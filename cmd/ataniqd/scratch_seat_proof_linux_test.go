@@ -67,7 +67,9 @@ func proofOffTmp(t *testing.T) string {
 		if err != nil || strings.HasPrefix(real+"/", "/tmp/") || strings.HasPrefix(real+"/", "/var/tmp/") {
 			continue
 		}
-		dir, err := os.MkdirTemp(real, "ataniq-seat-proof-")
+		// A short name: the holders' sockets lie in the runtime root below
+		// it, and a Unix socket address holds 107 bytes.
+		dir, err := os.MkdirTemp(real, "asp-")
 		if err != nil {
 			continue
 		}
@@ -174,9 +176,10 @@ func proofScript(t *testing.T, args ...string) []byte {
 // its scratch config passes the scratch config's strict reader, with the
 // trial's state folder as the state root, one lead running at a time, the
 // stand-in lead and the live lead of the sitting with the model named, and
-// owner/ of the state folder never mounted; its owner channel's settings pass
-// the strict reader of the settings as non-trial settings of the stand-in
-// door, whose suite names a sandbox template the script never writes.
+// owner/ of the state folder and the settings folder never mounted; its owner
+// channel's settings pass the strict reader of the settings as non-trial
+// settings of the stand-in door, whose suite names a sandbox template the
+// script never writes.
 func TestScratchSeatProofScriptWritesWhatTheDaemonReads(t *testing.T) {
 	dir := shortDir(t)
 	state, root := filepath.Join(dir, "trial-state"), filepath.Join(dir, "proof")
@@ -200,7 +203,7 @@ func TestScratchSeatProofScriptWritesWhatTheDaemonReads(t *testing.T) {
 		strings.Join(live.Agent.Argv, " ") != "/ataniq/agent/claude --model sample-model" || sti.ProfileDigest != "" || live.ProfileDigest != "" {
 		t.Fatalf("the script's leads: %+v", cfg.Entries)
 	}
-	for _, p := range []string{filepath.Join(state, hostadapter.OwnerDirName), "/srv/sample-home/.claude", "/srv/sample-home/.ssh", "/srv/sample-home/.codex"} {
+	for _, p := range []string{filepath.Join(state, hostadapter.OwnerDirName), filepath.Join(root, "owner-settings"), "/srv/sample-home/.claude", "/srv/sample-home/.ssh", "/srv/sample-home/.codex"} {
 		if !slices.Contains(cfg.Sandbox.NeverMounted, p) {
 			t.Fatalf("%s is not never-mounted: %v", p, cfg.Sandbox.NeverMounted)
 		}
@@ -218,7 +221,10 @@ func TestScratchSeatProofScriptWritesWhatTheDaemonReads(t *testing.T) {
 		t.Fatalf("the script's config without a model: %+v %v", cfg, err)
 	}
 
-	setPath := filepath.Join(root, "owner-scratch.json")
+	if err := os.Mkdir(filepath.Join(root, "owner-settings"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	setPath := filepath.Join(root, "owner-settings", "scratch.json")
 	if err := os.WriteFile(setPath, proofScript(t, "settings", root), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +255,7 @@ func TestScratchSeatProofGateCheckMatchesTheDaemon(t *testing.T) {
 		script, daemon bool
 	}{
 		{"192.0.2.10:7443", true, true},
-		{"10.0.0.1:1", true, true},
+		{"198.51.100.1:1", true, true},
 		{"127.0.0.1:65535", true, true},
 		{"223.255.255.254:7443", true, true},
 		{"240.0.0.1:7443", true, true},
@@ -329,17 +335,17 @@ func gatePorts(t *testing.T) func() string {
 }
 
 // proofKit is the owner's side of the proof in a private folder outside
-// /tmp: stubs of the binaries prepare copies, a systemctl stub that answers
-// "show" from a file of the test's ("UNIT PROP VALUE" lines, the value the
-// rest of the line), a folder that stands for /proc, and a home.
+// /tmp: stubs of the binaries prepare copies, a folder of tools put first on
+// prepare's PATH, whose systemctl and systemd-run are stubs that fail, and a
+// home.
 type proofKit struct {
-	dir, bin, tools, units, home string
+	dir, bin, tools, home string
 }
 
 func newProofKit(t *testing.T) proofKit {
 	t.Helper()
 	dir := proofOffTmp(t)
-	k := proofKit{dir: dir, bin: filepath.Join(dir, "bin"), tools: filepath.Join(dir, "tools"), units: filepath.Join(dir, "units"), home: filepath.Join(dir, "home")}
+	k := proofKit{dir: dir, bin: filepath.Join(dir, "bin"), tools: filepath.Join(dir, "tools"), home: filepath.Join(dir, "home")}
 	for _, d := range []string{k.bin, k.tools, k.home} {
 		if err := os.Mkdir(d, 0o700); err != nil {
 			t.Fatal(err)
@@ -351,23 +357,12 @@ func newProofKit(t *testing.T) proofKit {
 			t.Fatal(err)
 		}
 	}
-	systemctl := "#!/bin/sh\n" +
-		"[ \"$1 $2 $3\" = '--user show -p' ] && [ \"$5 $6\" = '--value --' ] || exit 97\n" +
-		"v=$(awk -v u=\"$7\" -v p=\"$4\" '$1 == u && $2 == p { s = $0; sub(/^[^ ]+ [^ ]+ ?/, \"\", s); print s; exit }' '" + k.units + "' 2>/dev/null)\n" +
-		"if [ -z \"$v\" ]; then case $4 in ActiveState) v=inactive ;; LoadState) v=not-found ;; esac; fi\n" +
-		"printf '%s\\n' \"$v\"\n"
-	if err := os.WriteFile(filepath.Join(k.tools, "systemctl"), []byte(systemctl), 0o700); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"systemctl", "systemd-run"} {
+		if err := os.WriteFile(filepath.Join(k.tools, name), []byte(stub), 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return k
-}
-
-// unitsSay sets the answers of the systemctl stub.
-func (k proofKit) unitsSay(t *testing.T, lines ...string) {
-	t.Helper()
-	if err := os.WriteFile(k.units, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 }
 
 // prepare runs the owner's prepare script and returns its output and exit
@@ -375,7 +370,7 @@ func (k proofKit) unitsSay(t *testing.T, lines ...string) {
 func (k proofKit) prepare(t *testing.T, args ...string) (string, int) {
 	t.Helper()
 	cmd := exec.Command("/bin/sh", append([]string{filepath.Join(repoRoot, "qualification", "scratch-seat", "prepare.sh")}, args...)...)
-	cmd.Env = []string{"PATH=" + k.tools + ":/usr/bin:/bin", "HOME=" + k.home, "PREPARE_PROC=" + filepath.Join(k.dir, "proc")}
+	cmd.Env = []string{"PATH=" + k.tools + ":/usr/bin:/bin", "HOME=" + k.home}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		var exit *exec.ExitError
@@ -449,44 +444,40 @@ func dialSeat(t *testing.T, addr string, seat seatgate.Identity, gateFP string) 
 
 // The scratch daemon on the phone trial's state folder, step by step as the
 // owner takes it (docs/scratch-seat-proof.md), on the files prepare.sh
-// --write makes in a folder of the proof's own, with the settings swapped by
-// prepare's --swap-in and --swap-out:
+// --write makes in a folder of the proof's own, with the owner channel's
+// settings read from ROOT/owner-settings by --owner-settings. Nothing of the
+// trial is renamed, moved or masked: the trial's settings stay in
+// owner/scratch.json from the first step to the last.
 //
-//  1. --write writes the config, the settings and the copies in ROOT and
-//     nothing in the state folder. While the trial's settings ("trial":
-//     true) are in owner/scratch.json the scratch daemon refuses to start at
-//     the config step (exit 10), before it looks at the root marker or takes
-//     a lock, and writes nothing. --status says the trial is in place;
-//     --record-trial records the trial's unit, a transient one, from the
-//     systemctl stub and a fake /proc entry of its main process; --swap-in
-//     refuses the running unit and, with the unit gone, a gate port the
-//     trial still listens on.
-//  2. The daemon's own guards behind prepare's: with the settings put in
-//     place by the test while the trial runs, the daemon refuses for the
-//     missing root marker (exit 10); "ataniq-canary scratch-init" takes the
-//     trial's private state folder as it is ("kept folder"), writes the
-//     marker and keeps it when run again, writing nothing in owner/; with the
-//     marker, the state folder's daemon lock refuses the scratch daemon (exit
-//     12). The test's own move is undone.
-//  3. Once the trial has stopped, --swap-in puts the proof's settings in
-//     place; the daemon starts: the gate has the trial's key fingerprint,
-//     the trial's pinned seat reaches it, the paired key is listed, both
-//     leads of the sitting are defined (provisioned, not started) and a
-//     reply of the stand-in is read by the seat once the desk turns its chat
-//     on; the live lead's chat is turned on and off. Restarted with the
-//     stand-in's chat on, the daemon comes back with every chat off.
-//  4. --swap-out puts the same trial settings file back and names the
-//     restart script as step 15; that script, run with a systemd-run stub,
-//     gives the unit's name, description, --collect and the trial's command
-//     line; the trial daemon starts again on the same folder with what the
-//     scratch daemon left there, with the same gate key, the same paired
-//     credential and its known STAND-IN sample rows.
+//  1. --write writes the config, the settings folder and the copies in ROOT
+//     and nothing in the state folder. Without --owner-settings the scratch
+//     daemon reads the trial's settings and refuses them (exit 10) before it
+//     looks at the root marker or takes a lock, and writes nothing.
+//  2. With --owner-settings while the trial runs: --check fails the missing
+//     root marker alone and binds, locks and makes nothing; the daemon refuses
+//     for the missing marker (exit 10); "ataniq-canary scratch-init" takes the
+//     trial's private state folder as it is ("kept folder"), writes the marker
+//     and keeps it when run again, writing nothing in owner/; --check then
+//     passes every line, while the trial still runs; and the state folder's
+//     daemon lock refuses the scratch daemon (exit 12), so the two never serve
+//     the folder at once.
+//  3. Once the trial has stopped (by the owner's own command; nothing is
+//     masked), the daemon starts: it says it reads ROOT/owner-settings, the
+//     gate has the trial's key fingerprint, the trial's pinned seat reaches
+//     it, the paired key is listed, both leads of the sitting are defined
+//     (provisioned, not started) and a reply of the stand-in is read by the
+//     seat once the desk turns its chat on; the live lead's chat is turned on
+//     and off. Restarted with the stand-in's chat on, the daemon comes back
+//     with every chat off.
+//  4. The trial daemon starts again on the same folder with what the scratch
+//     daemon left there, with the same gate key, the same paired credential,
+//     its STAND-IN sample rows and its sample card.
 //
-// With no phone login in between, the gate's key and certificate, the pins,
-// keys.log, keys.head and the trial's settings are the same bytes at the end
-// as at the start, and the settings the same file. (A real login on the
-// phone may advance a key's counter in the key journal; the sitting does not
-// compare those bytes.)
+// The gate's key and certificate, the pins, keys.log, keys.head and the
+// trial's settings are read, never written: they are the same bytes after the
+// proof's daemon stopped as before it started, and again after the trial ran
+// once more, and the settings are the same file. (No phone logs in here; a
+// real login may raise a key's sign counter, which appends to the key list.)
 func TestScratchSeatTakesThePhoneTrialsStateFolder(t *testing.T) {
 	useSuite(t, cmdSuite{})
 	tool := buildScratchInit(t)
@@ -531,7 +522,18 @@ func TestScratchSeatTakesThePhoneTrialsStateFolder(t *testing.T) {
 	for _, name := range []string{"gate/cert.pem", "gate/key.pem", "gate/" + leaddaemon.SeatPinsFileName, ownerjournal.KeysFileName, ownerjournal.KeysHeadFileName, hostadapter.ScratchName} {
 		kept[name] = fileBytes(t, filepath.Join(owner, name))
 	}
-	trialSettings, trialID := kept[hostadapter.ScratchName], inodeOf(t, canon)
+	trialID := inodeOf(t, canon)
+	sameTrial := func(when string) {
+		t.Helper()
+		for name, want := range kept {
+			if got := fileBytes(t, filepath.Join(owner, name)); !bytes.Equal(got, want) {
+				t.Errorf("%s: owner/%s is not the bytes it was", when, name)
+			}
+		}
+		if inodeOf(t, canon) != trialID {
+			t.Errorf("%s: the trial's settings are not the same file", when)
+		}
+	}
 	wantKey := func(when string, v ownerwire.KeysView) {
 		t.Helper()
 		if len(v.Keys) != 1 || v.Keys[0].ID != ownerjournal.KeyDisplayID(credID) || v.Keys[0].Kind != "platform-passkey" || v.Keys[0].Revoked {
@@ -548,7 +550,7 @@ func TestScratchSeatTakesThePhoneTrialsStateFolder(t *testing.T) {
 		done := startApp(t, ta, []string{"--state-dir", state, "--runtime-dir", trialRun, "--owner-channel", "--trial", "--seat-gate", nominal}, trialRun+"/daemon.sock")
 		return ta, errs, done, last()
 	}
-	ta, errs, done, trialAddr := startTrial()
+	ta, errs, done, _ := startTrial()
 	sub := newTestApp(t, nil)
 	if code := sub.run([]string{"trial", "submit", "--socket", trialRun + "/daemon.sock", "--kind", "finish"}); code != 0 {
 		t.Fatalf("trial submit: %d %s", code, sub.err.String())
@@ -557,9 +559,10 @@ func TestScratchSeatTakesThePhoneTrialsStateFolder(t *testing.T) {
 	// 1. prepare --write, as the owner runs it, into ROOT.
 	root := filepath.Join(k.dir, "proof")
 	config := filepath.Join(root, "scratch.json")
+	settingsDir := filepath.Join(root, "owner-settings")
 	stateTree := treeOf(t, owner)
-	vals := []string{"--state", state, "--root", root}
-	out, code := k.prepare(t, append(slices.Clone(vals), "--write", "--gate", nominal, "--sitting", "1", "--unit", "sample-trial.service",
+	vals := []string{"--state", state, "--root", root, "--gate", nominal}
+	out, code := k.prepare(t, append(slices.Clone(vals), "--write", "--sitting", "1",
 		"--bin", k.bin, "--daemon", filepath.Join(k.bin, "ataniqd"), "--pasta", filepath.Join(k.bin, "pasta"), "--bwrap", filepath.Join(k.bin, "bwrap"),
 		"--claude", filepath.Join(k.bin, "claude-file"), "--model", "sample-model")...)
 	if code != 0 {
@@ -568,77 +571,46 @@ func TestScratchSeatTakesThePhoneTrialsStateFolder(t *testing.T) {
 	if !sameTreeOf(stateTree, treeOf(t, owner)) {
 		t.Fatal("prepare --write changed the owner folder")
 	}
-	proofSettings := fileBytes(t, filepath.Join(root, "owner-scratch.json"))
+	if st, err := os.Lstat(settingsDir); err != nil || st.Mode() != fs.ModeDir|0o700 {
+		t.Fatalf("the settings folder: %v %v", st, err)
+	}
+	if st, err := os.Lstat(filepath.Join(settingsDir, "scratch.json")); err != nil || st.Mode() != 0o600 {
+		t.Fatalf("the proof's settings: %v %v", st, err)
+	}
 
-	scratchRun := func() (int, string) {
+	runtimeRoot := filepath.Join(root, "runtime")
+	scratchRun := func(more ...string) (int, string, string) {
 		t.Helper()
 		sa := canaryApp(t)
 		sa.getenv = env
-		code := sa.run([]string{"run", "--scratch", config, "--owner-channel", "--seat-gate", nominal})
-		return code, sa.err.String()
+		code := sa.run(append([]string{"run", "--scratch", config, "--owner-channel", "--seat-gate", nominal}, more...))
+		return code, sa.out.String(), sa.err.String()
 	}
-	runtimeRoot := filepath.Join(root, "runtime")
+	withSettings := []string{"--owner-settings", settingsDir}
 	const trialRefusal = `ataniqd run: --owner-channel: the scratch settings are a phone trial's ("trial": true)`
-	code, msg := scratchRun()
+	code, _, msg := scratchRun()
 	if code != leaddaemon.ExitConfig || !strings.HasPrefix(msg, trialRefusal) {
-		t.Fatalf("on the trial's settings: exit %d: %s", code, msg)
+		t.Fatalf("without --owner-settings, on the trial's settings: exit %d: %s", code, msg)
 	}
 	if _, err := os.Lstat(runtimeRoot); err == nil {
 		t.Fatal("a refused daemon made the runtime root")
 	}
-	if out, code := k.prepare(t, append([]string{"--status"}, vals...)...); code != 0 || !strings.Contains(out, "status: trial in place (not swapped)") {
-		t.Fatalf("--status before: exit %d:\n%s", code, out)
-	}
-	// f. --record-trial while the trial runs. The trial's unit is a
-	// transient one, as systemd-run makes it; its main process is a fake
-	// /proc entry with the trial daemon's command line.
-	trialProg := filepath.Join(k.bin, "ataniqd")
-	trialArgv := []string{trialProg, "run", "--state-dir", state, "--runtime-dir", trialRun, "--owner-channel", "--trial", "--seat-gate", nominal}
-	if err := os.MkdirAll(filepath.Join(k.dir, "proc", "4242"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(k.dir, "proc", "4242", "cmdline"), []byte(strings.Join(trialArgv, "\x00")+"\x00"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	u := "sample-trial.service "
-	k.unitsSay(t, u+"Id sample-trial.service", u+"Description Sample phone trial", u+"Transient yes", u+"UnitFileState transient",
-		u+"FragmentPath "+filepath.Join(k.dir, "xdg-run", "systemd", "transient", "sample-trial.service"), u+"CollectMode inactive-or-failed",
-		u+"LoadState loaded", u+"ActiveState active", u+"SubState running", u+"InvocationID 00112233445566778899aabbccddeeff", u+"MainPID 4242",
-		u+"Restart no", u+"ExecStart { path="+trialProg+" ; argv[]="+strings.Join(trialArgv, " ")+" ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=4242 ; code=(null) ; status=0/0 }")
-	if out, code := k.prepare(t, append(append([]string{"--record-trial"}, vals...), "--unit", "sample-trial.service")...); code != 0 ||
-		!strings.Contains(out, "recorded the trial's unit: transient") {
-		t.Fatalf("--record-trial: exit %d:\n%s", code, out)
-	}
-	if out, code := k.prepare(t, append([]string{"--status"}, vals...)...); code != 0 || !strings.Contains(out, "next: stop the trial's transient unit (step 1; it is not masked") {
-		t.Fatalf("--status after the record: exit %d:\n%s", code, out)
-	}
-	swapIn := func(gate string) (string, int) {
-		return k.prepare(t, append(append([]string{"--swap-in"}, vals...), "--gate", gate, "--sitting", "1", "--unit", "sample-trial.service")...)
-	}
-	if out, code := swapIn(trialAddr); code != 1 || !strings.Contains(out, "not inactive") {
-		t.Fatalf("--swap-in with the trial's unit active: exit %d:\n%s", code, out)
-	}
-	// Stopped, the transient unit is gone (inactive, not-found).
-	k.unitsSay(t)
-	if out, code := swapIn(trialAddr); code != 1 || !strings.Contains(out, "listens on the gate's port") {
-		t.Fatalf("--swap-in while the trial's gate listens: exit %d:\n%s", code, out)
-	}
-	if !bytes.Equal(fileBytes(t, canon), trialSettings) || inodeOf(t, canon) != trialID {
-		t.Fatal("a refused --swap-in moved the trial's settings")
-	}
 
-	// 2. The daemon's own guards, behind prepare's: the test puts the proof's
-	// settings in place itself while the trial runs.
-	aside := filepath.Join(owner, "scratch.json.trial")
-	if err := os.Rename(canon, aside); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(canon, proofSettings, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	// 2. With --owner-settings, while the trial runs.
 	ownerTree := treeOf(t, owner)
+	old := seatGateListen
+	seatGateListen = func(string, string) (net.Listener, error) {
+		t.Error("--check listened")
+		return nil, os.ErrPermission
+	}
 	marker := filepath.Join(state, canaryroot.ScratchMarkerName)
-	code, msg = scratchRun()
+	code, out, msg = scratchRun(append(slices.Clone(withSettings), "--check")...)
+	if code != leaddaemon.ExitConfig || msg != "" || !strings.Contains(out, "FAIL  the root marker: ") || !strings.Contains(out, "check: 1 refusal(s)") ||
+		!strings.Contains(out, "pass  the settings: not a phone trial's") || !strings.Contains(out, "pass  the seat gate: "+nominal+", key fingerprint "+gateFP) {
+		t.Fatalf("--check without the marker: exit %d:\n%s%s", code, out, msg)
+	}
+	seatGateListen = old
+	code, _, msg = scratchRun(withSettings...)
 	if code != leaddaemon.ExitConfig || !strings.Contains(msg, "no marker "+marker) {
 		t.Fatalf("without the marker: exit %d: %s", code, msg)
 	}
@@ -662,33 +634,25 @@ func TestScratchSeatTakesThePhoneTrialsStateFolder(t *testing.T) {
 	if got, want := initRun(), "kept folder "+state+"\nkept file "+marker+"\n"; got != want {
 		t.Fatalf("scratch-init again printed %q, want %q", got, want)
 	}
-	code, msg = scratchRun()
+	code, out, msg = scratchRun(append(slices.Clone(withSettings), "--check")...)
+	if code != 0 || msg != "" || strings.Contains(out, "FAIL") || !strings.Contains(out, "check: no refusal") {
+		t.Fatalf("--check while the trial runs: exit %d:\n%s%s", code, out, msg)
+	}
+	code, _, msg = scratchRun(withSettings...)
 	if code != leaddaemon.ExitLockHeld {
 		t.Fatalf("while the trial runs: exit %d: %s", code, msg)
 	}
 	if !sameTreeOf(ownerTree, treeOf(t, owner)) {
-		t.Fatal("the refused daemons or scratch-init changed the owner folder")
+		t.Fatal("the refused daemons, --check or scratch-init changed the owner folder")
 	}
-	if err := os.Remove(canon); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(aside, canon); err != nil {
-		t.Fatal(err)
-	}
+	sameTrial("while the trial runs")
 	stopApp(t, ta, errs, done)
 
-	// 3. The trial is stopped (its transient unit gone): --swap-in, then
-	// the scratch daemon with the seat gate on the trial's state folder.
-	out, code = swapIn(trialAddr)
-	if code != 0 || !strings.Contains(out, "status: swapped in") {
-		t.Fatalf("--swap-in: exit %d:\n%s", code, out)
-	}
-	if !bytes.Equal(fileBytes(t, canon), proofSettings) || !bytes.Equal(fileBytes(t, aside), trialSettings) || inodeOf(t, aside) != trialID {
-		t.Fatal("after --swap-in the settings are not in place")
-	}
-	old := ownerInspector
+	// 3. The trial is stopped: the scratch daemon with the seat gate on the
+	// trial's state folder, its settings from the settings folder.
+	oldInspector := ownerInspector
 	ownerInspector = ownerCmdTerminal{}
-	t.Cleanup(func() { ownerInspector = old })
+	t.Cleanup(func() { ownerInspector = oldInspector })
 	socket := filepath.Join(runtimeRoot, "daemon.sock")
 	startScratch := func() (*testApp, *gateBuf, <-chan int, string) {
 		t.Helper()
@@ -696,12 +660,13 @@ func TestScratchSeatTakesThePhoneTrialsStateFolder(t *testing.T) {
 		sa.getenv = env
 		serrs := &gateBuf{}
 		sa.stderr = serrs
-		sdone := startApp(t, sa, []string{"--scratch", config, "--owner-channel", "--seat-gate", nominal}, socket)
+		sdone := startApp(t, sa, append([]string{"--scratch", config, "--owner-channel", "--seat-gate", nominal}, withSettings...), socket)
 		return sa, serrs, sdone, last()
 	}
 	sa, serrs, sdone, addr := startScratch()
 	log := serrs.String()
 	if !strings.Contains(log, "ataniqd: seat gate: listening on "+addr+", key fingerprint "+gateFP) ||
+		!strings.Contains(log, "ataniqd: "+ownerSettingsNote(settingsDir)+"\n") ||
 		!strings.Contains(log, "ataniqd: seat gate: "+scratchChatNote+"\n") || strings.Contains(log, "TRIAL") ||
 		strings.Contains(log, "cannot be opened") {
 		t.Fatalf("the scratch daemon's start:\n%s", log)
@@ -750,46 +715,15 @@ func TestScratchSeatTakesThePhoneTrialsStateFolder(t *testing.T) {
 	}
 	c.Close()
 	stopApp(t, sa, serrs, sdone)
-	if !bytes.Equal(fileBytes(t, aside), trialSettings) {
-		t.Fatal("the trial's settings set aside changed")
+	sameTrial("after the proof's daemon")
+	for _, rel := range []string{"scratch.json.trial", "scratch.json.leads-1"} {
+		if _, err := os.Lstat(filepath.Join(owner, rel)); err == nil {
+			t.Errorf("owner/%s is there: something of the trial was set aside", rel)
+		}
 	}
 
-	// 4. Back to the trial: --swap-out, then the trial daemon again.
-	out, code = k.prepare(t, append(append([]string{"--swap-out"}, vals...), "--gate", addr, "--unit", "sample-trial.service")...)
-	if code != 0 || !strings.Contains(out, "status: trial in place (the way back is done)") {
-		t.Fatalf("--swap-out: exit %d:\n%s", code, out)
-	}
-	if inodeOf(t, canon) != trialID || !bytes.Equal(fileBytes(t, filepath.Join(owner, "scratch.json.leads-1")), proofSettings) {
-		t.Fatal("after --swap-out the trial's settings file is not back, or the proof's is not archived")
-	}
-	restart := filepath.Join(root, "trial-restart.sh")
-	if !strings.Contains(out, "next: re-create the trial's transient unit: OWNER ONLY: sh "+restart+" (step 15)") {
-		t.Fatalf("--swap-out does not name the restart script:\n%s", out)
-	}
-	if g := string(fileBytes(t, filepath.Join(root, "evidence", "trial-unit-guard.txt"))); !strings.Contains(g, "kind transient, ActiveState=inactive, LoadState=not-found") {
-		t.Fatalf("the guard's evidence: %q", g)
-	}
-	// Step 15, the owner's: the restart script, run here only with a
-	// systemd-run stub that records its arguments, gives the trial's unit
-	// its name, description, --collect and the command line recorded.
-	stubs := filepath.Join(k.dir, "restart-stubs")
-	gotArgs := filepath.Join(k.dir, "systemd-run-args")
-	if err := os.Mkdir(stubs, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(stubs, "systemd-run"), []byte("#!/bin/sh\nfor a; do printf '%s\\n' \"$a\"; done >'"+gotArgs+"'\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	rs := exec.Command("/bin/sh", restart)
-	rs.Env = []string{"PATH=" + stubs + ":/usr/bin:/bin", "HOME=" + k.home}
-	if b, err := rs.CombinedOutput(); err != nil {
-		t.Fatalf("the restart script with a stub: %v\n%s", err, b)
-	}
-	wantArgs := append([]string{"--user", "--unit", "sample-trial.service", "--description", "Sample phone trial", "--collect", "--"}, trialArgv...)
-	if got := string(fileBytes(t, gotArgs)); got != strings.Join(wantArgs, "\n")+"\n" {
-		t.Fatalf("systemd-run got:\n%s\nwant:\n%s", got, strings.Join(wantArgs, "\n"))
-	}
-	ta, errs, done, trialAddr = startTrial()
+	// 4. Back to the trial, by its own command, on the same folder.
+	ta, errs, done, trialAddr := startTrial()
 	tlog := errs.String()
 	if !strings.Contains(tlog, "listening on "+trialAddr+", key fingerprint "+gateFP) || !strings.Contains(tlog, trialNote) || strings.Contains(tlog, "cannot be opened") {
 		t.Fatalf("the trial after the proof:\n%s", tlog)
@@ -812,9 +746,5 @@ func TestScratchSeatTakesThePhoneTrialsStateFolder(t *testing.T) {
 	}
 	g.Close()
 	stopApp(t, ta, errs, done)
-	for name, want := range kept {
-		if got := fileBytes(t, filepath.Join(owner, name)); !bytes.Equal(got, want) {
-			t.Errorf("owner/%s is not as it was", name)
-		}
-	}
+	sameTrial("after the trial ran again")
 }

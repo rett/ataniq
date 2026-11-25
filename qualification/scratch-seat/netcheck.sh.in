@@ -1,56 +1,82 @@
 # The body of ROOT/netcheck.sh, which prepare.sh --write writes after six
 # lines of its own (the first line, a note, then SELF, PASTA, BWRAP, GATE_HOST
 # and GATE_PORT, the real values). It is never run by prepare or by an agent:
-# the owner runs it by hand, once, with the phone trial running (so that
-# something listens on the gate's address), before either lead starts.
+# the owner runs it by hand, with the phone trial running (so that something
+# listens on the gate's address), before either lead starts, and again once
+# the drop rule is in place, before the live lead.
 #
 # It is modelled on the canary run kit's netcheck (qualification/canary/run/
-# netcheck.sh.in) and checks, in the shape of the sandbox profile (pasta, then
-# bubblewrap with the read-only root, no capabilities, UID 0):
-#   1. from this host, outside any sandbox, that a TCP connection to the
-#      gate's address is made (the trial's gate answers): without a listener
-#      the next check proves nothing;
-#   2. from the lead's network, that no TCP connection to the gate's address
-#      is made (refused or timed out is a PASS);
-# and it lists what it does not refuse: this host's listening sockets on
-# non-loopback addresses, and the open network of the sandbox. It sends no
-# byte to the gate (a connection is made and closed), uses no credential and
-# starts no agent. One line per check, PASS or FINDING, and INFO lines; the
-# exit status is the number of findings.
+# netcheck.sh.in). It probes one TCP connection to the gate's numeric address
+# and port three times and classifies each probe as connected, refused, or
+# filtered/timed out, or as a probe that did not run (an error):
+#   1. from this host, outside any sandbox: it must connect (the trial's gate
+#      answers); without a listener the next probes prove nothing;
+#   2. from the lead's network, in the shape of the sandbox profile (pasta,
+#      then bubblewrap with the read-only root, no capabilities, UID 0),
+#      started from this shell: it must be refused or time out;
+#   3. the same, started in a throwaway user unit of systemd-run with the
+#      lead unit's fixed properties, where a lead's holder starts pasta (in
+#      the user manager, not in this shell's session): it must be refused or
+#      time out too. A rule that matches the lead's processes by their unit's
+#      place in the user manager shows here and not in 2.
+# Only a refusal or a timeout that the probe itself reports passes 2 and 3; a
+# probe that did not run (no curl, a curl without telnet://, a sandbox or a
+# unit that did not start, output without the probe's line) is a finding. The
+# probe is curl with no configuration file (-q, its first argument), no proxy
+# (--noproxy '*'; the environment is cleared on this host's side, and
+# bubblewrap clears it inside) and telnet://, which sends nothing but its empty
+# standard input; it prints one line, "probe rc=N connect=T": curl's own exit
+# status and its time to connect (0.000000 when no connection was made). It
+# sends no byte to the gate (a connection is made and closed), uses no
+# credential and starts no agent. One line per probe, PASS or FINDING, then
+# INFO lines; the exit status is the number of findings, at most 100, and the
+# last line names it.
 #
 # The network shape is the holder's for a scratch lead, and a test
 # (TestScratchSeatNetcheckMatchesTheLeadsNetwork) holds it there: the pasta
 # arguments are sandboxnet.PastaArgs() (internal/leadsandbox/sandboxnet), the
-# ones the plan passes, and the bubblewrap options that make the namespaces
-# and the identity are the profile's flag set for the identity a scratch lead
+# ones the plan passes; the bubblewrap options that make the namespaces and
+# the identity are the profile's flag set for the identity a scratch lead
 # has, UID and GID 0 (provisioning names no other identity and no seccomp
-# filter). What differs, and why the check still proves the gate unreachable
-# from the lead: the binds (the host's /usr and a few /etc files here, the
-# profile's table there) and the program inside (sh and curl here, the probe
-# and the agent there) do not change the network; the resolv.conf here is
-# the host's (its upstream list behind a systemd-resolved stub), where the
-# holder writes one it derives, and the gate is an address, so no name is
-# looked up; and pasta starts from the owner's shell here and from the holder
-# in the lead's user unit there, which sets no network property of its own,
-# so both start in this host's network as the same user. Whether the gate
-# answers is decided by pasta's namespace and its options, which are the same.
+# filter); and the unit's properties are leadunit.FixedProperties(). What
+# differs, and why the probes still show whether the gate is reachable from a
+# lead: the binds (the host's /usr and a few /etc files here, the profile's
+# table there) and the program inside (sh and curl here, the probe and the
+# agent there) do not change the network; the resolv.conf here is the host's
+# (its upstream list behind a systemd-resolved stub), where the holder writes
+# one it derives, and the gate is an address, so no name is looked up. The
+# throwaway unit's name is systemd-run's, not a lead unit's
+# (ataniq-lead-scratch-KEY.service): a rule that matches that name is not
+# seen by probe 3.
+#
+# Entries that run nothing, for the tests: --classify RC CONNECT and
+# --class-of TEXT print a class; --verdict HOST SHELL UNIT prints the lines
+# and ends with the exit status three classes give. --probe-here HOST PORT
+# runs the probe in the caller's environment, outside any sandbox (the tests
+# run it with a stub curl first on PATH and no other).
 #
 # POSIX sh. The script calls itself with --core to run the sandbox.
-RESOLV=/etc/resolv.conf
-_stub=0
-[ "$(readlink -f /etc/resolv.conf 2>/dev/null)" = /run/systemd/resolve/stub-resolv.conf ] && _stub=1
-if [ "$_stub" -eq 0 ] && [ -r /etc/resolv.conf ]; then
-  _ns=$(awk '$1 == "nameserver" { print $2 }' /etc/resolv.conf)
-  [ "$_ns" = 127.0.0.53 ] && _stub=1
-fi
-if [ "$_stub" -eq 1 ] && [ -r /run/systemd/resolve/resolv.conf ]; then
-  RESOLV=/run/systemd/resolve/resolv.conf
-fi
 SH=$(command -v sh) || SH=/bin/sh
+
+# resolv sets RESOLV, the resolv.conf the sandbox gets: the host's, or
+# resolved's upstream file when the host's is the local stub.
+resolv() {
+  RESOLV=/etc/resolv.conf
+  _stub=0
+  [ "$(readlink -f /etc/resolv.conf 2>/dev/null)" = /run/systemd/resolve/stub-resolv.conf ] && _stub=1
+  if [ "$_stub" -eq 0 ] && [ -r /etc/resolv.conf ]; then
+    _ns=$(awk '$1 == "nameserver" { print $2 }' /etc/resolv.conf)
+    [ "$_ns" = 127.0.0.53 ] && _stub=1
+  fi
+  if [ "$_stub" -eq 1 ] && [ -r /run/systemd/resolve/resolv.conf ]; then
+    RESOLV=/run/systemd/resolve/resolv.conf
+  fi
+}
 
 # core runs the command given as arguments inside pasta and bubblewrap in the
 # shape of the profile.
 core() {
+  resolv
   _opt=
   [ -e /etc/ssl ] && _opt="$_opt --ro-bind /etc/ssl /etc/ssl"
   [ -e /etc/ca-certificates ] && _opt="$_opt --ro-bind /etc/ca-certificates /etc/ca-certificates"
@@ -68,15 +94,55 @@ core() {
     --remount-ro / -- "$@"
 }
 
-# The connect test: curl opens a TCP connection (telnet:// sends nothing but
-# what standard input holds, and it is empty) and prints the time to connect,
-# 0.000000 when no connection was made.
-CONNECT='t=$(curl -s -o /dev/null --connect-timeout 5 -m 8 -w "%{time_connect}" "telnet://$0:$1" </dev/null); echo "connect ${t:-0.000000}"'
+# unit runs this script's --core in a throwaway user unit with the lead
+# unit's fixed properties, waits for it and passes its output through.
+unit() {
+  systemd-run --user --wait --pipe --quiet \
+    -p Type=exec -p CollectMode=inactive-or-failed -p KillMode=control-group -p Restart=no -p TimeoutStopSec=2s \
+    -- "$SH" "$SELF" --core
+}
 
-if [ "${1:-}" = --core ]; then
-  core /usr/bin/sh -c "$CONNECT" "$GATE_HOST" "$GATE_PORT"
-  exit
-fi
+# The probe, run by sh -c with the host and the port as $0 and $1. Its status
+# is curl's own: the status of an assignment is that of its command
+# substitution.
+# shellcheck disable=SC2016  # the inner shell expands these
+PROBE='command -v curl >/dev/null 2>&1 || { echo "probe no-curl"; exit 0; }
+t=$(curl -q -s --noproxy "*" -o /dev/null --connect-timeout 5 -m 8 -w "%{time_connect}" "telnet://$0:$1" </dev/null)
+echo "probe rc=$? connect=${t:-none}"'
+
+# classify RC CONNECT prints the class of one probe: connected when a time to
+# connect above zero was measured; else refused for curl's "could not
+# connect" (7: a reset, or a rejection answered by an unreachable message)
+# and filtered for its timeout (28: nothing answered); anything else is an
+# error, a probe that showed nothing.
+classify() {
+  case $1 in '' | *[!0-9]*) echo error; return 0 ;; esac
+  case $2 in '' | *[!0-9.]* | .* | *. | *.*.*) echo error; return 0 ;; esac
+  if awk -v t="$2" 'BEGIN { exit !(t + 0 > 0) }'; then
+    echo connected
+    return 0
+  fi
+  case $1 in
+    7) echo refused ;;
+    28) echo filtered ;;
+    *) echo error ;;
+  esac
+}
+
+# class_of TEXT prints the class of the last probe line of TEXT, the output of
+# a probe; a text without a line of the probe's form is an error.
+class_of() {
+  _l=$(printf '%s\n' "$1" | awk '/^probe / { l = $0 } END { print l }')
+  case $_l in
+    'probe rc='[0-9]*' connect='*) ;;
+    *) echo error; return 0 ;;
+  esac
+  _rc=${_l#probe rc=}
+  _rc=${_rc%% *}
+  _t=${_l#probe rc="$_rc" connect=}
+  case $_t in *' '* | '') echo error; return 0 ;; esac
+  classify "$_rc" "$_t"
+}
 
 FINDINGS=0
 finding() {
@@ -86,31 +152,82 @@ finding() {
 pass() { printf 'PASS     %s\n' "$*"; }
 info() { printf 'INFO     %s\n' "$*"; }
 
-# connected TEXT succeeds when the text holds a time to connect above zero.
-connected() {
-  printf '%s\n' "$1" | awk '$1 == "connect" && $2 + 0 > 0 { f = 1 } END { exit !f }'
+# host_line CLASS: this host must connect.
+host_line() {
+  case $1 in
+    connected) pass "this host: connected to $GATE_HOST:$GATE_PORT (the trial's gate listens)" ;;
+    refused) finding "this host: refused at $GATE_HOST:$GATE_PORT: nothing listens; run this while the trial runs, or the next probes prove nothing" ;;
+    filtered) finding "this host: no answer from $GATE_HOST:$GATE_PORT (filtered or timed out); run this while the trial runs, or the next probes prove nothing" ;;
+    *) finding "this host: the probe did not run (no curl, a curl without telnet://, or another failure), so nothing was shown" ;;
+  esac
 }
 
+# lead_line LABEL CLASS: the lead's network must not connect.
+lead_line() {
+  case $2 in
+    refused) pass "$1: refused (no connection to the gate's port was made)" ;;
+    filtered) pass "$1: filtered or timed out (no connection to the gate's port was made)" ;;
+    connected) finding "$1: connected to the gate's port $GATE_HOST:$GATE_PORT: do not start a lead until a rule refuses it" ;;
+    *) finding "$1: the probe did not run, so nothing was shown (see its output below)" ;;
+  esac
+}
+
+# verdict HOST SHELL UNIT prints the lines of the three classes.
+verdict() {
+  host_line "$1"
+  lead_line "the lead's network, from this shell" "$2"
+  lead_line "the lead's network, in a user unit" "$3"
+}
+
+# finish prints the last line and ends with the number of findings.
+finish() {
+  if [ "$FINDINGS" -gt 0 ]; then
+    echo "netcheck: $FINDINGS finding(s)"
+    [ "$FINDINGS" -le 100 ] || FINDINGS=100
+    exit "$FINDINGS"
+  fi
+  echo "netcheck: no finding"
+  exit 0
+}
+
+case ${1:-} in
+  --core)
+    core /usr/bin/sh -c "$PROBE" "$GATE_HOST" "$GATE_PORT"
+    exit
+    ;;
+  --classify)
+    [ "$#" -eq 3 ] || exit 2
+    classify "$2" "$3"
+    exit 0
+    ;;
+  --class-of)
+    [ "$#" -eq 2 ] || exit 2
+    class_of "$2"
+    exit 0
+    ;;
+  --verdict)
+    [ "$#" -eq 4 ] || exit 2
+    verdict "$2" "$3" "$4"
+    finish
+    ;;
+  --probe-here)
+    [ "$#" -eq 3 ] || exit 2
+    "$SH" -c "$PROBE" "$2" "$3"
+    exit
+    ;;
+  '') ;;
+  *) exit 2 ;;
+esac
+
 echo "netcheck: pasta $PASTA, bubblewrap $BWRAP, the gate $GATE_HOST:$GATE_PORT"
-if ! command -v curl >/dev/null 2>&1; then
-  finding 'curl is not on PATH: nothing could be checked'
-  echo "netcheck: $FINDINGS finding(s)"
-  exit "$FINDINGS"
-fi
-HOSTSIDE=$("$SH" -c "$CONNECT" "$GATE_HOST" "$GATE_PORT" 2>&1)
-if connected "$HOSTSIDE"; then
-  pass "this host reaches the gate's address (the trial's gate listens)"
+HOSTSIDE=$(/usr/bin/env -i PATH=/usr/bin:/bin "$SH" -c "$PROBE" "$GATE_HOST" "$GATE_PORT" 2>&1)
+SHAPE=$("$SH" "$SELF" --core 2>&1)
+if command -v systemd-run >/dev/null 2>&1; then
+  UNIT=$(unit 2>&1)
 else
-  finding "nothing on this host answers at $GATE_HOST:$GATE_PORT: run this while the trial runs; without a listener the next line proves nothing"
+  UNIT='systemd-run is not on PATH: the probe in a user unit could not run'
 fi
-SANDBOX=$("$SH" "$SELF" --core 2>&1)
-if connected "$SANDBOX"; then
-  finding "the lead's network reaches the gate's port $GATE_HOST:$GATE_PORT: do not start a lead until a rule refuses it"
-elif printf '%s\n' "$SANDBOX" | grep -q '^connect '; then
-  pass "the lead's network does not reach the gate's port (refused or timed out)"
-else
-  finding "the sandbox did not run the connect test (see its output below)"
-fi
+verdict "$(class_of "$HOSTSIDE")" "$(class_of "$SHAPE")" "$(class_of "$UNIT")"
 if command -v ss >/dev/null 2>&1; then
   _l=$(ss -ltnu 2>/dev/null | awk 'NR > 1 && $5 !~ /^(127\.|\[::1\]|\[::ffff:127\.)/ { print $1, $5 }' | LC_ALL=C sort)
   if [ -n "$_l" ]; then
@@ -121,15 +238,15 @@ if command -v ss >/dev/null 2>&1; then
 else
   info 'ss is not on PATH: list this host'"'"'s listeners another way'
 fi
-info "not refused: the lead's network is open. pasta gives the sandbox this host's outbound access, to your LAN, to the"
-info "listeners above where your rules let this host reach them, and to the Internet. provider_host is a DNS check, not a"
-info "rule, and the guard hook exits 0: it guards nothing. Accept this in writing in ${SELF%/*}/evidence/notes.txt before a live login, or stop."
+info "until the drop rule is in place the lead's network is open: pasta gives the sandbox this host's outbound access, to"
+info "your LAN, to the listeners above where your rules let this host reach them, and to the Internet. provider_host is a"
+info "DNS check, not a rule, and the guard hook exits 0: it guards nothing. The live lead waits for the drop rule and for"
+info "this check run again after it; write what you accept in ${SELF%/*}/evidence/notes.txt."
 if [ "$FINDINGS" -gt 0 ]; then
   echo
-  echo "Each finding above needs a look before the sitting. What the sandbox printed:"
-  printf '%s\n' "$SANDBOX" | head -n 10 | sed 's/^/  sandbox: /'
-  echo "netcheck: $FINDINGS finding(s)"
-  [ "$FINDINGS" -le 100 ] || FINDINGS=100
-  exit "$FINDINGS"
+  echo "Each finding above needs a look before the sitting. What the probes printed:"
+  printf '%s\n' "$HOSTSIDE" | head -n 5 | sed 's/^/  host: /'
+  printf '%s\n' "$SHAPE" | head -n 10 | sed 's/^/  shell: /'
+  printf '%s\n' "$UNIT" | head -n 10 | sed 's/^/  unit: /'
 fi
-echo "netcheck: no finding"
+finish

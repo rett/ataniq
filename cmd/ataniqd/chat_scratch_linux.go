@@ -20,7 +20,9 @@ import "ataniq/internal/leaddaemon"
 // channel's.
 
 func init() {
-	scratchSeat = &scratchSeatSet{on: leadModeOn, chat: scratchChat}
+	// --owner-settings and --check (scratch_settings_linux.go) belong to the
+	// same build.
+	scratchSeat = &scratchSeatSet{on: leadModeOn, chat: scratchChat, flags: defineSettingsFlags, settings: ownerSettingsRun}
 	usage += scratchSeatUsage
 }
 
@@ -43,6 +45,42 @@ with the seat gate together:
   only". --trial is refused with --scratch and with --canary (exit 2, before
   any config is read), so a daemon with leads never serves the phone trial's
   samples.
+
+       ataniqd run --scratch CONFIG --owner-channel --seat-gate ADDR
+               --owner-settings DIR [--check]
+
+  --owner-settings DIR
+                    read the owner channel's settings from DIR/scratch.json
+                    in place of owner/scratch.json of the state root, which
+                    is then not read (a phone trial's settings stay where
+                    they are); the journal, the list of keys and the gate's
+                    key and pins are the state root's all the same, read and
+                    never moved. Only with --scratch and --owner-channel. DIR
+                    is resolved through every link and opened by its handle
+                    with no link followed, and the daemon refuses to start
+                    (exit 10), naming why, when DIR is not a private folder
+                    of the daemon's user or when it is, lies in or holds:
+                    owner/ of the state root (the trial's settings folder);
+                    the state root or the runtime root; a path a lead's
+                    sandbox reaches (each lead's folder, mirror, mailbox,
+                    published folder and holder runtime folder, the agent
+                    install, the probe, the host paths every sandbox binds);
+                    or owner/gate (the gate's identity). Each is decided on
+                    the resolved path and on the identities of the folders,
+                    so a second name of a folder is caught. scratch.json is
+                    opened beneath the folder's handle without following a
+                    link and must be a private regular file with one name
+                    that is not the key list, the journal, a file of the gate
+                    or the trial's settings, and not a phone trial's. The
+                    start prints "owner channel: settings read from
+                    DIR/scratch.json (--owner-settings)".
+  --check           with --owner-settings: make every check the daemon makes
+                    before it takes a lock (the folder's refusals, the
+                    settings, the roots, the root marker, the gate's address,
+                    key and pins, the socket paths), print one line each,
+                    "pass" or "FAIL" with the reason, then what the daemon
+                    would read, and exit: 0 when nothing is refused, 10
+                    otherwise. It binds, locks, makes and starts nothing.
 `
 
 // scratchChatNote is the line the gate writes after its start line when it

@@ -1,82 +1,67 @@
 #!/bin/sh
-# Prepare the owner-attended proof of real lead replies: the scratch config and
-# the files it names, in a folder of the proof's own, for the daemon that
-# serves the scratch leads and the seat gate on the phone trial's state folder.
-# Read docs/scratch-seat-proof.md first: it has every step, in order, and says
-# which steps are the owner's alone.
+# Prepare the owner-attended proof of real lead replies: the scratch config,
+# the owner channel's settings and the files they name, in a folder of the
+# proof's own, for the daemon that serves the scratch leads and the seat gate
+# on the phone trial's state folder. Read docs/scratch-seat-proof.md first: it
+# has every step, in order, and says which steps are the owner's alone.
 #
 #   prepare.sh --dry      VALUES [--claude FILE --model NAME] [--bin DIR] [--daemon FILE]
 #                                [--pasta FILE] [--bwrap FILE]
 #   prepare.sh --write    the same
-#   prepare.sh --status   --state DIR --root DIR
-#   prepare.sh --record-trial --state DIR --root DIR --unit NAME
-#   prepare.sh --swap-in  VALUES
-#   prepare.sh --swap-out --state DIR --root DIR --gate IP:PORT --unit NAME
+#   prepare.sh --status   --state DIR --root DIR --gate IP:PORT [--daemon FILE]
 #   prepare.sh --self-test [gate IP:PORT | config STATE ROOT SITTING [MODEL]
 #                          | settings ROOT | commands STATE ROOT IP:PORT SITTING [live]]
 #
-# VALUES are --state DIR --root DIR --gate IP:PORT --sitting N --unit NAME. A
-# value is taken from its flag, else from the environment: OWNER_STATE_DIR
-# (--state: the phone trial's state folder, which becomes the scratch state
-# root, so that the gate's key, its seat pins and the paired phones' keys stay
-# the trial's), ROOT (--root: a new or empty folder for the proof's own files,
+# VALUES are --state DIR --root DIR --gate IP:PORT --sitting N. A value is
+# taken from its flag, else from the environment: OWNER_STATE_DIR (--state:
+# the phone trial's state folder, which becomes the scratch state root, so
+# that the gate's key, its seat pins and the paired phones' keys stay the
+# trial's), ROOT (--root: a new or empty folder for the proof's own files,
 # whose parent exists), SEAT_GATE (--gate: the gate's IPv4 address and port),
 # SITTING (--sitting: the sitting's number, 1 to 999, which makes the leads'
-# keys standin-N and live-N fresh for this sitting), TRIAL_UNIT (--unit: the
-# trial's user unit, one NAME.service; printed commands name it as
-# "$TRIAL_UNIT", never by its value), CLAUDE_FILE and CLAUDE_MODEL (--claude,
-# --model: the tested claude, one regular file, and the model; without them the
-# config has the stand-in lead only). No value is written into the repository
-# and none has a default that names a place of the owner's.
+# keys standin-N and live-N fresh for this sitting), CLAUDE_FILE and
+# CLAUDE_MODEL (--claude, --model: the tested claude, one regular file, and
+# the model; without them the config has the stand-in lead only). No value is
+# written into the repository and none has a default that names a place of
+# the owner's.
+#
+# The proof's daemon reads the owner channel's settings from the folder
+# ROOT/owner-settings (ataniqd run --owner-settings), never from
+# owner/scratch.json of the trial's state folder: nothing of the trial is
+# renamed, moved, masked or swapped. The trial is stopped and started again by
+# the owner's own commands, and the state folder's lock keeps the two daemons
+# apart.
 #
 # --dry prints what --write would make and the owner's steps from the values
 # alone: it reads no folder of the owner's and writes nothing, and what
 # depends on the file system is printed as a condition. --write checks the
-# state folder (the trial's private settings, the gate's key and pins, no
-# earlier set-aside and nothing of this sitting's leads), the tools and ROOT
-# (its parent exists; it is new or empty; physically outside the state folder,
-# the checkout, /tmp, /var/tmp and $TMPDIR), then makes ROOT (mode 0700, only
-# that folder) and writes in it only: the scratch config scratch.json (0600),
-# the owner channel's settings owner-scratch.json (0600), the managed settings
-# and the guard hook (a no-op the holder's marker check needs; it guards
-# nothing), the replay screens of the checkout, copies of the stand-in, the
-# probe, pasta when it is a link and the claude file, a throwaway source
-# repository (git, one commit, in a clean environment), netcheck.sh (the
-# owner's network check, never run by prepare) and the folders owner-channel/,
-# its drop/ and evidence/. It never starts a unit, a daemon, a sandbox or an
-# agent, never runs the claude it copies, never answers a prompt and never
-# deletes anything. It never writes in the trial's state folder.
+# state folder (a real folder at its physical path, with an owner/ folder, and
+# nothing of this sitting's leads), the tools and ROOT (its parent exists; it
+# is new or empty; physically outside the state folder, the checkout, /tmp,
+# /var/tmp and $TMPDIR), then makes ROOT (mode 0700, only that folder) and
+# writes in it only: the scratch config scratch.json (0600), the owner
+# channel's settings owner-settings/scratch.json (the folder 0700, the file
+# 0600), the managed settings and the guard hook (a no-op the holder's marker
+# check needs; it guards nothing), the replay screens of the checkout, copies
+# of the stand-in, the probe, pasta when it is a link and the claude file, a
+# throwaway source repository (git, one commit, in a clean environment),
+# netcheck.sh (the owner's network check, never run by prepare) and the
+# folders owner-channel/, its drop/ and evidence/. What only the daemon can
+# judge (the settings folder against the trial's folder, the leads' reach and
+# the gate's identity, the gate's key and pins, the root marker, the socket
+# paths) is left to the daemon's own check, which --status runs. --write never
+# starts a unit, a daemon, a sandbox or an agent, never runs the claude it
+# copies, never answers a prompt, never deletes anything and never writes in
+# the trial's state folder.
 #
-# --record-trial, --status, --swap-in and --swap-out are the owner's.
-# --record-trial (step f, while the trial runs, before step 1) reads the
-# trial's unit from the user manager (systemctl show only) and, for a
-# transient unit, the command line of its main process
-# (/proc/MAINPID/cmdline), and writes in ROOT only: trial-unit (the unit's
-# kind, transient or a unit file, which the later modes read),
-# evidence/trial-unit-before.txt and, for a transient unit, trial-restart.sh
-# (0700), the systemd-run command that re-creates it, every argument
-# single-quoted; prepare never runs it. It refuses, writing nothing, a unit
-# that does not run, a MainPID of 0, a command line it cannot read or that
-# holds a newline, and a program that is not ExecStart's. PREPARE_PROC, for
-# the tests only, names a folder that stands for /proc.
-# --status reads only: it names the state of owner/scratch.json, the trial's
-# set-aside owner/scratch.json.trial and ROOT/owner-scratch.json as trial in
-# place, swapped in, or interrupted or ambiguous, with their identities and
-# digests, and the recorded kind of the trial's unit, and prints one next
-# step. --swap-in (the trial's unit recorded and inactive; a transient one
-# gone, a unit file masked or, when the runtime mask cannot take, without an
-# activation source, see trial_guard; the gate's port free; the leads' units
-# unknown to the user manager) adds what it found to
-# ROOT/evidence/trial-unit-guard.txt, records the trial's settings in
-# ROOT/swap-record, renames them within
-# owner/ to scratch.json.trial and puts a copy of the proof's settings at
-# owner/scratch.json (written under a dot name in owner/, then renamed).
-# --swap-out (the unit inactive, the port free) renames the proof's settings
-# within owner/ to scratch.json.leads-N and the recorded trial settings back
-# to owner/scratch.json. Every rename refuses a name that is taken (a dangling
-# link included), and each is checked after it is made; nothing is deleted. A
-# layout that is not one of the three states is refused with the step that
-# recovers it.
+# --status is the owner's: it runs the daemon's check, "ataniqd run --scratch
+# ROOT/scratch.json --owner-channel --seat-gate IP:PORT --owner-settings
+# ROOT/owner-settings --check", which reads the trial's state folder and binds,
+# locks, makes and starts nothing, and passes its lines and its exit status
+# through; then, when ROOT/evidence/trial-before.sha256 is there (the owner
+# records it at step g), it compares the trial's gate key, certificate, pins,
+# key list and settings with it (sha256sum -c) and says whether they are the
+# same bytes. It writes nothing.
 set -eu
 umask 077
 
@@ -96,6 +81,8 @@ RUNTIME_VERSION=2.1.325
 BINARIES='ataniq-holder ataniq-canary ataniq-canary-standin ataniq-console ataniq-probe'
 # The token the owner gives the stand-in.
 TOKEN='canary-token: proof-standin-0001'
+# The trial's files whose digests the sitting compares, relative to owner/.
+TRIAL_FILES='gate/key.pem gate/cert.pem gate/seat-pins keys.log keys.head scratch.json'
 
 say() { printf '%s\n' "$*"; }
 
@@ -105,22 +92,16 @@ die() {
 }
 
 usage() {
-  printf '%s\n' 'usage: prepare.sh --dry|--write|--swap-in --state DIR --root DIR --gate IP:PORT --sitting N --unit NAME' \
+  printf '%s\n' 'usage: prepare.sh --dry|--write --state DIR --root DIR --gate IP:PORT --sitting N' \
     '                  [--claude FILE --model NAME] [--bin DIR] [--daemon FILE] [--pasta FILE] [--bwrap FILE]' \
-    '       prepare.sh --status --state DIR --root DIR' \
-    '       prepare.sh --record-trial --state DIR --root DIR --unit NAME' \
-    '       prepare.sh --swap-out --state DIR --root DIR --gate IP:PORT --unit NAME' \
+    '       prepare.sh --status --state DIR --root DIR --gate IP:PORT [--daemon FILE]' \
     '       --dry          print what --write makes and your steps, from the values alone; read and write nothing' \
     '       --write        check, make ROOT and write the proof'"'"'s files in it (nothing else)' \
-    '       --record-trial read the running trial'"'"'s unit and write its record in ROOT (yours; it runs nothing)' \
-    '       --status       read the trial'"'"'s and the proof'"'"'s settings and print one next step (yours)' \
-    '       --swap-in      put the proof'"'"'s settings in place of the trial'"'"'s, within owner/ (yours)' \
-    '       --swap-out     put the trial'"'"'s settings back, within owner/ (yours)' \
+    '       --status       run the daemon'"'"'s check and compare the trial'"'"'s files with their digests (yours; it writes nothing)' \
     '       --state DIR    the phone trial'"'"'s state folder (or OWNER_STATE_DIR)' \
     '       --root DIR     a new or empty folder for the proof (or ROOT); its parent exists; outside /tmp and the checkout' \
     '       --gate IP:PORT the seat gate'"'"'s IPv4 address and port (or SEAT_GATE)' \
     '       --sitting N    the sitting'"'"'s number, 1 to 999 (or SITTING): the leads are standin-N and live-N' \
-    '       --unit NAME    the trial'"'"'s user unit, NAME.service (or TRIAL_UNIT)' \
     '       --claude FILE  the tested claude, one regular file (or CLAUDE_FILE); it is copied, never run' \
     '       --model NAME   the model of the live lead (or CLAUDE_MODEL); needed with --claude' \
     '       --bin DIR      the canary binaries (default: build/canary of the checkout)' \
@@ -209,21 +190,6 @@ check_model() {
   [ "${#1}" -le 64 ] || die '--model is longer than 64 characters'
 }
 
-# check_unit NAME refuses anything but one unit name NAME.service: no option,
-# no pattern, no space, no character a shell would read, and not a lead's
-# unit.
-check_unit() {
-  case $1 in
-    '') die 'no trial unit: give --unit NAME or TRIAL_UNIT, the user unit that runs the phone trial (NAME.service)' ;;
-    -*) die "the trial unit starts with -: $1" ;;
-    *[!A-Za-z0-9:_.@-]*) die "the trial unit is one unit name of letters, digits and : _ . @ -, ending in .service: $1" ;;
-    ataniq-lead-*) die "the trial unit is a lead's unit: $1" ;;
-    ?*.service) ;;
-    *) die "the trial unit is not a NAME.service: $1" ;;
-  esac
-  [ "${#1}" -le 255 ] || die 'the trial unit is longer than 255 characters'
-}
-
 # check_sitting N refuses a sitting number that is not 1 to 999.
 check_sitting() {
   case $1 in
@@ -253,13 +219,6 @@ check_home() {
   esac
 }
 
-# sq VALUE prints VALUE single-quoted for sh, each ' written as '\''. The
-# callers refuse a value with a newline before (a command substitution would
-# drop a trailing one).
-sq() {
-  printf "'%s'" "$(printf '%s\n' "$1" | LC_ALL=C sed "s/'/'\\\\''/g")"
-}
-
 # phys DIR prints the physical path of an existing folder, or fails.
 phys() { (cd -P -- "$1" 2>/dev/null && pwd -P); }
 
@@ -269,31 +228,27 @@ set_paths() {
   S=$1
   ROOT=$2
   CONFIG=$ROOT/scratch.json
-  SETTINGS=$ROOT/owner-scratch.json
+  SETTINGS_DIR=$ROOT/owner-settings
+  SETTINGS=$SETTINGS_DIR/scratch.json
   RUNTIME=$ROOT/runtime
   OC=$ROOT/owner-channel
   EVIDENCE=$ROOT/evidence
-  RECORD=$ROOT/swap-record
-  KINDREC=$ROOT/trial-unit
-  BEFORE=$EVIDENCE/trial-unit-before.txt
-  RESTART=$ROOT/trial-restart.sh
+  BEFORE=$EVIDENCE/trial-before.sha256
   OWNER=$S/owner
-  CANON=$OWNER/scratch.json
-  ASIDE=$OWNER/scratch.json.trial
 }
 set_keys() {
   SITTING=$1
   KEY_STANDIN=standin-$1
   KEY_LIVE=live-$1
-  ARCHIVE_NAME=scratch.json.leads-$1
 }
 
 # never_mounted prints the paths no bind source of a lead may touch: the
-# checkout, the owner's own folders of credentials and the owner folder of
-# the state root, which holds the gate's key and the phones' keys. check_home
-# has refused a HOME that cannot give them.
+# checkout, the owner's own folders of credentials, the owner folder of the
+# state root, which holds the gate's key and the phones' keys, and the folder
+# of the owner channel's settings. check_home has refused a HOME that cannot
+# give them.
 never_mounted() {
-  printf '%s' "\"$REPO\", \"$HOME/.ssh\", \"$HOME/.claude\", \"$HOME/.codex\", \"$S/owner\""
+  printf '%s' "\"$REPO\", \"$HOME/.ssh\", \"$HOME/.claude\", \"$HOME/.codex\", \"$S/owner\", \"$SETTINGS_DIR\""
 }
 
 # lead_json KEY KIND ARGV ENV prints one lead of the scratch config.
@@ -386,73 +341,78 @@ EOF
 
 # commands GATE [live] prints the owner's steps, with the values filled in.
 # Every step that starts a real process, changes a unit or defines a lead says
-# OWNER ONLY. No printed command deletes anything or moves a file by hand: the
-# swaps are prepare's own modes. The trial's unit is named "$TRIAL_UNIT", a
-# reference the owner's shell fills in, never by its value; no printed line
-# holds a placeholder in angle brackets.
+# OWNER ONLY. No printed command deletes anything or moves a file. The trial's
+# unit is named "$TRIAL_UNIT", a reference the owner's shell fills in, never by
+# its value; no printed line holds a placeholder in angle brackets.
 commands() {
   _g=$1
   _live=${2:-}
   _c="$DAEMON chat"
-  _vals="--state $S --root $ROOT"
+  _vals="--state $S --root $ROOT --gate $_g"
   _lu=ataniq-lead-scratch-$KEY_LIVE.service
   _su=ataniq-lead-scratch-$KEY_STANDIN.service
+  _run="$DAEMON run --scratch $CONFIG --owner-channel --seat-gate $_g --owner-settings $SETTINGS_DIR"
   cat <<EOF
 Your steps, in order (docs/scratch-seat-proof.md says what each proves and what to do when one fails).
 Three terminals in the checkout, with TRIAL_UNIT set: A for the daemon, B for the console, C for the desk.
+Nothing of the trial is renamed, moved or masked: the proof's daemon reads its settings from $SETTINGS_DIR.
 Before the sitting, with the trial running (terminal C):
 EOF
   if [ -n "$_live" ]; then
     cat <<EOF
-  c. OWNER ONLY (runs the claude copy): env -i HOME="\$(mktemp -d)" $ROOT/agent-install/claude --version
+  c. OWNER ONLY (runs the claude copy, in a new home in the root): H=\$(mktemp -d $ROOT/version-home.XXXXXX) && env -i HOME="\$H" $ROOT/agent-install/claude --version
      must name $RUNTIME_VERSION.
 EOF
   fi
   cat <<EOF
   d. Check that your firewall admits TCP to $_g from the authority host only.
-  e. OWNER ONLY (starts pasta, bubblewrap and curl): sh $ROOT/netcheck.sh | tee -a $EVIDENCE/netcheck.txt
-     It must say PASS for the gate; write in $EVIDENCE/notes.txt whether you accept the open network it lists.
-  f. $DAEMON seat-gate pins --state-dir $S
-     sh $PREP --record-trial $_vals --unit "\$TRIAL_UNIT"   (reads the unit and its command line; writes $KINDREC, $BEFORE and, for a transient unit, its restart script)
+  e. OWNER ONLY (starts pasta, bubblewrap, curl and a throwaway user unit): { sh $ROOT/netcheck.sh; echo "netcheck: exit status \$?"; } 2>&1 | tee -a $EVIDENCE/netcheck.txt
+     It must say connected from this host and refused or filtered from the lead's network, and end "netcheck: exit status 0".
+  f. $BIN/ataniq-canary scratch-init --config $CONFIG   (the root marker; it writes nothing in owner/)
+  g. sh $PREP --status $_vals   (the daemon's check: it must end "check: no refusal")
+     $DAEMON seat-gate pins --state-dir $S
      journalctl --user --unit "\$TRIAL_UNIT" -I | grep 'key fingerprint' | tail -n 1
-  g. sh $PREP --status $_vals   (trial in place; it names the kind of the trial's unit)
+     (cd $OWNER && sha256sum -- $TRIAL_FILES) >$BEFORE
 Switch from the trial to the proof:
   1. OWNER ONLY: systemctl --user stop -- "\$TRIAL_UNIT"
-     a unit file only (step g names the kind): OWNER ONLY: systemctl --user mask --runtime -- "\$TRIAL_UNIT"
-     then: systemctl --user show -p ActiveState -p LoadState -- "\$TRIAL_UNIT"   (inactive; not-found for a transient unit, masked for a unit file)
-     a unit file still loaded (the mask did not take): OWNER ONLY: systemctl --user unmask --runtime -- "\$TRIAL_UNIT"   (step 3 then checks that nothing can start it)
-  2. $BIN/ataniq-canary scratch-init --config $CONFIG
-  3. sh $PREP --swap-in $_vals --gate $_g --sitting $SITTING --unit "\$TRIAL_UNIT"
-  4. OWNER ONLY (terminal A): sh -c 'trap : INT; "\$@" 2>&1; echo "ataniqd: exit status \$?"' sh $DAEMON run --scratch $CONFIG --owner-channel --seat-gate $_g | tee -ai $EVIDENCE/daemon.log
-  5. OWNER ONLY (terminal B): $BIN/ataniq-console --daemon $RUNTIME   then L
+     then: systemctl --user show -p ActiveState -- "\$TRIAL_UNIT"   (inactive; nothing is masked)
+  2. OWNER ONLY (terminal A): sh -c 'trap : INT; "\$@" 2>&1; echo "ataniqd: exit status \$?"' sh $_run | tee -ai $EVIDENCE/daemon.log
+  3. OWNER ONLY (terminal B): $BIN/ataniq-console --daemon $RUNTIME   then L
+     On the phone and in a desktop browser: the seat's web app, its Leads page.
 The stand-in lead:
-  6. OWNER ONLY (the daemon runs git to define it): d on $KEY_STANDIN
+  4. OWNER ONLY (the daemon runs git to define it): d on $KEY_STANDIN
      then (terminal C): $_c set $KEY_STANDIN read --config $CONFIG
-  7. OWNER ONLY: s on $KEY_STANDIN; m: $TOKEN
-     Only after NOT delivered (nothing was written): w, Enter, look at the input line, paste that line, Enter once; Ctrl+\\ then q.
-     Any other answer, or one you are not sure of: no paste; stop and reconcile as the guide says.
-  8. Phone and desktop: Leads, daemon:$KEY_STANDIN and its reply; then x and y on $KEY_STANDIN
+  5. OWNER ONLY: s on $KEY_STANDIN; m: $TOKEN
+     submitted: the fence put it in; no paste.
+     NOT delivered (nothing was written): w, Enter, look at the empty input line, paste that line once, Enter once; Ctrl+\\ then q.
+     Any other answer, or one you are not sure of: no paste; write it in $EVIDENCE/notes.txt; stop and reconcile as the guide says.
+  6. Phone and desktop: Leads, daemon:$KEY_STANDIN and its reply; then x and y on $KEY_STANDIN
 EOF
   if [ -n "$_live" ]; then
     cat <<EOF
-The live lead (same sitting, only if all was well):
-  9. Note the login rows of the provider's account page.
+The live lead (only once the drop rule is in place):
+  7. The drop rule (a separate change, SB-1) is in place: you install it as root at the start of sitting 1, and its own check passes.
+     OWNER ONLY (starts pasta, bubblewrap, curl and a throwaway user unit): { sh $ROOT/netcheck.sh; echo "netcheck: exit status \$?"; } 2>&1 | tee -a $EVIDENCE/netcheck.txt
+     Without the rule: no live lead; go on with step 11.
+  8. Note the login rows of the provider's account page.
      OWNER ONLY (the daemon runs git to define it): d on $KEY_LIVE
      then (terminal C): $_c set $KEY_LIVE read --config $CONFIG
- 10. OWNER ONLY: s on $KEY_LIVE; then (terminal C): systemctl --user status -- $_lu
+  9. OWNER ONLY: s on $KEY_LIVE; then (terminal C): systemctl --user status -- $_lu
      must show /ataniq/agent/claude --model $MODEL. Note the time.
-     w, Enter, a fresh login in the pane; approve only the write of the one reply into its outbox; Ctrl+\\ then q;
-     m with the message of the guide (a paste only after NOT delivered, as in 7)
- 11. Phone and desktop: daemon:$KEY_LIVE and its reply; at most 30 minutes or 10 turns, by your clock; then x and y on $KEY_LIVE;
-     revoke the login made in 10 and confirm it is gone
+     w, Enter, a fresh login in the pane; Ctrl+\\ then q.
+     m with the message of the guide. submitted: w, Enter, approve only the write of the one reply into its outbox; Ctrl+\\ then q.
+     NOT delivered (nothing was written): w, Enter, paste the line once, Enter once, stay for the approval of that one write; Ctrl+\\ then q.
+     Any other answer: no paste; write it in $EVIDENCE/notes.txt; stop and reconcile.
+ 10. Phone and desktop: daemon:$KEY_LIVE and its reply; at most 30 minutes or 10 turns, by your clock; then x and y on $KEY_LIVE;
+     revoke the login made in 9 and confirm it is gone (or write cannot-identify and what you saw in $EVIDENCE/notes.txt)
 Off, restart, stop and back to the trial:
- 12. (terminal C) $_c set $KEY_LIVE off --config $CONFIG   (its page says Chat is off; $KEY_STANDIN stays on)
+ 11. (terminal C) $_c set $KEY_LIVE off --config $CONFIG   (its page says Chat is off; $KEY_STANDIN stays on)
      $_c list --config $CONFIG >>$EVIDENCE/chat-list.jsonl
 EOF
   else
     cat <<EOF
 Off, restart, stop and back to the trial:
- 12. (terminal C) $_c set $KEY_STANDIN off --config $CONFIG   (its page says Chat is off)
+ 11. (terminal C) $_c set $KEY_STANDIN off --config $CONFIG   (its page says Chat is off)
      $_c set $KEY_STANDIN read --config $CONFIG   (on again, for the restart)
      $_c list --config $CONFIG >>$EVIDENCE/chat-list.jsonl
 EOF
@@ -460,16 +420,14 @@ EOF
   _units=$_su
   if [ -n "$_live" ]; then _units="$_su $_lu"; fi
   cat <<EOF
- 13. OWNER ONLY: quit the console; Ctrl+C in A (exit status 0); the daemon again as in 4, then (terminal C):
+ 12. OWNER ONLY: quit the console; Ctrl+C in A (exit status 0); the daemon again as in 2, then (terminal C):
      $_c list --config $CONFIG >>$EVIDENCE/chat-list.jsonl   ($KEY_STANDIN is off now)
      OWNER ONLY: Ctrl+C in A again (exit status 0); systemctl --user list-units --all -- $_units   (0 units)
- 14. sh $PREP --swap-out $_vals --gate $_g --unit "\$TRIAL_UNIT"
- 15. a transient unit (step 14 printed the kind): OWNER ONLY: sh $RESTART   (re-creates it as recorded)
-     a unit file: OWNER ONLY: systemctl --user unmask --runtime -- "\$TRIAL_UNIT"   (when it is masked)
-     a unit file: OWNER ONLY: systemctl --user start -- "\$TRIAL_UNIT"   (when trial-unit-before.txt says ActiveState=active)
-     systemctl --user show -p Id -p Transient -p UnitFileState -p LoadState -p ActiveState -p InvocationID -p MainPID -p ExecStart -- "\$TRIAL_UNIT" >$EVIDENCE/trial-unit-after.txt
-     journalctl --user --unit "\$TRIAL_UNIT" -I | grep 'key fingerprint' | tail -n 1   (this new invocation only)
- 16. sh $PREP --status $_vals   (trial in place, the way back done); the phone shows the trial's samples
+ 13. (cd $OWNER && sha256sum -c -- $BEFORE)   (every line OK: the trial's gate key, pins, keys and settings are the same bytes)
+     sh $PREP --status $_vals   (the same comparison, and the daemon's check)
+ 14. OWNER ONLY: start the trial again with your own command (systemctl --user start -- "\$TRIAL_UNIT" for a unit file, or your systemd-run)
+     journalctl --user --unit "\$TRIAL_UNIT" -I | grep 'key fingerprint' | tail -n 1   (this new invocation only; the fingerprint of g)
+     The phone shows the trial's samples again.
 EOF
 }
 
@@ -482,7 +440,7 @@ self_check() {
     printf '%s: self-test: %s\n' "$NAME" "$*" >&2
     exit 1
   }
-  for _a in 192.0.2.10:7443 10.0.0.1:1 127.0.0.1:65535 223.255.255.254:7443 240.0.0.1:7443; do
+  for _a in 192.0.2.10:7443 198.51.100.1:1 127.0.0.1:65535 223.255.255.254:7443 240.0.0.1:7443; do
     (check_gate "$_a") 2>/dev/null || _fail "the gate address $_a is refused"
     _n=$((_n + 1))
   done
@@ -492,29 +450,13 @@ self_check() {
     if (check_gate "$_a") 2>/dev/null; then _fail "the gate address $_a is taken"; fi
     _n=$((_n + 1))
   done
-  for _u in sample.service 'a b.service' -x.service 'a*.service' sample.socket 'a;b.service' ataniq-lead-scratch-x.service ''; do
-    if (check_unit "$_u") 2>/dev/null; then
-      [ "$_u" = sample.service ] || _fail "the unit $_u is taken"
-    else
-      [ "$_u" != sample.service ] || _fail "the unit $_u is refused"
-    fi
-    _n=$((_n + 1))
-  done
-  # sq: what the shell reads back is the value itself.
-  _r=''
-  # shellcheck disable=SC2016,SC1003  # the samples are literal on purpose
-  for _v in 'a b' "it's" "'" "''" '$HOME' '${x}' 'a\b' '\' '`x`' '"q"' '' ' -x ' '*' '!x' '%s'; do
-    eval "_r=$(sq "$_v")"
-    [ "$_r" = "$_v" ] || _fail "sq does not quote $_v"
-    _n=$((_n + 1))
-  done
   HOME=/srv/sample/home
   set_keys 7
   set_paths /srv/sample/trial-state /srv/sample/proof
   for _m in '' sample-model; do
     _c=$(config_json "$_m")
     for _w in '"state_root": "/srv/sample/trial-state"' '"runtime_root": "/srv/sample/proof/runtime"' '"max_running": 1' \
-      '"/srv/sample/trial-state/owner"' '"/srv/sample/home/.claude"' '"key": "standin-7"' '"inject": true'; do
+      '"/srv/sample/trial-state/owner"' '"/srv/sample/home/.claude"' '"/srv/sample/proof/owner-settings"' '"key": "standin-7"' '"inject": true'; do
       case $_c in *"$_w"*) ;; *) _fail "the config lacks $_w" ;; esac
       _n=$((_n + 1))
     done
@@ -540,13 +482,17 @@ self_check() {
   for _m in '' live; do
     MODEL=sample-model
     _o=$(commands 192.0.2.10:7443 "$_m")
-    case $_o in *'--swap-in '*'--swap-out '*'--status '*) ;; *) _fail 'the steps lack the swaps in order' ;; esac
-    case $_o in *'--record-trial '*'systemctl --user stop'*) ;; *) _fail 'the steps do not record the trial before they stop it' ;; esac
+    case $_o in *'--status '*'systemctl --user stop'*' --owner-settings /srv/sample/proof/owner-settings'*'sha256sum -c'*'systemctl --user start'*) ;;
+      *) _fail 'the steps do not check, stop the trial, run the daemon on the settings folder, compare and start the trial, in order' ;;
+    esac
+    case $_o in *'scratch-init '*'--status '*) ;; *) _fail 'the steps do not make the root marker before the daemon'"'"'s check' ;; esac
     case $_o in *'TRIAL_UNIT'*) ;; *) _fail 'the steps do not name the unit' ;; esac
     case $_o in *'KEY'*) _fail 'the steps name a lead KEY' ;; esac
+    case $_o in *'swap'* | *'mask --'* | *'unmask'* | *'record-trial'* | *'trial-restart'*) _fail 'the steps still swap, mask or record the trial' ;; esac
     case $_o in *'live-7'*) [ -n "$_m" ] || _fail 'the steps name a lead that is not configured' ;; esac
     case $_o in *'claude --version'*) [ -n "$_m" ] || _fail 'the steps run claude without a live lead' ;; esac
-    _n=$((_n + 5))
+    case $_o in *'drop rule'*'d on live-7'*) ;; *) [ -z "$_m" ] || _fail 'the live lead does not wait for the drop rule' ;; esac
+    _n=$((_n + 8))
     _rest=$_o$_nl
     while [ -n "$_rest" ]; do
       _l=${_rest%%"$_nl"*}
@@ -554,11 +500,10 @@ self_check() {
       case $_l in
         *' rm '* | *'rm -'* | *' mv '* | *' unlink '* | *"$_tgt"*) _fail "a step deletes, moves by hand or builds: $_l" ;;
         *'<'[A-Za-z]*'>'*) _fail "a step holds a placeholder: $_l" ;;
-        *'sample.service'*) _fail "a step names the unit by its value: $_l" ;;
       esac
       case $_l in
-        *'systemctl --user st'* | *'systemctl --user mask'* | *'systemctl --user unmask'* | *' run --scratch '* | \
-          *'ataniq-console '* | *' --version'* | *'d on '* | *'s on '* | *'netcheck.sh'* | *'trial-restart.sh'*)
+        *'systemctl --user st'* | *' run --scratch '* | *'ataniq-console '* | *' --version'* | *'d on '* | *'s on '* | *'netcheck.sh'* | \
+          *'start the trial again'*)
           case $_l in *'OWNER ONLY'*) ;; *) _fail "a step that starts a process, changes a unit or defines a lead is not marked OWNER ONLY: $_l" ;; esac ;;
       esac
       case $_l in
@@ -632,7 +577,6 @@ S=${OWNER_STATE_DIR:-}
 ROOT=${ROOT:-}
 GATE=${SEAT_GATE:-}
 SIT=${SITTING:-}
-UNIT=${TRIAL_UNIT:-}
 CLAUDE_SRC=${CLAUDE_FILE:-}
 MODEL=${CLAUDE_MODEL:-}
 BIN=$REPO/build/canary
@@ -641,7 +585,7 @@ PASTA=
 BWRAP=
 while [ "$#" -gt 0 ]; do
   case $1 in
-    --dry | --write | --status | --record-trial | --swap-in | --swap-out)
+    --dry | --write | --status)
       [ -z "$MODE" ] || usage
       MODE=${1#--}
       shift
@@ -650,7 +594,6 @@ while [ "$#" -gt 0 ]; do
     --root) [ "$#" -ge 2 ] || usage; ROOT=$2; shift 2 ;;
     --gate) [ "$#" -ge 2 ] || usage; GATE=$2; shift 2 ;;
     --sitting) [ "$#" -ge 2 ] || usage; SIT=$2; shift 2 ;;
-    --unit) [ "$#" -ge 2 ] || usage; UNIT=$2; shift 2 ;;
     --claude) [ "$#" -ge 2 ] || usage; CLAUDE_SRC=$2; shift 2 ;;
     --model) [ "$#" -ge 2 ] || usage; MODEL=$2; shift 2 ;;
     --bin) [ "$#" -ge 2 ] || usage; BIN=$2; shift 2 ;;
@@ -669,16 +612,11 @@ done
 safe_path 'the state folder' "$S"
 safe_path 'the root' "$ROOT"
 safe_path 'the checkout' "$REPO"
+safe_path --daemon "$DAEMON"
+[ -n "$GATE" ] || die 'no gate address: give --gate IP:PORT or SEAT_GATE'
+check_gate "$GATE"
 case $MODE in
-  dry | write | swap-in | swap-out)
-    [ -n "$GATE" ] || die 'no gate address: give --gate IP:PORT or SEAT_GATE'
-    check_gate "$GATE"
-    check_unit "$UNIT"
-    ;;
-  record-trial) check_unit "$UNIT" ;;
-esac
-case $MODE in
-  dry | write | swap-in) check_sitting "$SIT" ;;
+  dry | write) check_sitting "$SIT" ;;
   *) if [ -n "$SIT" ]; then check_sitting "$SIT"; fi ;;
 esac
 set_keys "${SIT:-0}"
@@ -692,7 +630,6 @@ LIVE=
 case $MODE in
   dry | write)
     safe_path --bin "$BIN"
-    safe_path --daemon "$DAEMON"
     check_home
     if [ -n "$CLAUDE_SRC$MODEL" ]; then
       [ -n "$CLAUDE_SRC" ] || die '--model needs --claude FILE, the tested claude'
@@ -712,7 +649,7 @@ if [ "$MODE" = dry ]; then
   PASTA_USE=${PASTA:-/usr/bin/pasta}
   BWRAP=${BWRAP:-bwrap}
   say "[dry] prepare.sh would make, and writes nothing now (the paths of pasta and bubblewrap are decided at --write):"
-  say "[dry]   folder $ROOT (0700; its parent must exist) with conf/, agent-install/, bin/, upstream/, evidence/, owner-channel/ and owner-channel/drop/ (0700)"
+  say "[dry]   folder $ROOT (0700; its parent must exist) with conf/, agent-install/, bin/, upstream/, evidence/, owner-settings/, owner-channel/ and owner-channel/drop/ (0700)"
   say "[dry]   $CONFIG (0600): the scratch config; state_root $S (the trial's state folder), runtime_root $RUNTIME, max_running 1"
   say "[dry]     lead $KEY_STANDIN: the stand-in, runtime claude $RUNTIME_VERSION, footer_mode manual, inject true, limits 4 GiB, no swap, 512 tasks"
   if [ -n "$LIVE" ]; then
@@ -721,7 +658,8 @@ if [ "$MODE" = dry ]; then
     say "[dry]     no live lead: give --claude FILE and --model NAME for it"
   fi
   say "[dry]     never_mounted: $(never_mounted)"
-  say "[dry]   $SETTINGS (0600): the owner channel's settings (stand-in door, proof-project, roots $OC, no sandbox template), which --swap-in puts in place"
+  say "[dry]   $SETTINGS (0600, in a folder of 0700): the owner channel's settings (stand-in door, proof-project, roots $OC, no sandbox template),"
+  say "[dry]     which the daemon reads with --owner-settings $SETTINGS_DIR; owner/scratch.json of the state folder is never read, moved or changed"
   say "[dry]   $ROOT/conf/managed-settings.json (the marker guard-hook), $ROOT/conf/guard-hook (exits 0: the holder's marker check needs it, it guards nothing) and $ROOT/conf/replay-screens (from $SCREENS)"
   say "[dry]   $ROOT/agent-install/ataniq-canary-standin, a copy of $BIN/ataniq-canary-standin"
   if [ -n "$LIVE" ]; then say "[dry]   $ROOT/agent-install/claude (0700), a copy of $CLAUDE_SRC; it is not run"; fi
@@ -734,12 +672,11 @@ if [ "$MODE" = dry ]; then
   if [ "$BWRAP" = bwrap ]; then say "[dry]   bubblewrap: the bwrap on PATH at --write"; else say "[dry]   bubblewrap: $BWRAP"; fi
   say "[dry]   $ROOT/netcheck.sh (0700): your network check, which prepare never runs"
   say "[dry]   $ROOT/upstream: a throwaway repository, one commit on develop, author example.invalid, made by git in a clean environment"
-  say "[dry]   --write refuses, before it makes anything: a state folder that is a link or not at its physical path; an owner/scratch.json that is"
-  say "[dry]   not the trial's private regular settings; an owner/scratch.json.trial (an earlier set-aside: see --status); gate material that is"
-  say "[dry]   missing, empty, a link or not private; anything of $KEY_STANDIN or $KEY_LIVE in the state folder; a missing binary, daemon, pasta,"
-  say "[dry]   bubblewrap or /usr/bin/git; a root whose parent is missing or a link, that is not new or empty or cannot be read, or that lies"
-  say "[dry]   physically in the state folder, the checkout, /tmp, /var/tmp or \$TMPDIR; and a HOME that is not a real folder"
-  say "[dry]   nothing in $S is written by --dry or --write: --swap-in and --swap-out, yours, rename within $OWNER"
+  say "[dry]   --write refuses, before it makes anything: a state folder that is a link, not at its physical path or without an owner/ folder;"
+  say "[dry]   anything of $KEY_STANDIN or $KEY_LIVE in the state folder; a missing binary, daemon, pasta, bubblewrap or /usr/bin/git; a root whose"
+  say "[dry]   parent is missing or a link, that is not new or empty or cannot be read, or that lies physically in the state folder, the"
+  say "[dry]   checkout, /tmp, /var/tmp or \$TMPDIR; and a HOME that is not a real folder. The daemon's check (--status) judges the rest."
+  say "[dry]   nothing in $S is written by --dry, --write or --status"
   say ""
   commands "$GATE" "$LIVE"
   exit 0
@@ -747,62 +684,12 @@ fi
 
 # ---- From here the file system is read. ----
 
-# The state folder: a real folder at its own physical path.
+# The state folder: a real folder at its own physical path, with owner/.
 check_state() {
   if [ -L "$S" ] || [ ! -d "$S" ]; then die "the state folder is not a folder (a link is refused): $S"; fi
   _p=$(phys "$S") || die "the state folder cannot be entered: $S"
   [ "$_p" = "$S" ] || die "the state folder is not at its physical path (a folder on the way is a link): give $_p"
   if [ -L "$OWNER" ] || [ ! -d "$OWNER" ]; then die "the state folder has no owner/ folder (a link is refused): $OWNER"; fi
-}
-
-# fstate PATH sets F_K to absent, link (a dangling one too), notfile,
-# unreadable or file, and for a file F_ID (device:inode), F_MODE, F_UID and
-# F_SHA (SHA-256).
-fstate() {
-  F_K='' F_ID='' F_MODE='' F_UID='' F_SHA=''
-  if [ -L "$1" ]; then F_K='link'; return 0; fi
-  if [ ! -e "$1" ]; then F_K='absent'; return 0; fi
-  if [ ! -f "$1" ]; then F_K='notfile'; return 0; fi
-  _st=$(stat -c '%d:%i %a %u' -- "$1" 2>/dev/null) || { F_K='unreadable'; return 0; }
-  F_SHA=$(sha256sum -- "$1" 2>/dev/null) || { F_K='unreadable'; return 0; }
-  F_SHA=${F_SHA%% *}
-  F_ID=${_st%% *}
-  _st=${_st#* }
-  F_MODE=${_st%% *}
-  F_UID=${_st#* }
-  F_K='file'
-}
-ME=$(id -u)
-# private: the file of the last fstate is the caller's, mode 0600 or narrower.
-private() {
-  [ "$F_K" = file ] && [ "$F_UID" = "$ME" ] || return 1
-  case $F_MODE in
-    [0-7]00 | 0) return 0 ;;
-  esac
-  return 1
-}
-# trial_kind PATH: a regular file that holds "trial": true.
-trial_kind() { grep -Eq '"trial"[[:space:]]*:[[:space:]]*true' -- "$1" 2>/dev/null; }
-
-# check_gate_material refuses a gate's key, certificate or pins that the
-# daemon could not use.
-check_gate_material() {
-  for _f in gate/cert.pem gate/key.pem gate/seat-pins; do
-    fstate "$OWNER/$_f"
-    case $F_K in
-      file) ;;
-      absent) die "the state folder has no owner/$_f: run the phone trial's set-up first (docs/seat-gate.md, Phone trial)" ;;
-      *) die "owner/$_f is a link, not a regular file or unreadable: $OWNER/$_f" ;;
-    esac
-    [ "$F_UID" = "$ME" ] || die "owner/$_f is not yours: $OWNER/$_f"
-    [ -s "$OWNER/$_f" ] || die "owner/$_f is empty: $OWNER/$_f"
-    case $_f in
-      gate/cert.pem) ;;
-      *) private || die "owner/$_f can be read by group or other: $OWNER/$_f (mode $F_MODE)" ;;
-    esac
-  done
-  grep -Eq '^[[:space:]]*[0-9a-f]{64}[[:space:]]*$' -- "$OWNER/gate/seat-pins" ||
-    die "owner/gate/seat-pins pins no seat key: pin the seat first (docs/seat-gate.md)"
 }
 
 # keys_fresh refuses when the state folder holds anything of this sitting's
@@ -830,621 +717,37 @@ keys_fresh() {
   done
 }
 
-# unit_prop UNIT PROPERTY prints one property of a user unit. It only reads.
-unit_prop() {
-  systemctl --user show -p "$2" --value -- "$1" || die "cannot read the user manager's state of $1"
-}
-
-# port_listens PORT succeeds when a TCP socket of this host's network listens
-# on the port, at any address (/proc/net/tcp and tcp6).
-port_listens() {
-  [ -r /proc/net/tcp ] || die 'cannot read /proc/net/tcp to see whether the gate'"'"'s port is free'
-  _hex=$(printf '%04X' "$1")
-  for _f in /proc/net/tcp /proc/net/tcp6; do
-    [ -e "$_f" ] || continue
-    _hit=$(awk -v p=":$_hex" 'NR > 1 && $4 == "0A" && substr($2, length($2) - 4) == p { print "x"; exit }' "$_f") ||
-      die "cannot read $_f"
-    [ -z "$_hit" ] || return 0
-  done
-  return 1
-}
-
-# unit_quiet refuses a trial unit that runs and a gate port that something
-# listens on.
-unit_quiet() {
-  _a=$(unit_prop "$UNIT" ActiveState)
-  [ "$_a" = inactive ] || die "the trial's unit is $_a, not inactive: stop it first (step 1): systemctl --user stop -- \"\$TRIAL_UNIT\""
-  port_free
-}
-port_free() {
-  if port_listens "${GATE##*:}"; then die "something listens on the gate's port ${GATE##*:}: a daemon still runs (the trial's or the proof's); stop it first"; fi
-}
-
-# trial_guard is --swap-in's check that nothing can start the trial during
-# the sitting, by the kind --record-trial recorded, and that the gate's port
-# is free. It sets GUARD, the line --swap-in adds to the evidence.
-#   A transient unit: inactive, and gone (LoadState not-found; masked is
-#   taken too): only trial-restart.sh, run by hand, makes it again.
-#   A unit file: inactive and masked; or, when the runtime mask did not take
-#   (a unit file of higher priority shadows the runtime folder) and has been
-#   taken back, loaded with no activation source: TriggeredBy, WantedBy,
-#   RequiredBy, BoundBy and UpheldBy empty and UnitFileState not enabled,
-#   linked or alias (a start by hand would still fail closed: the trial
-#   refuses the proof's settings and the state folder's lock a second
-#   daemon). Anything else is refused with its reason.
-trial_guard() {
-  kind_read
-  case $K_ST in
-    none) die "this ROOT has no record of the trial's unit: run --record-trial while the trial runs (step f, before step 1)" ;;
-    bad) die "$KINDREC is a link, not a regular file, unreadable or not a record of --record-trial: look at it" ;;
-  esac
-  [ "$K_UNIT" = "$UNIT" ] || die "this ROOT recorded the trial's unit $K_UNIT, not $UNIT: give the unit of the record"
-  _a=$(unit_prop "$UNIT" ActiveState)
-  [ "$_a" = inactive ] || die "the trial's unit is $_a, not inactive: stop it first (step 1): systemctl --user stop -- \"\$TRIAL_UNIT\""
-  _l=$(unit_prop "$UNIT" LoadState)
-  if [ "$K_KIND" = transient ]; then
-    case $_l in
-      not-found | masked) GUARD="kind transient, ActiveState=$_a, LoadState=$_l: gone; only trial-restart.sh makes it again: accepted" ;;
-      *) die "the trial's transient unit is $_l, not gone (not-found), so it could be started again meanwhile: a failed one stays loaded until it is reset (OWNER ONLY: systemctl --user reset-failed -- \"\$TRIAL_UNIT\"), then --swap-in again" ;;
-    esac
-  else
-    case $_l in
-      masked) GUARD="kind file, ActiveState=$_a, LoadState=masked: the runtime mask took: accepted" ;;
-      loaded)
-        _rt=${XDG_RUNTIME_DIR:-}
-        case $_rt in
-          /*) ;;
-          *) die "the trial's unit is not masked and XDG_RUNTIME_DIR is not set, so the runtime mask of step 1 cannot be looked at" ;;
-        esac
-        if ! gone "$_rt/systemd/user/$UNIT"; then
-          die "the trial's unit is not masked though its runtime mask is there: a unit file of higher priority shadows it; take the mask back (OWNER ONLY: systemctl --user unmask --runtime -- \"\$TRIAL_UNIT\"), then --swap-in again: it checks that nothing can start the unit"
-        fi
-        _src=''
-        for _p in TriggeredBy WantedBy RequiredBy BoundBy UpheldBy; do
-          _v=$(unit_prop "$UNIT" "$_p")
-          [ -z "$_v" ] || _src="$_src $_p=$_v"
-        done
-        _ufs=$(unit_prop "$UNIT" UnitFileState)
-        case $_ufs in
-          enabled | enabled-runtime | linked | linked-runtime | alias) _src="$_src UnitFileState=$_ufs" ;;
-        esac
-        [ -z "$_src" ] || die "the trial's unit is not masked (a unit file of higher priority shadows the runtime mask) and can be started:$_src; stop the sitting here and start the trial again (step 15)"
-        GUARD="kind file, ActiveState=$_a, LoadState=loaded: the runtime mask did not take (a unit file of higher priority shadows it) and was taken back; fallback: no activation source (TriggeredBy, WantedBy, RequiredBy, BoundBy and UpheldBy empty, UnitFileState=$_ufs): accepted"
-        ;;
-      *) die "the trial's unit is $_l, neither masked nor loaded: look at it before the sitting with systemctl --user status" ;;
-    esac
-  fi
-  port_free
-}
-
-# The swap record in ROOT: one "key value" per line.
-rec_get() { awk -v k="$1" '$1 == k { print $2; exit }' "$RECORD"; }
-
-# kv_get FILE KEY prints the rest of the first line of FILE that starts with
-# KEY and a space.
-kv_get() { awk -v k="$2" '$1 == k { sub(/^[^ ]+ /, ""); print; exit }' "$1"; }
-
-# kind_read reads ROOT/trial-unit, which --record-trial writes, and sets K_ST
-# (none, rec or bad), and for a record K_KIND (transient or file), K_UNIT,
-# K_INV (the invocation recorded) and K_FRAG (the unit file).
-kind_read() {
-  K_ST=none K_KIND='' K_UNIT='' K_INV='' K_FRAG=''
-  fstate "$KINDREC"
-  case $F_K in
-    absent) return 0 ;;
-    file) ;;
-    *) K_ST=bad; return 0 ;;
-  esac
-  if [ "$(sed -n 1p -- "$KINDREC")" != 'trial-unit 1' ]; then K_ST=bad; return 0; fi
-  K_KIND=$(kv_get "$KINDREC" kind) K_UNIT=$(kv_get "$KINDREC" unit) K_INV=$(kv_get "$KINDREC" invocation) K_FRAG=$(kv_get "$KINDREC" fragment)
-  case $K_KIND in
-    transient | file) K_ST=rec ;;
-    *) K_ST=bad ;;
-  esac
-}
-
-# kind_print prints the line of --status about the trial's unit.
-kind_print() {
-  case $K_ST in
-    none) say "  $KINDREC: none (record the trial's unit while it runs: --record-trial, step f)" ;;
-    bad) say "  $KINDREC: a link, not a regular file, unreadable or not a record of --record-trial" ;;
-    *)
-      if [ "$K_KIND" = transient ]; then
-        say "  $KINDREC: unit $K_UNIT, transient (made by systemd-run; step 15 re-creates it with $RESTART)"
-      else
-        say "  $KINDREC: unit $K_UNIT, a unit file ($K_FRAG)"
-      fi
-      say "  invocation recorded: $K_INV (step 15 wants another one, a new run)"
-      ;;
-  esac
-}
-
-# classify reads the three names and the record and sets ST (trial, in,
-# ambiguous), SUB, NEXT, and the facts status_print prints.
-classify() {
-  kind_read
-  ST=ambiguous SUB='' SUBK='' NEXT=''
-  HAVE_REC=
-  R_STATE='' R_ID='' R_SHA='' R_PSHA='' R_ARCH=''
-  fstate "$RECORD"
-  case $F_K in
-    file)
-      HAVE_REC=1
-      R_STATE=$(rec_get state) R_ID=$(rec_get trial_id) R_SHA=$(rec_get trial_sha) R_PSHA=$(rec_get proof_sha) R_ARCH=$(rec_get archive)
-      ;;
-    absent) ;;
-    *) NEXT="ROOT/swap-record is a link, not a regular file or unreadable: look at $RECORD; nothing is moved"; return 0 ;;
-  esac
-  fstate "$SETTINGS"
-  P_K=$F_K P_SHA=$F_SHA P_MODE=$F_MODE
-  PSHA=$R_PSHA
-  if [ -z "$HAVE_REC" ] && [ "$P_K" = file ]; then PSHA=$P_SHA; fi
-  fstate "$CANON"
-  C_K=$F_K C_ID=$F_ID C_SHA=$F_SHA C_MODE=$F_MODE
-  if [ "$C_K" = file ]; then
-    if private && trial_kind "$CANON"; then
-      C_K=trial
-    elif [ -n "$PSHA" ] && [ "$C_SHA" = "$PSHA" ]; then
-      C_K=proof
-    else
-      C_K=other
-    fi
-  fi
-  fstate "$ASIDE"
-  T_K=$F_K T_ID=$F_ID T_SHA=$F_SHA T_MODE=$F_MODE
-  if [ "$T_K" = file ] && [ -n "$HAVE_REC" ] && [ "$T_ID" = "$R_ID" ] && [ "$T_SHA" = "$R_SHA" ]; then T_K=recorded; fi
-  A_K=none A_SHA='' A_ID=''
-  if [ -n "$HAVE_REC" ]; then
-    fstate "$OWNER/$R_ARCH"
-    A_K=$F_K A_SHA=$F_SHA A_ID=$F_ID
-    if [ "$A_K" = file ] && [ "$A_SHA" = "$R_PSHA" ]; then A_K=proof; fi
-  fi
-  if [ -n "$HAVE_REC" ] && [ "$R_STATE" != "$S" ]; then
-    NEXT="this ROOT's swap record is of another state folder ($R_STATE): run --status with the root of the sitting that swapped this state folder"
-    return 0
-  fi
-  _mask='keep the trial stopped (a unit file masked as in step 1) and both daemons stopped'
-  if [ "$C_K" = trial ] && [ "$T_K" = absent ]; then
-    if [ -z "$HAVE_REC" ]; then
-      ST=trial SUBK=fresh SUB='not swapped'
-      case $K_ST:$K_KIND in
-        rec:transient) NEXT='stop the trial'"'"'s transient unit (step 1; it is not masked: stopped, it is gone), scratch-init (step 2), then --swap-in (step 3)' ;;
-        rec:file) NEXT='stop the trial'"'"'s unit and mask it for this boot (step 1), scratch-init (step 2), then --swap-in (step 3)' ;;
-        bad:*) NEXT="look at $KINDREC, which is not a record of --record-trial; then stop the trial (step 1), scratch-init (step 2) and --swap-in (step 3)" ;;
-        *) NEXT='record the trial'"'"'s unit while it runs (--record-trial, step f), then stop it (step 1), scratch-init (step 2) and --swap-in (step 3)' ;;
-      esac
-      return 0
-    fi
-    if [ "$C_ID" = "$R_ID" ] && [ "$C_SHA" = "$R_SHA" ]; then
-      case $A_K in
-        proof)
-          ST=trial SUBK=back SUB='the way back is done'
-          case $K_ST:$K_KIND in
-            rec:transient) NEXT="re-create the trial's transient unit: OWNER ONLY: sh $RESTART (step 15), then check its new invocation and fingerprint" ;;
-            rec:file) NEXT='unmask the trial'"'"'s unit if it is masked and start it again (step 15), then check its new invocation and fingerprint' ;;
-            *) NEXT='start the trial again as you made it (step 15)' ;;
-          esac
-          return 0
-          ;;
-        absent)
-          ST=trial SUBK=recorded SUB='recorded by --swap-in, which stopped before its first rename'
-          NEXT='run --swap-in again (step 3): it goes on from the record'
-          return 0
-          ;;
-      esac
-      NEXT="owner/$R_ARCH is there and is not this sitting's proof settings: $_mask, look at it; prepare moves nothing in this layout"
-      return 0
-    fi
-    NEXT="owner/scratch.json is trial settings, but not the ones this ROOT recorded: $_mask; run --status with the root of the sitting that recorded them"
-    return 0
-  fi
-  if [ "$C_K" = proof ] && [ "$T_K" = recorded ] && [ "$A_K" = absent ]; then
-    ST=in SUB=
-    NEXT='the sitting (steps 4 to 13); once the proof'"'"'s daemon has stopped, --swap-out (step 14)'
-    return 0
-  fi
-  if [ "$C_K" = absent ] && [ "$T_K" = recorded ]; then
-    SUBK=missing SUB='owner/scratch.json is missing; the recorded trial settings are set aside'
-    NEXT='--swap-out (step 14): it puts the recorded trial settings back'
-    return 0
-  fi
-  if [ "$C_K" = trial ] && [ "$T_K" = recorded ] && [ "$C_ID" = "$T_ID" ]; then
-    SUBK=half-trial SUB='a rename stopped half way: the recorded trial settings have both names'
-    NEXT='--swap-out (step 14): it removes the second name, owner/scratch.json.trial, of that one file'
-    return 0
-  fi
-  if [ "$C_K" = proof ] && [ "$T_K" = recorded ] && [ "$A_K" = proof ] && [ "$C_ID" = "$A_ID" ]; then
-    SUBK=half-proof SUB="a rename stopped half way: the proof's settings have both names, owner/scratch.json and owner/$R_ARCH"
-    NEXT='--swap-out (step 14): it goes on from there'
-    return 0
-  fi
-  if [ -z "$HAVE_REC" ] && [ "$T_K" != absent ]; then
-    NEXT="owner/scratch.json.trial was set aside by another sitting (this ROOT has no swap record): $_mask; run --status with that sitting's root"
-    return 0
-  fi
-  case $C_K in
-    link | notfile | unreadable)
-      NEXT="owner/scratch.json is a link, not a regular file or unreadable: $_mask; look at it (ls -l $OWNER); prepare moves nothing in this layout"
-      return 0
-      ;;
-    other)
-      NEXT="owner/scratch.json is neither private trial settings nor this proof's: $_mask; compare its digest above; prepare moves nothing in this layout"
-      return 0
-      ;;
-  esac
-  if [ "$T_K" != recorded ]; then
-    NEXT="the trial's settings are not where this ROOT's record says (owner/scratch.json.trial): $_mask; do not start the trial; find them (the other names in owner/ are listed above)"
-    return 0
-  fi
-  NEXT="$_mask; look at the names above; prepare moves nothing in this layout"
-}
-
-# fact NAME KIND ID SHA MODE prints one line of the status.
-fact() {
-  case $2 in
-    absent) say "  $1: absent" ;;
-    link) say "  $1: a link (a dangling one counts as taken)" ;;
-    notfile) say "  $1: not a regular file" ;;
-    unreadable) say "  $1: unreadable" ;;
-    *) say "  $1: $2, mode $5, id $3, sha256 $4" ;;
-  esac
-}
-
-status_print() {
-  case $ST in
-    trial) _w='trial in place' ;;
-    in) _w='swapped in' ;;
-    *) _w='interrupted or ambiguous' ;;
-  esac
-  if [ -n "$SUB" ]; then say "status: $_w ($SUB)"; else say "status: $_w"; fi
-  _ck=$C_K
-  [ "$_ck" != trial ] || _ck='trial settings'
-  [ "$_ck" != proof ] || _ck="this proof's settings"
-  [ "$_ck" != other ] || _ck='a file of other settings'
-  [ "$_ck" != file ] || _ck='a file'
-  fact "$CANON" "$_ck" "$C_ID" "$C_SHA" "$C_MODE"
-  _tk=$T_K
-  [ "$_tk" != recorded ] || _tk='the recorded trial settings'
-  [ "$_tk" != file ] || _tk='a file this ROOT did not record'
-  fact "$ASIDE" "$_tk" "$T_ID" "$T_SHA" "$T_MODE"
-  _pk=$P_K
-  [ "$_pk" != file ] || _pk="the proof's settings"
-  fact "$SETTINGS" "$_pk" '-' "$P_SHA" "$P_MODE"
-  if [ -n "$HAVE_REC" ]; then
-    say "  $RECORD: trial id $R_ID, trial sha256 $R_SHA, proof sha256 $R_PSHA, archive owner/$R_ARCH ($A_K)"
-  else
-    say "  $RECORD: none"
-  fi
-  kind_print
-  _others=$(find "$OWNER" -mindepth 1 -maxdepth 1 \( -name 'scratch.json*' -o -name '.scratch.json*' \) -print 2>/dev/null | LC_ALL=C sort) || _others=
-  for _o in $_others; do
-    case $_o in
-      "$CANON" | "$ASIDE") ;;
-      *) if [ -n "$HAVE_REC" ] && [ "$_o" = "$OWNER/$R_ARCH" ]; then :; else say "  other name in owner/: $_o"; fi ;;
-    esac
-  done
-  say "next: $NEXT"
-}
-
-# no_replace FROM TO renames FROM to TO within one folder, refusing a TO
-# that is there (a dangling link and a folder included): the new name is made
-# first, by link(2), which never replaces a name, and checked to be the same
-# file; then the old name is removed by unlink(2). The file itself is never
-# removed. Stopped between the two, the file has both names, which --status
-# names and --swap-out resolves.
-no_replace() {
-  ln -P -T -- "$1" "$2" || die "the new name $2 was refused (it is taken?); nothing else was moved: run --status"
-  drop_name "$1" "$2"
-}
-# drop_name OLD KEPT removes the name OLD of a file that KEPT names too,
-# after checking that the two are one file.
-drop_name() {
-  _i1=$(stat -c '%d:%i' -- "$1") || die "cannot read $1"
-  _i2=$(stat -c '%d:%i' -- "$2") || die "cannot read $2"
-  [ "$_i1" = "$_i2" ] || die "$1 and $2 are not one file: nothing was removed: run --status"
-  [ ! -L "$1" ] && [ -f "$1" ] || die "$1 is not a regular file: nothing was removed"
-  unlink -- "$1" || die "the old name $1 could not be removed: run --status"
-  gone "$1" || die "$1 is still there after the unlink"
-}
-# gone PATH succeeds when no name is there, not even a dangling link.
-gone() { [ ! -e "$1" ] && [ ! -L "$1" ]; }
-
-# check_settings_file refuses ROOT/owner-scratch.json when it is not the
-# proof's private, regular, non-trial settings.
-check_proof_settings() {
-  fstate "$SETTINGS"
-  case $F_K in
-    file) ;;
-    absent) die "$SETTINGS is missing: run --write first" ;;
-    *) die "$SETTINGS is a link, not a regular file or unreadable" ;;
-  esac
-  private || die "$SETTINGS is not private (mode $F_MODE)"
-  if trial_kind "$SETTINGS"; then die "$SETTINGS holds trial settings"; fi
-  grep -Fq -e '"door": "stand-in"' -- "$SETTINGS" || die "$SETTINGS is not the stand-in door's settings prepare writes"
-}
-
+# --status: the daemon's own check on the files --write made, then the
+# trial's files against the digests the owner recorded. It writes nothing.
 if [ "$MODE" = status ]; then
   check_state
-  [ -d "$ROOT" ] && [ ! -L "$ROOT" ] || die "the root is not a folder: $ROOT"
-  classify
-  status_print
-  exit 0
-fi
-
-# cmdline_read FILE reads a command line as /proc/PID/cmdline holds it (each
-# argument ends with a NUL) and sets ARGV0, the first argument, ARGC, and
-# QARGV, every argument single-quoted, separated by spaces. It fails, with
-# CL_WHY, for a file it cannot read, an empty one, one whose last byte is not
-# a NUL (a process that changed its command line) and one with a newline in
-# an argument, which the restart script would not keep exactly.
-cmdline_read() {
-  CL_WHY=''
-  _oct=$(od -An -v -to1 -- "$1" 2>/dev/null) || { CL_WHY='cannot be read'; return 1; }
-  ARGV0='' QARGV='' ARGC=0 _esc='' _b=''
-  for _b in $_oct; do
-    case $_b in
-      000)
-        # shellcheck disable=SC2059  # the format holds only octal escapes, one per byte
-        _a=$(printf "$_esc")
-        if [ "$ARGC" -eq 0 ]; then
-          ARGV0=$_a QARGV=$(sq "$_a")
-        else
-          QARGV="$QARGV $(sq "$_a")"
-        fi
-        ARGC=$((ARGC + 1)) _esc=''
-        ;;
-      012) CL_WHY='holds a newline in an argument, which a restart script would not keep exactly'; return 1 ;;
-      [0-3][0-7][0-7]) _esc="$_esc\\$_b" ;;
-      *) CL_WHY='cannot be read as bytes'; return 1 ;;
-    esac
-  done
-  [ -n "$_b" ] || { CL_WHY='is empty'; return 1; }
-  [ "$_b" = 000 ] || { CL_WHY='does not end with a NUL (the process changed its command line)'; return 1; }
-}
-
-# --record-trial: the trial's unit as it runs, before step 1. It reads the
-# user manager (show only) and the main process's command line, checks all
-# of it, and only then writes, in ROOT, the evidence, the restart script of a
-# transient unit and, last, the kind record the later modes read. It never
-# runs the script it writes.
-if [ "$MODE" = record-trial ]; then
-  PROC=${PREPARE_PROC:-/proc}
-  safe_path PREPARE_PROC "$PROC"
-  [ -d "$ROOT" ] && [ ! -L "$ROOT" ] || die "the root is not a folder made by --write: $ROOT"
-  [ -d "$EVIDENCE" ] && [ ! -L "$EVIDENCE" ] || die "the root has no evidence/ folder: run --write first: $EVIDENCE"
-  gone "$RECORD" || die "this ROOT has swapped already ($RECORD): the trial's unit is recorded before step 1, while the trial runs; nothing was written"
-  for _f in "$KINDREC" "$BEFORE" "$RESTART" "$KINDREC.new" "$BEFORE.new" "$RESTART.new"; do
-    gone "$_f" || die "$_f is there already: the trial's unit is recorded once for a root, and the record is kept; nothing was written"
-  done
-  _nl='
-'
-  _txt=''
-  # Every property is set by the loop, through eval.
-  U_Id='' U_Description='' U_Transient='' U_UnitFileState='' U_FragmentPath='' U_CollectMode='' U_LoadState=''
-  U_ActiveState='' U_InvocationID='' U_MainPID='' U_ExecStart=''
-  for _p in Id Description Transient UnitFileState FragmentPath CollectMode LoadState ActiveState SubState \
-    TriggeredBy WantedBy RequiredBy BoundBy UpheldBy InvocationID MainPID ExecStart Restart Environment WorkingDirectory; do
-    _v=$(unit_prop "$UNIT" "$_p")
-    case $_v in *"$_nl"*) die "the trial's unit's $_p has more than one line; nothing was written" ;; esac
-    eval "U_$_p=\$_v"
-    _txt="$_txt$_p=$_v$_nl"
-  done
-  [ "$U_Id" = "$UNIT" ] || die "the user manager names the unit $U_Id, not $UNIT (an alias?): give its own name; nothing was written"
-  [ "$U_LoadState" = loaded ] || die "the trial's unit is $U_LoadState, not loaded: record it while the trial runs, before step 1; nothing was written"
-  [ "$U_ActiveState" = active ] || die "the trial's unit is $U_ActiveState, not active: record it while the trial runs, before step 1; nothing was written"
-  case $U_InvocationID in
-    '' | *[!0-9a-f]*) die "the trial's unit has no invocation id ($U_InvocationID); nothing was written" ;;
-  esac
-  case $U_Transient in
-    yes)
-      KIND='transient'
-      [ "$U_UnitFileState" = transient ] || die "the trial's unit is transient but its UnitFileState is $U_UnitFileState; nothing was written"
-      case $U_FragmentPath in
-        /*/systemd/transient/*) ;;
-        *) die "the trial's transient unit is not in a transient folder of the user manager ($U_FragmentPath); nothing was written" ;;
-      esac
-      ;;
-    no)
-      KIND='file'
-      case $U_FragmentPath in
-        /*) ;;
-        *) die "the trial's unit is not transient and has no unit file (FragmentPath is empty); nothing was written" ;;
-      esac
-      [ "$U_UnitFileState" != transient ] || die "the trial's unit says Transient=no and UnitFileState=transient; nothing was written"
-      ;;
-    *) die "the trial's unit says Transient=$U_Transient, neither yes nor no; nothing was written" ;;
-  esac
-  if [ "$KIND" = transient ]; then
-    case $U_MainPID in
-      '' | *[!0-9]* | 0*) die "the trial's unit has no main process (MainPID=$U_MainPID), so its command line cannot be read for the restart script; nothing was written" ;;
-    esac
-    case $U_CollectMode in
-      inactive-or-failed) _collect=' --collect' ;;
-      inactive) _collect='' ;;
-      *) die "the trial's transient unit has CollectMode=$U_CollectMode, which the restart script cannot give; nothing was written" ;;
-    esac
-    case $U_ExecStart in
-      '{ path='*' ; argv[]='*) ;;
-      *) die "the trial's ExecStart is not one command with a path; nothing was written" ;;
-    esac
-    _es=${U_ExecStart#'{ path='}
-    case $_es in
-      *' ; argv[]='*' ; argv[]='*) die "the trial's ExecStart holds more than one command; nothing was written" ;;
-    esac
-    _prog=${_es%%' ; argv[]='*}
-    _cl=$PROC/$U_MainPID/cmdline
-    cmdline_read "$_cl" || die "the command line of the trial's main process ($_cl) $CL_WHY: no restart script can be written; nothing was written"
-    [ "$ARGV0" = "$_prog" ] || die "the trial's main process ($U_MainPID) runs $ARGV0, not ExecStart's program $_prog: the process is not the unit's command; nothing was written"
-    _desc=''
-    [ -z "$U_Description" ] || _desc=" --description $(sq "$U_Description")"
+  [ -f "$CONFIG" ] && [ ! -L "$CONFIG" ] || die "no scratch config $CONFIG: run --write first"
+  if [ ! -f "$DAEMON" ] || [ ! -x "$DAEMON" ]; then
+    die "no daemon of both tags at $DAEMON (docs/scratch-seat-proof.md, Before the sitting, says how to build it)"
   fi
-
-  # shellcheck disable=SC2329  # the trap below runs it
-  half_rec() {
-    _rc=$?
-    if [ "$_rc" -ne 0 ]; then printf '%s\n' "$NAME: --record-trial stopped part way: look at $ROOT (it keeps what was written)" >&2; fi
-    exit "$_rc"
-  }
-  trap half_rec EXIT
-  printf '%s' "$_txt" >"$BEFORE.new"
-  no_replace "$BEFORE.new" "$BEFORE"
-  _krec="trial-unit 1${_nl}unit $UNIT${_nl}kind $KIND${_nl}invocation $U_InvocationID${_nl}"
-  if [ "$KIND" = transient ]; then
-    printf '%s\n' '#!/bin/sh' \
-      '# Written by prepare.sh --record-trial from the phone trial'"'"'s transient unit as' \
-      '# it ran: its name, description and collect mode, as the user manager shows them, and the' \
-      "# command line of its main process ($_cl), every argument single-quoted." \
-      '# prepare never runs it. Run it by hand at step 15, after --swap-out' \
-      '# (docs/scratch-seat-proof.md). It re-creates the unit with those and' \
-      '# nothing else of it.' \
-      'set -eu' \
-      "name=$(sq "$UNIT")" \
-      "exec systemd-run --user --unit \"\$name\"$_desc$_collect -- $QARGV" >"$RESTART.new"
-    chmod 0700 -- "$RESTART.new"
-    sh -n "$RESTART.new" || die "the restart script written does not parse: $RESTART.new"
-    no_replace "$RESTART.new" "$RESTART"
-    _krec="${_krec}restart $RESTART${_nl}"
+  say "status: the daemon's check: $DAEMON run --scratch $CONFIG --owner-channel --seat-gate $GATE --owner-settings $SETTINGS_DIR --check"
+  RC=0
+  "$DAEMON" run --scratch "$CONFIG" --owner-channel --seat-gate "$GATE" --owner-settings "$SETTINGS_DIR" --check || RC=$?
+  if [ "$RC" -eq 0 ]; then
+    say "status: the daemon's check found no refusal"
   else
-    _krec="${_krec}fragment $U_FragmentPath${_nl}"
+    say "status: the daemon's check ended with exit status $RC: the daemon would not start; the lines above say why"
   fi
-  printf '%s' "$_krec" >"$KINDREC.new"
-  no_replace "$KINDREC.new" "$KINDREC"
-  trap - EXIT
-  if [ "$KIND" = transient ]; then
-    say "recorded the trial's unit: transient (made by systemd-run), its program $ARGV0 and $ARGC arguments in all"
-    say "  $BEFORE: the unit as it runs"
-    say "  $RESTART (0700): re-creates it at step 15, after --swap-out; prepare never runs it"
-    say "  $KINDREC: its kind, for --swap-in, --status and step 15"
-    say "next: step 1 stops it (a transient unit is not masked: stopped, it is gone)"
+  if [ -L "$BEFORE" ] || [ ! -f "$BEFORE" ]; then
+    say "status: no $BEFORE yet: record the trial's digests at step g, before the trial is stopped"
+  elif _out=$(cd -- "$OWNER" && sha256sum -c -- "$BEFORE" 2>&1); then
+    printf '%s\n' "$_out" | sed 's/^/status:   /'
+    say "status: the trial's gate key, certificate, pins, key list and settings are the same bytes as recorded in $BEFORE"
   else
-    say "recorded the trial's unit: a unit file, $U_FragmentPath"
-    say "  $BEFORE: the unit as it runs"
-    say "  $KINDREC: its kind, for --swap-in, --status and step 15"
-    say "next: step 1 stops it and masks it for this boot (--runtime)"
+    printf '%s\n' "$_out" | sed 's/^/status:   /'
+    say "status: CHANGED: a file of the trial is not the bytes recorded in $BEFORE (the lines above name it)"
+    [ "$RC" -ne 0 ] || RC=1
   fi
-  exit 0
-fi
-
-if [ "$MODE" = swap-in ] || [ "$MODE" = swap-out ]; then
-  check_state
-  [ -d "$ROOT" ] && [ ! -L "$ROOT" ] || die "the root is not a folder made by --write: $ROOT"
-  half() {
-    _rc=$?
-    if [ "$_rc" -ne 0 ]; then printf '%s\n' "$NAME: --$MODE stopped; nothing more was moved: run sh $PREP --status --state $S --root $ROOT" >&2; fi
-    exit "$_rc"
-  }
-  trap half EXIT
-fi
-
-if [ "$MODE" = swap-in ]; then
-  check_proof_settings
-  grep -Fq -e "\"key\": \"$KEY_STANDIN\"" -- "$CONFIG" 2>/dev/null || die "$CONFIG has no lead $KEY_STANDIN: give the --sitting of --write"
-  classify
-  case $ST:$SUBK in
-    trial:fresh | trial:recorded) ;;
-    *)
-      status_print >&2
-      die 'the layout is not the trial'"'"'s alone, not swapped: nothing was moved'
-      ;;
-  esac
-  if [ -z "$HAVE_REC" ]; then
-    gone "$OWNER/$ARCHIVE_NAME" || die "owner/$ARCHIVE_NAME is taken, the name --swap-out uses: give another --sitting"
-  elif [ "$R_ARCH" != "$ARCHIVE_NAME" ]; then
-    die "this ROOT's record is of another sitting (archive owner/$R_ARCH): give its --sitting"
-  fi
-  trial_guard
-  keys_fresh
-  for _k in "$KEY_STANDIN" "$KEY_LIVE"; do
-    _l=$(unit_prop "ataniq-lead-scratch-$_k.service" LoadState)
-    [ "$_l" = not-found ] || die "the user manager knows the unit ataniq-lead-scratch-$_k.service ($_l): another scratch root uses the key $_k; give another --sitting"
-  done
-  # What the guard found, kept as evidence (a fallback of a unit file
-  # included); one line for each --swap-in that gets this far.
-  GUARDF=$EVIDENCE/trial-unit-guard.txt
-  if [ -L "$GUARDF" ] || { [ -e "$GUARDF" ] && [ ! -f "$GUARDF" ]; }; then die "$GUARDF is a link or not a regular file: nothing was moved"; fi
-  printf '%s\n' "swap-in, sitting $SITTING, unit $UNIT: $GUARD" >>"$GUARDF"
-  if [ -z "$HAVE_REC" ]; then
-    _new=$RECORD.new
-    gone "$_new" || die "$_new is there: look at it; nothing was moved"
-    printf '%s\n' 'swap-record 1' "state $S" "sitting $SITTING" "trial_id $C_ID" "trial_sha $C_SHA" "proof_sha $P_SHA" \
-      "archive $ARCHIVE_NAME" >"$_new"
-    no_replace "$_new" "$RECORD"
-    R_ID=$C_ID R_SHA=$C_SHA R_PSHA=$P_SHA
-  fi
-  [ "$P_SHA" = "$R_PSHA" ] || die "$SETTINGS changed since the record was made: nothing was moved"
-  # 1. The trial's settings aside, within owner/.
-  no_replace "$CANON" "$ASIDE"
-  fstate "$ASIDE"
-  [ "$F_K" = file ] && [ "$F_ID" = "$R_ID" ] && [ "$F_SHA" = "$R_SHA" ] || die "owner/scratch.json.trial is not the recorded trial settings after the rename"
-  # 2. A copy of the proof's settings, written under a dot name in owner/,
-  # checked, then renamed to owner/scratch.json.
-  _stg=$(mktemp -- "$OWNER/.scratch.json.proof.XXXXXX") || die "cannot make a file in $OWNER"
-  cat -- "$SETTINGS" >"$_stg"
-  chmod 0600 -- "$_stg"
-  fstate "$_stg"
-  [ "$F_K" = file ] && [ "$F_SHA" = "$R_PSHA" ] || die "the copy $_stg is not the proof's settings"
-  no_replace "$_stg" "$CANON"
-  fstate "$CANON"
-  [ "$F_K" = file ] && private && [ "$F_SHA" = "$R_PSHA" ] || die "owner/scratch.json is not the proof's settings after the rename"
-  trap - EXIT
-  say "swapped in: owner/scratch.json is this proof's settings, and the trial's are owner/scratch.json.trial, as recorded in $RECORD"
-  classify
-  status_print
-  [ "$ST" = in ] || die 'the layout after the swap is not swapped in: run --status'
-  exit 0
-fi
-
-if [ "$MODE" = swap-out ]; then
-  classify
-  [ -n "$HAVE_REC" ] || { status_print >&2; die "this ROOT has no swap record: run --swap-out with the root of the sitting that swapped in"; }
-  if [ "$ST:$SUBK" = trial:back ]; then
-    trap - EXIT
-    say "nothing to do: the trial's settings are back"
-    status_print
-    exit 0
-  fi
-  case $ST:$SUBK in
-    in: | ambiguous:missing | ambiguous:half-trial | ambiguous:half-proof) unit_quiet ;;
-    *)
-      status_print >&2
-      die 'the layout is not one --swap-out puts back: nothing was moved'
-      ;;
-  esac
-  case $ST:$SUBK in
-    in:) no_replace "$CANON" "$OWNER/$R_ARCH" ;;
-    ambiguous:half-proof) drop_name "$CANON" "$OWNER/$R_ARCH" ;;
-  esac
-  if [ "$SUBK" = half-trial ]; then
-    drop_name "$ASIDE" "$CANON"
-  else
-    gone "$CANON" || die "owner/scratch.json is still there"
-    if [ "$ST" = in ] || [ "$SUBK" = half-proof ]; then
-      fstate "$OWNER/$R_ARCH"
-      [ "$F_K" = file ] && [ "$F_SHA" = "$R_PSHA" ] || die "owner/$R_ARCH is not the proof's settings after the rename"
-    fi
-    no_replace "$ASIDE" "$CANON"
-  fi
-  fstate "$CANON"
-  [ "$F_K" = file ] && [ "$F_ID" = "$R_ID" ] && [ "$F_SHA" = "$R_SHA" ] || die "owner/scratch.json is not the recorded trial settings after the rename"
-  trap - EXIT
-  say "swapped out: owner/scratch.json is the recorded trial settings again (same file, same digest)"
-  classify
-  status_print
-  exit 0
+  exit "$RC"
 fi
 
 # ---- --write. Everything is checked before ROOT is made. ----
 check_state
-fstate "$CANON"
-case $F_K in
-  file) ;;
-  absent) die "$CANON is missing: the trial's settings may be set aside: run --status with the root of the sitting that swapped" ;;
-  *) die "$CANON is a link, not a regular file or unreadable: run --status" ;;
-esac
-private || die "$CANON is not private (mode $F_MODE)"
-trial_kind "$CANON" || die "$CANON is not the trial's settings (no \"trial\": true): run --status"
-gone "$ASIDE" || die "$ASIDE is there already: the trial's settings may be set aside from an earlier proof: run --status with that sitting's root"
-check_gate_material
 keys_fresh
 
 _hp=$(phys "$HOME") || die "HOME is not a folder, so ~/.ssh, ~/.claude and ~/.codex cannot be listed as never mounted: $HOME"
@@ -1522,7 +825,7 @@ chmod 0700 -- "$ROOT"
 ROOT_MADE=1
 trap half_made EXIT
 say "making $ROOT"
-mkdir -m 0700 -- "$ROOT/conf" "$ROOT/agent-install" "$ROOT/bin" "$ROOT/upstream" "$EVIDENCE" "$OC" "$OC/drop"
+mkdir -m 0700 -- "$ROOT/conf" "$ROOT/agent-install" "$ROOT/bin" "$ROOT/upstream" "$EVIDENCE" "$SETTINGS_DIR" "$OC" "$OC/drop"
 
 # The managed settings name the guard hook, bound at /ataniq/qargi/guard-hook,
 # and hold the marker text guard-hook, as the canary run kit's do. The hook
