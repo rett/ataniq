@@ -3,12 +3,11 @@
 package leaddaemon
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"ataniq/internal/approval/ownerwire"
+	"ataniq/internal/clientapi"
 	"ataniq/internal/leadchat"
 	"ataniq/internal/leadwire"
 )
@@ -130,10 +130,30 @@ func TestLeadChatCursorCoversTheEnabledLeadsOnly(t *testing.T) {
 	if c := cursorOf(t, port); c != none || closed(ch0) {
 		t.Fatalf("the start of leads whose chat is off moved the cursor (%d) or the broadcast", c)
 	}
+	// Every scan that ends is counted, by lead, so that a check can wait
+	// for a whole scan of a lead that is on, begun after something it did.
+	// The hook is set while no lead has a scanner.
+	d := deskOf(t, port)
+	var scanMu sync.Mutex
+	scans := map[string]int{}
+	d.afterScan = func(_ context.Context, cl *chatLead, _ bool) {
+		scanMu.Lock()
+		scans[cl.key]++
+		scanMu.Unlock()
+	}
+	scansOf := func(key string) int {
+		scanMu.Lock()
+		defer scanMu.Unlock()
+		return scans[key]
+	}
 
-	// beta is off: its activity moves nothing.
+	// beta is off: its activity moves nothing. Its replies are written, and
+	// then every chance of a scan is had before the cursor and the broadcast
+	// are looked at: beta has no scanner and a scan of it is refused, and
+	// each lead that is on finishes a scan begun after the replies were
+	// written.
 	requireTestClock(t, port)
-	offActivity := func(what string, n int) {
+	offActivity := func(what string, n int, on ...string) {
 		t.Helper()
 		before := cursorOf(t, port)
 		ch := port.ChatCursorChanged()
@@ -143,15 +163,28 @@ func TestLeadChatCursorCoversTheEnabledLeadsOnly(t *testing.T) {
 		}
 		// Names a scan takes: a reply left alone is left by the switch,
 		// not refused for its name.
+		var names []string
 		for i := 0; i < n; i++ {
-			reply(t, out, fmt.Sprintf("off-%s-%c.txt", strings.ReplaceAll(what, " ", "-"), 'a'+i), "an off lead's reply")
+			name := fmt.Sprintf("off-%s-%c.txt", strings.ReplaceAll(what, " ", "-"), 'a'+i)
+			reply(t, out, name, "an off lead's reply")
+			names = append(names, name)
 		}
-		time.Sleep(10 * l.scratch.ChatScanEvery)
+		requireOffLeadLeftAlone(t, d, "beta", nil)
+		for _, key := range on {
+			// A scan that ends twice from now began after the replies.
+			from := scansOf(key)
+			waitFor(t, chatWatchdog, key+" scans after "+what, func() bool { return scansOf(key) >= from+2 })
+		}
 		if c := cursorOf(t, port); c != before {
 			t.Fatalf("%s: an off lead's activity moved the cursor from %d to %d", what, before, c)
 		}
 		if closed(ch) {
 			t.Fatalf("%s: an off lead's activity closed the broadcast", what)
+		}
+		for _, name := range names {
+			if _, err := os.Lstat(filepath.Join(out, name)); err != nil {
+				t.Fatalf("%s: an off lead's reply was taken: %v", what, err)
+			}
 		}
 	}
 	offActivity("all off", 3)
@@ -161,7 +194,6 @@ func TestLeadChatCursorCoversTheEnabledLeadsOnly(t *testing.T) {
 	if !closed(ch) {
 		t.Fatal("a turn-on did not close the broadcast")
 	}
-	d := deskOf(t, port)
 	gen := func() int64 {
 		cl := d.byKey["alpha"]
 		cl.mu.Lock()
@@ -177,7 +209,7 @@ func TestLeadChatCursorCoversTheEnabledLeadsOnly(t *testing.T) {
 	if want := cursorFor(t, port, []ownerwire.ChatCursorLead{{Lead: "daemon:alpha", Gen: g1, Head: r.Head}}); on != want {
 		t.Fatalf("with alpha on the cursor is %d, want %d", on, want)
 	}
-	offActivity("alpha on", 2)
+	offActivity("alpha on", 2, "alpha")
 
 	ch = port.ChatCursorChanged()
 	reply(t, l.outboxOf("alpha"), "0001-done.txt", "done")
@@ -189,6 +221,7 @@ func TestLeadChatCursorCoversTheEnabledLeadsOnly(t *testing.T) {
 	}
 
 	ch = port.ChatCursorChanged()
+	scanner := workerNow(d, "alpha")
 	l.mustChatSet("alpha", leadwire.ChatOff)
 	if !closed(ch) {
 		t.Fatal("a turn-off did not close the broadcast")
@@ -196,6 +229,7 @@ func TestLeadChatCursorCoversTheEnabledLeadsOnly(t *testing.T) {
 	if c := cursorOf(t, port); c != none {
 		t.Fatalf("after the turn-off the cursor is %d, want that of no lead %d: the old head left a trace", c, none)
 	}
+	requireOffLeadLeftAlone(t, d, "alpha", scanner)
 	offActivity("alpha off again", 2)
 
 	l.mustChatSet("alpha", leadwire.ChatRead)
@@ -286,12 +320,37 @@ func storeHead(t *testing.T, d *chatDesk, key string) int64 {
 	return st.Head
 }
 
+// chatSetFrom is chatSet for a goroutine other than the test's: it returns
+// every error and uses no testing.T.
+func (l *leadEnv) chatSetFrom(key, chat string) (leadwire.ChatLead, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	c, err := clientapi.Dial(ctx, l.running.socket)
+	if err != nil {
+		return leadwire.ChatLead{}, err
+	}
+	defer c.Close()
+	var r leadwire.ChatLead
+	err = c.Call(ctx, leadwire.OpChatSet, leadwire.ChatSetParams{Key: key, Chat: chat}, &r)
+	return r, err
+}
+
 // A scan admitted before a turn-off is published (the lead read when it was
 // admitted) ingests and signals before the seat can see the lead off: the
 // turn-off waits for it. Once the seat sees the lead off, no scan is
 // admitted, so a reply written while the lead is off moves no head, and the
 // next turn-on's head is the one the seat could last see, plus its turned-on
 // entry. The same run with no scan in flight gives the same heads.
+//
+// In the paused run the scan is held at its admission (atScan), holding the
+// lead's change lock, and the turn-off of alpha is seen at that lock by the
+// desk's own hook (atTurnOff), which names the lead; the turn-off runs under
+// the lead's setMu, so it is this request's. While the two overlap the seat
+// still sees the lead read, the turn-off has not returned, and nothing is
+// signalled. The test records every signal of the desk (what the seat's
+// cursor covers may have changed) with the lead's head at that moment: once
+// the scan is let go, the scan's ingest signals and then the turn-off's
+// publication does, and each shows the head with the scan's reply in it.
 func TestChatScanAdmittedBeforeATurnOffEndsBeforeTheOffIsSeen(t *testing.T) {
 	for _, paused := range []bool{false, true} {
 		name := "no scan in flight"
@@ -302,50 +361,142 @@ func TestChatScanAdmittedBeforeATurnOffEndsBeforeTheOffIsSeen(t *testing.T) {
 			l, port := newChatEnv(t)
 			l.start()
 			l.up("alpha", submitted)
+			waitFor(t, 10*time.Second, "the port is bound", func() bool { return port.src.Load() != nil })
 			requireTestClock(t, port)
 			d := deskOf(t, port)
+
 			var armed atomic.Bool
 			reached := make(chan struct{})
 			release := make(chan struct{})
+			var releaseOnce sync.Once
+			letGo := func() { releaseOnce.Do(func() { close(release) }) }
+			atLock := make(chan struct{})
+			var atLockOnce sync.Once
+			var offDone chan struct{}
+			// Registered after the daemon's stop, so run before it, and
+			// before any assertion: a failing check lets the paused scan go
+			// (it holds the lead's change lock) and then joins the turn-off
+			// in flight, so neither is left for the daemon's stop to wait
+			// out.
+			t.Cleanup(func() {
+				letGo()
+				if offDone == nil {
+					return
+				}
+				select {
+				case <-offDone:
+				case <-time.After(chatWatchdog):
+					t.Error("the turn-off in flight did not end after the scan was let go")
+				}
+			})
 			d.atScan = func(cl *chatLead) {
 				if cl.key == "alpha" && armed.CompareAndSwap(true, false) {
 					close(reached)
 					<-release
 				}
 			}
+			d.atTurnOff = func(cl *chatLead) {
+				if cl.key == "alpha" {
+					atLockOnce.Do(func() { close(atLock) })
+				}
+			}
+			// Every signal of the desk, while recording, with alpha's head
+			// then. A signal is made under the change lock of the lead it
+			// is of (and the store's own lock is not held), so the head is
+			// read here as it was at the signal.
+			cl := d.byKey["alpha"]
+			cl.mu.Lock()
+			store := cl.store
+			cl.mu.Unlock()
+			var recording atomic.Bool
+			var sigMu sync.Mutex
+			var signals []int64
+			if prev := d.changed.Load(); prev != nil {
+				d.onChange(func() {
+					if recording.Load() {
+						head := int64(-1)
+						if st, err := store.Status(); err == nil {
+							head = st.Head
+						}
+						sigMu.Lock()
+						signals = append(signals, head)
+						sigMu.Unlock()
+					}
+					(*prev)()
+				})
+			} else {
+				t.Fatal("the desk has no change function: the port is not bound")
+			}
+			signalled := func() []int64 {
+				sigMu.Lock()
+				defer sigMu.Unlock()
+				return slices.Clone(signals)
+			}
+
 			l.mustChatSet("alpha", leadwire.ChatRead)
+			scanner := workerNow(d, "alpha")
+			if scanner == nil {
+				t.Fatal("alpha is read and has no scanner")
+			}
 			out := l.outboxOf("alpha")
 			reply(t, out, "0001-first.txt", "first")
 			waitFor(t, 15*time.Second, "the first reply is taken", func() bool { return l.chatRow("alpha").Entries == 2 })
 
-			var offDone chan struct{}
 			if paused {
+				recording.Store(true)
 				armed.Store(true)
-				<-reached
+				select {
+				case <-reached:
+				case <-time.After(chatWatchdog):
+					t.Fatal("no scan of alpha was admitted")
+				}
 				// The scan is admitted and holds the lead's change lock; a
 				// reply reaches the outbox now, and is settled for the
 				// scan that is released (the test clock), so the turn-off
 				// waits for the scan and not for the reply's age.
 				reply(t, out, "0002-second.txt", "second")
 				offDone = make(chan struct{})
+				var offErr error
 				go func() {
 					defer close(offDone)
-					l.mustChatSet("alpha", leadwire.ChatOff)
+					_, offErr = l.chatSetFrom("alpha", leadwire.ChatOff)
 				}()
-				// The turn-off has reached the change lock that the paused
-				// scan holds, and waits there: what follows is seen while
-				// the two overlap.
-				waitForTurnOffAtChangeLock(t)
 				select {
+				case <-atLock:
 				case <-offDone:
-					t.Fatal("the turn-off returned while an admitted scan had not ingested")
-				default:
+					t.Fatalf("the turn-off of alpha returned (%v) without coming to its change lock", offErr)
+				case <-time.After(chatWatchdog):
+					t.Fatal("the turn-off of alpha did not come to its change lock")
+				}
+				// The turn-off of alpha is at the change lock that the paused
+				// scan holds: what follows is seen while the two overlap.
+				if got := signalled(); len(got) != 0 {
+					t.Fatalf("the desk signalled %d change(s), heads %v, while an admitted scan held the lead's change lock", len(got), got)
 				}
 				if r := rowOf(t, port, "alpha"); r.Chat != ownerwire.ChatRead {
 					t.Fatalf("the seat sees the lead %s while an admitted scan has not ingested", r.Chat)
 				}
-				close(release)
-				<-offDone
+				select {
+				case <-offDone:
+					t.Fatalf("the turn-off returned (%v) while an admitted scan had not ingested", offErr)
+				default:
+				}
+				letGo()
+				select {
+				case <-offDone:
+				case <-time.After(chatWatchdog):
+					t.Fatal("the turn-off did not end after the scan was let go")
+				}
+				if offErr != nil {
+					t.Fatalf("chat.set alpha off: %v\nlog:\n%s", offErr, l.log)
+				}
+				// The order: the scan's ingest signalled, then the turn-off
+				// published, each with the second reply in the head (the
+				// turned-on entry, the first reply and the second).
+				if got := signalled(); !slices.Equal(got, []int64{3, 3}) {
+					t.Fatalf("the desk signalled heads %v after the admission, want the scan's ingest and then the turn-off, both at 3", got)
+				}
+				recording.Store(false)
 			} else {
 				reply(t, out, "0002-second.txt", "second")
 				waitFor(t, 15*time.Second, "the second reply is taken", func() bool { return l.chatRow("alpha").Entries == 3 })
@@ -362,11 +513,15 @@ func TestChatScanAdmittedBeforeATurnOffEndsBeforeTheOffIsSeen(t *testing.T) {
 				t.Fatalf("the head at the turn-off is %d, want 3", offHead)
 			}
 
-			// While the lead is off a reply moves nothing.
+			// While the lead is off a reply moves nothing: its scanner has
+			// ended, it has none, and a scan of it is refused.
 			reply(t, out, "0003-while-off.txt", "while off")
-			time.Sleep(10 * l.scratch.ChatScanEvery)
+			requireOffLeadLeftAlone(t, d, "alpha", scanner)
 			if h := storeHead(t, d, "alpha"); h != offHead {
 				t.Fatalf("a reply written while the lead is off moved the head from %d to %d", offHead, h)
+			}
+			if _, err := os.Lstat(filepath.Join(out, "0003-while-off.txt")); err != nil {
+				t.Fatalf("a reply written while the lead is off was taken: %v", err)
 			}
 			r := l.mustChatSet("alpha", leadwire.ChatRead)
 			if r.Head != offHead+1 {
@@ -374,68 +529,6 @@ func TestChatScanAdmittedBeforeATurnOffEndsBeforeTheOffIsSeen(t *testing.T) {
 			}
 		})
 	}
-}
-
-// changeLockLine is the line of setOff that takes the lead's change lock,
-// read from the desk's source beside this file.
-func changeLockLine(t *testing.T) int {
-	t.Helper()
-	_, here, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("no source file of the test")
-	}
-	f, err := os.Open(filepath.Join(filepath.Dir(here), "chat_desk_linux.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	in := false
-	for n := 1; sc.Scan(); n++ {
-		line := strings.TrimSpace(sc.Text())
-		switch {
-		case strings.HasPrefix(line, "func (d *chatDesk) setOff("):
-			in = true
-		case in && strings.HasPrefix(line, "func "):
-			t.Fatal("setOff takes no change lock")
-		case in && line == "cl.chg.Lock()":
-			return n
-		}
-	}
-	t.Fatal("no setOff in the desk's source")
-	return 0
-}
-
-// waitForTurnOffAtChangeLock waits until a goroutine of the daemon is in
-// setOff, waiting for the mutex it takes at the line that takes the lead's
-// change lock: the turn-off has reached that lock, which another holds.
-func waitForTurnOffAtChangeLock(t *testing.T) {
-	t.Helper()
-	at := fmt.Sprintf("/chat_desk_linux.go:%d", changeLockLine(t))
-	waitFor(t, 15*time.Second, "the turn-off waits at the lead's change lock", func() bool {
-		buf := make([]byte, 1<<20)
-		for {
-			n := runtime.Stack(buf, true)
-			if n < len(buf) {
-				buf = buf[:n]
-				break
-			}
-			buf = make([]byte, 2*len(buf))
-		}
-		for _, g := range strings.Split(string(buf), "\n\n") {
-			lines := strings.Split(g, "\n")
-			for i := 1; i+1 < len(lines); i++ {
-				// A frame is two lines: the function, then its place. The
-				// frame above setOff's is the mutex's Lock.
-				place := strings.TrimSpace(lines[i+1])
-				if strings.Contains(lines[i], "leaddaemon.(*chatDesk).setOff(") && (strings.HasSuffix(place, at) || strings.Contains(place, at+" ")) &&
-					i >= 2 && strings.Contains(lines[i-2], "Mutex).Lock") {
-					return true
-				}
-			}
-		}
-		return false
-	})
 }
 
 // The cursor samples the leads as one state of the desk: a handoff (alpha

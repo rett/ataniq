@@ -362,26 +362,69 @@ func TestSeatSessionsLookDoesNotMarkUsed(t *testing.T) {
 	}
 }
 
+// heldPoll sends a poll that is held, on a hold timer the test fires: its
+// request's cancellation and the join of its handler are registered before
+// the caller asserts anything, so a poll that ignores what the test does is
+// ended, and joined, when the test fails.
+func (r *rig) heldPoll(t *testing.T, ft *fakeTimers, body string, cookies ...*http.Cookie) <-chan *httptest.ResponseRecorder {
+	t.Helper()
+	r.app.watchTimer = ft.timer
+	ctx, cancel := context.WithCancel(context.Background())
+	out := make(chan *httptest.ResponseRecorder, 1)
+	ended := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-ended:
+		case <-time.After(waitBound):
+			t.Errorf("a poll's handler did not end within %v of its request's end", waitBound)
+		}
+	})
+	go func() {
+		defer close(ended)
+		w := httptest.NewRecorder()
+		r.h.ServeHTTP(w, watchReq(ctx, body, cookies...))
+		out <- w
+	}()
+	return out
+}
+
 // TestSeatWatchEndsWithTheSession: a logout, or the session's idle time
-// passing in the hold, ends a held poll with "ended". The logout's poll is
-// held for a minute, longer than the wait for its answer: at the hold's end
-// the poll looks at the session again and says "ended" too, so a shorter
-// hold would pass with the logout's wake ignored.
+// passing in the hold, ends a held poll with "ended". The hold is on a
+// timer of the test's (watchTimer). For the logout it is never fired, so
+// the logout's wake alone can end the poll however long the test takes to
+// look: at the hold's end the poll looks at the session again and says
+// "ended" too, which would stand in for an ignored wake. For the idle time
+// it is fired once the session's clock has passed the idle time, so the
+// poll's look at the session after the hold finds it ended, however long
+// the test took to move the clock.
 func TestSeatWatchEndsWithTheSession(t *testing.T) {
 	r, _ := newWatchRig(t, "aa", time.Minute)
+	ft := &fakeTimers{clk: r.clock}
 	s := r.login(t)
-	got := r.pollAsync(context.Background(), pollOK, s)
+	got := r.heldPoll(t, ft, pollOK, s)
 	r.waitHeld(t, 1)
+	waitTimers(t, ft, 1) // the hold
 	r.postWith("/api/logout", "{}", s)
 	if a := pollAnswer(t, within(t, got, waitBound)); a.State != "ended" {
 		t.Errorf("after a logout: %+v", a)
 	}
 
-	r2, _ := newWatchRig(t, "aa", 80*time.Millisecond)
+	r2, _ := newWatchRig(t, "aa", time.Minute)
+	ft2 := &fakeTimers{clk: r2.clock}
 	s2 := r2.login(t)
-	got = r2.pollAsync(context.Background(), pollOK, s2)
+	got = r2.heldPoll(t, ft2, pollOK, s2)
 	r2.waitHeld(t, 1)
+	waitTimers(t, ft2, 1) // the hold
 	r2.clock.Advance(SessionIdle)
+	select {
+	case w := <-got:
+		t.Fatalf("the poll answered before its hold ended: %d %s", w.Code, w.Body)
+	default:
+	}
+	if !ft2.advance(0) {
+		t.Fatal("no hold was due once the idle time had passed")
+	}
 	if a := pollAnswer(t, within(t, got, waitBound)); a.State != "ended" {
 		t.Errorf("after the idle time: %+v", a)
 	}

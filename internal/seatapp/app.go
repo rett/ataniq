@@ -238,9 +238,11 @@ type app struct {
 		held int
 	}
 	// watches bounds the watch polls of each credential's sessions, apart
-	// from the reads; watchHold is how long a poll is held.
-	watches   *limiter
-	watchHold time.Duration
+	// from the reads; watchHold is how long a poll is held. watchTimer is
+	// the timer of the hold; the real one when nil. For tests.
+	watches    *limiter
+	watchHold  time.Duration
+	watchTimer noticeTimer
 	// streams are the open hint streams (watchstream.go), streamOpens
 	// bounds how often each credential's sessions open one, and the
 	// durations are the stream's limits, which tests shorten. streamTimer

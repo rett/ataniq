@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"ataniq/internal/dispatch"
@@ -322,14 +323,23 @@ func TestRecognizeBusyDeadline(t *testing.T) {
 }
 
 // stalledConn is a connection whose first query after the connection is
-// set up, the read of the application id, waits until its context ends, and
-// reports the context's error; noDeadline ends the wait, with errNoDeadline,
-// when no deadline does.
+// set up, the read of the application id, records the deadline of its
+// context and then waits until the context ends, and reports the context's
+// error and cause. noDeadline ends the wait, with errNoDeadline, when no
+// deadline does.
 type stalledConn struct {
 	driver.Conn
 	sqlite.ExecQuerierContext
-	saw        chan error
+	saw        chan stalledQuery
 	noDeadline time.Duration
+}
+
+// stalledQuery is what the stalled query saw: its context's deadline, when
+// it had one, and the error and cause it ended with.
+type stalledQuery struct {
+	deadline    time.Time
+	hasDeadline bool
+	err, cause  error
 }
 
 var errNoDeadline = errors.New("the query outlived every deadline")
@@ -338,46 +348,73 @@ func (c *stalledConn) QueryContext(ctx context.Context, q string, args []driver.
 	if q != "PRAGMA application_id" {
 		return c.ExecQuerierContext.QueryContext(ctx, q, args)
 	}
+	var s stalledQuery
+	s.deadline, s.hasDeadline = ctx.Deadline()
 	select {
 	case <-ctx.Done():
-		c.saw <- ctx.Err()
-		return nil, ctx.Err()
+		s.err, s.cause = ctx.Err(), context.Cause(ctx)
 	case <-time.After(c.noDeadline):
-		c.saw <- errNoDeadline
-		return nil, errNoDeadline
+		s.err = errNoDeadline
 	}
+	c.saw <- s
+	return nil, s.err
 }
 
 // TestRecognizeOperationDeadline: Recognize bounds its own work by
-// OperationTimeout. Nothing else can end the stalled query: the caller gives
-// no deadline, no other connection holds a lock (so the engine's busy timeout
-// has nothing to wait for), and the query waits on its context alone. It
-// ends with the context's deadline, which Recognize returns, with no Info,
-// and the ownership is released.
+// OperationTimeout, counted from the operation's start. Nothing else can end
+// the stalled query: the caller gives no deadline, no other connection holds
+// a lock (so the engine's busy timeout has nothing to wait for), and the
+// query waits on its context alone.
+//
+// The recognition runs in a synctest bubble, whose clock moves only when
+// every goroutine of the bubble is blocked: the work before the query
+// (ownership, connection, configuration) takes no time on it, however slowly
+// the host runs it, and a pause the setup sleeps is counted exactly. So the
+// query's deadline is checked to be exactly OperationTimeout after the
+// operation's start, and then the query is left to wait: the bubble's clock
+// moves to the deadline, which ends it with context.DeadlineExceeded as its
+// error and its cause, and Recognize returns that error with a zero Info.
+// The ownership is then released: a recognition with the fixture's ordinary
+// options, outside the bubble, succeeds.
 func TestRecognizeOperationDeadline(t *testing.T) {
 	path, o := fixture(t)
 	mustCreate(t, path, o).Close()
 	reopenOptions := o
-	o.OperationTimeout, o.BusyTimeout = 50*time.Millisecond, 50*time.Millisecond
-	saw := make(chan error, 1)
-	d := recognitionDriver{Driver: &sqlite.Driver{}, wrap: func(raw driver.Conn) driver.Conn {
-		return &stalledConn{Conn: raw, ExecQuerierContext: raw.(sqlite.ExecQuerierContext), saw: saw, noDeadline: 10 * time.Second}
-	}}
-	got, err := recognizeWithDriver(context.Background(), path, o, d)
-	if got != (Info{}) {
-		t.Fatal("a recognition past its deadline returned an Info", got, err)
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("the recognition ended with %v, want its operation deadline", err)
-	}
-	select {
-	case qerr := <-saw:
-		if !errors.Is(qerr, context.DeadlineExceeded) {
-			t.Fatalf("the stalled query ended with %v, want the operation deadline", qerr)
+	// Far longer than any setup: on the bubble's clock the setup takes no
+	// time, and this costs none.
+	o.OperationTimeout = 20 * time.Second
+	synctest.Test(t, func(t *testing.T) {
+		saw := make(chan stalledQuery, 1)
+		d := recognitionDriver{Driver: &sqlite.Driver{}, wrap: func(raw driver.Conn) driver.Conn {
+			return &stalledConn{Conn: raw, ExecQuerierContext: raw.(sqlite.ExecQuerierContext), saw: saw, noDeadline: time.Hour}
+		}}
+		start := time.Now()
+		got, err := recognizeWithDriver(context.Background(), path, o, d)
+		var q stalledQuery
+		select {
+		case q = <-saw:
+		default:
+			t.Fatalf("the stalled query was never made: %v", err)
 		}
-	default:
-		t.Fatal("the stalled query was never made")
-	}
+		if !q.hasDeadline {
+			t.Fatalf("the stalled query had no deadline (it ended with %v)", q.err)
+		}
+		if want := start.Add(o.OperationTimeout); !q.deadline.Equal(want) {
+			t.Fatalf("the stalled query's deadline is %v after the operation's start, want OperationTimeout, %v", q.deadline.Sub(start), o.OperationTimeout)
+		}
+		if !errors.Is(q.err, context.DeadlineExceeded) || !errors.Is(q.cause, context.DeadlineExceeded) {
+			t.Fatalf("the stalled query ended with %v (cause %v), want the operation deadline", q.err, q.cause)
+		}
+		if got != (Info{}) {
+			t.Fatal("a recognition past its deadline returned an Info", got, err)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("the recognition ended with %v, want its operation deadline", err)
+		}
+		if ended := time.Since(start); ended != o.OperationTimeout {
+			t.Fatalf("the recognition ended %v after its start, want at its deadline, %v", ended, o.OperationTimeout)
+		}
+	})
 	if _, err := Recognize(context.Background(), path, reopenOptions); err != nil {
 		t.Fatal("the deadline leaked ownership", err)
 	}

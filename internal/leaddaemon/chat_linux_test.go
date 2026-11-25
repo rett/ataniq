@@ -566,6 +566,11 @@ func TestChatListReadOffCycles(t *testing.T) {
 	}
 
 	// Off: at once, the row is bare, a read is chat-off, the entries are gone.
+	d := deskOf(t, port)
+	scanner := workerNow(d, "alpha")
+	if scanner == nil {
+		t.Fatal("alpha is read and has no scanner")
+	}
 	off := l.mustChatSet("alpha", leadwire.ChatOff)
 	if off.Chat != leadwire.ChatOff || off.Entries != 0 || off.Head != page.Head {
 		t.Fatalf("the row after off: %+v", off)
@@ -577,12 +582,16 @@ func TestChatListReadOffCycles(t *testing.T) {
 		t.Fatalf("a read after off: %v", err)
 	}
 	// While off, a reply is not taken. The stores' clock is past the reply's
-	// settle age, so it is the switch that leaves it, not its age.
+	// settle age, so it is the switch that leaves it, not its age; the
+	// scanner alpha had has ended, it has none, and a scan of it is refused.
 	requireTestClock(t, port)
 	reply(t, out, "0002-while-off.txt", "written while off")
-	time.Sleep(300 * time.Millisecond)
+	requireOffLeadLeftAlone(t, d, "alpha", scanner)
 	if _, err := os.Lstat(filepath.Join(out, "0002-while-off.txt")); err != nil {
 		t.Fatalf("a reply was taken while off: %v", err)
+	}
+	if r := l.chatRow("alpha"); r.Head != page.Head || r.Entries != 0 {
+		t.Fatalf("a reply written while off moved the row: %+v", r)
 	}
 
 	// Read again: a new conversation, and the old cursor is reset.
@@ -805,6 +814,44 @@ func (l *leadEnv) fillQuarantine(key string) {
 		if err := os.WriteFile(name, []byte("set aside"), 0o600); err != nil {
 			l.t.Fatal(err)
 		}
+	}
+}
+
+// chatWatchdog bounds the chat tests' waits for something that must happen:
+// a passing run never waits it out, so it fails a test and proves nothing.
+const chatWatchdog = 30 * time.Second
+
+// workerNow is the lead's scanner, under the lead's lock; nil when it has
+// none.
+func workerNow(d *chatDesk, key string) *chatWorker {
+	cl := d.byKey[key]
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	return cl.worker
+}
+
+// requireOffLeadLeftAlone checks, without waiting for a scanner's turn, that
+// nothing takes a reply of the lead key, which is off: the scanner it had
+// before its turn-off (prev, nil when it had none) has ended, it has no
+// scanner now, and a scan of it, driven here as a scanner runs one, is
+// refused at its admission. The caller then sees a reply written before
+// this check left alone, in the reply folder, the head and the broadcast,
+// by the rule under test and not by a scanner that had no turn yet.
+func requireOffLeadLeftAlone(t *testing.T, d *chatDesk, key string, prev *chatWorker) {
+	t.Helper()
+	if prev != nil {
+		select {
+		case <-prev.done:
+		case <-time.After(chatWatchdog):
+			t.Fatalf("the scanner %s had before its turn-off did not end", key)
+		}
+	}
+	if w := workerNow(d, key); w != nil {
+		t.Fatalf("the off lead %s has a scanner, of generation %d", key, w.gen)
+	}
+	var failing bool
+	if d.scanOnce(d.byKey[key], &failing) {
+		t.Fatalf("a scan of the off lead %s was admitted", key)
 	}
 }
 

@@ -172,6 +172,11 @@ type chatDesk struct {
 	// atCursor, a test's hook, runs in the cursor's sampling, the change
 	// locks held, before each lead is sampled.
 	atCursor func(cl *chatLead)
+	// atTurnOff, a test's hook, runs in a turn-off of the lead (setOff,
+	// under the lead's setMu, so for one request at a time) as it comes to
+	// the lead's change lock, before it takes it and before anything of the
+	// turn-off is published.
+	atTurnOff func(cl *chatLead)
 
 	// changed is the function the seat's port gave (onChange), called when
 	// what the chat cursor covers may have changed; nil when none.
@@ -798,6 +803,9 @@ func (d *chatDesk) set(params json.RawMessage) (any, *clientapi.ErrorBody) {
 // before it has ingested and signalled; the scanner is waited for after the
 // lock is let go of.
 func (d *chatDesk) setOff(cl *chatLead) {
+	if d.atTurnOff != nil {
+		d.atTurnOff(cl)
+	}
 	cl.chg.Lock()
 	cl.mu.Lock()
 	was := cl.on
