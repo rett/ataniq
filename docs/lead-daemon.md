@@ -1271,8 +1271,9 @@ the config is the daemon's own build, and before it mints an attach ticket or
 sends a message that the running holder recorded that build in its
 `holder.json`, for the role's current epoch. A holder that is not is refused
 with `holder-version-skew`, with a message that names both builds, and a
-`holder.json` of another epoch with `stale-epoch`, naming both epochs; nothing
-changes (see `internal/leadholder/buildid` for what "the same build" means, and
+`holder.json` of another epoch with `stale-epoch`, naming both epochs; so is a
+role shown `starting` whose holder has written no `holder.json` yet, with a
+text that says it is still starting; nothing changes (see `internal/leadholder/buildid` for what "the same build" means, and
 [the scratch leads guide](scratch-leads.md) for the receipt). A daemon whose
 own build cannot be read does not start (the config step).
 

@@ -434,7 +434,14 @@ refused message is not spent). A `holder.json` of another epoch than the lead's
 current one is refused with `stale-epoch` before its build is looked at, since
 it is not the record of the holder that would be asked: most often the holder
 of a lead that is starting has not written its own yet, and the ticket or the
-message is asked again once the list shows the lead ready. The same build is
+message is asked again once the list shows the lead ready. A lead shown
+`starting` whose holder has written no `holder.json` at all yet (its first
+start) is refused the same way, `stale-epoch` with the text "the holder of the
+epoch has not written its state file yet: the role is still starting; try
+again in a moment", and not as another build: nothing is known of a build
+yet, and waiting is the way out. The console's leads view words `stale-epoch`
+as "the epoch changed or the lead is not ready yet; read the list and try
+again". The same build is
 the same main module path, module version, VCS revision and modified flag;
 the build tags and the Go version are not compared, so the daemon of `make scratch-seat-build`
 and the holder of `make canary-build` from one checkout are the same build. A

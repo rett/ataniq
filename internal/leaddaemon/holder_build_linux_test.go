@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/wire"
 	"ataniq/internal/leadwire"
@@ -244,6 +245,97 @@ func TestCanaryInjectChecksTheRunningHolder(t *testing.T) {
 	record(testHolderBuild)
 	got, err := c.inject("msg-one", "body text\n")
 	if err != nil || got.Epoch != started.Epoch || got.Result.Outcome != wire.InjectOutcomeSubmitted {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+// holderRecord writes the holder's holder.json in the state folder of the lead
+// whose config is cfg: the epoch and, unless build is nil, the build.
+func holderRecord(t *testing.T, cfg leadcanary.Config, epoch uint64, build *buildid.Identity) {
+	t.Helper()
+	layout, err := cfg.Layout()
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := `{"version":1,"role":"` + cfg.Role.String() + `","epoch":` + strconv.FormatUint(epoch, 10)
+	if build != nil {
+		content += `,"build":{"module":"` + build.Module + `","version":"` + build.Version + `","revision":"` + build.Revision + `"}`
+	}
+	if err := os.WriteFile(filepath.Join(layout.Holder(), buildid.RecordFileName), []byte(content+"}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestLeadStartingWithoutStateFileIsNotReady: a lead shown starting whose
+// holder has not written holder.json yet (a first start) is not a holder of
+// another build: a ticket and a message asked before the file is there are
+// refused stale-epoch with the text that the role is still starting, nothing
+// reaches the holder and the message is not spent; once the holder has
+// written its file, the same ticket and message go through.
+func TestLeadStartingWithoutStateFileIsNotReady(t *testing.T) {
+	l := newLeadEnv(t)
+	l.scratch.HolderBuild.Record = nil // buildid.ReadRecord, over the real state folder
+	l.start()
+	want(t, l.define("alpha"), leadwire.StatusDone, "")
+	h := l.holder("alpha", submitted) // up, but never says ready: the lead stays starting
+	want(t, l.startLead("alpha"), leadwire.StatusDone, "")
+	if row := l.row("alpha"); row.State != "starting" || row.Epoch != 1 {
+		t.Fatalf("row %+v", row)
+	}
+	// Before the holder writes its file.
+	tk := l.ticket("alpha", 1, "writer")
+	want(t, tk, leadwire.StatusRefused, "stale-epoch")
+	in := l.inject("alpha", 1, "msg-one", "body one")
+	want(t, in, leadwire.StatusRefused, "stale-epoch")
+	for _, r := range []leadwire.Receipt{tk, in} {
+		if r.Message != msgNotReady {
+			t.Fatalf("message %q, want %q", r.Message, msgNotReady)
+		}
+	}
+	if n := len(h.requests(wire.OpTicket)) + len(h.requests(wire.OpInject)); n != 0 {
+		t.Fatalf("the holder was asked %d times", n)
+	}
+	if row := l.row("alpha"); row.MessageSpent {
+		t.Fatal("a refused message spent the epoch")
+	}
+	// After it.
+	b := testHolderBuild
+	holderRecord(t, l.cfgOf("alpha"), 1, &b)
+	want(t, l.ticket("alpha", 1, "writer"), leadwire.StatusDone, "")
+	want(t, l.inject("alpha", 1, "msg-one", "body one"), leadwire.StatusDone, "")
+	if n, m := len(h.requests(wire.OpTicket)), len(h.requests(wire.OpInject)); n != 1 || m != 1 {
+		t.Fatalf("%d tickets, %d messages reached the holder", n, m)
+	}
+}
+
+// TestCanaryStartingWithoutStateFileIsNotReady: the canary's lead stays
+// starting, and a ticket asked before its holder has written holder.json is
+// refused as not ready, not as another build; after the file is written it
+// is served.
+func TestCanaryStartingWithoutStateFileIsNotReady(t *testing.T) {
+	c := newCanaryEnv(t)
+	c.build = sameHolderBuild()
+	c.build.Record = nil // buildid.ReadRecord
+	started := c.up(submitted)
+	var r CanaryTicketResult
+	ce := wantCode(t, c.call(OpCanaryTicket, CanaryTicketParams{Role: canaryRoleText, AttachRole: "writer"}, &r), CodeRefused)
+	if ce.Message != msgNotReady {
+		t.Fatalf("refusal %q", ce.Message)
+	}
+	_, err := c.inject("msg-one", "body text\n")
+	if ce := wantCode(t, err, CodeRefused); ce.Message != msgNotReady {
+		t.Fatalf("refusal %q", ce.Message)
+	}
+	if l := c.lastEvidence(); l["event"] != "inject-refused" || l["code"] != "stale-epoch" {
+		t.Fatalf("line %v", l)
+	}
+	if n := len(c.holder.requests(wire.OpTicket)) + len(c.holder.requests(wire.OpInject)); n != 0 {
+		t.Fatalf("the holder was asked %d times", n)
+	}
+	b := testHolderBuild
+	holderRecord(t, c.cfg, started.Epoch, &b)
+	c.mustCall(OpCanaryTicket, CanaryTicketParams{Role: canaryRoleText, AttachRole: "writer"}, &r)
+	if got, err := c.inject("msg-one", "body text\n"); err != nil || got.Result.Outcome != wire.InjectOutcomeSubmitted {
 		t.Fatalf("%+v %v", got, err)
 	}
 }
