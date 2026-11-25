@@ -24,7 +24,9 @@
   within a guarded one, are caught; a mount made later is not), and a
   settings file that
   is a link, not private, has a second name, is the key list, the journal,
-  a gate file or the trial's settings, or holds a trial's settings; the
+  a gate file or the trial's settings, or holds a trial's settings, or
+  settings whose drop folder, mirror, work folder or sandbox template the
+  folder is, lies in or holds; the
   folder is opened by its handle with no link followed and the file read
   beneath it, so a link planted after the check changes nothing.
   `--check` with the same flags prints every check the daemon makes before

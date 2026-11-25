@@ -1266,7 +1266,13 @@ the daemon's user, or when it is, lies in or holds:
   and the probe of the config, and the host paths every sandbox binds ("out of
   every lead's reach");
 - `owner/gate`, the gate's identity and pins ("not the key list, the journal
-  or the gate identity").
+  or the gate identity");
+- once the settings are read, the drop folder, the mirror, the work folder or
+  the sandbox template they name ("apart from the folders the settings
+  name"): the drop folder, the mirror and the work folder are where others
+  write or run, and the template decides which command wraps the gates, as
+  the settings file does, so neither is kept with the other (the template is
+  kept out of the first three for the same reason).
 
 Each rule is decided three ways. By the resolved paths. By the identities
 (device and inode) of the open folder and of each folder above it, which
@@ -1297,8 +1303,9 @@ when it builds the service, and each read is checked again.
 `--check` with the same flags makes every check the daemon makes before it
 takes a lock and prints one line each, `pass` with what holds or `FAIL` with
 why: the folder and its four rules, the settings file and the settings, the
-scratch roots, the suite, the root marker, the gate's address, key and pins,
-and the socket paths of the daemon and of every lead's holder. Then it lists
+folders the settings name, the scratch roots, the suite, the root marker, the
+gate's address, key and pins, and the socket paths of the daemon and of every
+lead's holder. Then it lists
 what the daemon would read and open, says that `owner/scratch.json` is not
 read, and ends `check: no refusal` (exit 0) or `check: N refusal(s)` (exit
 10). It binds, locks, makes and starts nothing; the locks and the gate's port,

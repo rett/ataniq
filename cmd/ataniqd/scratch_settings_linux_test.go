@@ -292,7 +292,9 @@ func mkSettings(t *testing.T, w *settingsWorld, dir string) string {
 // trial's settings folder, a folder in it, either reached through a link or a
 // link whose target climbs with "..", the state folder, the runtime folder, a
 // folder in a lead's home, a folder in the agent install, the folder that
-// holds the probe, the gate's folder, a folder others can enter, a settings
+// holds the probe, the gate's folder, the drop folder its own settings name,
+// a folder that holds it, a folder in the mirror or the work folder they name
+// or at the name of their sandbox template, a folder others can enter, a settings
 // file that is a link, that is the key list by a second name, that others can
 // read or that holds the trial's settings, a relative path and a folder that
 // is not there. The trial's files are the same bytes after all of them.
@@ -333,6 +335,21 @@ func TestOwnerSettingsRefusesTheTrialsTheLeadsAndTheGatesFolders(t *testing.T) {
 		{"the proof's root, which holds the agent install", func(t *testing.T, w *settingsWorld) string { return w.root }, ruleLead, "holds the agent install"},
 		{"the gate's folder", func(t *testing.T, w *settingsWorld) string { return filepath.Join(w.owner, leaddaemon.SeatGateDirName) },
 			ruleSecret, "is or lies in the gate's identity and pins"},
+		{"the drop folder its settings name", func(t *testing.T, w *settingsWorld) string {
+			return mkSettings(t, w, filepath.Join(w.root, "owner-channel", "drop"))
+		}, ruleNamed, "is or lies in the drop folder the settings name"},
+		{"a folder that holds the folders its settings name", func(t *testing.T, w *settingsWorld) string {
+			return mkSettings(t, w, filepath.Join(w.root, "owner-channel"))
+		}, ruleNamed, "holds the drop folder the settings name"},
+		{"a folder in the mirror its settings name", func(t *testing.T, w *settingsWorld) string {
+			return mkSettings(t, w, filepath.Join(w.root, "owner-channel", "mirror.git", "s"))
+		}, ruleNamed, "is or lies in the mirror the settings name"},
+		{"a folder in the work folder its settings name", func(t *testing.T, w *settingsWorld) string {
+			return mkSettings(t, w, filepath.Join(w.root, "owner-channel", "work", "s"))
+		}, ruleNamed, "is or lies in the work folder the settings name"},
+		{"a folder at the name of the sandbox template its settings name", func(t *testing.T, w *settingsWorld) string {
+			return mkSettings(t, w, filepath.Join(w.root, "owner-channel", "no-template.json"))
+		}, ruleNamed, "is or lies in the sandbox template the settings name"},
 		{"a folder others can enter", func(t *testing.T, w *settingsWorld) string {
 			d := mkSettings(t, w, filepath.Join(w.dir, "open"))
 			if err := os.Chmod(d, 0o755); err != nil {
@@ -514,6 +531,7 @@ func TestOwnerSettingsCheckPrintsWhatTheDaemonWouldRead(t *testing.T) {
 		"pass  " + ruleTrial + ": ", "pass  " + ruleRoots + ": ", "pass  " + ruleLead + ": ", "pass  " + ruleSecret + ": ",
 		"pass  the settings file: " + w.settings + "/scratch.json: a regular file of the daemon's user, mode 0600, one name",
 		"pass  the settings: not a phone trial's",
+		"pass  " + ruleNamed + ": is not, lies not in and holds not the drop folder, the mirror, the work folder or the sandbox template",
 		"pass  the scratch roots, the drop folder and the mirror: ",
 		"pass  the suite: ",
 		"pass  the root marker: ",

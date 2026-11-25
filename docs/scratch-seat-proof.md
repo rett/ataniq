@@ -368,8 +368,9 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    key list or the journal, by path, by identity and by place in the
    filesystem (so a bind mount of a guarded folder, of a folder within one,
    or of the settings folder into one is caught); the settings file is a
-   private regular file with one name and the proof's settings; the scratch
-   roots and the suite; the root marker (step f); the gate's address, key
+   private regular file with one name and the proof's settings; the folder
+   is not, lies not in and holds not the drop folder, the mirror, the work
+   folder or the sandbox template the settings name; the scratch roots and the suite; the root marker (step f); the gate's address, key
    fingerprint and pins; and the socket paths of the daemon and of every
    lead's holder. It then lists what the daemon will read (the settings
    file, the gate's key, certificate and pins, read only; the key list; the

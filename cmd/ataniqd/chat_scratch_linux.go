@@ -71,7 +71,9 @@ with the seat gate together:
                     table), so a bind mount of a guarded folder or of a
                     folder within it, given as DIR, and a mount that shows
                     DIR within a guarded folder are caught; a mount made
-                    after the check is not. scratch.json is
+                    after the check is not. Once read, the settings must not
+                    name a drop folder, mirror, work folder or sandbox
+                    template that DIR is, lies in or holds. scratch.json is
                     opened beneath the folder's handle without following a
                     link and must be a private regular file with one name
                     that is not the key list, the journal, a file of the gate
