@@ -495,7 +495,8 @@ builds, as read from the binary or the record: a version, the first 12
 characters of the revision and `modified`, in a restricted character set, and
 both module paths when they differ (each cut, keeping its start and the first
 character at which the two differ, when the 256 bytes of
-the message would not hold them). Not
+the message would not hold them; a path that is the start of the other, cut
+to the same text, is followed by its length in bytes). Not
 checked are `lead.stop` and the `status` questions of the daemon's ready
 observer, which only read the holder's state: stop a skewed lead and start it
 again with the new holder. A refused start leaves the lead stopped, and a start

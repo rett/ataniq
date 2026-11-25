@@ -557,6 +557,33 @@ func TestModuleCutKeepsTheDifference(t *testing.T) {
 			}
 		}
 	}
+	// One path a strict prefix of the other: they differ only past the end
+	// of the shorter, and each cut text names the length of its path.
+	for _, n := range []int{9, 16, minModuleShare, 40, 87, 120} {
+		for _, size := range []int{n, n + 1, 100, 240, MaxModule - 1} {
+			for _, longer := range []int{1, 2, 17} {
+				if size+longer > MaxModule {
+					continue
+				}
+				a := strings.Repeat("m", size)
+				b := a + strings.Repeat("m", longer)
+				x, y := clipPair(a, b, n)
+				if x == y || len(x) > n || len(y) > n {
+					t.Fatalf("share %d, sizes %d and %d: %q and %q", n, size, size+longer, x, y)
+				}
+			}
+		}
+	}
+	// The reviewer's case: valid paths of 240 and 241 repeated letters, with
+	// the longest builds, read as two texts that name their lengths.
+	pre := Identity{Module: strings.Repeat("m", 240), Version: strings.Repeat("v", MaxVersion),
+		Revision: strings.Repeat("a", MaxRevision), Modified: true}
+	preOther := pre
+	preOther.Module = strings.Repeat("m", 241)
+	got, want := modulesOf(t, (&SkewError{Expected: pre, Holder: &preOther, Why: WhyDiffer}).Error())
+	if got == want || !strings.HasSuffix(got, " (241 bytes)") || !strings.HasSuffix(want, " (240 bytes)") {
+		t.Errorf("the strict prefix reads %q and %q", got, want)
+	}
 	// The cut around the difference: the start, the bytes from a few before
 	// the difference on, and the marks of what was left out.
 	if got := clipAround(strings.Repeat("m", 50)+"x"+strings.Repeat("m", 50), 50, 32); got != "mmmmmmmm...mmmmx"+strings.Repeat("m", 13)+"..." {

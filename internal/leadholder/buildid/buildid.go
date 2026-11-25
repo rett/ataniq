@@ -366,13 +366,32 @@ func clipMiddle(s string, n int) string {
 
 // clipPair cuts each of two module paths that differ to at most n bytes so
 // that the cut texts still differ: each is cut by [clipAround] around the
-// first byte at which the two differ.
+// first byte at which the two differ. When one path is a strict prefix of the
+// other they first differ past the end of the shorter, and both can be cut to
+// one text; each cut text then ends with the length of its path
+// ([clipWithLength]), which differs.
 func clipPair(a, b string, n int) (string, string) {
 	d := 0
 	for d < len(a) && d < len(b) && a[d] == b[d] {
 		d++
 	}
-	return clipAround(a, d, n), clipAround(b, d, n)
+	x, y := clipAround(a, d, n), clipAround(b, d, n)
+	if x == y && a != b {
+		return clipWithLength(a, d, n), clipWithLength(b, d, n)
+	}
+	return x, y
+}
+
+// clipWithLength cuts s as [clipAround] does to what n leaves after the
+// length of s, and adds the length: " (241 bytes)", or "(241)" when n leaves
+// too little for the longer form.
+func clipWithLength(s string, d, n int) string {
+	suffix := " (" + strconv.Itoa(len(s)) + " bytes)"
+	if n-len(suffix) < 9 {
+		suffix = "(" + strconv.Itoa(len(s)) + ")"
+		return clipMiddle(s, n-len(suffix)) + suffix
+	}
+	return clipAround(s, d, n-len(suffix)) + suffix
 }
 
 // clipAround cuts s to at most n bytes as [clipMiddle] does when byte d of s
