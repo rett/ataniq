@@ -257,13 +257,6 @@ func TestRecoveryRecordCorruption(t *testing.T) {
 		{"acknowledgement without a note", appendRecord(t, prefix(3), kindRecoveryAck, leadrole.Role{}, ack("")), 4, "recovery note is empty"},
 		{"acknowledgement with a long note", appendRecord(t, prefix(3), kindRecoveryAck, leadrole.Role{}, ack(strings.Repeat("n", MaxProofBytes+1))), 4, "recovery note is longer"},
 		{"acknowledgement with a control character", appendRecord(t, prefix(3), kindRecoveryAck, leadrole.Role{}, ack("a\nb")), 4, "control character"},
-		{"unknown field in a recovered record", appendRecord(t, prefix(2), kindRecovered, leadrole.Role{}, &struct {
-			Lines, Bytes, Offset, Extra int
-		}{1, 5, 10, 1}), 3, "bad recovered payload"},
-		{"unknown field in an acknowledgement", appendRecord(t, prefix(3), kindRecoveryAck, leadrole.Role{}, &struct {
-			Note  string `json:"note"`
-			Extra int    `json:"extra"`
-		}{"n", 1}), 4, "bad recovery-acknowledged payload"},
 	}
 	for _, tc := range cases {
 		err := openErr(t, tc.data)
@@ -291,6 +284,15 @@ func TestRecoveryRecordCorruption(t *testing.T) {
 		"cut, acknowledged, cut":     {appendRecord(t, appendRecord(t, prefix(3), kindRecoveryAck, leadrole.Role{}, ack("n")), kindRecovered, leadrole.Role{}, rec(1, 7, 99)), Recovery{Lines: 1, Bytes: 7, Offset: 99}},
 		"two cuts":                   {appendRecord(t, prefix(3), kindRecovered, leadrole.Role{}, rec(1, 7, 99)), Recovery{Lines: 2, Bytes: 8, Offset: 99}},
 		"two cuts, one for the both": {appendRecord(t, appendRecord(t, prefix(3), kindRecovered, leadrole.Role{}, rec(1, 7, 99)), kindRecoveryAck, leadrole.Role{}, ack("n")), Recovery{}},
+		// A member a newer build wrote and this one does not know is ignored:
+		// the records say what they say without it.
+		"cut with an unknown member": {appendRecord(t, prefix(2), kindRecovered, leadrole.Role{}, &struct {
+			Lines, Bytes, Offset, Extra int
+		}{1, 5, 10, 1}), Recovery{Lines: 1, Bytes: 5, Offset: 10}},
+		"acknowledgement with an unknown member": {appendRecord(t, prefix(3), kindRecoveryAck, leadrole.Role{}, &struct {
+			Note  string `json:"note"`
+			Extra int    `json:"extra"`
+		}{"n", 1}), Recovery{}},
 	} {
 		d := writeJournal(t, c.data)
 		r, err := Open(d, testOpts(1))

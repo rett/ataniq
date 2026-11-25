@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"ataniq/internal/leadholder/buildid"
 )
 
 func newDir(t *testing.T) string {
@@ -593,7 +595,7 @@ func worst() Fields {
 		ClientPID: 1<<62 - 1, ClientCommand: ctl(MaxCommandLine), Cols: 1<<62 - 1, Rows: 1<<62 - 1,
 		Reason: ctl(MaxReason), State: ctl(MaxState), Digest: ctl(MaxDigest),
 		MessageID: ctl(MaxMessageID), Sender: ctl(MaxSender), Outcome: ctl(MaxOutcome),
-		CommandID:  ctl(MaxCommandID),
+		CommandID: ctl(MaxCommandID), Build: ctl(MaxBuild),
 		ExitStatus: &exit, StreamEnded: &yes, TUIExited: &yes, TreeGone: &yes,
 		Counters: map[string]uint64{},
 	}
@@ -606,6 +608,38 @@ func worst() Fields {
 	return f
 }
 
+// TestTheLongestBuildTokenIsKept: the start event keeps the longest valid
+// build token whole, its revision at the end included, and the field is cut
+// only past it.
+func TestTheLongestBuildTokenIsKept(t *testing.T) {
+	long := buildid.Identity{Module: strings.Repeat("m", buildid.MaxModule), Version: strings.Repeat("v", buildid.MaxVersion),
+		Revision: strings.Repeat("a", buildid.MaxRevision-1) + "f", Modified: true}
+	if err := long.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	// The reviewer's case: a valid 282-byte token, which lost 26 characters
+	// of its revision at a cap of 256 bytes.
+	mid := buildid.Identity{Module: strings.Repeat("m", 162), Version: strings.Repeat("v", 50), Revision: long.Revision}
+	if len(mid.Token()) != 282 {
+		t.Fatalf("the token is %d bytes", len(mid.Token()))
+	}
+	if MaxBuild != buildid.MaxToken || len(long.Token()) != buildid.MaxToken {
+		t.Fatalf("MaxBuild %d, MaxToken %d, the longest token %d bytes", MaxBuild, buildid.MaxToken, len(long.Token()))
+	}
+	dir := newDir(t)
+	l := openLog(t, dir, Options{})
+	for _, id := range []buildid.Identity{long, mid} {
+		mustAppend(t, l, KindHolder, EventStart, Fields{Role: "scratch/one", Epoch: "3", Build: id.Token()})
+	}
+	ev := readAll(t, dir)
+	if len(ev) != 2 || ev[0].Build != long.Token() || ev[1].Build != mid.Token() {
+		t.Fatalf("events %+v", ev)
+	}
+	if s := l.Stats(); s.Truncated != 0 {
+		t.Fatalf("stats %+v", s)
+	}
+}
+
 func TestWorstCaseEventFits(t *testing.T) {
 	dir := newDir(t)
 	l := openLog(t, dir, Options{})
@@ -616,9 +650,11 @@ func TestWorstCaseEventFits(t *testing.T) {
 	}
 	t.Logf("worst-case event: %d bytes of %d", st.Size(), MaxEventBytes)
 	// Leave room for growth: a field added later must not push the
-	// worst case near the cap without someone noticing here.
-	if st.Size() > MaxEventBytes*3/4 {
-		t.Fatalf("worst case is %d bytes, over three quarters of the %d cap", st.Size(), MaxEventBytes)
+	// worst case near the cap without someone noticing here. The margin
+	// was a quarter of the cap until the build token (463 bytes, kept
+	// whole) was counted here; the worst case is now 12738 bytes.
+	if st.Size() > MaxEventBytes*4/5 {
+		t.Fatalf("worst case is %d bytes, over four fifths of the %d cap", st.Size(), MaxEventBytes)
 	}
 }
 
@@ -1227,6 +1263,7 @@ var reviewedFields = []frozenField{
 	{"StreamEnded", "*bool", `json:"stream_ended,omitempty"`},
 	{"TUIExited", "*bool", `json:"tui_exited,omitempty"`},
 	{"TreeGone", "*bool", `json:"tree_gone,omitempty"`},
+	{"Build", "string", `json:"build,omitempty"`},
 }
 
 // diffFields returns every difference between the exported fields of typ and

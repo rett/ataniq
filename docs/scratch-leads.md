@@ -349,6 +349,35 @@ on the holder's word, and in no other way:
   and the same role** as the registry shows. A refusal (`wrong-epoch` included),
   no answer, an answer with no status and a status of another epoch or role are
   ignored: the lead stays `starting`, and nothing else changes.
+- **Which build answered.** Before it sets `ready`, the observer reads the
+  build the holder recorded in its `holder.json` for the epoch, which the
+  holder reads from its own running executable. `lead.start` checked the holder
+  executable by its path, and the unit manager looks the path up again, so a
+  holder rebuilt in between runs as another build. A holder that is not the
+  daemon's build is never shown `ready`. The observer also reads the file
+  after a question that got no usable answer: a holder of another build may
+  write its `holder.json` of the epoch and never answer. Only a file of the
+  epoch that records another build (or none) is acted on, after an answer or
+  without one: the lead is shown `degraded`, with the reason
+  `holder-version-skew`, the evidence kind `ataniq-observation` and the
+  refusal, which names both builds, as the detail, and the daemon logs that
+  the owner stops the lead and starts it again. The daemon never stops the
+  holder for its build, whether its own `lead.start` launched the epoch or it
+  adopted the lead: the unit is left running, nothing is signalled, and the
+  lead's ticket and message are refused `holder-version-skew` before the
+  holder is asked anything. That `lead.start` has already returned by then:
+  its receipt says `done`, with the state `starting`. The change is made under
+  the role's operation lock, taken as a try-lock, and only while the lead is
+  shown `starting` in that epoch, so a later epoch or a lead stopped meanwhile
+  is never changed; while a command of the role holds the lock it is tried
+  again, also after the observer's 60 s have run out, until it is made. The
+  owner's `lead.stop` is the way out, and the next `lead.start` is refused
+  `holder-version-skew` before anything changes while the executable is still
+  the other build. A file that is missing, cannot be read or is not yet the
+  epoch's confirms nothing, after an answer as without one: the lead is not
+  shown `ready` and nothing else changes, the observer logs it and reads the
+  file again at its next question, and the lead stays `starting` when the
+  observation ends.
 - **What it sets.** The shown state `ready` for that epoch, with the reason code
   `holder-ready`, the evidence kind `ataniq-observation` and the detail "the
   holder is up and the agent was started; the agent's login is not observed".
@@ -370,13 +399,28 @@ on the holder's word, and in no other way:
   from its screen, and nothing says the agent works or will answer. `ready` is
   not a claim that the lead is usable: it replaces "nothing says anything" with
   "the holder said it is up", and no more. A lead that is `ready` stays so until
-  a stop. This build adds no way from `ready` back to `starting` or to
-  `degraded`: a holder that goes away after it said it was up is not noticed
-  by this observer, and a unit that ends is found by the next reconcile when
-  the daemon starts.
-- **It does not change** what counts against `max_running` (a `starting` lead
-  and a `ready` one both count), the receipts, the command table or the
-  evidence file.
+  a stop, with one exception, below. This build adds no other way from `ready`
+  back to `starting` or to `degraded`: a holder that goes away after it said it
+  was up is not noticed by this observer, and a unit that ends is found by the
+  next reconcile when the daemon starts.
+- **A lead an earlier daemon showed `ready`.** `ready` was that daemon's word,
+  for its own build. Before a daemon serves anything, it reads again the
+  `holder.json` of every lead it adopted shown `ready`. A file of the epoch
+  that records another build than this daemon's (or none) makes the lead shown
+  `degraded`, with the reason `holder-version-skew`, the evidence kind
+  `ataniq-observation` and the refusal, which names both builds, as the
+  detail: the list never shows `ready` a holder whose ticket and message this
+  daemon refuses `holder-version-skew`. The unit is left running and its
+  holder is asked nothing; `lead.stop` and a `lead.start` with the matching
+  holder are the way out. A `degraded` state that cannot be written to the
+  registry ends the daemon's start, at the reconcile step (exit 16) and before
+  the socket is made, so no status or list shows that lead `ready`; the next
+  start checks it again. A file that is missing or cannot be read confirms
+  nothing: the lead stays `ready`, the daemon logs it, and its ticket says why
+  it is refused.
+- **It does not change** what counts against `max_running` (a `starting` lead,
+  a `ready` one and a `degraded` one all count), the receipts, the command
+  table or the evidence file.
 - **At shutdown** the daemon ends the observers and waits for them before it
   closes the registry, so a daemon stopped while a holder does not answer still
   exits 0 and promptly. When the server itself did not stop within the grace the
@@ -385,7 +429,9 @@ on the holder's word, and in no other way:
   and logged) leaves the lead as it is shown.
 
 `ready` is for scratch leads only. The canary has no observer and its lead stays
-`starting` (see [the canary slice](canary-slice.md)).
+`starting` (see [the canary slice](canary-slice.md)); a canary holder that
+started as another build is refused at its ticket and its message, and the
+owner stops it.
 
 `lead.list` shows the state and the reason together: a promoted lead's row says
 `"state":"ready"` and `"state_reason":"holder-ready"`, both from the registry's
@@ -421,10 +467,45 @@ operation; every code is a word of lower-case letters, digits and dashes.
 | Operation | Refused | Unavailable | Uncertain |
 | --- | --- | --- | --- |
 | `lead.define` | `role-busy`, `record-invalid`, `provision-incomplete`, `digest-pin`, `provision-refused`, `registry-refused` | `provision-failed` | `registry-broken`, `failed` |
-| `lead.start` | `role-busy`, `not-provisioned`, `folder-missing`, `max-running`, `role-not-defined`, `not-managed`, `preflight`, `record-folder-left`, `foreign-unit`, `unit-loaded`, `limits`, `launch-refused`, `epoch-exhausted`, `registry-refused` | `start-failed`, `previous-unit-not-gone`, `intent-pending` | `launch-uncertain`, `daemon-stopping`, `registry-check`, `registry-broken`, `failed` |
+| `lead.start` | `role-busy`, `not-provisioned`, `folder-missing`, `holder-version-skew`, `max-running`, `role-not-defined`, `not-managed`, `preflight`, `record-folder-left`, `foreign-unit`, `unit-loaded`, `limits`, `profile-not-launchable`, `launch-refused`, `epoch-exhausted`, `registry-refused` | `start-failed`, `previous-unit-not-gone`, `intent-pending` | `launch-uncertain`, `daemon-stopping`, `registry-check`, `registry-broken`, `failed` |
 | `lead.stop` | `role-busy`, `stale-epoch`, `role-not-defined`, `not-managed` | `intent-pending`, `failed` | `stop-unproven`, `daemon-stopping`, `registry-broken`, `failed` |
-| `lead.ticket` | `stale-epoch`, `not-running`, `ticket-refused` | `holder-unreachable`, `ticket-failed`, `ticket-lost`, `ticket-file` | |
-| `lead.inject` | `stale-epoch`, `inject-off`, `not-running`, `second-message`, `message-in-flight`, and the admission codes of the canary slice (`bad-id`, `body-too-long`, `empty-body` and the like) | `holder-unreachable`, and `holder-` with the holder's refusal (`disabled`, `busy`, `bad-request`; the epoch's message stays free after `disabled` and `bad-request`, and stays spent after `busy`) | |
+| `lead.ticket` | `stale-epoch`, `not-running`, `holder-version-skew`, `ticket-refused` | `holder-unreachable`, `ticket-failed`, `ticket-lost`, `ticket-file` | |
+| `lead.inject` | `stale-epoch`, `inject-off`, `not-running`, `holder-version-skew`, `second-message`, `message-in-flight`, and the admission codes of the canary slice (`bad-id`, `body-too-long`, `empty-body` and the like) | `holder-unreachable`, and `holder-` with the holder's refusal (`disabled`, `busy`, `bad-request`; the epoch's message stays free after `disabled` and `bad-request`, and stays spent after `busy`) | |
+
+`holder-version-skew` refuses a holder that is not the daemon's own build,
+before anything changes: `lead.start` reads the build of the holder executable
+of the lead's config, and `lead.ticket` and `lead.inject` the build the running
+holder recorded in its `holder.json`, before the holder is asked anything (a
+refused message is not spent). A `holder.json` of another epoch than the lead's
+current one is refused with `stale-epoch` before its build is looked at, since
+it is not the record of the holder that would be asked: most often the holder
+of a lead that is starting has not written its own yet, and the ticket or the
+message is asked again once the list shows the lead ready. A lead shown
+`starting` whose holder has written no `holder.json` at all yet (its first
+start) is refused the same way, `stale-epoch` with the text "the holder of the
+epoch has not written its state file yet: the role is still starting; try
+again in a moment", and not as another build: nothing is known of a build
+yet, and waiting is the way out. The console's leads view words `stale-epoch`
+as "the epoch changed or the lead is not ready yet; read the list and try
+again". The same build is
+the same main module path, module version, VCS revision and modified flag;
+the build tags and the Go version are not compared, so the daemon of `make scratch-seat-build`
+and the holder of `make canary-build` from one checkout are the same build. A
+build without a VCS revision is never the expected one, and a holder that
+records no build (a holder older than build identities) is refused as such. Its
+message, unlike the other codes' fixed texts, names what was found and both
+builds, as read from the binary or the record: a version, the first 12
+characters of the revision and `modified`, in a restricted character set, and
+both module paths when they differ (each cut, keeping its start and the first
+character at which the two differ, when the 256 bytes of
+the message would not hold them; a path that is the start of the other, cut
+to the same text, is followed by its length in bytes). Not
+checked are `lead.stop` and the `status` questions of the daemon's ready
+observer, which only read the holder's state: stop a skewed lead and start it
+again with the new holder. A refused start leaves the lead stopped, and a start
+again is refused again until the holder executable and the daemon are of one
+checkout: build the holder again, or restart the daemon with the build that
+matches. The console says both in one line.
 
 Every operation can also end `refused` with `daemon-broken` (the registry or the
 table cannot be written, and the daemon admits no new command until it is

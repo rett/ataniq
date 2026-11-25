@@ -4,9 +4,12 @@ package leaddaemon
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
+	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/wire"
 	"ataniq/internal/leadregistry"
 	"ataniq/internal/leadrole"
@@ -17,19 +20,52 @@ import (
 // status and, when the holder answers for the lead's own epoch, sets the shown
 // state ready. The canary has none of it.
 //
+// Before it sets ready the observer checks the build the holder recorded in
+// its holder.json, which the holder reads from its own running executable:
+// the daemon checked the holder executable by its path before the start, and
+// the unit manager looks the path up again, so a holder rebuilt in between
+// runs as another build. A lead whose holder is not the expected build is
+// never shown ready. The file is read after an answer for the epoch, and also
+// after a question that got no usable answer: a holder of another build can
+// write its file of the epoch and never answer. Only a file of the epoch that
+// confirms another build (buildid.Confirmed) is acted on: the lead is shown
+// degraded, with the reason holder-version-skew and the refusal, which names
+// both builds, in the detail (markSkewed). That launch's lead.start has
+// already returned by then, done, with the state starting. The daemon never
+// stops the holder for its build, whether it launched the epoch or adopted
+// it: its ticket and its message are refused holder-version-skew before the
+// holder is asked anything, and the owner stops the lead and starts it again,
+// which is the way out. A file that is missing, cannot be read or is of
+// another epoch confirms nothing, after an answer as without one: it is
+// logged and read again at the next question, and the lead stays starting
+// when the observation ends.
+//
+// A lead that an earlier daemon showed ready was ready for that daemon's
+// build. Before this daemon serves anything, every lead it adopted shown
+// ready has its holder.json of the epoch read again (revalidateAdopted): one
+// that confirms another build than this daemon's is shown degraded in the same
+// way, so that the list never shows ready a holder whose ticket this daemon
+// refuses. Its unit is left running as well. A file that is missing or cannot
+// be read confirms nothing, and the lead stays ready (its ticket says why it
+// is refused); the daemon logs it.
+//
 // What ready means here is the holder's word and no more: the holder is up and
 // the agent was started. The agent's login is not observed, so ready is not a
 // claim that the agent works. There is no way back: this file never sets
-// degraded or starting, a lead that is ready stays so until a stop, and a
-// failed or slow observation leaves the lead starting with nothing else
-// changed.
+// starting, sets degraded only for a holder that confirms another build, a
+// lead that is ready stays so until a stop (or, adopted, until it is found to
+// be another build), and a failed or slow observation leaves the lead
+// starting with nothing else changed.
 //
 // The observer never blocks lead.start or a client call, and takes no lock
 // across the holder call: it takes the role's operation lock, as a try-lock,
 // for the one compare-and-set of the epoch and the shown state that makes the
 // change, which the registry does not make itself (it checks the epoch only).
 // A role whose operation lock is held is tried again, never waited for, so a
-// stop is never held up by an observer.
+// stop is never held up by an observer. A confirmed other build is a finding
+// the observation's deadline does not end: its compare-and-set is tried again
+// while the lock is held until it is made, the lead is no longer starting in
+// the epoch, or the daemon stops.
 
 // Defaults of the observer, and the reason of the state it sets.
 const (
@@ -54,6 +90,11 @@ const (
 // sets it, to make a stop or a start happen at that point.
 var leadReadyHook func(stage string)
 
+// showSkewedHook, when set, is called by showSkewed before the registry is
+// written, and an error it returns is returned in place of the write's, with
+// nothing written. Only a test sets it, to make the append fail.
+var showSkewedHook func() error
+
 // readyObservers is the observers of one daemon: at most one per lead. The
 // mutex guards the fields and is never held across a call that waits.
 type readyObservers struct {
@@ -69,6 +110,7 @@ type readyObservers struct {
 // readyObserver is the observer of one lead's epoch.
 type readyObserver struct {
 	gen    uint64
+	epoch  uint64
 	cancel context.CancelFunc
 }
 
@@ -139,8 +181,13 @@ func (l *leadMode) joinObservers(grace time.Duration) bool {
 }
 
 // observeReady starts the observer of the lead's epoch, in place of any that
-// the lead has, and returns at once. It does nothing before the observers are
-// let run or after they are joined.
+// the lead has for the same or an earlier epoch, and returns at once. It does
+// nothing before the observers are let run or after they are joined, and
+// nothing when the lead has an observer of a later epoch: the check and the
+// replacement are one step under the observers' mutex, so a registration that
+// was decided on an older read of the registry (the scan of startObservers,
+// which runs beside the first commands) never cancels the observer of an
+// epoch started since.
 func (l *leadMode) observeReady(lr *leadRole, epoch uint64) {
 	o := &l.ready
 	o.mu.Lock()
@@ -149,10 +196,15 @@ func (l *leadMode) observeReady(lr *leadRole, epoch uint64) {
 		return
 	}
 	if prev := o.byRole[lr.role]; prev != nil {
+		if prev.epoch > epoch {
+			o.mu.Unlock()
+			l.d.logf("scratch ready %q: the observer of epoch %d is not started: the lead has one of epoch %d", lr.key, epoch, prev.epoch)
+			return
+		}
 		prev.cancel()
 	}
 	o.gen++
-	me := &readyObserver{gen: o.gen}
+	me := &readyObserver{gen: o.gen, epoch: epoch}
 	var ctx context.Context
 	ctx, me.cancel = context.WithCancel(o.ctx)
 	o.byRole[lr.role] = me
@@ -201,11 +253,15 @@ func (l *leadMode) watchReady(ctx context.Context, lr *leadRole, epoch uint64) {
 		delay = DefaultReadyBackoff
 	}
 	longest := 8 * delay
+	// base is the observer's own context, without the observation's deadline:
+	// the state of a holder of another build is set whenever the role's lock
+	// is free, even after the observation has ended.
+	base := ctx
 	ctx, cancel := context.WithTimeout(ctx, within)
 	defer cancel()
 	var why string
 	for {
-		done, w := l.readyStep(ctx, lr, epoch)
+		done, w := l.readyStep(ctx, base, lr, epoch)
 		if done {
 			return
 		}
@@ -231,8 +287,9 @@ func (l *leadMode) watchReady(ctx context.Context, lr *leadRole, epoch uint64) {
 // readyStep makes one question. It reports done when there is nothing more to
 // do (the state was set, or the lead is no longer starting in the epoch, or
 // the registry cannot be used), and otherwise a short word for why the holder
-// did not settle it.
-func (l *leadMode) readyStep(ctx context.Context, lr *leadRole, epoch uint64) (done bool, why string) {
+// did not settle it. ctx bounds the observation; base is the observer's
+// context without that bound, under which a confirmed other build is shown.
+func (l *leadMode) readyStep(ctx, base context.Context, lr *leadRole, epoch uint64) (done bool, why string) {
 	if !l.startingIn(lr, epoch) {
 		return true, ""
 	}
@@ -242,22 +299,154 @@ func (l *leadMode) readyStep(ctx context.Context, lr *leadRole, epoch uint64) (d
 	}, l.cm.dialFor, l.cm.dialFor)
 	switch {
 	case err != nil:
-		return false, "no usable answer"
+		why = "no usable answer"
 	case !resp.OK:
-		return false, "refused: " + SafeText(resp.Code)
+		why = "refused: " + SafeText(resp.Code)
 	case resp.Status == nil:
-		return false, "no status in the answer"
+		why = "no status in the answer"
 	case resp.Status.Epoch != epoch || resp.Status.Lead != lr.role.String():
 		// Another epoch or another lead: not this lead's holder. Ignored.
-		return false, "the answer is for another epoch or lead"
+		why = "the answer is for another epoch or lead"
+	}
+	if why != "" {
+		// No answer of the epoch's holder, but its state file may be there:
+		// a holder of another build that never answers is known by the file
+		// it wrote for the epoch from its own executable. Only a confirmed
+		// mismatch is acted on; a file that is missing or cannot be read
+		// says nothing without an answer.
+		if berr := ext.holderBuild(epoch); buildid.Confirmed(berr) {
+			l.markSkewed(base, lr, epoch, ext.skewRefusal("scratch ready "+strconv.Quote(lr.key), berr))
+			return true, ""
+		}
+		return false, why
 	}
 	if leadReadyHook != nil {
 		leadReadyHook("answered")
+	}
+	// The holder that answered is checked by the build it recorded for the
+	// epoch, before it counts as started.
+	e, ok := ext.runningEntry()
+	if !ok || e.Epoch != epoch || e.Shown.State != leadregistry.StateStarting {
+		return true, ""
+	}
+	if err := ext.holderBuild(epoch); err != nil {
+		if !buildid.Confirmed(err) {
+			// No state file of the epoch yet, or one that cannot be read:
+			// nothing is known of its build. It is read again at the next
+			// question, and the lead is not shown ready meanwhile.
+			return false, "the holder's build cannot be confirmed: " + SafeText(err.Error())
+		}
+		l.markSkewed(base, lr, epoch, ext.skewRefusal("scratch ready "+strconv.Quote(lr.key), err))
+		return true, ""
 	}
 	if l.promote(lr, epoch) {
 		return true, ""
 	}
 	return false, "the operation lock was held"
+}
+
+// markSkewed shows the lead of epoch, whose holder.json confirms another
+// build (f is the refusal of the check), degraded with the reason
+// holder-version-skew (showSkewed). It is a compare-and-set under the role's
+// operation lock, taken as a try-lock, made only while the lead is shown
+// starting in the epoch, so it never changes a later epoch or a lead that was
+// stopped meanwhile. While the lock is held it is tried again, with the
+// observer's growing wait, until it is made or ctx ends (the daemon stops):
+// the observation's deadline does not end it. Nothing is stopped and nothing
+// is asked of the holder.
+func (l *leadMode) markSkewed(ctx context.Context, lr *leadRole, epoch uint64, f *opFail) {
+	delay := l.readyBackoff
+	if delay <= 0 {
+		delay = DefaultReadyBackoff
+	}
+	longest := 8 * delay
+	for !lr.tryLock() {
+		t := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			l.d.logf("scratch ready %q: the holder of epoch %d is not the expected build, and the daemon stopped before the lead could be shown degraded; its ticket and message are refused", lr.key, epoch)
+			return
+		case <-t.C:
+		}
+		if delay *= 2; delay > longest {
+			delay = longest
+		}
+	}
+	defer lr.unlock()
+	if !l.startingIn(lr, epoch) {
+		return
+	}
+	if err := l.showSkewed(lr, epoch, f); err != nil {
+		l.registryDown(err)
+		l.d.logf("scratch ready %q: the state degraded cannot be set for epoch %d: %s", lr.key, epoch, SafeText(err.Error()))
+		return
+	}
+	l.d.logf("scratch ready %q: the holder that started for epoch %d is not the build checked before the start; the lead is shown degraded and its unit is left running: stop the lead and start it again", lr.key, epoch)
+}
+
+// showSkewed sets the lead of epoch shown degraded, with the reason
+// holder-version-skew, the evidence kind ataniq-observation and the refusal f
+// as the detail. The caller holds the role's operation lock.
+func (l *leadMode) showSkewed(lr *leadRole, epoch uint64, f *opFail) error {
+	detail := f.msg
+	if len(detail) > leadregistry.MaxReasonDetailBytes {
+		detail = detail[:leadregistry.MaxReasonDetailBytes]
+	}
+	if showSkewedHook != nil {
+		if err := showSkewedHook(); err != nil {
+			return err
+		}
+	}
+	_, err := l.reg.SetState(lr.role, leadregistry.StateChange{
+		Epoch: epoch, State: leadregistry.StateDegraded, Evidence: leadregistry.EvidenceObservation,
+		Reason: leadregistry.Reason{Code: codeHolderVersionSkew, Detail: detail},
+	})
+	return err
+}
+
+// revalidateAdopted reads again, before the daemon serves, the holder.json of
+// every lead it found shown ready (with its launch recorded and a holder
+// command): an earlier daemon set ready for its own build. A file of the epoch
+// that confirms another build than this daemon's (buildid.Confirmed) makes the
+// lead shown degraded (showSkewed): its unit is not stopped and nothing is
+// asked of its holder. Any other answer of the check leaves the lead as it is
+// shown. A degraded state that cannot be recorded is returned, and the daemon
+// does not start: it would otherwise serve the earlier daemon's ready for a
+// holder whose ticket it refuses. It runs before the socket is made, so no
+// command of the role runs beside it; the role's lock is taken all the same.
+func (l *leadMode) revalidateAdopted() error {
+	for _, role := range l.cm.router.order {
+		lr := l.roles[role]
+		if lr.in.holderCommand() == nil {
+			continue
+		}
+		e, ok := lr.in.ext.runningEntry()
+		if !ok || e.Shown.State != leadregistry.StateReady {
+			continue
+		}
+		err := lr.in.ext.holderBuild(e.Epoch)
+		if err == nil {
+			continue
+		}
+		op := "scratch ready " + strconv.Quote(lr.key)
+		if !buildid.Confirmed(err) {
+			l.d.logf("%s: the adopted ready lead's build cannot be confirmed for epoch %d; it stays ready: %s", op, e.Epoch, SafeText(err.Error()))
+			continue
+		}
+		f := lr.in.ext.skewRefusal(op, err)
+		if !lr.tryLock() {
+			return fmt.Errorf("scratch mode: the lead %q of epoch %d is another build than this daemon's, and its lock is held, so it cannot be shown degraded", lr.key, e.Epoch)
+		}
+		serr := l.showSkewed(lr, e.Epoch, f)
+		lr.unlock()
+		if serr != nil {
+			l.registryDown(serr)
+			return fmt.Errorf("scratch mode: the lead %q of epoch %d is another build than this daemon's, and its state degraded cannot be recorded: %w; the daemon does not serve a state it could not record", lr.key, e.Epoch, serr)
+		}
+		l.d.logf("%s: the holder of epoch %d, which this daemon adopted shown ready, is not its build; the lead is shown degraded and its unit is left running: stop the lead and start it again", op, e.Epoch)
+	}
+	return nil
 }
 
 // startingIn reports whether the lead is shown starting in the epoch, with its

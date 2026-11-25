@@ -75,7 +75,7 @@ var reasonWords = map[string]string{
 	"max-running":       "the limit of running leads is reached",
 	"second-message":    "a message was already sent in this epoch",
 	"message-in-flight": "a message is already in flight for this lead",
-	"stale-epoch":       "the epoch changed; read the list and try again",
+	"stale-epoch":       "the epoch changed or the lead is not ready yet; read the list and try again",
 
 	// Any command.
 	"role-busy":            "another command for this lead is running; try again",
@@ -109,12 +109,14 @@ var reasonWords = map[string]string{
 	"unit-loaded":            "a unit with the lead's name is already loaded",
 	"limits":                 "the unit's limits are outside the bounds",
 	"launch-refused":         "the registry does not admit a launch in the lead's state",
+	"profile-not-launchable": "this build does not launch the lead's recorded profile; define the lead again",
 	"epoch-exhausted":        "the lead has no epoch left to start",
 	"previous-unit-not-gone": "the previous unit is not proven gone",
 	"start-failed":           "the start failed and nothing was started",
 	"launch-uncertain":       "the start's outcome is not known; read the list",
 	"intent-pending":         unsettledWords,
 	"stop-unproven":          "the stop is not proven; read the list",
+	"holder-version-skew":    holderSkewWords,
 
 	// Ticket and message.
 	"not-running":        "the lead is not running",
@@ -139,6 +141,15 @@ var reasonWords = map[string]string{
 	"bad-body":           "the message body was not accepted",
 	"bad-text":           "the message text was not accepted",
 }
+
+// holderSkewWords are the words of holder-version-skew, which refuses a start
+// (the holder executable of the config is not the daemon's build, and the
+// lead stays stopped, so starting it again is refused again) and a ticket or a
+// message (the running holder is not the daemon's build). The one code serves
+// all three, so the words name the way out of each: a holder and a daemon of
+// one checkout (a holder built again, or the daemon restarted with the build
+// that matches), and for a lead that runs, its stop and its start.
+const holderSkewWords = "builds differ: run holder and daemon from one checkout; restart a running lead"
 
 // unsettledWords is what a launch that is not settled needs: the daemon in
 // scratch mode settles it itself once the late-start window of 30 s and its
@@ -390,6 +401,11 @@ var stateWords = map[[2]string]string{
 	// its window: the daemon settles it when the window ends.
 	{"unknown", reasonLaunchUnsettled}: unsettledWords,
 	{"unknown", reasonLaunchReplyLost}: unsettledWords,
+	// A lead whose running holder is not the daemon's build: one that
+	// started as another build than the one checked before the start, or one
+	// an earlier daemon showed ready. Its unit is left running, and its ticket
+	// and message are refused until it runs the daemon's build.
+	{"degraded", "holder-version-skew"}: "the running holder is not the daemon's build: stop the lead, then start it again",
 }
 
 // stateLine is the line about the row under the cursor: its state in words,
