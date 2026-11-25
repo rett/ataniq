@@ -182,7 +182,11 @@ catch-up, and the `owner/` folder and `TMPDIR` are as they were.
 `internal/approval/ownerjournal/keys_verify_linux_test.go` runs each refusal
 through `VerifyKeys` and then the opener on the same files (another owner,
 faked, among them), and holds that where the opener would make or repair a
-file the check refuses and writes nothing.
+file the check refuses and writes nothing; it also holds the owner check of
+the list and of the head on its own, with the folder the user's own and
+another owner's UID in the file's stat alone, and, through a hook between
+the read of the head and the last look at the list, that a record appended
+there is refused as a list that changed while it was checked.
 
 The tests of the flag (`cmd/ataniqd/scratch_settings_linux_test.go`) hold its
 refusals, each with `--check` (the line of its rule says `FAIL` and why) and

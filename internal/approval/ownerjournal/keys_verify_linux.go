@@ -21,6 +21,11 @@ type KeysSnapshot struct {
 	Records int
 }
 
+// verifyKeysAfterHead, when set, is called by VerifyKeys once the head is
+// read and checked against the list, before the list's file is looked at
+// again. Only a test sets it, to append a record at that point.
+var verifyKeysAfterHead func()
+
 // VerifyKeys checks the list in the file at path and its head, read only:
 // the checks [OpenKeys] makes, and no write. The folder is opened once
 // without following its last part, and the file and the head are opened in
@@ -95,6 +100,9 @@ func VerifyKeys(path string) (_ KeysSnapshot, err error) {
 	}
 	if err := headAgainst(h, digests); err != nil {
 		return KeysSnapshot{}, err
+	}
+	if verifyKeysAfterHead != nil {
+		verifyKeysAfterHead()
 	}
 	// The file read is the file now: the same size, times and inode, at
 	// the same path in the same folder.
