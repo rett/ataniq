@@ -923,6 +923,11 @@ JSON object per line. The first line is a header that names the format
   until it is defined again. `internal/leadregistry/testdata/v1-base` holds a
   journal an older build wrote, and the tests read it back byte for byte. An
   unknown record kind and another format version are still damage.
+- **A reserved pack reference.** The requested profile has a member `pack`
+  (a pack's name and the SHA-256 of its manifest) for the provider packs. No
+  build sets it yet: `Define` refuses a profile that names a pack, a role whose
+  record names one replays and is not launched (`ErrLaunchProfile`), and a
+  profile without one is encoded and digested as before the member existed.
 
 Format version 1 has no compatibility promise until a first deployment: a rule
 may be tightened so that a journal written by an earlier build is no longer

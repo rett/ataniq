@@ -528,9 +528,16 @@ func (r *Registry) existing(role leadrole.Role) (Entry, error) {
 // DefaultCoordinatorProvider and DefaultCoordinatorModel when empty, and the
 // version, effort, permission mode and access mode are optional; the profile
 // is journaled with the defaults filled in.
+//
+// A profile that sets Pack is refused with ErrInvalid, writing nothing:
+// provider packs are not wired in this build. (A define record that a later
+// build wrote with a pack replays; see BeginLaunch.)
 func (r *Registry) Define(role leadrole.Role, manager Manager, requested Requested) (Entry, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if !requested.Pack.IsZero() {
+		return Entry{}, invalid("a pack reference in the requested profile: provider packs are not wired in this build")
+	}
 	if role.Kind() == leadrole.KindCoordinator {
 		requested = requested.withCoordinatorDefaults()
 	}
@@ -568,7 +575,8 @@ func (r *Registry) SetDesired(role leadrole.Role, desired Desired) (Entry, error
 // role's define record stores it. A role whose define record a newer build
 // wrote with a member this build does not know is refused with
 // ErrLaunchProfile: it replays, but this build does not launch a profile it
-// cannot read whole.
+// cannot read whole. So is a role whose recorded profile names a pack
+// (Requested.Pack): this build does not launch packs.
 func (r *Registry) BeginLaunch(role leadrole.Role) (Intent, error) {
 	return r.BeginLaunchWith(role, LaunchOptions{})
 }
@@ -609,7 +617,7 @@ func (r *Registry) BeginLaunchWith(role leadrole.Role, opts LaunchOptions) (Inte
 	}
 	// A rule of writing only: a launch a newer build journaled for such a
 	// profile replays, but this build does not launch what it cannot read.
-	if e.foreignProfile {
+	if e.foreignProfile || !e.Requested.Pack.IsZero() {
 		return Intent{}, ErrLaunchProfile
 	}
 	var parentEpoch uint64

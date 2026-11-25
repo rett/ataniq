@@ -78,7 +78,9 @@ var (
 	// cannot launch what was requested. Defining the role again with a profile
 	// of this build lifts it. A record that holds such a profile, and a
 	// launch that a newer build journaled for it, still replay.
-	ErrLaunchProfile error = refusal("the requested profile has members this build does not know; define the role again")
+	// It also refuses a profile that names a pack (Requested.Pack), which this
+	// build does not launch.
+	ErrLaunchProfile error = refusal("the requested profile has members this build does not know or does not launch; define the role again")
 	// ErrIntentMismatch means the intent id is not the role's current intent.
 	ErrIntentMismatch = errors.New("leadregistry: not the current launch intent")
 	// ErrIntentResolved means the launch intent already has an outcome.
@@ -310,6 +312,77 @@ type Requested struct {
 	PermissionMode string `json:"permission_mode"`
 	// AccessMode is the requested access mode.
 	AccessMode string `json:"access_mode"`
+	// Pack is the provider pack the profile asks for. It is reserved: no
+	// build sets it yet (packs are not wired), Define refuses a profile that
+	// sets it, and BeginLaunch refuses a role whose recorded profile sets it,
+	// with ErrLaunchProfile. The zero PackRef is left out of the encoding
+	// (omitzero), so the encoding and the digest of every profile that does
+	// not set it are what they were before it existed (testdata/v1-base).
+	Pack PackRef `json:"pack,omitzero"`
+}
+
+// PackRef refers to one provider pack: its name and the SHA-256 of its
+// manifest. The zero PackRef refers to none. A PackRef that is set has a name
+// of 1 to MaxFieldBytes bytes of text and a manifest digest of 64 lower-case
+// hex characters.
+type PackRef struct {
+	// Name is the pack's name.
+	Name string `json:"name"`
+	// ManifestDigest is the hex SHA-256 of the pack's manifest.
+	ManifestDigest string `json:"manifest_digest"`
+}
+
+// IsZero reports whether p refers to no pack.
+func (p PackRef) IsZero() bool { return p == PackRef{} }
+
+func (p PackRef) validate() error {
+	if p.IsZero() {
+		return nil
+	}
+	if err := validText("pack name", p.Name, MaxFieldBytes, true); err != nil {
+		return err
+	}
+	if len(p.ManifestDigest) != hashHexLen || !isLowerHex([]byte(p.ManifestDigest)) {
+		return invalid("pack manifest digest is not a hex SHA-256")
+	}
+	return nil
+}
+
+// packSessionRef is RESERVED and unused: the shape of the reference to a pack
+// session that the federation review asks for (ID-11), kept here so that the
+// binding record of the provider packs starts from it. Nothing builds,
+// stores, encodes or compares one; it has no wire form, and its members and
+// their names may still change when the binding record is designed. A test
+// keeps the member list as reviewed.
+//
+// The reference is qualified by instance: the authority and its store
+// incarnation come first, and native ids of a provider stay at home (they are
+// not members).
+type packSessionRef struct {
+	// authority is the fingerprint of the instance that holds the session.
+	authority string
+	// storeIncarnation is that instance's store incarnation.
+	storeIncarnation string
+	// project and homeGeneration name the project at its home instance.
+	project        string
+	homeGeneration uint64
+	// role is the role the session runs, and conversation its conversation.
+	role         string
+	conversation string
+	// roleEpoch is the role's launch epoch, named apart from a seat epoch.
+	roleEpoch uint64
+	// bindingGeneration counts the bindings of the pack to the role.
+	bindingGeneration uint64
+	// pack is the pack's name with its manifest digest, and signerGeneration
+	// the generation of the key that signed the manifest.
+	pack             PackRef
+	signerGeneration uint64
+	// profileDigest is the digest of the launch profile.
+	profileDigest string
+	// transport is how the session is carried (terminal, headless).
+	transport string
+	// custody says who holds the session.
+	custody string
 }
 
 // Defaults of the launch profile of a coordinator, used by Define for the
@@ -343,6 +416,9 @@ func (r Requested) validateFor(role leadrole.Role) error {
 	if r.Provider != ProviderClaude && r.Provider != ProviderCodex {
 		return invalid("provider %q", string(r.Provider))
 	}
+	if err := r.Pack.validate(); err != nil {
+		return err
+	}
 	for _, f := range []struct {
 		name, v  string
 		required bool
@@ -360,6 +436,9 @@ func (r Requested) validateFor(role leadrole.Role) error {
 func (r Requested) validate() error {
 	if r.Provider != ProviderClaude && r.Provider != ProviderCodex {
 		return invalid("provider %q", string(r.Provider))
+	}
+	if err := r.Pack.validate(); err != nil {
+		return err
 	}
 	for _, f := range []struct{ name, v string }{
 		{"version", r.Version}, {"model", r.Model}, {"effort", r.Effort},
