@@ -121,7 +121,7 @@ func judgeSpec(p *Policy, spec Spec, s Snapshot, kind string, l *pack.Launch, ex
 		if f.Slot == "" {
 			continue
 		}
-		v := strings.TrimPrefix(token, f.Prefix)
+		v := strings.TrimPrefix(token, string(f.Prefix))
 		if code := q.checkValue(f.Slot, v); code != "" {
 			return Verdict{}, tokenFault(code, 2, i, f, token)
 		}
@@ -227,7 +227,7 @@ func (q *sequence) expect(s Snapshot, spec Spec, pairs map[pack.Slot]string) (Ve
 	m := q.policy.modes[s.Mode] // the required mode passed R25 and R29
 	recognizer := ""
 	if s.Transport == pack.Terminal {
-		recognizer = m.Recognizer
+		recognizer = string(m.Recognizer)
 	}
 	if recognizer != s.Recognizer {
 		return Verdict{}, refuse("expected-recognizer", 3, "snapshot")

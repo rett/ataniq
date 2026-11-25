@@ -43,7 +43,7 @@ func tokenFault(code string, stage, index int, f *form, token string) *Refusal {
 	switch code {
 	case "literal-in-slot", "slot-mismatch", "form-position", "form-repeated", "value-outside-ceiling", "value-grammar", "value-unadmitted", "mode-class-refused", "mode-vector-pending":
 		const label = " value="
-		value := strings.TrimPrefix(token, f.Prefix)
+		value := strings.TrimPrefix(token, string(f.Prefix))
 		r.detail = label + quoteWithin(value, 200-len(r.Error())-len(label))
 	}
 	return r

@@ -181,7 +181,7 @@ func TestT24Ceiling(t *testing.T) {
 					x.s.Mode = "m-plan"
 					spec.Argv = spec.Argv[:1]
 				}
-				spec.Argv = append(spec.Argv, x.p.bySlot[slot].Prefix+value)
+				spec.Argv = append(spec.Argv, string(x.p.bySlot[slot].Prefix)+value)
 				r := x.recheck(t, spec)
 				at := argvAt(len(spec.Argv) - 1)
 				if slot == pack.ResumeSlot {

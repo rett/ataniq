@@ -21,7 +21,7 @@ var betaPolicy []byte
 var tinyPolicy []byte
 
 const fixtureHelp = "-m,--mode=<v>   select a mode\n"
-const tinyPolicySHA256 = "db9acf90f5067b5fc67271b5cb793f9673fd0447003f9f37c55a4d155f99cc72"
+const tinyPolicySHA256 = "b81e8a914ebf362aaab2d49676714172840f27538e6200f43875d6e94b905ad7"
 
 type obj = map[string]any
 
@@ -117,6 +117,7 @@ func TestT4FormReservations(t *testing.T) {
 	beta := map[string]mutation{
 		"no separator": func(d obj) { dropForm(d, "sep") },
 		"positional collision": func(d obj) {
+			d["slots"].(obj)["effort"] = tree(t, alphaPolicy)["slots"].(obj)["effort"]
 			f := fixed(d, "")
 			delete(f, "token")
 			f["shape"] = "positional"
@@ -181,8 +182,8 @@ func TestT5EvidenceAndGrammars(t *testing.T) {
 	}
 }
 func TestT6Canonical(t *testing.T) {
-	version2 := bytes.ReplaceAll(alphaPolicy, []byte("1.0"), []byte("2.0"))
-	for _, gold := range [][]byte{alphaPolicy, betaPolicy, tinyPolicy, version2} {
+	// Tiny is the literal golden for a second version of the same pack.
+	for _, gold := range [][]byte{alphaPolicy, betaPolicy, tinyPolicy} {
 		var spaced bytes.Buffer
 		if err := json.Indent(&spaced, gold, "", "  "); err != nil {
 			t.Fatal(err)
@@ -195,7 +196,7 @@ func TestT6Canonical(t *testing.T) {
 			t.Fatal("round trip changed digest")
 		}
 	}
-	if decode(t, tinyPolicy).Digest() != tinyPolicySHA256 || decode(t, version2).Digest() == decode(t, alphaPolicy).Digest() {
+	if decode(t, tinyPolicy).Digest() != tinyPolicySHA256 || decode(t, tinyPolicy).Digest() == decode(t, alphaPolicy).Digest() {
 		t.Fatal("digest vector or version binding differs")
 	}
 	// A pending locator is legal only on an unrecorded policy. Its canonical
@@ -217,4 +218,68 @@ func unrecorded(t *testing.T, b []byte) []byte {
 	}
 	formRow(d, "bin")["evidence"] = obj{"source": "pending"}
 	return wire(t, d)
+}
+
+func TestOptionalMembersRejectNull(t *testing.T) {
+	for _, mutate := range []func(obj){
+		func(d obj) { formRow(d, "mode")["aliases"] = nil },
+		func(d obj) { formRow(d, "bin")["at"] = nil },
+		func(d obj) { d["slots"].(obj)["model"] = nil },
+		func(d obj) { modeRow(d, "m-ask")["vector"].(obj)["protocol"] = nil },
+		func(d obj) { formRow(d, "bin")["separator"] = nil },
+		func(d obj) { d["files"].([]any)[1].(obj)["allowed"] = []any{nil} },
+	} {
+		d := tree(t, alphaPolicy)
+		mutate(d)
+		if _, err := Decode(wire(t, d), []byte(fixtureHelp)); err == nil {
+			t.Fatal("accepted null member")
+		}
+	}
+}
+
+func TestOptionalMemberPresence(t *testing.T) {
+	for _, change := range []func(obj){
+		func(d obj) { formRow(d, "bin")["prefix"] = "" },
+		func(d obj) { formRow(d, "bin")["slot"] = "" },
+		func(d obj) { formRow(d, "model")["token"] = "" },
+		func(d obj) { formRow(d, "bin")["evidence"].(obj)["scope"] = "" },
+		func(d obj) { modeRow(d, "q-plan")["recognizer"] = "" },
+	} {
+		d := tree(t, betaPolicy)
+		change(d)
+		if _, err := Decode(wire(t, d), []byte(fixtureHelp)); err == nil {
+			t.Fatal("accepted an inapplicable empty field")
+		}
+	}
+}
+
+func TestCanonicalSizeBound(t *testing.T) {
+	// A short JSON escape occupies two input bytes but six canonical bytes.
+	d := tree(t, alphaPolicy)
+	formRow(d, "bin")["evidence"].(obj)["ref"] = strings.Repeat("\n", 12000)
+	raw := wire(t, d)
+	if len(raw) > 64<<10 {
+		t.Fatal("fixture already exceeds the input bound")
+	}
+	if _, err := Decode(raw, []byte(fixtureHelp)); err == nil {
+		t.Fatal("canonical encoding cannot be decoded within the bound")
+	}
+}
+
+func TestHelpDefinitionEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		line, spelling string
+		want           bool
+	}{
+		{"  -m, --mode=<v>   select a value", "--mode=", true},
+		{"--[no-]quiet     suppress output", "--no-quiet", true},
+		{"--mode=m-plan    select this value", "--mode=m-plan", true},
+		{"examples: --mode=m-plan", "--mode=m-plan", false},
+		{"--quiet    see --mode=m-plan", "--mode=m-plan", false},
+		{"--mode=m-edit", "--mode=m-plan", false},
+	} {
+		if got := defines(tc.line, tc.spelling); got != tc.want {
+			t.Errorf("defines(%q, %q) = %t", tc.line, tc.spelling, got)
+		}
+	}
 }

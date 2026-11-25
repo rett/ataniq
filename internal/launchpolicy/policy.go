@@ -1,7 +1,6 @@
 package launchpolicy
 
 import (
-	"ataniq/internal/pack"
 	"bytes"
 	"cmp"
 	"crypto/sha256"
@@ -13,6 +12,8 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+
+	"ataniq/internal/pack"
 )
 
 // Policy is immutable after Decode. All indexes refer to this document alone.
@@ -50,13 +51,13 @@ type scope struct {
 	To    int    `json:"to"`
 }
 type form struct {
-	ID        string    `json:"id"`
-	Shape     string    `json:"shape"`
-	Token     string    `json:"token,omitzero"`
-	Prefix    string    `json:"prefix,omitzero"`
-	Slot      pack.Slot `json:"slot,omitzero"`
-	Separator bool      `json:"separator,omitzero"`
-	After     *int      `json:"after_separator_index,omitzero"`
+	ID        string       `json:"id"`
+	Shape     string       `json:"shape"`
+	Token     optionalText `json:"token,omitzero"`
+	Prefix    optionalText `json:"prefix,omitzero"`
+	Slot      pack.Slot    `json:"slot,omitzero"`
+	Separator bool         `json:"separator,omitzero"`
+	After     *int         `json:"after_separator_index,omitzero"`
 	At        *struct {
 		Index *int `json:"index"`
 	} `json:"at,omitzero"`
@@ -114,19 +115,32 @@ func (c cardinality) MarshalJSON() ([]byte, error) {
 }
 
 type evidence struct {
-	Source string `json:"source"`
-	Scope  string `json:"scope,omitzero"`
-	Line   *int   `json:"line,omitzero"`
-	Ref    string `json:"ref,omitzero"`
-}
-type option struct {
-	Token  string `json:"token,omitzero"`
-	Prefix string `json:"prefix,omitzero"`
+	Source string       `json:"source"`
+	Scope  optionalText `json:"scope,omitzero"`
+	Line   *int         `json:"line,omitzero"`
+	Ref    optionalText `json:"ref,omitzero"`
 }
 
-func (o option) text() string { return o.Token + o.Prefix }
+// An absent optional string leaves its zero value. A present locator member,
+// spelling, or recognizer must contain text, even on a shape that forbids it.
+type optionalText string
+
+func (s *optionalText) UnmarshalText(b []byte) error {
+	if len(b) == 0 {
+		return errors.New("empty optional string")
+	}
+	*s = optionalText(b)
+	return nil
+}
+
+type option struct {
+	Token  optionalText `json:"token,omitzero"`
+	Prefix optionalText `json:"prefix,omitzero"`
+}
+
+func (o option) text() string { return string(o.Token + o.Prefix) }
 func (o option) matches(token string) bool {
-	return o.Token == token && o.Token != "" || o.Prefix != "" && strings.HasPrefix(token, o.Prefix)
+	return string(o.Token) == token && o.Token != "" || o.Prefix != "" && strings.HasPrefix(token, string(o.Prefix))
 }
 
 type alias struct {
@@ -180,7 +194,7 @@ func (s slotRules) grammar(slot pack.Slot) *grammar {
 type mode struct {
 	Name       string         `json:"name"`
 	Class      pack.ModeClass `json:"class"`
-	Recognizer string         `json:"recognizer,omitzero"`
+	Recognizer optionalText   `json:"recognizer,omitzero"`
 	Basis      string         `json:"basis"`
 	Evidence   evidence       `json:"evidence"`
 	Vector     struct {
@@ -246,6 +260,16 @@ var members = json.JoinUnmarshalers(json.UnmarshalFromFunc(func(d *jsontext.Deco
 		return errors.New("unexpected null")
 	}
 	return errors.ErrUnsupported
+}), json.UnmarshalFunc(func(b []byte, slot *pack.Slot) error {
+	var name string
+	if err := json.Unmarshal(b, &name); err != nil {
+		return err
+	}
+	*slot = pack.Slot(name)
+	if !slot.Valid() {
+		return errors.New("invalid slot")
+	}
+	return nil
 }), json.UnmarshalFromFunc(func(d *jsontext.Decoder, path *[]Comp) error {
 	var parts []jsontext.Value
 	if err := json.UnmarshalDecode(d, &parts); err != nil {
@@ -308,6 +332,9 @@ func Decode(data, help []byte) (*Policy, error) {
 		}
 	}
 	p.canonical = append(p.canonical, '\n')
+	if len(p.canonical) > 64<<10 {
+		return nil, errors.New("canonical policy exceeds 64 KiB")
+	}
 	p.digest = fmt.Sprintf("%x", sha256.Sum256(p.canonical))
 	return p, nil
 }
@@ -430,7 +457,7 @@ func (p *Policy) evidence(e evidence, spelling string, lines []string) bool {
 			return false
 		}
 		for _, s := range p.doc.Options {
-			if s.Scope == e.Scope && s.From <= *e.Line && *e.Line <= s.To {
+			if s.Scope == string(e.Scope) && s.From <= *e.Line && *e.Line <= s.To {
 				return defines(lines[*e.Line-1], spelling)
 			}
 		}
@@ -442,13 +469,16 @@ func (p *Policy) evidence(e evidence, spelling string, lines []string) bool {
 // Stop at the description; words in prose never qualify a spelling.
 func defines(line, want string) bool {
 	fields := strings.Fields(line)
-	for i, field := range fields {
+	for _, field := range fields {
 		if !strings.HasPrefix(field, "-") {
 			break
 		}
 		for part := range strings.SplitSeq(field, ",") {
-			if part == "" {
+			if !strings.HasPrefix(part, "-") {
 				continue
+			}
+			if part == want {
+				return true
 			}
 			name, _, attached := strings.Cut(part, "=")
 			if attached {
@@ -464,7 +494,7 @@ func defines(line, want string) bool {
 				}
 			}
 		}
-		if !strings.HasSuffix(fields[i], ",") {
+		if !strings.HasSuffix(field, ",") {
 			break
 		}
 	}
@@ -495,7 +525,7 @@ func (p *Policy) validateForms(check evidenceCheck) error {
 				return errors.New("invalid exact form")
 			}
 		case "prefixed":
-			name, suffix, ok := strings.Cut(f.Prefix, "=")
+			name, suffix, ok := strings.Cut(string(f.Prefix), "=")
 			if !ok || name == "" || suffix != "" || f.Token != "" || !f.Slot.Valid() || f.After != nil {
 				return errors.New("invalid prefixed form")
 			}
@@ -560,6 +590,9 @@ func (p *Policy) validateForms(check evidenceCheck) error {
 		if (name == "--resume") != (f.Slot == pack.ResumeSlot) || f.Slot == pack.ResumeSlot && f.Prefix != "--resume=" {
 			return errors.New("resume spelling reserved")
 		}
+		if strings.ContainsAny(f.option().text(), "{}") {
+			return errors.New("form spelling contains placeholder delimiters")
+		}
 		if !check(f.Evidence, f.option().text()) {
 			return errors.New("invalid form evidence")
 		}
@@ -615,7 +648,7 @@ func (p *Policy) validateForms(check evidenceCheck) error {
 		if f.Shape != "exact" || f.Separator {
 			continue
 		}
-		fixed, _, _ := strings.Cut(f.Token, "=")
+		fixed, _, _ := strings.Cut(string(f.Token), "=")
 		for _, s := range p.spellings {
 			if s.form != nil && s.form.Slot == "" {
 				continue
@@ -655,11 +688,11 @@ func (p *Policy) validateSlots(check evidenceCheck) error {
 	}
 	for i := range s.Permission.Values {
 		m := &s.Permission.Values[i]
-		if !ceiling.MatchString(m.Name) || !m.Class.Valid() || m.Basis != "documented" && (m.Basis != "undocumented" || m.Class != pack.Bypass) || !check(m.Evidence, m.Name) {
+		if !ceiling.MatchString(m.Name) || !m.Class.Valid() || m.Basis != "documented" && (m.Basis != "undocumented" || m.Class != pack.Bypass) || !check(m.Evidence, string(p.bySlot[pack.PermissionModeSlot].Prefix)+m.Name) {
 			return errors.New("invalid mode")
 		}
 		if p.executable.transports(pack.Terminal) {
-			if !recognizerPattern.MatchString(m.Recognizer) {
+			if !recognizerPattern.MatchString(string(m.Recognizer)) {
 				return errors.New("invalid recognizer")
 			}
 		} else if m.Recognizer != "" {

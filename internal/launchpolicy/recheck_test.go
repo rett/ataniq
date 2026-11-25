@@ -203,3 +203,18 @@ func TestT65DifferentView(t *testing.T) {
 		line(t, r, "expected-differs", "0", "snapshot")
 	}
 }
+
+func TestInvalidSnapshotIdentity(t *testing.T) {
+	for _, change := range []func(*Snapshot){
+		func(s *Snapshot) { s.Pack = "?" },
+		func(s *Snapshot) { s.Version = "../x" },
+		func(s *Snapshot) { s.Recognizer = "Invalid" },
+		func(s *Snapshot) { s.Transport = "other" },
+		func(s *Snapshot) { s.ProfileDigest = "d1\n" },
+	} {
+		x := baseline(t, "BL")
+		spec := x.expand(t)
+		change(&x.s)
+		line(t, x.recheck(t, spec), "snapshot-invalid", "0", "snapshot")
+	}
+}

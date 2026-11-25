@@ -2,8 +2,9 @@
 package launchpolicy
 
 import (
-	"ataniq/internal/pack"
 	"regexp"
+
+	"ataniq/internal/pack"
 )
 
 type Snapshot struct {

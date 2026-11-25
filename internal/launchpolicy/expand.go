@@ -10,10 +10,13 @@ import (
 )
 
 func identity(p *Policy, s Snapshot) (string, *Refusal) {
-	if !versionPattern.MatchString(s.Version) {
+	if p == nil || p.doc.Fixture.SHA == nil {
+		return "", refuse("policy-missing", 0, "policy")
+	}
+	if _, err := pack.ParseName(string(s.Pack)); err != nil || !versionPattern.MatchString(s.Version) {
 		return "", refuse("snapshot-invalid", 0, "snapshot")
 	}
-	if p == nil || p.doc.Pack != s.Pack || p.doc.Version != s.Version || p.doc.Fixture.SHA == nil {
+	if p.doc.Pack != s.Pack || p.doc.Version != s.Version {
 		return "", refuse("policy-missing", 0, "policy")
 	}
 	if *p.doc.Fixture.SHA == "" {
@@ -114,7 +117,7 @@ func (q *sequence) templateForm(token string) (*form, string) {
 			return f, ""
 		}
 		f, code := p.lookup(prefix)
-		if code != "" || f.Prefix != prefix {
+		if code != "" || string(f.Prefix) != prefix {
 			return nil, "unknown-token"
 		}
 		if f.Slot != slot {
@@ -136,7 +139,7 @@ func (q *sequence) finalForm(i int, token string) (*form, string) {
 	p := q.policy
 	if q.split >= 0 {
 		if f := p.after[i-q.split-1]; f != nil {
-			if f.Shape == "exact" && f.Token != token {
+			if f.Shape == "exact" && string(f.Token) != token {
 				return nil, "unknown-token"
 			}
 			return f, ""
@@ -184,7 +187,7 @@ func expand(p *Policy, launch pack.Launch, s Snapshot, kind string) (Spec, *Refu
 	spec := Spec{Role: s.Role, Transport: s.Transport, ProfileDigest: s.ProfileDigest, Env: maps.Clone(launch.Env)}
 	surviving := make([]*form, 0, len(forms))
 	for _, f := range forms {
-		token := f.Token
+		token := string(f.Token)
 		if f.Slot != "" {
 			v := s.value(f.Slot)
 			if v == "" {
@@ -193,7 +196,7 @@ func expand(p *Policy, launch pack.Launch, s Snapshot, kind string) (Spec, *Refu
 				}
 				continue
 			}
-			token = f.Prefix + v
+			token = string(f.Prefix) + v
 		}
 		spec.Argv = append(spec.Argv, token)
 		surviving = append(surviving, f)
