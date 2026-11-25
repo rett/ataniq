@@ -57,6 +57,10 @@ func (b Bind) destination(layout BindLayout) (string, error) {
 		if path.IsAbs(p) || p == ".." || below(p, "..") || p == ".git" || below(p, ".git") {
 			return "", fmt.Errorf("invalid tree overlay %q", p)
 		}
+		// Preparation lists the target literally as one anchored Git exclude line.
+		if strings.ContainsAny(p, `\*?[]`) || strings.HasSuffix(p, " ") {
+			return "", fmt.Errorf("tree overlay %q cannot be listed in info/exclude", p)
+		}
 		parent = layout.Tree
 		p = path.Join(parent, p)
 	case ConfigOverlay, SessionStore:
