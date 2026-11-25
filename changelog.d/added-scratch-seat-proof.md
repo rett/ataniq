@@ -18,9 +18,15 @@
   reaches (each lead's folder, mirror, mailbox, published and holder
   runtime folders, the agent install, the probe, the host paths every
   sandbox binds), the gate's folder, the key list or the journal, decided on
-  the resolved path and on the folders' identities, and a settings file that
+  the resolved path, on the folders' identities and on their places in their
+  filesystems from the mount table (so a bind mount of a guarded folder or of
+  a folder within one given as the folder, and a mount that shows the folder
+  within a guarded one, are caught; a mount made later is not), and a
+  settings file that
   is a link, not private, has a second name, is the key list, the journal,
-  a gate file or the trial's settings, or holds a trial's settings; the
+  a gate file or the trial's settings, or holds a trial's settings, or
+  settings whose drop folder, mirror, work folder or sandbox template the
+  folder is, lies in or holds; the
   folder is opened by its handle with no link followed and the file read
   beneath it, so a link planted after the check changes nothing.
   `--check` with the same flags prints every check the daemon makes before
@@ -37,7 +43,11 @@
   trial's state folder, never deletes and starts nothing, and `--status`
   runs the daemon's `--check` and compares the trial's gate key,
   certificate, pins, key list and settings with the digests the owner
-  recorded before the sitting. It takes an IPv4 gate only. It also writes
+  recorded before the sitting; from a private copy of the key list taken
+  then, it checks that the list only grew (the copy is a byte prefix) and
+  names the kind of each record appended, passing counter records alone (a
+  phone login) and a head that caught up with the list, and calling any
+  pairing, revocation, changed old byte or missing copy CHANGED. It takes an IPv4 gate only. It also writes
   the owner's network check `netcheck.sh` (its connect test in the network
   shape of a scratch lead's sandbox: the plan's pasta arguments and the
   profile's bubblewrap flag set for the lead's identity, which a test
@@ -46,7 +56,9 @@
   and in a throwaway user unit with the lead unit's fixed properties,
   classifies each probe as connected, refused, or filtered or timed out,
   passes the lead's network only on a refusal or timeout the probe itself
-  reports, takes a probe that did not run for a finding, and the runbook
+  reports after the sandbox showed an IPv4 address and a default route
+  (without them the probe did not run), takes a probe that did not run for
+  a finding, and the runbook
   records its exit status). The runbook's last steps compare the trial's
   files byte for byte with the record and start the trial again. A test in
   `cmd/ataniqd` takes a trial-shaped state folder to the scratch daemon and

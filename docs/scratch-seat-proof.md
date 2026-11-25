@@ -156,8 +156,11 @@ they show:
 The byte comparison holds because no phone logs in during the test. In the
 sitting, a login on the phone with a credential whose sign counter rises
 appends a counter record to the key journal (`keys.log`, `keys.head`); a
-passkey of the platform's keeps its counter at 0 and appends nothing. Step 13
-compares the bytes, and a difference there is written down and looked at.
+passkey of the platform's keeps its counter at 0 and appends nothing. A
+digest alone cannot tell that record from a pairing, a revocation or the
+head catching up with the list, so step g also keeps a private copy of
+`keys.log`, and step 13 checks that the copy is a byte prefix of the list and
+names the kind of each record appended to it.
 
 The tests of the flag (`cmd/ataniqd/scratch_settings_linux_test.go`) hold its
 refusals, each with `--check` (the line of its rule says `FAIL` and why) and
@@ -165,18 +168,25 @@ without it (exit 10, nothing made): the trial's `owner/` folder, a folder in
 it, a link to it, a link whose target climbs with `..`, the state folder, the
 runtime folder, a folder in a lead's home, in the agent install, the folder
 of the probe, the proof's root (which holds the agent install), the gate's
-folder, a folder others can enter, a second name of a folder (the identity
-rule a bind mount meets), and a settings file that is a link, a hard link of
-the key list, readable by others, missing or a trial's; a link planted after
-the folder was opened changes nothing, and a settings file replaced between
-its check and its read is refused. `TestScratchLeadReachCoversEveryBind` in
+folder, a folder others can enter, and a settings file that is a link, a
+hard link of the key list, readable by others, missing or a trial's; a link
+planted after the folder was opened changes nothing, and a settings file
+replaced between its check and its read is refused. No test makes a mount, so
+the mount cases are held on the rules themselves: a bind mount of a guarded
+folder itself (by its identity), and a bind mount of a folder within `owner/`
+given as the folder, the settings folder bound into a lead's folder and
+`owner/` bound into the settings folder (by their places in the filesystem, on
+the daemon's mount table with the mount's line added), with the reading of
+mount tables held on tables written out in
+`cmd/ataniqd/scratch_mounts_linux_test.go` (a plain host, a bind of a
+subfolder, a bind into a lead's folder, btrfs subvolumes and escaped spaces). `TestScratchLeadReachCoversEveryBind` in
 `internal/leaddaemon` holds the leads' reach to every source of their bind
 tables. `tests/scratch_seat_prepare_test.go` holds the script: `--dry` and
 `--self-test` read and write nothing, `--write` writes in the root only and
 refuses what it can judge, `--status` runs the daemon's check with exactly
-the flags of step 2 and `--check` and compares the trial's digests, and no
-line of the script deletes, moves, links or masks anything or runs
-`systemctl`.
+the flags of step 2 and `--check`, compares the trial's digests and names
+what was appended to the key list since step g, and no line of the script
+deletes, moves, links or masks anything or runs `systemctl`.
 
 What none of it shows: the real unit and its stop and start, the holder,
 sandbox and stand-in, the paste, claude and its login, the seat on the
@@ -301,7 +311,14 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    pasta), it must be refused or filtered: `PASS ... refused (no connection
    to the gate's port was made)`. A probe that did not run (no curl, a curl
    without `telnet://`, a sandbox or unit that did not start) is a
-   `FINDING`, never a pass, and so is a connection. Any `FINDING` there ends
+   `FINDING`, never a pass, and so is a connection. So is a sandbox whose
+   network did not come up: curl's "could not connect" is also what an
+   unreachable network gives, so inside the sandbox, before the probe, the
+   check looks for an IPv4 address other than loopback and a default route
+   other than on `lo` and prints `net route=... addr=...`; without either
+   the probe is not made and the line says `the probe did not run: the
+   sandbox's network did not come up`. A host with no IPv4 default route
+   reads the same way. Any `FINDING` there ends
    the sitting before it starts. The probe is curl with no configuration
    file and no proxy, to the numeric address, and it sends no byte. The
    script then lists this host's listeners on non-loopback addresses and
@@ -346,6 +363,7 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    $D seat-gate pins --state-dir "$S"
    journalctl --user --unit "$TRIAL_UNIT" -I | grep 'key fingerprint' | tail -n 1
    (cd "$S/owner" && sha256sum -- gate/key.pem gate/cert.pem gate/seat-pins keys.log keys.head scratch.json) >"$ROOT/evidence/trial-before.sha256"
+   cp -- "$S/owner/keys.log" "$ROOT/keys-before.log"
    ```
 
    `--status` runs the daemon's own check, `$D run --scratch "$CONFIG"
@@ -358,9 +376,12 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    folder, no path a lead's sandbox reaches (each lead's folder, mirror,
    mailbox, published folder and holder runtime folder, the agent install,
    the probe, the host paths every sandbox binds) and not `owner/gate`, the
-   key list or the journal, by path and by identity; the settings file is a
-   private regular file with one name and the proof's settings; the scratch
-   roots and the suite; the root marker (step f); the gate's address, key
+   key list or the journal, by path, by identity and by place in the
+   filesystem (so a bind mount of a guarded folder, of a folder within one,
+   or of the settings folder into one is caught); the settings file is a
+   private regular file with one name and the proof's settings; the folder
+   is not, lies not in and holds not the drop folder, the mirror, the work
+   folder or the sandbox template the settings name; the scratch roots and the suite; the root marker (step f); the gate's address, key
    fingerprint and pins; and the socket paths of the daemon and of every
    lead's holder. It then lists what the daemon will read (the settings
    file, the gate's key, certificate and pins, read only; the key list; the
@@ -370,8 +391,10 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    and the gate's port, which the check does not take, are left to the start.
    The pins line, the trial's fingerprint line of its current run, and the
    digests of the trial's gate key, certificate, pins, key list and settings
-   are the record that step 13 compares with. Nothing of the trial is changed
-   by any of it.
+   are the record that step 13 compares with. The copy of the key list,
+   `$ROOT/keys-before.log`, is private and not evidence (it holds the paired
+   credentials' public keys): step 13 tells from it what was appended to the
+   list. Nothing of the trial is changed by any of it.
 
 ## The sitting
 
@@ -505,7 +528,9 @@ it, the sitting has no live lead: go on with step 11.
    { sh "$ROOT/netcheck.sh"; echo "netcheck: exit status $?"; } 2>&1 | tee -a "$ROOT/evidence/netcheck.txt"
    ```
 
-   It must end `netcheck: exit status 0` as at step e. Write in
+   It must end `netcheck: exit status 0` as at step e. The trial is stopped
+   now and the proof's daemon serves the gate, so the probe from this host
+   connects to the proof's gate. Write in
    `$ROOT/evidence/notes.txt` the rule's check and what you accept of what
    stays open. A `FINDING`, or a rule whose check fails: no live lead; go on
    with step 11.
@@ -613,10 +638,22 @@ it, the sitting has no live lead: go on with step 11.
     to step g. `--status` makes the same comparison after the daemon's check
     and ends `status: the trial's gate key, certificate, pins, key list and
     settings are the same bytes as recorded`. A `FAILED` line is written in
-    `$ROOT/evidence/notes.txt` and looked at before the trial starts: a key
-    list that grew by a counter record after a phone login is explained by
-    that login (see [What was proved in process](#what-was-proved-in-process));
-    any other change is a finding.
+    `$ROOT/evidence/notes.txt` and looked at before the trial starts.
+    `keys.log` and `keys.head` may differ, and `--status` says why: the copy
+    of step g must be the list of step g (its recorded digest) and a byte
+    prefix of the list now, and each record appended is named by its kind,
+    `status:   keys.log is the list of step g with N record(s) appended:
+    counter ...`. Counter records alone are a phone login with a passkey
+    whose sign counter rises (see [What was proved in
+    process](#what-was-proved-in-process)): `--status` passes them and ends
+    `status: the trial's gate key, certificate, pins and settings are the
+    same bytes as recorded ..., and the key list holds the records of step g
+    unchanged`. `keys.head` alone changed, with `keys.log` the same bytes, is
+    the head catching up with the list (a daemon makes it right at open), and
+    passes too. Any other kind (`added`: a pairing; `revoked`: a revocation;
+    `rejected`: a refused pairing; `unreadable`: not a record), an old byte
+    of the list changed, a missing copy or a copy that is not the list of
+    step g is `status: CHANGED`, a finding.
 14. **OWNER ONLY (C): start the trial again**, by your own command, the one
     you started it with:
 
@@ -697,7 +734,8 @@ and `leads/scratch-standin-N-lead/` hold the provider's config and login
 `holder/final.json` and `holder/final.json.previous`, which keep the last
 screen the holder showed even with `record_screens` off: it can hold a reply,
 a prompt or a login code. `chat/` holds the stored replies while a chat is
-on. `$ROOT/version-home.*` is the claude copy's home of step c. Keep them where
+on. `$ROOT/version-home.*` is the claude copy's home of step c, and
+`$ROOT/keys-before.log` the copy of the trial's key list of step g. Keep them where
 they are and share none of them; never archive the state folder, or the
 proof's root, as evidence.
 

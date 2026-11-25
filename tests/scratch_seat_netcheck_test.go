@@ -184,8 +184,11 @@ func netcheckRun(t *testing.T, script, path string, args ...string) (string, int
 // that did not run is a finding (review finding 7: a missing curl, a curl
 // without telnet://, a sandbox that did not start, a line that is not the
 // probe's). The probe runs curl with no configuration file and no proxy and
-// reports curl's own exit status. Everything here runs on inert fixtures:
-// the entries --classify, --class-of and --verdict run nothing, and
+// reports curl's own exit status. A probe of the lead's network counts only
+// when the sandbox showed an address and a default route first. Everything
+// here runs on inert fixtures: the entries --classify, --class-of,
+// --lead-class-of, --net-of (on files written here) and --verdict run
+// nothing, and
 // --probe-here runs only a stub curl, the one program on its PATH; no test
 // starts pasta, bubblewrap, a unit or a network request.
 func TestScratchSeatNetcheckClassifiesEachProbe(t *testing.T) {
@@ -240,7 +243,9 @@ func TestScratchSeatNetcheckClassifiesEachProbe(t *testing.T) {
 		{"connected", "refused", "connected", 1, []string{"FINDING  the lead's network, in a user unit: connected"}},
 		{"connected", "error", "refused", 1, []string{"FINDING  the lead's network, from this shell: the probe did not run"}},
 		{"connected", "refused", "error", 1, []string{"FINDING  the lead's network, in a user unit: the probe did not run"}},
-		{"refused", "refused", "refused", 1, []string{"FINDING  this host: refused at 192.0.2.1:9: nothing listens"}},
+		{"connected", "nonet", "refused", 1, []string{"FINDING  the lead's network, from this shell: the probe did not run: the sandbox's network did not come up"}},
+		{"connected", "refused", "nonet", 1, []string{"FINDING  the lead's network, in a user unit: the probe did not run: the sandbox's network did not come up"}},
+		{"refused", "refused", "refused", 1, []string{"FINDING  this host: refused at 192.0.2.1:9: nothing listens; run this while a daemon serves the gate (the trial at step e, the proof's daemon at step 7)"}},
 		{"filtered", "filtered", "filtered", 1, []string{"FINDING  this host: no answer from 192.0.2.1:9 (filtered or timed out)"}},
 		{"error", "error", "error", 3, []string{"FINDING  this host: the probe did not run", "netcheck: 3 finding(s)"}},
 	} {
@@ -253,6 +258,70 @@ func TestScratchSeatNetcheckClassifiesEachProbe(t *testing.T) {
 				t.Errorf("--verdict %s %s %s does not say %q:\n%s", c.host, c.shell, c.unit, w, out)
 			}
 		}
+	}
+
+	// A probe of the lead's network counts only after the sandbox showed its
+	// network: a net line with a default route and an address, then the
+	// probe's line. curl's 7 is also an unreachable network, so a namespace
+	// whose network did not come up is a probe that did not run (review
+	// finding 5), never a refusal.
+	for _, c := range []struct{ text, want string }{
+		{"net route=eth0 addr=192.0.2.5\nprobe rc=7 connect=0.000000", "refused"},
+		{"net route=eth0 addr=192.0.2.5\nprobe rc=28 connect=0.000000", "filtered"},
+		{"net route=eth0 addr=192.0.2.5\nprobe rc=0 connect=0.000300", "connected"},
+		{"net route=none addr=192.0.2.5", "nonet"},
+		{"net route=eth0 addr=none", "nonet"},
+		{"net route=none addr=none\nprobe rc=7 connect=0.000000", "nonet"},
+		{"probe rc=7 connect=0.000000", "error"},
+		{"", "error"},
+		{"bwrap: setting up uid map: Permission denied", "error"},
+		{"net route=eth0 addr=192.0.2.5\nprobe no-curl", "error"},
+		{"net route=eth0 addr=192.0.2.5", "error"},
+	} {
+		out, code := netcheckRun(t, script, "/usr/bin:/bin", "--lead-class-of", c.text)
+		if code != 0 || out != c.want+"\n" {
+			t.Errorf("--lead-class-of %q: exit %d, %q, want %q", c.text, code, out, c.want)
+		}
+	}
+	// NETUP itself, on copies of /proc/net/route and /proc/net/fib_trie
+	// written here: the interface of an IPv4 default route other than lo,
+	// and an IPv4 address other than loopback; "none" for what is missing
+	// or cannot be read.
+	routeHead := "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+	routeDefault := routeHead + "eth0\t00000000\t010200C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n" +
+		"eth0\t000200C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n"
+	routeNoDefault := routeHead + "eth0\t000200C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n" +
+		"lo\t00000000\t00000000\t0001\t0\t0\t0\t00000000\t0\t0\t0\n"
+	trieUp := "Main:\n  +-- 0.0.0.0/0 3 0 5\n     |-- 0.0.0.0\n        /0 universe UNICAST\n     +-- 127.0.0.0/8 2 0 2\n" +
+		"        +-- 127.0.0.0/31 1 0 0\n           |-- 127.0.0.0\n              /8 host LOCAL\n           |-- 127.0.0.1\n              /32 host LOCAL\n" +
+		"     |-- 192.0.2.15\n        /32 host LOCAL\nLocal:\n     |-- 192.0.2.15\n        /32 host LOCAL\n"
+	trieLoopback := "Main:\n  +-- 127.0.0.0/8 2 0 2\n     |-- 127.0.0.1\n        /32 host LOCAL\n     |-- 127.255.255.255\n        /32 link BROADCAST\n"
+	write := func(name, body string) string {
+		f := filepath.Join(dir, name)
+		if err := os.WriteFile(f, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	rd, rn, tu, tl := write("route-default", routeDefault), write("route-no-default", routeNoDefault), write("trie-up", trieUp), write("trie-lo", trieLoopback)
+	missing := filepath.Join(dir, "missing")
+	for _, c := range []struct{ route, trie, want string }{
+		{rd, tu, "net route=eth0 addr=192.0.2.15\n"},
+		{rn, tu, "net route=none addr=192.0.2.15\n"},
+		{rd, tl, "net route=eth0 addr=none\n"},
+		{missing, missing, "net route=none addr=none\n"},
+	} {
+		out, code := netcheckRun(t, script, "/usr/bin:/bin", "--net-of", c.route, c.trie)
+		if code != 0 || out != c.want {
+			t.Errorf("--net-of %s %s: exit %d, %q, want %q", filepath.Base(c.route), filepath.Base(c.trie), code, out, c.want)
+		}
+	}
+	// The sandbox runs NETUP before the probe, and the verdict reads both
+	// probes of the lead's network through it.
+	text := string(mustRead(t, script))
+	if !strings.Contains(text, `core /usr/bin/sh -c "$NETUP$PROBE" "$GATE_HOST" "$GATE_PORT"`) ||
+		!strings.Contains(text, `verdict "$(class_of "$HOSTSIDE")" "$(lead_class_of "$SHAPE")" "$(lead_class_of "$UNIT")"`) {
+		t.Error("the sandbox does not show its network before the probe, or the verdict does not read it")
 	}
 
 	// The probe itself, with a stub curl that records its arguments and

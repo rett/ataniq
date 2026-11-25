@@ -292,7 +292,9 @@ func mkSettings(t *testing.T, w *settingsWorld, dir string) string {
 // trial's settings folder, a folder in it, either reached through a link or a
 // link whose target climbs with "..", the state folder, the runtime folder, a
 // folder in a lead's home, a folder in the agent install, the folder that
-// holds the probe, the gate's folder, a folder others can enter, a settings
+// holds the probe, the gate's folder, the drop folder its own settings name,
+// a folder that holds it, a folder in the mirror or the work folder they name
+// or at the name of their sandbox template, a folder others can enter, a settings
 // file that is a link, that is the key list by a second name, that others can
 // read or that holds the trial's settings, a relative path and a folder that
 // is not there. The trial's files are the same bytes after all of them.
@@ -333,6 +335,21 @@ func TestOwnerSettingsRefusesTheTrialsTheLeadsAndTheGatesFolders(t *testing.T) {
 		{"the proof's root, which holds the agent install", func(t *testing.T, w *settingsWorld) string { return w.root }, ruleLead, "holds the agent install"},
 		{"the gate's folder", func(t *testing.T, w *settingsWorld) string { return filepath.Join(w.owner, leaddaemon.SeatGateDirName) },
 			ruleSecret, "is or lies in the gate's identity and pins"},
+		{"the drop folder its settings name", func(t *testing.T, w *settingsWorld) string {
+			return mkSettings(t, w, filepath.Join(w.root, "owner-channel", "drop"))
+		}, ruleNamed, "is or lies in the drop folder the settings name"},
+		{"a folder that holds the folders its settings name", func(t *testing.T, w *settingsWorld) string {
+			return mkSettings(t, w, filepath.Join(w.root, "owner-channel"))
+		}, ruleNamed, "holds the drop folder the settings name"},
+		{"a folder in the mirror its settings name", func(t *testing.T, w *settingsWorld) string {
+			return mkSettings(t, w, filepath.Join(w.root, "owner-channel", "mirror.git", "s"))
+		}, ruleNamed, "is or lies in the mirror the settings name"},
+		{"a folder in the work folder its settings name", func(t *testing.T, w *settingsWorld) string {
+			return mkSettings(t, w, filepath.Join(w.root, "owner-channel", "work", "s"))
+		}, ruleNamed, "is or lies in the work folder the settings name"},
+		{"a folder at the name of the sandbox template its settings name", func(t *testing.T, w *settingsWorld) string {
+			return mkSettings(t, w, filepath.Join(w.root, "owner-channel", "no-template.json"))
+		}, ruleNamed, "is or lies in the sandbox template the settings name"},
 		{"a folder others can enter", func(t *testing.T, w *settingsWorld) string {
 			d := mkSettings(t, w, filepath.Join(w.dir, "open"))
 			if err := os.Chmod(d, 0o755); err != nil {
@@ -514,6 +531,7 @@ func TestOwnerSettingsCheckPrintsWhatTheDaemonWouldRead(t *testing.T) {
 		"pass  " + ruleTrial + ": ", "pass  " + ruleRoots + ": ", "pass  " + ruleLead + ": ", "pass  " + ruleSecret + ": ",
 		"pass  the settings file: " + w.settings + "/scratch.json: a regular file of the daemon's user, mode 0600, one name",
 		"pass  the settings: not a phone trial's",
+		"pass  " + ruleNamed + ": is not, lies not in and holds not the drop folder, the mirror, the work folder or the sandbox template",
 		"pass  the scratch roots, the drop folder and the mirror: ",
 		"pass  the suite: ",
 		"pass  the root marker: ",
@@ -556,22 +574,21 @@ func TestOwnerSettingsCheckPrintsWhatTheDaemonWouldRead(t *testing.T) {
 	}
 }
 
-// A second name of a folder, which a bind mount gives and a path cannot show,
-// is caught by the identities of the open folder and of the folders above it:
-// a folder opened under the name of a place no guard names, whose identity is
-// owner/ of the state folder, the gate's folder, a folder below owner/, or a
-// folder that holds the gate's folder, is refused with "by another name".
-// (A test cannot make a bind mount without privileges; the folder's name is
-// set apart from its identity here instead.)
+// A bind mount of a guarded folder itself gives a second name that a path
+// cannot show and the identities of the open folder and of the folders above
+// it catch: a folder opened under the name of a place no guard names, whose
+// identity is owner/ of the state folder or the gate's folder, or a folder
+// that holds the gate's folder, is refused with "by another name". (A test
+// cannot make a bind mount without privileges; the folder's name is set apart
+// from its identity here instead, which is what a bind mount of the folder
+// itself shows. A bind of a folder within a guard is not caught this way, as
+// ".." from a mount's root leads above its mount point: the places of
+// TestOwnerSettingsPlacesTheFolderInItsFilesystem catch it.)
 func TestOwnerSettingsCatchesASecondNameOfAFolder(t *testing.T) {
 	w := newSettingsWorld(t)
 	guards := []settingsGuard{
 		{ruleTrial, w.owner, "owner/ of the state folder, the trial's settings folder"},
 		{ruleSecret, filepath.Join(w.owner, leaddaemon.SeatGateDirName), "the gate's identity and pins (owner/gate)"},
-	}
-	sub := filepath.Join(w.owner, "below")
-	if err := os.Mkdir(sub, 0o700); err != nil {
-		t.Fatal(err)
 	}
 	for _, c := range []struct {
 		open string
@@ -579,7 +596,6 @@ func TestOwnerSettingsCatchesASecondNameOfAFolder(t *testing.T) {
 		want string
 	}{
 		{w.owner, ruleTrial, "is or lies in owner/ of the state folder, the trial's settings folder (" + w.owner + "), by another name (a bind mount)"},
-		{sub, ruleTrial, "is or lies in owner/ of the state folder, the trial's settings folder (" + w.owner + "), by another name (a bind mount)"},
 		{filepath.Join(w.owner, leaddaemon.SeatGateDirName), ruleSecret, "is or lies in the gate's identity and pins (owner/gate) (" + filepath.Join(w.owner, "gate") + "), by another name (a bind mount)"},
 		{w.state, ruleSecret, "holds the gate's identity and pins (owner/gate) (" + filepath.Join(w.owner, "gate") + "), by another name (a bind mount)"},
 	} {
@@ -608,6 +624,113 @@ func TestOwnerSettingsCatchesASecondNameOfAFolder(t *testing.T) {
 			t.Errorf("the proof's folder by another name fails %s: %v", r, err)
 		}
 	}
+}
+
+// The places of the folder and of the guards in their filesystems, from the
+// daemon's mount table, catch what a path and an identity cannot: a bind
+// mount of a folder within owner/ given as the folder (".." from the root of
+// that mount leads above its mount point, so no identity above it is
+// owner/'s), a bind mount of the settings folder into a lead's folder, and a
+// bind mount of owner/ into the settings folder. A test cannot make a mount
+// without privileges, so each mount is a line added to the daemon's own mount
+// table, the input the check reads, with the root and the device the kernel
+// would write; the folder of a bind given as the folder is opened by its own
+// path and given the identities ".." of the mount's root would give. With the
+// table as it is, the same folders pass.
+func TestOwnerSettingsPlacesTheFolderInItsFilesystem(t *testing.T) {
+	w := newSettingsWorld(t)
+	lead := filepath.Join(w.state, "leads", "scratch-standin-1-lead")
+	guards := []settingsGuard{
+		{ruleTrial, w.owner, "owner/ of the state folder, the trial's settings folder"},
+		{ruleLead, lead, "the lead standin-1: its folder"},
+	}
+	sub := filepath.Join(w.owner, "below")
+	if err := os.Mkdir(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tbl, err := readMountTable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := 0
+	for _, m := range tbl {
+		next = max(next, m.id+1)
+	}
+	// placed is the mount and the place of a real path, as the check finds
+	// them.
+	placed := func(p string) (mountEntry, fsPlace) {
+		t.Helper()
+		id, err := mountIDOfPath(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, ok := tbl.byID(id)
+		if !ok {
+			t.Fatalf("the mount %d of %s is not in the table", id, p)
+		}
+		pl, err := tbl.placeOf(id, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m, pl
+	}
+	with := func(e mountEntry) mountTable { return append(append(mountTable(nil), tbl...), e) }
+	clean := func(t *testing.T, d *settingsDir) {
+		t.Helper()
+		for r, err := range d.rules(guards) {
+			if err != nil {
+				t.Errorf("%s with the table as it is fails %s: %v", d.given, r, err)
+			}
+		}
+	}
+
+	// owner/below bound at a place no guard names, given as the folder.
+	m, subPl := placed(sub)
+	view := "/srv/elsewhere/view"
+	t1 := with(mountEntry{id: next, parent: m.id, dev: m.dev, root: subPl.path, point: view})
+	d, err := openSettingsDir(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.f.Close()
+	d.given, d.real = view, view
+	d.up = append([]fileID{d.id}, aboveIDs(view)...)
+	if d.place, err = t1.placeOf(next, view); err != nil {
+		t.Fatal(err)
+	}
+	d.mnt = t1
+	if err := d.rules(guards)[ruleTrial]; err == nil || !strings.Contains(err.Error(), "is or lies in owner/ of the state folder, the trial's settings folder ("+w.owner+"), by another name: in its filesystem (device "+m.dev+")") {
+		t.Errorf("the bind of owner/below given as the folder: %v", err)
+	}
+
+	// The settings folder bound into the lead's home: its place is its own,
+	// but a mount shows it within the lead's folder.
+	m, setPl := placed(w.settings)
+	into := filepath.Join(lead, "home", "x")
+	ds, err := openSettingsDir(w.settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ds.f.Close()
+	clean(t, ds)
+	ds.mnt = with(mountEntry{id: next, parent: m.id, dev: m.dev, root: setPl.path, point: into})
+	if err := ds.rules(guards)[ruleLead]; err == nil || !strings.Contains(err.Error(), "is or lies in the lead standin-1: its folder ("+lead+"), by another name: a mount shows the folder, or a part of it, at "+into+", within "+lead) {
+		t.Errorf("the settings folder bound into the lead's home: %v", err)
+	}
+	// A part of it is enough.
+	ds.mnt = with(mountEntry{id: next, parent: m.id, dev: m.dev, root: setPl.path + "/part", point: into})
+	if err := ds.rules(guards)[ruleLead]; err == nil || !strings.Contains(err.Error(), "a mount shows the folder, or a part of it, at "+into) {
+		t.Errorf("a folder in the settings folder bound into the lead's home: %v", err)
+	}
+
+	// owner/ bound into the settings folder.
+	m, ownPl := placed(w.owner)
+	ds.mnt = with(mountEntry{id: next, parent: m.id, dev: m.dev, root: ownPl.path, point: filepath.Join(w.settings, "o")})
+	if err := ds.rules(guards)[ruleTrial]; err == nil || !strings.Contains(err.Error(), "holds owner/ of the state folder, the trial's settings folder ("+w.owner+"), by another name: a mount shows the guard") {
+		t.Errorf("owner/ bound into the settings folder: %v", err)
+	}
+	ds.mnt = tbl
+	clean(t, ds)
 }
 
 // A runtime root so long that a holder's socket would not fit in a Unix

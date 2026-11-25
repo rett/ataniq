@@ -1266,11 +1266,27 @@ the daemon's user, or when it is, lies in or holds:
   and the probe of the config, and the host paths every sandbox binds ("out of
   every lead's reach");
 - `owner/gate`, the gate's identity and pins ("not the key list, the journal
-  or the gate identity").
+  or the gate identity");
+- once the settings are read, the drop folder, the mirror, the work folder or
+  the sandbox template they name ("apart from the folders the settings
+  name"): the drop folder, the mirror and the work folder are where others
+  write or run, and the template decides which command wraps the gates, as
+  the settings file does, so neither is kept with the other (the template is
+  kept out of the first three for the same reason).
 
-Each rule is decided on the resolved path and on the identities (device and
-inode) of the open folder and of each folder above it, so a second name of a
-folder, such as a bind mount, is caught too. `scratch.json` must be a regular
+Each rule is decided three ways. By the resolved paths. By the identities
+(device and inode) of the open folder and of each folder above it, which
+catch a bind mount of a guarded folder itself given as `DIR`. And by the
+places of the folder and of each guard within their filesystems, read from
+the daemon's mount table (`/proc/self/mountinfo`: a mount's device, the folder
+of the filesystem it shows and where it shows it), which catch a bind mount
+of a folder within a guard given as `DIR` (`..` from the root of such a mount
+leads above its mount point, so no identity above it is the guard's) and a
+mount that shows `DIR`, or a part of it, within a guarded folder, such as a
+lead's. A mount whose root is not `/` is ordinary (a btrfs subvolume, say)
+and is not refused by itself. A mount made after the check, or in another
+mount namespace, is not seen; only the owner or root can make one on the
+host, and a lead cannot. `scratch.json` must be a regular
 file of the user's, mode 0600, with one name, that is not the key list, its
 head, the journal, a file of the gate or the trial's settings file by another
 name, and that holds non-trial settings. The start then prints, after the
@@ -1287,8 +1303,9 @@ when it builds the service, and each read is checked again.
 `--check` with the same flags makes every check the daemon makes before it
 takes a lock and prints one line each, `pass` with what holds or `FAIL` with
 why: the folder and its four rules, the settings file and the settings, the
-scratch roots, the suite, the root marker, the gate's address, key and pins,
-and the socket paths of the daemon and of every lead's holder. Then it lists
+folders the settings name, the scratch roots, the suite, the root marker, the
+gate's address, key and pins, and the socket paths of the daemon and of every
+lead's holder. Then it lists
 what the daemon would read and open, says that `owner/scratch.json` is not
 read, and ends `check: no refusal` (exit 0) or `check: N refusal(s)` (exit
 10). It binds, locks, makes and starts nothing; the locks and the gate's port,

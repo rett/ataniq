@@ -44,10 +44,18 @@ import (
 //     paths every bind table binds, the agent install, the probe and each
 //     lead's folder, mirror, mailbox, published folder and holder runtime
 //     folder, whether or not the lead is defined);
-//   - the gate's identity (owner/gate).
-// Each is decided twice, on the resolved path and on the identity (device and
-// inode) of the open folder and of each folder above it, so that a second
-// name of a folder (a bind mount of it elsewhere) is caught as well. The file
+//   - the gate's identity (owner/gate);
+//   - once the settings are read, the drop folder, the mirror, the work
+//     folder or the sandbox template they name (namedGuards).
+// Each is decided three ways: on the resolved paths; on the identity (device
+// and inode) of the open folder and of each folder above it, which catches a
+// bind mount of a guarded folder itself; and on the places of the folder and of
+// the guard within their filesystems, from the daemon's mount table
+// (scratch_mounts_linux.go), which catches a bind mount of a folder within a
+// guard given as the folder and a mount that shows the folder, or a part of
+// it, within a guard (inside a lead's folder, say). A mount made after the
+// check, or in another mount namespace, is not seen; only the owner or root
+// can make one on the host. The file
 // scratch.json is opened beneath the folder's handle without following a link
 // and refused when it is not a regular private file of the user with one name
 // or is the key list, the journal, a file of the gate or the trial's settings
@@ -83,12 +91,15 @@ func defineSettingsFlags(fs *flag.FlagSet, s *settingsFlags) {
 	fs.BoolVar(&s.check, "check", false, "with --owner-settings: check and print what the daemon would read, then exit; nothing is bound, locked or started")
 }
 
-// The refusals of the folder, by name. Each is one line of --check.
+// The refusals of the folder, by name. Each is one line of --check. The
+// last, ruleNamed, is decided once the settings are read, on the folders they
+// name.
 const (
 	ruleTrial  = "not the trial's settings folder"
 	ruleRoots  = "outside the state and runtime folders"
 	ruleLead   = "out of every lead's reach"
 	ruleSecret = "not the key list, the journal or the gate identity"
+	ruleNamed  = "apart from the folders the settings name"
 )
 
 // settingsGuard is one path the folder must not be, lie in or hold.
@@ -145,6 +156,38 @@ func (p settingsPlace) secretFiles() []settingsGuard {
 	}
 }
 
+// namedGuards are the paths the settings name that the folder holding them
+// must not be, lie in or hold: the drop folder, the one place another process
+// is expected to write, the mirror and the work folder, which others write or
+// run in, and the sandbox template, which decides which command wraps the
+// gates (checkScratchRoots keeps the template out of the first three for the
+// same reason). The settings file names the template and the gates, so it is
+// of the same weight.
+func namedGuards(sc hostadapter.Scratch) []settingsGuard {
+	out := []settingsGuard{
+		{ruleNamed, sc.Drop, "the drop folder the settings name"},
+		{ruleNamed, sc.Mirror, "the mirror the settings name"},
+	}
+	if sc.Work != "" {
+		out = append(out, settingsGuard{ruleNamed, sc.Work, "the work folder the settings name"})
+	}
+	if sc.Sandbox != "" {
+		out = append(out, settingsGuard{ruleNamed, sc.Sandbox, "the sandbox template the settings name"})
+	}
+	return out
+}
+
+// apartFromNamed refuses a folder that is, lies in or holds a path its own
+// settings name ([namedGuards]), by path, identity and place, as every rule.
+func (d *settingsDir) apartFromNamed(sc hostadapter.Scratch) error {
+	for _, g := range namedGuards(sc) {
+		if err := d.against(g); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // settingsDir is the folder of --owner-settings, open by its handle.
 type settingsDir struct {
 	given, real string
@@ -153,6 +196,10 @@ type settingsDir struct {
 	// up are the identities of the folder and of every folder above it, as
 	// the open folder's ".." leads.
 	up []fileID
+	// mnt is the daemon's mount table, read once when the folder is opened,
+	// and place the folder's place within its filesystem.
+	mnt   mountTable
+	place fsPlace
 }
 
 // openSettingsDir resolves the folder, opens it with no link followed and
@@ -220,7 +267,40 @@ func openSettingsDir(dir string) (*settingsDir, error) {
 		d.up = append(d.up, pid)
 		cur = pfd
 	}
+	// The folder's place in its filesystem: the mount the handle lies on,
+	// from the mount table, and the handle's own path below its mount point.
+	if err := d.placeSelf(fd); err != nil {
+		d.f.Close()
+		return nil, fmt.Errorf("the folder %s cannot be placed in its filesystem: %v", dir, err)
+	}
 	return d, nil
+}
+
+// placeSelf reads the mount table and places the open folder in it, by the
+// path the kernel gives its handle (/proc/self/fd/N, which follows the folder
+// when it is renamed), on the mount the handle lies on.
+func (d *settingsDir) placeSelf(fd int) error {
+	t, err := readMountTable()
+	if err != nil {
+		return err
+	}
+	id, err := mountIDOfFD(fd)
+	if err != nil {
+		return err
+	}
+	at, err := os.Readlink("/proc/self/fd/" + strconv.Itoa(fd))
+	if err != nil {
+		return err
+	}
+	if !filepath.IsAbs(at) || filepath.Clean(at) != at {
+		return fmt.Errorf("the open folder has no path from the root (%q)", at)
+	}
+	pl, err := t.placeOf(id, at)
+	if err != nil {
+		return err
+	}
+	d.mnt, d.place = t, pl
+	return nil
 }
 
 // private refuses a folder that is not a folder of the user's, closed to the
@@ -276,7 +356,8 @@ func hasID(list []fileID, id fileID) bool {
 }
 
 // against decides one guard: the folder must not be, lie in or hold it, by
-// its resolved path and by the identities of the folders.
+// its resolved path, by the identities of the folders and by their places in
+// their filesystems.
 func (d *settingsDir) against(g settingsGuard) error {
 	rp, err := resolvePath(g.path)
 	if err != nil {
@@ -295,6 +376,20 @@ func (d *settingsDir) against(g settingsGuard) error {
 	}
 	if hasID(aboveIDs(rp), d.id) {
 		return fmt.Errorf("the folder %s holds %s (%s), by another name (a bind mount)", d.given, g.what, g.path)
+	}
+	id, err := mountIDOfPath(rp)
+	if err != nil {
+		return fmt.Errorf("%s (%s) cannot be placed in its filesystem: %v", g.what, g.path, err)
+	}
+	pl, err := d.mnt.placeOf(id, rp)
+	if err != nil {
+		return fmt.Errorf("%s (%s) cannot be placed in its filesystem: %v", g.what, g.path, err)
+	}
+	switch m := d.mnt.meet(d.real, d.place, rp, pl); {
+	case m.in:
+		return fmt.Errorf("the folder %s is or lies in %s (%s), by another name: %s", d.given, g.what, g.path, m.how)
+	case m.holds:
+		return fmt.Errorf("the folder %s holds %s (%s), by another name: %s", d.given, g.what, g.path, m.how)
 	}
 	return nil
 }
@@ -414,7 +509,13 @@ func openOwnerSettings(p settingsPlace) (scratchLoad, error) {
 	secrets := p.secretFiles()
 	return func() (hostadapter.Scratch, error) {
 		sc, _, err := d.readSettings(secrets)
-		return sc, err
+		if err != nil {
+			return sc, err
+		}
+		if err := d.apartFromNamed(sc); err != nil {
+			return hostadapter.Scratch{}, fmt.Errorf("%s: %v", ruleNamed, err)
+		}
+		return sc, nil
 	}, nil
 }
 
@@ -469,7 +570,7 @@ func (a *app) ownerSettingsCheck(o *ownerFlags, cfg *leaddaemon.Config, p settin
 	d, err := openSettingsDir(p.dir)
 	if err != nil {
 		line("the settings folder", err, "")
-		for _, r := range []string{"a private folder of the daemon's user", ruleTrial, ruleRoots, ruleLead, ruleSecret, "the settings file", "the settings", "the scratch roots, the drop folder and the mirror", "the suite"} {
+		for _, r := range []string{"a private folder of the daemon's user", ruleTrial, ruleRoots, ruleLead, ruleSecret, "the settings file", "the settings", ruleNamed, "the scratch roots, the drop folder and the mirror", "the suite"} {
 			skip(r, "the settings folder is refused")
 		}
 	} else {
@@ -493,11 +594,11 @@ func (a *app) ownerSettingsCheck(o *ownerFlags, cfg *leaddaemon.Config, p settin
 				line(r, gerr, "")
 				continue
 			}
-			line(r, rules[r], oks[r]+", by path and by identity")
+			line(r, rules[r], oks[r]+", by path, by identity and by place in the filesystem")
 		}
 		folderOK := perr == nil && gerr == nil && rules[ruleTrial] == nil && rules[ruleRoots] == nil && rules[ruleLead] == nil && rules[ruleSecret] == nil
 		if !folderOK {
-			for _, r := range []string{"the settings file", "the settings", "the scratch roots, the drop folder and the mirror", "the suite"} {
+			for _, r := range []string{"the settings file", "the settings", ruleNamed, "the scratch roots, the drop folder and the mirror", "the suite"} {
 				skip(r, "the settings folder is refused, so nothing in it is read")
 			}
 		} else {
@@ -505,7 +606,7 @@ func (a *app) ownerSettingsCheck(o *ownerFlags, cfg *leaddaemon.Config, p settin
 			sc, sf, err = d.readSettings(p.secretFiles())
 			if err != nil {
 				line("the settings file", err, "")
-				for _, r := range []string{"the settings", "the scratch roots, the drop folder and the mirror", "the suite"} {
+				for _, r := range []string{"the settings", ruleNamed, "the scratch roots, the drop folder and the mirror", "the suite"} {
 					skip(r, "the settings file is refused")
 				}
 			} else {
@@ -513,6 +614,7 @@ func (a *app) ownerSettingsCheck(o *ownerFlags, cfg *leaddaemon.Config, p settin
 					p.dir, settingsName, sf.st.Mode&0o777, sf.st.Size))
 				line("the settings", nil, fmt.Sprintf("not a phone trial's; the stand-in door; project %s, role %s, target %s; scratch roots %s; drop folder %s",
 					sc.Project, sc.Role, sc.Target, strings.Join(sc.Roots, ", "), sc.Drop))
+				line(ruleNamed, d.apartFromNamed(sc), "is not, lies not in and holds not the drop folder, the mirror, the work folder or the sandbox template the settings name, by path, by identity and by place in the filesystem")
 				line("the scratch roots, the drop folder and the mirror", checkScratchRoots(p.state, sc, p.getenv),
 					"none is, lies in or holds a default folder of the account; the mirror lies under a scratch root; the drop folder is apart from the state folder")
 				if ownerSuite != nil {

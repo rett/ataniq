@@ -1,16 +1,18 @@
 # The body of ROOT/netcheck.sh, which prepare.sh --write writes after six
 # lines of its own (the first line, a note, then SELF, PASTA, BWRAP, GATE_HOST
 # and GATE_PORT, the real values). It is never run by prepare or by an agent:
-# the owner runs it by hand, with the phone trial running (so that something
-# listens on the gate's address), before either lead starts, and again once
-# the drop rule is in place, before the live lead.
+# the owner runs it by hand while a daemon serves the gate (so that something
+# listens on the gate's address): at step e, before either lead starts, the
+# phone trial's; at step 7, once the drop rule is in place and before the live
+# lead, the proof's daemon, with the trial stopped.
 #
 # It is modelled on the canary run kit's netcheck (qualification/canary/run/
 # netcheck.sh.in). It probes one TCP connection to the gate's numeric address
 # and port three times and classifies each probe as connected, refused, or
 # filtered/timed out, or as a probe that did not run (an error):
-#   1. from this host, outside any sandbox: it must connect (the trial's gate
-#      answers); without a listener the next probes prove nothing;
+#   1. from this host, outside any sandbox: it must connect (the gate of the
+#      daemon that serves it answers); without a listener the next probes
+#      prove nothing;
 #   2. from the lead's network, in the shape of the sandbox profile (pasta,
 #      then bubblewrap with the read-only root, no capabilities, UID 0),
 #      started from this shell: it must be refused or time out;
@@ -21,7 +23,15 @@
 #      place in the user manager shows here and not in 2.
 # Only a refusal or a timeout that the probe itself reports passes 2 and 3; a
 # probe that did not run (no curl, a curl without telnet://, a sandbox or a
-# unit that did not start, output without the probe's line) is a finding. The
+# unit that did not start, output without the probe's line) is a finding.
+# Inside the sandbox, before the probe, the namespace's network is looked at
+# (NETUP): an IPv4 address other than loopback (/proc/net/fib_trie) and a
+# default route on an interface other than lo (/proc/net/route). curl's
+# "could not connect" (7) is also what an unreachable network, a missing
+# route or a local refusal give, so a namespace whose network did not come
+# up would read as refused: without the address or the route the probe is
+# not made, the line "net route=... addr=..." says which is missing, and the
+# result is a probe that did not run, a finding. The
 # probe is curl with no configuration file (-q, its first argument), no proxy
 # (--noproxy '*'; the environment is cleared on this host's side, and
 # bubblewrap clears it inside) and telnet://, which sends nothing but its empty
@@ -49,11 +59,12 @@
 # (ataniq-lead-scratch-KEY.service): a rule that matches that name is not
 # seen by probe 3.
 #
-# Entries that run nothing, for the tests: --classify RC CONNECT and
-# --class-of TEXT print a class; --verdict HOST SHELL UNIT prints the lines
-# and ends with the exit status three classes give. --probe-here HOST PORT
-# runs the probe in the caller's environment, outside any sandbox (the tests
-# run it with a stub curl first on PATH and no other).
+# Entries that run nothing, for the tests: --classify RC CONNECT,
+# --class-of TEXT and --lead-class-of TEXT print a class; --verdict HOST SHELL
+# UNIT prints the lines and ends with the exit status three classes give;
+# --net-of ROUTE TRIE runs NETUP on the two files given in place of /proc's.
+# --probe-here HOST PORT runs the probe in the caller's environment, outside
+# any sandbox (the tests run it with a stub curl first on PATH and no other).
 #
 # POSIX sh. The script calls itself with --core to run the sandbox.
 SH=$(command -v sh) || SH=/bin/sh
@@ -110,6 +121,33 @@ PROBE='command -v curl >/dev/null 2>&1 || { echo "probe no-curl"; exit 0; }
 t=$(curl -q -s --noproxy "*" -o /dev/null --connect-timeout 5 -m 8 -w "%{time_connect}" "telnet://$0:$1" </dev/null)
 echo "probe rc=$? connect=${t:-none}"'
 
+# NETUP, run by sh -c inside the sandbox before the probe, prints one line,
+# "net route=IFACE addr=ADDRESS" ("none" for what is not there): the
+# interface of an IPv4 default route other than lo, from /proc/net/route, and
+# an IPv4 address of the namespace other than loopback, from
+# /proc/net/fib_trie. Without both it ends there, and the probe is not made.
+# $2 and $3, when given, are read in place of the two files (--net-of).
+# shellcheck disable=SC2016  # the inner shell expands these
+NETUP='r=none
+a=none
+if [ -r "${2:-/proc/net/route}" ]; then
+  while read -r i d g f c u m k rest; do
+    if [ "$d" = 00000000 ] && [ "$k" = 00000000 ] && [ "$i" != lo ] && [ "$i" != Iface ]; then r=$i; break; fi
+  done <"${2:-/proc/net/route}"
+fi
+if [ -r "${3:-/proc/net/fib_trie}" ]; then
+  p=
+  while read -r w x y z; do
+    if [ "$w" = /32 ] && [ "$x" = host ] && [ "$y" = LOCAL ]; then
+      case $p in 127.* | "") ;; *) a=$p; break ;; esac
+    fi
+    if [ "$w" = "|--" ]; then p=$x; fi
+  done <"${3:-/proc/net/fib_trie}"
+fi
+echo "net route=$r addr=$a"
+[ "$r" != none ] && [ "$a" != none ] || exit 0
+'
+
 # classify RC CONNECT prints the class of one probe: connected when a time to
 # connect above zero was measured; else refused for curl's "could not
 # connect" (7: a reset, or a rejection answered by an unreachable message)
@@ -144,6 +182,22 @@ class_of() {
   classify "$_rc" "$_t"
 }
 
+# lead_class_of TEXT prints the class of a probe of the lead's network: its
+# last "net " line must name a route and an address (NETUP), else the class
+# is nonet, a probe that did not run; without that line it is an error; then
+# the class of its probe line.
+lead_class_of() {
+  _n=$(printf '%s\n' "$1" | awk '/^net / { l = $0 } END { print l }')
+  case $_n in
+    'net route='*' addr='*) ;;
+    *) echo error; return 0 ;;
+  esac
+  case $_n in
+    *'route=none'* | *'addr=none'*) echo nonet; return 0 ;;
+  esac
+  class_of "$1"
+}
+
 FINDINGS=0
 finding() {
   FINDINGS=$((FINDINGS + 1))
@@ -155,9 +209,9 @@ info() { printf 'INFO     %s\n' "$*"; }
 # host_line CLASS: this host must connect.
 host_line() {
   case $1 in
-    connected) pass "this host: connected to $GATE_HOST:$GATE_PORT (the trial's gate listens)" ;;
-    refused) finding "this host: refused at $GATE_HOST:$GATE_PORT: nothing listens; run this while the trial runs, or the next probes prove nothing" ;;
-    filtered) finding "this host: no answer from $GATE_HOST:$GATE_PORT (filtered or timed out); run this while the trial runs, or the next probes prove nothing" ;;
+    connected) pass "this host: connected to $GATE_HOST:$GATE_PORT (a daemon's gate listens)" ;;
+    refused) finding "this host: refused at $GATE_HOST:$GATE_PORT: nothing listens; run this while a daemon serves the gate (the trial at step e, the proof's daemon at step 7), or the next probes prove nothing" ;;
+    filtered) finding "this host: no answer from $GATE_HOST:$GATE_PORT (filtered or timed out); run this while a daemon serves the gate (the trial at step e, the proof's daemon at step 7), or the next probes prove nothing" ;;
     *) finding "this host: the probe did not run (no curl, a curl without telnet://, or another failure), so nothing was shown" ;;
   esac
 }
@@ -168,6 +222,7 @@ lead_line() {
     refused) pass "$1: refused (no connection to the gate's port was made)" ;;
     filtered) pass "$1: filtered or timed out (no connection to the gate's port was made)" ;;
     connected) finding "$1: connected to the gate's port $GATE_HOST:$GATE_PORT: do not start a lead until a rule refuses it" ;;
+    nonet) finding "$1: the probe did not run: the sandbox's network did not come up (no IPv4 address or no default route; see its net line below), and a refusal there would show nothing" ;;
     *) finding "$1: the probe did not run, so nothing was shown (see its output below)" ;;
   esac
 }
@@ -192,7 +247,7 @@ finish() {
 
 case ${1:-} in
   --core)
-    core /usr/bin/sh -c "$PROBE" "$GATE_HOST" "$GATE_PORT"
+    core /usr/bin/sh -c "$NETUP$PROBE" "$GATE_HOST" "$GATE_PORT"
     exit
     ;;
   --classify)
@@ -204,6 +259,16 @@ case ${1:-} in
     [ "$#" -eq 2 ] || exit 2
     class_of "$2"
     exit 0
+    ;;
+  --lead-class-of)
+    [ "$#" -eq 2 ] || exit 2
+    lead_class_of "$2"
+    exit 0
+    ;;
+  --net-of)
+    [ "$#" -eq 3 ] || exit 2
+    "$SH" -c "$NETUP" sh - "$2" "$3"
+    exit
     ;;
   --verdict)
     [ "$#" -eq 4 ] || exit 2
@@ -227,7 +292,7 @@ if command -v systemd-run >/dev/null 2>&1; then
 else
   UNIT='systemd-run is not on PATH: the probe in a user unit could not run'
 fi
-verdict "$(class_of "$HOSTSIDE")" "$(class_of "$SHAPE")" "$(class_of "$UNIT")"
+verdict "$(class_of "$HOSTSIDE")" "$(lead_class_of "$SHAPE")" "$(lead_class_of "$UNIT")"
 if command -v ss >/dev/null 2>&1; then
   _l=$(ss -ltnu 2>/dev/null | awk 'NR > 1 && $5 !~ /^(127\.|\[::1\]|\[::ffff:127\.)/ { print $1, $5 }' | LC_ALL=C sort)
   if [ -n "$_l" ]; then
