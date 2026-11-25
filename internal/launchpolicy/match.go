@@ -27,6 +27,9 @@ func authenticate(p *Policy, s Snapshot, intent Intent) (string, *Refusal) {
 	if v != (View{s.Pack, s.Version, s.Mode, s.Model, s.Effort}) {
 		return "", refuse("expected-differs", 0, "snapshot")
 	}
+	if r := p.checkTransport(s.Transport); r != nil {
+		return "", r
+	}
 	if s.Transport == pack.Protocol {
 		m := p.modes[s.Mode]
 		if kind != "coordinator" || !s.OwnerProtocol || m == nil || m.Class != pack.NoPrompt || m.Vector.Protocol == nil || m.Vector.Protocol.observation == nil || !slices.Contains(m.Vector.Protocol.Profiles, digest) {
@@ -224,7 +227,10 @@ func (q *sequence) expect(s Snapshot, spec Spec, pairs map[pack.Slot]string) (Ve
 			return Verdict{}, refuse("expected-differs", 3, at)
 		}
 	}
-	m := q.policy.modes[s.Mode] // the required mode passed R25 and R29
+	m := q.policy.modes[pairs[pack.PermissionModeSlot]]
+	if m == nil {
+		return Verdict{}, refuse("expected-missing", 3, "slot[permission_mode]")
+	}
 	recognizer := ""
 	if s.Transport == pack.Terminal {
 		recognizer = string(m.Recognizer)

@@ -57,6 +57,13 @@ func (p *Policy) lookup(token string) (*form, string) {
 	return nil, "unknown-token"
 }
 
+func (p *Policy) checkTransport(t pack.Transport) *Refusal {
+	if !p.executable.transports(t) {
+		return refuse("transport-not-admitted", 0, "snapshot")
+	}
+	return nil
+}
+
 type sequence struct {
 	policy    *Policy
 	kind      string
@@ -161,6 +168,9 @@ func (q *sequence) finalForm(i int, token string) (*form, string) {
 func Expand(p *Policy, launch pack.Launch, s Snapshot) (Spec, *Refusal) {
 	kind, r := identity(p, s)
 	if r != nil {
+		return Spec{}, r
+	}
+	if r := p.checkTransport(s.Transport); r != nil {
 		return Spec{}, r
 	}
 	return expand(p, launch, s, kind)
