@@ -122,6 +122,7 @@ func TestManifestValidation(t *testing.T) {
 		{"runtime", "other"}, {"token", "prefix"}, {"terminal", "headless"}, {"terminal", "hooks"},
 		{`["terminal"]`, "[]"}, {`["terminal"]`, `["protocol","protocol"]`}, {"preview", "alpha"},
 		{"hooks", "hook"}, {`"verified_on":""`, `"verified_on":"yesterday"`},
+		{`"minimum_version":"1.0"`, `"minimum_version":" \t"`},
 		{"1.0.0", "1.0"}, {`"minimum_version":`, `"schema_digest":"invalid","minimum_version":`},
 		{`"words":[{"text":"sample","match":"token"}]`, `"words":[]`},
 	} {

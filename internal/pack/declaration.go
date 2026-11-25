@@ -274,7 +274,7 @@ func (b Build) validate() error {
 		default:
 			return fmt.Errorf("unknown interface stability %q", iface.Stability)
 		}
-		if iface.MinimumVersion == "" || (iface.SchemaDigest != "" && !sha256Hex.MatchString(iface.SchemaDigest)) {
+		if strings.TrimSpace(iface.MinimumVersion) == "" || (iface.SchemaDigest != "" && !sha256Hex.MatchString(iface.SchemaDigest)) {
 			return fmt.Errorf("invalid version or schema digest for %q", iface.Kind)
 		}
 	}
