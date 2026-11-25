@@ -1240,7 +1240,9 @@ read again: it never allows a read, which the desk checks on every one.
 owner channel reads its settings from `DIR/scratch.json` and not from
 `owner/scratch.json` of the state root, which is not read at all, so a phone
 trial's state folder keeps its own settings while the scratch daemon serves its
-gate identity, its pins and its paired phones:
+gate identity, its pins and its paired phones. `DIR` sits beside the state
+root and the runtime root, not inside either (the runbook puts it at
+`ROOT/owner-settings`, beside `ROOT/runtime`, with the state root elsewhere):
 
 ```sh
 build/scratch-seat/ataniqd run --scratch CONFIG --owner-channel --seat-gate IP:PORT --owner-settings DIR
@@ -1250,16 +1252,19 @@ The flag's name follows run's other flags (`--owner-channel` says what is
 served; `--scratch`, `--seat-gate` and `--owner-settings` name what it is
 served from), and it names a folder because the folder is what is checked and
 held: the daemon resolves `DIR` through every link and `..`, opens it with no
-link followed and reads `scratch.json` beneath that handle each time, without
-following a link, so a link planted after the check changes nothing. It
+link followed and opens `scratch.json` beneath that handle each time, without
+following a link, so a link planted after the check changes nothing. The
+file's bytes are read once, from the descriptor that was checked, and the
+settings are decoded from those bytes; the file is never opened by its name
+a second time. It
 refuses to start (exit 10, one line naming every rule that fails, before any
 lock and with nothing made) when `DIR` is not a private folder (mode 0700) of
 the daemon's user, or when it is, lies in or holds:
 
 - `owner/` of the state root, the trial's own settings folder ("not the
   trial's settings folder");
-- the state root or the runtime root ("outside the state and runtime
-  folders");
+- the state root or the runtime root ("beside the state and runtime
+  folders, not inside them");
 - a path a lead's sandbox reaches: each lead's folder (home, provider config,
   tree and the copies its sandbox binds), mirror, mailbox, published folder and
   holder runtime folder, whether or not the lead is defined, the agent install
@@ -1274,19 +1279,15 @@ the daemon's user, or when it is, lies in or holds:
   the settings file does, so neither is kept with the other (the template is
   kept out of the first three for the same reason).
 
-Each rule is decided three ways. By the resolved paths. By the identities
-(device and inode) of the open folder and of each folder above it, which
-catch a bind mount of a guarded folder itself given as `DIR`. And by the
-places of the folder and of each guard within their filesystems, read from
-the daemon's mount table (`/proc/self/mountinfo`: a mount's device, the folder
-of the filesystem it shows and where it shows it), which catch a bind mount
-of a folder within a guard given as `DIR` (`..` from the root of such a mount
-leads above its mount point, so no identity above it is the guard's) and a
-mount that shows `DIR`, or a part of it, within a guarded folder, such as a
-lead's. A mount whose root is not `/` is ordinary (a btrfs subvolume, say)
-and is not refused by itself. A mount made after the check, or in another
-mount namespace, is not seen; only the owner or root can make one on the
-host, and a lead cannot. `scratch.json` must be a regular
+Each rule is decided two ways: by the resolved paths, and by the identities
+(device and inode) of the open folder and of each folder above it, which also
+catch a bind mount of a guarded folder itself given as `DIR`. The checks
+guard against mistakes (a wrong path, a link, a guarded folder given by its
+other name), not against an attacker. A mount layout the owner or root makes
+is outside them: a bind mount of a folder within a guard given as `DIR`,
+nested mounts, a mount made after the check and a mount in another mount
+namespace are not looked at. A lead cannot make a mount on the host.
+`scratch.json` must be a regular
 file of the user's, mode 0600, with one name, that is not the key list, its
 head, the journal, a file of the gate or the trial's settings file by another
 name, and that holds non-trial settings. The start then prints, after the
@@ -1305,11 +1306,29 @@ takes a lock and prints one line each, `pass` with what holds or `FAIL` with
 why: the folder and its four rules, the settings file and the settings, the
 folders the settings name, the scratch roots, the suite, the root marker, the
 gate's address, key and pins, and the socket paths of the daemon and of every
-lead's holder. Then it lists
+lead's holder. The last of these is one the daemon's start does not make: a
+holder meets the limit of a socket address only when it starts, so the check
+is the place to find a runtime root too long for a holder. Then it lists
 what the daemon would read and open, says that `owner/scratch.json` is not
 read, and ends `check: no refusal` (exit 0) or `check: N refusal(s)` (exit
 10). It binds, locks, makes and starts nothing; the locks and the gate's port,
 which it does not take, are the start's own refusals (exit 12, 17 and 18).
+
+`--check --keys-prefix` and `--check --keys-since LEN:SHA256` check the key
+list of the state root alone (`owner/keys.log` and its head
+`owner/keys.head`), with the journal's own reader: the records well formed,
+in sequence, on the digest chain and within the list's rules, and the head's
+count and digest the list's. The reader runs on a private copy in a
+temporary folder that is removed, so nothing of the state root is written,
+and a head that lags the list (a start would make it right) does not pass.
+`--keys-prefix` prints the list's prefix, its length in bytes and its
+SHA-256, as `LEN:SHA256`. `--keys-since` checks that a prefix taken earlier
+is the list's beginning, ending at a whole record, and names the type of
+each record appended since: counter records alone (a phone login whose
+passkey's sign counter rises) end `keys: holds` (exit 0); any other record,
+a changed or missing old byte and any damage end `keys: CHANGED` (exit 1).
+The attended proof takes the prefix before its sitting and checks the list
+against it after.
 
 **Reading a lead's replies.** The owner defines and starts a lead from the
 console ([the console guide](terminal-console.md)). Its chat is off, like every

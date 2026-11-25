@@ -176,15 +176,20 @@ type ownerFlags struct {
 // settingsFlags are the flags of run that only a build with both tags has:
 // --owner-settings DIR, the folder the owner channel reads its settings from
 // in place of owner/ of the state folder, and --check, which checks and prints
-// what the daemon would read and exits.
+// what the daemon would read and exits; with --check, --keys-prefix and
+// --keys-since PREFIX check the state folder's key list alone
+// (scratch_keys_linux.go).
 type settingsFlags struct {
-	dir    string
-	dirSet bool
-	check  bool
+	dir        string
+	dirSet     bool
+	check      bool
+	keysPrefix bool
+	keysSince  string
+	sinceSet   bool
 }
 
-// given reports whether either flag was given.
-func (s settingsFlags) given() bool { return s.dirSet || s.check }
+// given reports whether any of the flags was given.
+func (s settingsFlags) given() bool { return s.dirSet || s.check || s.keysPrefix || s.sinceSet }
 
 // ownerSettingsNote is the line the daemon prints after the banner when the
 // owner channel's settings come from the folder of --owner-settings: the file

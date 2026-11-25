@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -34,12 +35,19 @@ import (
 // because the folder is what is checked and held: the daemon opens it once by
 // its handle and reads scratch.json beneath that handle every time.
 //
+// Where the folder lies: beside the state and runtime roots, not inside them
+// (the runbook's layout puts it at ROOT/owner-settings, beside ROOT/runtime,
+// with the state root elsewhere). The proof's daemon still reads the trial's
+// gate identity, pins and key list and keeps its cards in the trial's journal;
+// what the folder keeps apart is the settings: the trial's owner/scratch.json
+// stays where it is and is not read, and the daemon reads the proof's own.
+//
 // Before anything else is read the folder is resolved through every link and
 // `..`, opened with no link followed (openat2, RESOLVE_NO_SYMLINKS), and
 // refused, by name, when it is not a private folder of the daemon's user, or
 // when it is, lies in or holds:
 //   - owner/ of the state folder, the trial's own settings folder;
-//   - the state folder or the runtime folder;
+//   - the state folder or the runtime folder (the folder sits beside them);
 //   - a path a lead's sandbox reaches (leaddaemon.ScratchLeadReach: the host
 //     paths every bind table binds, the agent install, the probe and each
 //     lead's folder, mirror, mailbox, published folder and holder runtime
@@ -47,31 +55,33 @@ import (
 //   - the gate's identity (owner/gate);
 //   - once the settings are read, the drop folder, the mirror, the work
 //     folder or the sandbox template they name (namedGuards).
-// Each is decided three ways: on the resolved paths; on the identity (device
-// and inode) of the open folder and of each folder above it, which catches a
-// bind mount of a guarded folder itself; and on the places of the folder and of
-// the guard within their filesystems, from the daemon's mount table
-// (scratch_mounts_linux.go), which catches a bind mount of a folder within a
-// guard given as the folder and a mount that shows the folder, or a part of
-// it, within a guard (inside a lead's folder, say). A mount made after the
-// check, or in another mount namespace, is not seen; only the owner or root
-// can make one on the host. The file
-// scratch.json is opened beneath the folder's handle without following a link
-// and refused when it is not a regular private file of the user with one name
-// or is the key list, the journal, a file of the gate or the trial's settings
-// file. A link planted after the check changes nothing: the folder is the one
-// open, and the file is read beneath its handle with O_NOFOLLOW and compared
-// with what was checked after it is read. What stays outside the check: the
-// folder is the user's own, so a process of the user's (not a lead's: the
-// folder is out of every lead's reach) could still change the file between two
-// reads; the daemon reads it twice, before its locks and when it builds the
-// service, and each read is checked.
+// Each is decided two ways: on the resolved paths, and on the identity
+// (device and inode) of the open folder and of each folder above it, which
+// also catches a bind mount of a guarded folder itself given as the folder.
+//
+// What the checks are for: they guard against mistakes (a wrong path, a link,
+// a folder of the trial's given by its other name), not against an attacker.
+// A mount layout the owner or root makes is outside them: a bind mount of a
+// folder within a guard, nested mounts, a mount made after the check and a
+// mount in another namespace are not looked at. A lead cannot make a mount
+// on the host. The file scratch.json is opened beneath the folder's handle
+// without following a link and refused when it is not a regular private file
+// of the user with one name or is the key list, the journal, a file of the
+// gate or the trial's settings file. Its bytes are read once, from the
+// descriptor that was checked, and decoded from those bytes; nothing opens it
+// by its name again. A link planted after the check changes nothing: the
+// folder is the one open, and the file is opened beneath its handle with
+// O_NOFOLLOW and compared with what was checked after it is read. What stays outside the check: the folder is the
+// user's own, so a process of the user's (not a lead's: the folder is out of
+// every lead's reach) could still change the file between two reads; the
+// daemon reads it twice, before its locks and when it builds the service, and
+// each read is checked.
 
 // settingsName is the settings file in the folder of --owner-settings.
 const settingsName = hostadapter.ScratchName
 
 // maxSettingsBytes is the largest settings file, the host adapter's bound.
-const maxSettingsBytes = 64 << 10
+const maxSettingsBytes = hostadapter.MaxScratchBytes
 
 // maxUnixSocketPath is the longest path a Unix socket address holds, the
 // bound of package clientapi.
@@ -89,6 +99,11 @@ func defineSettingsFlags(fs *flag.FlagSet, s *settingsFlags) {
 		return nil
 	})
 	fs.BoolVar(&s.check, "check", false, "with --owner-settings: check and print what the daemon would read, then exit; nothing is bound, locked or started")
+	fs.BoolVar(&s.keysPrefix, "keys-prefix", false, "with --check: check the state folder's key list and its head with the journal's own reader and print the list's prefix, LEN:SHA256")
+	fs.Func("keys-since", "with --check: check the key list and its head, and name each record appended to the list since the prefix LEN:SHA256", func(v string) error {
+		s.keysSince, s.sinceSet = v, true
+		return nil
+	})
 }
 
 // The refusals of the folder, by name. Each is one line of --check. The
@@ -96,7 +111,7 @@ func defineSettingsFlags(fs *flag.FlagSet, s *settingsFlags) {
 // name.
 const (
 	ruleTrial  = "not the trial's settings folder"
-	ruleRoots  = "outside the state and runtime folders"
+	ruleRoots  = "beside the state and runtime folders, not inside them"
 	ruleLead   = "out of every lead's reach"
 	ruleSecret = "not the key list, the journal or the gate identity"
 	ruleNamed  = "apart from the folders the settings name"
@@ -178,7 +193,7 @@ func namedGuards(sc hostadapter.Scratch) []settingsGuard {
 }
 
 // apartFromNamed refuses a folder that is, lies in or holds a path its own
-// settings name ([namedGuards]), by path, identity and place, as every rule.
+// settings name ([namedGuards]), by path and identity, as every rule.
 func (d *settingsDir) apartFromNamed(sc hostadapter.Scratch) error {
 	for _, g := range namedGuards(sc) {
 		if err := d.against(g); err != nil {
@@ -196,10 +211,6 @@ type settingsDir struct {
 	// up are the identities of the folder and of every folder above it, as
 	// the open folder's ".." leads.
 	up []fileID
-	// mnt is the daemon's mount table, read once when the folder is opened,
-	// and place the folder's place within its filesystem.
-	mnt   mountTable
-	place fsPlace
 }
 
 // openSettingsDir resolves the folder, opens it with no link followed and
@@ -267,40 +278,7 @@ func openSettingsDir(dir string) (*settingsDir, error) {
 		d.up = append(d.up, pid)
 		cur = pfd
 	}
-	// The folder's place in its filesystem: the mount the handle lies on,
-	// from the mount table, and the handle's own path below its mount point.
-	if err := d.placeSelf(fd); err != nil {
-		d.f.Close()
-		return nil, fmt.Errorf("the folder %s cannot be placed in its filesystem: %v", dir, err)
-	}
 	return d, nil
-}
-
-// placeSelf reads the mount table and places the open folder in it, by the
-// path the kernel gives its handle (/proc/self/fd/N, which follows the folder
-// when it is renamed), on the mount the handle lies on.
-func (d *settingsDir) placeSelf(fd int) error {
-	t, err := readMountTable()
-	if err != nil {
-		return err
-	}
-	id, err := mountIDOfFD(fd)
-	if err != nil {
-		return err
-	}
-	at, err := os.Readlink("/proc/self/fd/" + strconv.Itoa(fd))
-	if err != nil {
-		return err
-	}
-	if !filepath.IsAbs(at) || filepath.Clean(at) != at {
-		return fmt.Errorf("the open folder has no path from the root (%q)", at)
-	}
-	pl, err := t.placeOf(id, at)
-	if err != nil {
-		return err
-	}
-	d.mnt, d.place = t, pl
-	return nil
 }
 
 // private refuses a folder that is not a folder of the user's, closed to the
@@ -356,8 +334,9 @@ func hasID(list []fileID, id fileID) bool {
 }
 
 // against decides one guard: the folder must not be, lie in or hold it, by
-// its resolved path, by the identities of the folders and by their places in
-// their filesystems.
+// its resolved path and by the identities of the folders. A bind mount of the
+// guard itself given as the folder has the guard's identity; a bind mount of a
+// folder within the guard, or any other mount layout, is not looked at.
 func (d *settingsDir) against(g settingsGuard) error {
 	rp, err := resolvePath(g.path)
 	if err != nil {
@@ -376,20 +355,6 @@ func (d *settingsDir) against(g settingsGuard) error {
 	}
 	if hasID(aboveIDs(rp), d.id) {
 		return fmt.Errorf("the folder %s holds %s (%s), by another name (a bind mount)", d.given, g.what, g.path)
-	}
-	id, err := mountIDOfPath(rp)
-	if err != nil {
-		return fmt.Errorf("%s (%s) cannot be placed in its filesystem: %v", g.what, g.path, err)
-	}
-	pl, err := d.mnt.placeOf(id, rp)
-	if err != nil {
-		return fmt.Errorf("%s (%s) cannot be placed in its filesystem: %v", g.what, g.path, err)
-	}
-	switch m := d.mnt.meet(d.real, d.place, rp, pl); {
-	case m.in:
-		return fmt.Errorf("the folder %s is or lies in %s (%s), by another name: %s", d.given, g.what, g.path, m.how)
-	case m.holds:
-		return fmt.Errorf("the folder %s holds %s (%s), by another name: %s", d.given, g.what, g.path, m.how)
 	}
 	return nil
 }
@@ -412,9 +377,11 @@ type settingsFile struct {
 }
 
 // readSettings opens scratch.json beneath the folder's handle without
-// following a link, checks it, reads it with the host adapter's strict reader
-// and checks that what was read is the file that was checked. It refuses trial
-// settings.
+// following a link, checks it, reads its bytes once from the descriptor that
+// was checked and decodes those bytes with the host adapter's strict reader
+// (hostadapter.ReadScratch), then checks that the file is still the one that
+// was checked. Nothing opens the file by its name a second time, so the
+// bytes decoded are the bytes of the file checked. It refuses trial settings.
 func (d *settingsDir) readSettings(secrets []settingsGuard) (hostadapter.Scratch, settingsFile, error) {
 	var none hostadapter.Scratch
 	name := d.given + "/" + settingsName
@@ -427,7 +394,8 @@ func (d *settingsDir) readSettings(secrets []settingsGuard) (hostadapter.Scratch
 	case err != nil:
 		return none, settingsFile{}, fmt.Errorf("%s cannot be opened: %v", name, err)
 	}
-	defer unix.Close(fd)
+	f := os.NewFile(uintptr(fd), name)
+	defer f.Close()
 	var sf settingsFile
 	if err := unix.Fstat(fd, &sf.st); err != nil {
 		return none, sf, err
@@ -453,19 +421,21 @@ func (d *settingsDir) readSettings(secrets []settingsGuard) (hostadapter.Scratch
 	if ownerSettingsHook != nil {
 		ownerSettingsHook("file")
 	}
-	// The host adapter's strict reader, on the file beneath the folder's
-	// handle: /proc/self/fd/N names the open folder itself, whatever its
-	// path names now, and the reader opens the last name without following
-	// a link.
-	via := "/proc/self/fd/" + strconv.Itoa(int(d.f.Fd())) + "/" + settingsName
-	sc, err := hostadapter.LoadScratch(via)
+	// The host adapter's strict reader, on the bytes of the descriptor that
+	// was checked: the file is read once, from its start, and never opened
+	// again by a name.
+	sc, err := hostadapter.ReadScratch(io.NewSectionReader(f, 0, maxSettingsBytes+1))
 	if err != nil {
-		return none, sf, errors.New(strings.ReplaceAll(err.Error(), via, name))
+		return none, sf, fmt.Errorf("%s: %v", name, err)
 	}
 	var after unix.Stat_t
 	if err := unix.Fstat(fd, &after); err != nil {
 		return none, sf, err
 	}
+	// The name still names the file that was read (/proc/self/fd/N is the
+	// open folder itself, whatever its path names now), and the file did not
+	// change while it was read.
+	via := "/proc/self/fd/" + strconv.Itoa(int(d.f.Fd())) + "/" + settingsName
 	var now unix.Stat_t
 	if err := unix.Lstat(via, &now); err != nil || idOfStat(&now) != id || after.Mtim != sf.st.Mtim ||
 		after.Ctim != sf.st.Ctim || after.Size != sf.st.Size {
@@ -526,6 +496,16 @@ func ownerSettingsRun(a *app, o *ownerFlags, cfg *leaddaemon.Config) (scratchLoa
 	case cfg.Scratch == nil:
 		fmt.Fprint(a.stderr, "ataniqd run: --owner-settings and --check need --scratch CONFIG\n")
 		return nil, leaddaemon.ExitUsage
+	case (s.keysPrefix || s.sinceSet) && !s.check:
+		fmt.Fprint(a.stderr, "ataniqd run: --keys-prefix and --keys-since need --check\n")
+		return nil, leaddaemon.ExitUsage
+	case s.keysPrefix && s.sinceSet:
+		fmt.Fprint(a.stderr, "ataniqd run: --keys-prefix and --keys-since exclude each other\n")
+		return nil, leaddaemon.ExitUsage
+	case s.keysPrefix || s.sinceSet:
+		// The key list alone: neither the settings folder nor the gate is
+		// looked at.
+		return nil, a.keysCheck(s, cfg.StateDir)
 	case !s.dirSet:
 		fmt.Fprint(a.stderr, "ataniqd run: --check needs --owner-settings DIR\n")
 		return nil, leaddaemon.ExitUsage
@@ -543,7 +523,9 @@ func ownerSettingsRun(a *app, o *ownerFlags, cfg *leaddaemon.Config) (scratchLoa
 }
 
 // ownerSettingsCheck is run --check: every check the daemon makes before it
-// takes a lock, on the same flags and config, one line each, with what passes
+// takes a lock, on the same flags and config, and one the start does not
+// make, the socket paths of every lead's holder (a holder meets that limit
+// only when it starts, during the sitting), one line each, with what passes
 // and why a refusal fails, then what the daemon would read. It binds, locks,
 // makes and starts nothing. It ends 0 when nothing is refused, else 10.
 func (a *app) ownerSettingsCheck(o *ownerFlags, cfg *leaddaemon.Config, p settingsPlace) int {
@@ -585,7 +567,7 @@ func (a *app) ownerSettingsCheck(o *ownerFlags, cfg *leaddaemon.Config, p settin
 		}
 		oks := map[string]string{
 			ruleTrial:  "is not, lies not in and holds not " + owner,
-			ruleRoots:  "is not, lies not in and holds not " + p.state + " or " + p.runtime,
+			ruleRoots:  "lies beside " + p.state + " and " + p.runtime + ": is not, lies not in and holds not either",
 			ruleLead:   fmt.Sprintf("is not, lies not in and holds not any of the %d paths the leads' sandboxes reach (their folders, mirrors, mailboxes, published folders, holder runtime folders, the agent install, the probe and the host paths every sandbox binds)", countRule(guards, ruleLead)),
 			ruleSecret: "is not, lies not in and holds not " + filepath.Join(owner, leaddaemon.SeatGateDirName) + ", the key list or the journal",
 		}
@@ -594,7 +576,7 @@ func (a *app) ownerSettingsCheck(o *ownerFlags, cfg *leaddaemon.Config, p settin
 				line(r, gerr, "")
 				continue
 			}
-			line(r, rules[r], oks[r]+", by path, by identity and by place in the filesystem")
+			line(r, rules[r], oks[r]+", by path and by identity")
 		}
 		folderOK := perr == nil && gerr == nil && rules[ruleTrial] == nil && rules[ruleRoots] == nil && rules[ruleLead] == nil && rules[ruleSecret] == nil
 		if !folderOK {
@@ -614,7 +596,7 @@ func (a *app) ownerSettingsCheck(o *ownerFlags, cfg *leaddaemon.Config, p settin
 					p.dir, settingsName, sf.st.Mode&0o777, sf.st.Size))
 				line("the settings", nil, fmt.Sprintf("not a phone trial's; the stand-in door; project %s, role %s, target %s; scratch roots %s; drop folder %s",
 					sc.Project, sc.Role, sc.Target, strings.Join(sc.Roots, ", "), sc.Drop))
-				line(ruleNamed, d.apartFromNamed(sc), "is not, lies not in and holds not the drop folder, the mirror, the work folder or the sandbox template the settings name, by path, by identity and by place in the filesystem")
+				line(ruleNamed, d.apartFromNamed(sc), "is not, lies not in and holds not the drop folder, the mirror, the work folder or the sandbox template the settings name, by path and by identity")
 				line("the scratch roots, the drop folder and the mirror", checkScratchRoots(p.state, sc, p.getenv),
 					"none is, lies in or holds a default folder of the account; the mirror lies under a scratch root; the drop folder is apart from the state folder")
 				if ownerSuite != nil {

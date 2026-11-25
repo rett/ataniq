@@ -56,37 +56,72 @@ with the seat gate together:
                     they are); the journal, the list of keys and the gate's
                     key and pins are the state root's all the same, read and
                     never moved. Only with --scratch and --owner-channel. DIR
-                    is resolved through every link and opened by its handle
-                    with no link followed, and the daemon refuses to start
-                    (exit 10), naming why, when DIR is not a private folder
-                    of the daemon's user or when it is, lies in or holds:
-                    owner/ of the state root (the trial's settings folder);
-                    the state root or the runtime root; a path a lead's
-                    sandbox reaches (each lead's folder, mirror, mailbox,
-                    published folder and holder runtime folder, the agent
-                    install, the probe, the host paths every sandbox binds);
-                    or owner/gate (the gate's identity). Each is decided on
-                    the resolved path, on the identities of the folders and
-                    on their places in their filesystems (from the mount
-                    table), so a bind mount of a guarded folder or of a
-                    folder within it, given as DIR, and a mount that shows
-                    DIR within a guarded folder are caught; a mount made
-                    after the check is not. Once read, the settings must not
-                    name a drop folder, mirror, work folder or sandbox
-                    template that DIR is, lies in or holds. scratch.json is
-                    opened beneath the folder's handle without following a
-                    link and must be a private regular file with one name
-                    that is not the key list, the journal, a file of the gate
-                    or the trial's settings, and not a phone trial's. The
-                    start prints "owner channel: settings read from
-                    DIR/scratch.json (--owner-settings)".
+                    sits beside the state root and the runtime root, not
+                    inside either. It is resolved through every link and
+                    opened by its handle with no link followed, and the
+                    daemon refuses to start (exit 10), naming why, when DIR
+                    is not a private folder of the daemon's user or when it
+                    is, lies in or holds: owner/ of the state root (the
+                    trial's settings folder); the state root or the runtime
+                    root; a path a lead's sandbox reaches (each lead's
+                    folder, mirror, mailbox, published folder and holder
+                    runtime folder, the agent install, the probe, the host
+                    paths every sandbox binds); or owner/gate (the gate's
+                    identity). Each is decided on the resolved path and on
+                    the identities of the folders, so a bind mount of a
+                    guarded folder itself, given as DIR, is caught. The
+                    checks guard against mistakes, not attackers: a mount
+                    layout the owner or root makes (a bind mount of a folder
+                    within a guard, nested mounts, a mount made after the
+                    check, another namespace) is not looked at; a lead
+                    cannot make a mount on the host. Once read, the
+                    settings must not name a drop folder, mirror, work
+                    folder or sandbox template that DIR is, lies in or
+                    holds. scratch.json is opened beneath the folder's
+                    handle without following a link and must be a private
+                    regular file with one name that is not the key list,
+                    the journal, a file of the gate or the trial's settings,
+                    and not a phone trial's; its bytes are read once, from
+                    the descriptor that was checked, and decoded from those
+                    bytes. The start prints
+                    "owner channel: settings read from DIR/scratch.json
+                    (--owner-settings)".
   --check           with --owner-settings: make every check the daemon makes
                     before it takes a lock (the folder's refusals, the
                     settings, the roots, the root marker, the gate's address,
-                    key and pins, the socket paths), print one line each,
-                    "pass" or "FAIL" with the reason, then what the daemon
-                    would read, and exit: 0 when nothing is refused, 10
-                    otherwise. It binds, locks, makes and starts nothing.
+                    key and pins, the daemon's socket path) and one more that
+                    the start does not make, the socket paths of every lead's
+                    holder (a holder meets that limit only when it starts);
+                    print one line each, "pass" or "FAIL" with the reason,
+                    then what the daemon would read, and exit: 0 when nothing
+                    is refused, 10 otherwise. It binds, locks, makes and
+                    starts nothing.
+
+       ataniqd run --scratch CONFIG --owner-channel --check --keys-prefix
+       ataniqd run --scratch CONFIG --owner-channel --check
+               --keys-since LEN:SHA256
+
+  --keys-prefix     with --check: check only the key list owner/keys.log of
+                    the state root and its head owner/keys.head, with the
+                    journal's own reader (the records well formed, in
+                    sequence, on the digest chain and within the list's
+                    rules; the head's count and digest the list's), run on
+                    a private copy in a temporary folder that is removed, so
+                    nothing of the state root is written; then print the
+                    list's prefix, LEN:SHA256, its length in bytes and its
+                    SHA-256. Exit 0, or 1 with the reason on standard error
+                    when the list or its head does not hold (a head that
+                    lags the list, which a start would make right, does not).
+  --keys-since LEN:SHA256
+                    with --check: check the key list and its head as
+                    --keys-prefix does, check that the prefix is the list's
+                    first LEN bytes, ending at a whole record, and name the
+                    type of each record appended after it. Counter records
+                    alone (a phone login whose passkey's sign counter rises)
+                    hold: "keys: holds" and exit 0. Any other record (added,
+                    revoked, rejected), a changed or missing old byte and
+                    any damage of the list or its head is "keys: CHANGED"
+                    and exit 1; a prefix not of the form is exit 2.
 `
 
 // scratchChatNote is the line the gate writes after its start line when it

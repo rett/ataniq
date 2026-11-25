@@ -26,7 +26,8 @@
 # unit that did not start, output without the probe's line) is a finding.
 # Inside the sandbox, before the probe, the namespace's network is looked at
 # (NETUP): an IPv4 address other than loopback (/proc/net/fib_trie) and a
-# default route on an interface other than lo (/proc/net/route). curl's
+# default route on an interface other than lo (/proc/net/route) that is up,
+# goes through a gateway and is not a reject or blackhole route. curl's
 # "could not connect" (7) is also what an unreachable network, a missing
 # route or a local refusal give, so a namespace whose network did not come
 # up would read as refused: without the address or the route the probe is
@@ -123,16 +124,26 @@ echo "probe rc=$? connect=${t:-none}"'
 
 # NETUP, run by sh -c inside the sandbox before the probe, prints one line,
 # "net route=IFACE addr=ADDRESS" ("none" for what is not there): the
-# interface of an IPv4 default route other than lo, from /proc/net/route, and
-# an IPv4 address of the namespace other than loopback, from
-# /proc/net/fib_trie. Without both it ends there, and the probe is not made.
-# $2 and $3, when given, are read in place of the two files (--net-of).
+# interface of a usable IPv4 default route other than lo, from
+# /proc/net/route, and an IPv4 address of the namespace other than loopback,
+# from /proc/net/fib_trie. A usable default route is one whose flags (the
+# fourth column, hexadecimal) say it is up (RTF_UP, 0x1) and goes through a
+# gateway (RTF_GATEWAY, 0x2) that is not 0.0.0.0, and is not a reject route
+# (RTF_REJECT, 0x200: an unreachable, prohibit or blackhole route, which
+# answers curl's connect with the same "could not connect" a refusal gives).
+# A line whose flags are not hexadecimal is not a route. Without both it ends
+# there, and the probe is not made. $2 and $3, when given, are read in place
+# of the two files (--net-of).
 # shellcheck disable=SC2016  # the inner shell expands these
 NETUP='r=none
 a=none
 if [ -r "${2:-/proc/net/route}" ]; then
   while read -r i d g f c u m k rest; do
-    if [ "$d" = 00000000 ] && [ "$k" = 00000000 ] && [ "$i" != lo ] && [ "$i" != Iface ]; then r=$i; break; fi
+    [ "$d" = 00000000 ] && [ "$k" = 00000000 ] && [ "$i" != lo ] && [ "$i" != Iface ] || continue
+    case $f in "" | *[!0-9A-Fa-f]* | ?????????*) continue ;; esac
+    case $g in 00000000 | "" | *[!0-9A-Fa-f]*) continue ;; esac
+    f=$((0x$f))
+    if [ $((f & 1)) -ne 0 ] && [ $((f & 2)) -ne 0 ] && [ $((f & 512)) -eq 0 ]; then r=$i; break; fi
   done <"${2:-/proc/net/route}"
 fi
 if [ -r "${3:-/proc/net/fib_trie}" ]; then
@@ -222,7 +233,7 @@ lead_line() {
     refused) pass "$1: refused (no connection to the gate's port was made)" ;;
     filtered) pass "$1: filtered or timed out (no connection to the gate's port was made)" ;;
     connected) finding "$1: connected to the gate's port $GATE_HOST:$GATE_PORT: do not start a lead until a rule refuses it" ;;
-    nonet) finding "$1: the probe did not run: the sandbox's network did not come up (no IPv4 address or no default route; see its net line below), and a refusal there would show nothing" ;;
+    nonet) finding "$1: the probe did not run: the sandbox's network did not come up (no IPv4 address, or no default route that is up, through a gateway and not a reject or blackhole route; see its net line below), and a refusal there would show nothing" ;;
     *) finding "$1: the probe did not run, so nothing was shown (see its output below)" ;;
   esac
 }
