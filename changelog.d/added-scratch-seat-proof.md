@@ -52,7 +52,9 @@
   and in a throwaway user unit with the lead unit's fixed properties,
   classifies each probe as connected, refused, or filtered or timed out,
   passes the lead's network only on a refusal or timeout the probe itself
-  reports, takes a probe that did not run for a finding, and the runbook
+  reports after the sandbox showed an IPv4 address and a default route
+  (without them the probe did not run), takes a probe that did not run for
+  a finding, and the runbook
   records its exit status). The runbook's last steps compare the trial's
   files byte for byte with the record and start the trial again. A test in
   `cmd/ataniqd` takes a trial-shaped state folder to the scratch daemon and

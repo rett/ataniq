@@ -308,7 +308,14 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    pasta), it must be refused or filtered: `PASS ... refused (no connection
    to the gate's port was made)`. A probe that did not run (no curl, a curl
    without `telnet://`, a sandbox or unit that did not start) is a
-   `FINDING`, never a pass, and so is a connection. Any `FINDING` there ends
+   `FINDING`, never a pass, and so is a connection. So is a sandbox whose
+   network did not come up: curl's "could not connect" is also what an
+   unreachable network gives, so inside the sandbox, before the probe, the
+   check looks for an IPv4 address other than loopback and a default route
+   other than on `lo` and prints `net route=... addr=...`; without either
+   the probe is not made and the line says `the probe did not run: the
+   sandbox's network did not come up`. A host with no IPv4 default route
+   reads the same way. Any `FINDING` there ends
    the sitting before it starts. The probe is curl with no configuration
    file and no proxy, to the numeric address, and it sends no byte. The
    script then lists this host's listeners on non-loopback addresses and
