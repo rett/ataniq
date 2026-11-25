@@ -401,6 +401,27 @@ func clipAround(s string, d, n int) string {
 // Is makes errors.Is(err, ErrSkew) true.
 func (e *SkewError) Is(target error) bool { return target == ErrSkew }
 
+// Confirmed reports whether err, of [Checker.BeforeAttach], says what the
+// state file of the epoch records and that it is not the expected build: the
+// file was read, is of the epoch, and records another build ([WhyDiffer]), no
+// build ([WhyNoRecord]), or any build while the expected one is unstamped
+// ([WhyUnstamped]). A file that is missing ([WhyNoStateFile]) or cannot be
+// read ([WhyUnreadable]), or is of another epoch ([ErrOtherEpoch]), confirms
+// nothing of the holder of the epoch, and neither does nil. A launcher that
+// acts on a holder without its answer (one that has not answered its status)
+// acts only on a confirmed mismatch.
+func Confirmed(err error) bool {
+	var se *SkewError
+	if !errors.As(err, &se) {
+		return false
+	}
+	switch se.Why {
+	case WhyDiffer, WhyNoRecord, WhyUnstamped:
+		return true
+	}
+	return false
+}
+
 // Check compares a holder's identity with the expected one. holder is nil
 // for a holder that records none. It returns nil for the expected build and a
 // *SkewError otherwise.

@@ -111,6 +111,11 @@ start changes nothing. `start` reads the build from the holder binary before it 
 again, once the holder has answered, from the `holder.json` the holder wrote
 from its own running executable: the binary may have been replaced between
 the first check and the start, which looks the path up again. A holder that
+does not answer within the wait is checked the same way when its
+`holder.json` of the epoch is there: a file that records another build (or
+none) refuses the start as below, with "(it did not answer within ...)" in
+the reason, and a file that is missing or cannot be read leaves the start to
+fail as a holder that did not answer. A holder that
 started as another build is stopped (with `--direct` it is ended and the
 epoch is given back; in unit mode its unit is stopped with `systemctl --user
 stop` and the epoch is kept), `start` prints the refusal and why, and it

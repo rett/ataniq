@@ -330,6 +330,44 @@ func TestReadRecord(t *testing.T) {
 	}
 }
 
+// TestConfirmedMismatch: only a state file of the epoch that was read and
+// records another build, or none, or any while the expected build is
+// unstamped, confirms a mismatch; a missing, unreadable or stale file, and the
+// expected build, confirm nothing.
+func TestConfirmedMismatch(t *testing.T) {
+	b := build(revNew, false)
+	ch := &Checker{Expected: b}
+	unstamped := &Checker{Expected: Identity{Module: "ataniq", Version: "(devel)"}}
+	other := newRecord(build(revOld, false))
+	for name, c := range map[string]struct {
+		ch      *Checker
+		content string // "" is no file
+		epoch   uint64
+		want    bool
+	}{
+		"another build":            {ch, other, 3, true},
+		"an older holder":          {ch, oldRecord, 3, true},
+		"an unstamped expectation": {unstamped, newRecord(b), 3, true},
+		"the expected build":       {ch, newRecord(b), 3, false},
+		"no state file":            {ch, "", 3, false},
+		"a file that is not JSON":  {ch, "garbage", 3, false},
+		"a malformed build":        {ch, `{"epoch":3,"build":"x"}`, 3, false},
+		"a top-level null":         {ch, "null", 3, false},
+		"another epoch":            {ch, other, 4, false},
+	} {
+		dir := t.TempDir()
+		if c.content != "" {
+			dir = writeRecord(t, c.content)
+		}
+		if got := Confirmed(c.ch.BeforeAttach(dir, c.epoch)); got != c.want {
+			t.Errorf("%s: Confirmed %v, want %v", name, got, c.want)
+		}
+	}
+	if Confirmed(nil) || Confirmed(errors.New(Reason)) {
+		t.Error("an error that is not a refusal of the check confirms a mismatch")
+	}
+}
+
 // TestBeforeAttachComparesTheEpoch: the state file must be of the epoch to be
 // attached. One of another epoch is refused with stale-epoch, naming both
 // epochs, whatever build it records, the expected one included; the state
