@@ -1462,8 +1462,12 @@ func TestSeatDecideRevokedEndsEveryLoginOfTheKey(t *testing.T) {
 		}
 	}
 
+	// The stream's timers stand still, so that the revocation, not a
+	// heartbeat that finds the session gone, ends it.
+	ft := stillTimers(r)
 	held := r.streamAsync(context.Background(), streamOK, b)
 	r.waitStreams(t, 1)
+	waitTimers(t, ft, 3) // the life, the heartbeat and the session's end
 	r.openCard(t, a)
 	r.daemon.decideChErr = ErrKeyRevoked
 	wantFailure(t, "revoked", r.tap(approveBody, a), 403, "key_revoked", "This phone's passkey is no longer paired. Pair it again at the desk.")

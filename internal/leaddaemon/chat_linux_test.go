@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -381,8 +382,14 @@ func requireTestClock(t *testing.T, port *LeadChat) {
 	if d.now == nil {
 		t.Fatal("the chat stores run on the real clock: a reply left alone proves nothing about the rule under test")
 	}
-	if ahead := d.now().Sub(time.Now()); ahead < leadchat.SettleAge {
-		t.Fatalf("the chat stores' clock is %v ahead, less than the settle age %v", ahead, leadchat.SettleAge)
+	// The desk holds the fixture's clock itself, which runs chatClockLead
+	// ahead by its definition: no sample of the real clock, which a host
+	// that pauses between two samples would make look behind.
+	if reflect.ValueOf(d.now).Pointer() != reflect.ValueOf(chatTestClock).Pointer() {
+		t.Fatal("the chat stores do not run on chatTestClock")
+	}
+	if chatClockLead <= leadchat.SettleAge {
+		t.Fatalf("chatTestClock runs %v ahead, not past the settle age %v", chatClockLead, leadchat.SettleAge)
 	}
 }
 
@@ -439,6 +446,11 @@ func (l *leadEnv) outboxOf(key string) string {
 // reply writes a reply as a lead does: under a dot-name, then renamed.
 func reply(t *testing.T, outbox, name, text string) {
 	t.Helper()
+	// A name the scan refuses would be left alone whatever the rule under
+	// test says, and a check that a reply is left alone would prove nothing.
+	if !leadchat.ValidReplyName(name) {
+		t.Fatalf("%q is not a name a scan takes", name)
+	}
 	tmp := filepath.Join(outbox, "."+name+".tmp")
 	if err := os.WriteFile(tmp, []byte(text), 0o600); err != nil {
 		t.Fatal(err)

@@ -363,9 +363,12 @@ func TestSeatSessionsLookDoesNotMarkUsed(t *testing.T) {
 }
 
 // TestSeatWatchEndsWithTheSession: a logout, or the session's idle time
-// passing in the hold, ends a held poll with "ended".
+// passing in the hold, ends a held poll with "ended". The logout's poll is
+// held for a minute, longer than the wait for its answer: at the hold's end
+// the poll looks at the session again and says "ended" too, so a shorter
+// hold would pass with the logout's wake ignored.
 func TestSeatWatchEndsWithTheSession(t *testing.T) {
-	r, _ := newWatchRig(t, "aa", 30*time.Second)
+	r, _ := newWatchRig(t, "aa", time.Minute)
 	s := r.login(t)
 	got := r.pollAsync(context.Background(), pollOK, s)
 	r.waitHeld(t, 1)

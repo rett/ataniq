@@ -9,6 +9,11 @@ package tests
 // finds, so it would not notice a tagged file in a package that ./tests/
 // imports; this check does, under each of the four tag sets the targets build
 // with, so that any return of ./tests/ to a tagged run is a deliberate change.
+// It reads the constraints of the Go files and of the other sources (assembly,
+// C and the like, which a constraint selects as it does a Go file), and it
+// compares the sources each tag set selects with those the untagged build
+// selects, so that a selection that differs is found even where reading a
+// constraint would miss it.
 // The checks of the tags in this package run go list with the tags they need
 // and do not depend on the tags the package itself is built with.
 
@@ -26,19 +31,41 @@ import (
 
 // closurePackage is the part of a go list -json entry the check reads.
 type closurePackage struct {
-	ImportPath     string
-	Dir            string
-	Standard       bool
-	GoFiles        []string
-	CgoFiles       []string
-	IgnoredGoFiles []string
-	TestGoFiles    []string
-	XTestGoFiles   []string
+	ImportPath string
+	Dir        string
+	Standard   bool
+	GoFiles    []string
+	CgoFiles   []string
+	// The sources that are not Go, selected by constraints as Go files are.
+	CFiles       []string
+	CXXFiles     []string
+	MFiles       []string
+	HFiles       []string
+	FFiles       []string
+	SFiles       []string
+	SwigFiles    []string
+	SwigCXXFiles []string
+	// SysoFiles are objects, selected by their names alone; they are compared
+	// and not read.
+	SysoFiles []string
+	// The files a constraint leaves out, Go and other.
+	IgnoredGoFiles    []string
+	IgnoredOtherFiles []string
+	TestGoFiles       []string
+	XTestGoFiles      []string
 }
 
 // closureListFlags list the test closure of a package with the fields of
 // closurePackage.
-var closureListFlags = []string{"-deps", "-test", "-json=ImportPath,Dir,Standard,GoFiles,CgoFiles,IgnoredGoFiles,TestGoFiles,XTestGoFiles"}
+var closureListFlags = []string{"-deps", "-test", "-json=ImportPath,Dir,Standard,GoFiles,CgoFiles," +
+	"CFiles,CXXFiles,MFiles,HFiles,FFiles,SFiles,SwigFiles,SwigCXXFiles,SysoFiles," +
+	"IgnoredGoFiles,IgnoredOtherFiles,TestGoFiles,XTestGoFiles"}
+
+// otherSources are the selected sources of p that are not Go and that hold
+// text a constraint is read from.
+func (p closurePackage) otherSources() []string {
+	return slices.Concat(p.CFiles, p.CXXFiles, p.MFiles, p.HFiles, p.FFiles, p.SFiles, p.SwigFiles, p.SwigCXXFiles)
+}
 
 // closureTagSets are the tag settings the targets build with: none (make
 // test), the canary tag (make test-canary), and the owner channel's alone and
@@ -64,9 +91,10 @@ func decodeClosure(listing string) ([]closurePackage, error) {
 
 // checkTestsClosure reports every file of the test closure of the package in
 // testsDir whose build constraint names either tag. A package of the standard
-// library is not read. Of every other package it reads the files built and the
-// files a constraint leaves out (a file left out under one tag set is built
-// under another), and of the package in testsDir also its test files. The test
+// library is not read. Of every other package it reads the files built, Go and
+// other sources, and the files a constraint leaves out, Go and other (a file
+// left out under one tag set is built under another), and of the package in
+// testsDir also its test files. The test
 // files of the other packages are not built and are not read. A closure without
 // the test files of the package in testsDir is a problem, so that the check
 // cannot pass by reading nothing.
@@ -79,7 +107,7 @@ func checkTestsClosure(tags string, pkgs []closurePackage, testsDir string, read
 			continue
 		}
 		own := p.Dir == testsDir
-		files := slices.Concat(p.GoFiles, p.CgoFiles)
+		files := slices.Concat(p.GoFiles, p.CgoFiles, p.otherSources(), p.IgnoredOtherFiles)
 		for _, f := range p.IgnoredGoFiles {
 			if own || !strings.HasSuffix(f, "_test.go") {
 				files = append(files, f)
@@ -121,38 +149,94 @@ func checkTestsClosure(tags string, pkgs []closurePackage, testsDir string, read
 	return problems
 }
 
+// closureInputs are the sources the test build of the package in testsDir
+// selects, one entry for each, its package and its path: the Go files and the
+// other sources of every package of the closure, the standard library's too,
+// and the test files of the package in testsDir, which alone are built.
+func closureInputs(pkgs []closurePackage, testsDir string) []string {
+	var in []string
+	for _, p := range pkgs {
+		files := slices.Concat(p.GoFiles, p.CgoFiles, p.otherSources(), p.SysoFiles)
+		if p.Dir == testsDir {
+			files = slices.Concat(files, p.TestGoFiles, p.XTestGoFiles)
+		}
+		for _, f := range files {
+			if !filepath.IsAbs(f) {
+				f = filepath.Join(p.Dir, f)
+			}
+			in = append(in, p.ImportPath+" "+f)
+		}
+	}
+	slices.Sort(in)
+	return slices.Compact(in)
+}
+
+// compareClosureInputs reports every source that the build under tags
+// selects and the untagged build does not, or the other way round: either
+// means ./tests/ does not build the same under every tag set.
+func compareClosureInputs(tags string, untagged, tagged []string) []string {
+	var problems []string
+	for _, in := range tagged {
+		if _, found := slices.BinarySearch(untagged, in); !found {
+			problems = append(problems, fmt.Sprintf("tags %q: the test build of ./tests/ selects %s, which the untagged build does not, so ./tests/ must run in the tagged runs again", tags, in))
+		}
+	}
+	for _, in := range untagged {
+		if _, found := slices.BinarySearch(tagged, in); !found {
+			problems = append(problems, fmt.Sprintf("tags %q: the test build of ./tests/ leaves out %s, which the untagged build selects, so ./tests/ must run in the tagged runs again", tags, in))
+		}
+	}
+	return problems
+}
+
 // TestCanaryTagTestsClosure lists the test closure of ./tests/ under each tag
-// set the targets build with and finds no file whose constraint names a tag.
+// set the targets build with, finds no file whose constraint names a tag, and
+// finds that every tag set selects the sources the untagged build does.
 func TestCanaryTagTestsClosure(t *testing.T) {
 	testsDir := filepath.Join(root(t), "tests")
+	var untagged []string
 	for _, tags := range closureTagSets {
 		pkgs, err := decodeClosure(ownerGoList(t, tags, closureListFlags, "./tests/"))
 		if err != nil {
 			t.Fatalf("tags %q: %v", tags, err)
 		}
 		reportCanaryProblems(t, checkTestsClosure(tags, pkgs, testsDir, os.ReadFile))
+		in := closureInputs(pkgs, testsDir)
+		if tags == "" {
+			untagged = in
+			if len(in) == 0 {
+				t.Fatal("the untagged build of ./tests/ selects no source")
+			}
+			continue
+		}
+		reportCanaryProblems(t, compareClosureInputs(tags, untagged, in))
 	}
 }
 
 func TestCanaryTagTestsClosureCheck(t *testing.T) {
 	const testsDir = "/r/tests"
 	files := map[string]string{
-		"/r/tests/a_test.go":         "package tests\n",
-		"/r/tests/b_test.go":         "package tests_test\n",
-		"/r/internal/a/a.go":         "package a\n",
-		"/r/internal/a/linux.go":     hdrPlain + "\n\npackage a\n",
-		"/r/internal/a/a_test.go":    hdrTagged + "\n\npackage a\n",
-		"/r/internal/a/x_test.go":    ownHdrTagged + "\n\npackage a\n",
-		"/r/internal/a/comment.go":   "// the ataniq_canary tag is not a constraint\n\npackage a\n",
-		"/r/internal/t/canary.go":    hdrTagged + "\n\npackage t\n",
-		"/r/internal/t/release.go":   hdrNegated + "\n\npackage t\n",
-		"/r/internal/t/owner.go":     ownHdrTagged + "\n\npackage t\n",
-		"/r/internal/t/plus.go":      hdrPlusTagged + "\n\npackage t\n",
-		"/r/internal/t/bad.go":       "//go:build linux && (ataniq_canary\n\npackage t\n",
-		"/r/tests/canary_x_test.go":  hdrTagged + "\n\npackage tests\n",
-		"/r/tests/release_x_test.go": ownHdrNegated + "\n\npackage tests\n",
-		"/cache/testmain.go":         "package main\n",
-		"/std/os/os.go":              hdrTagged + "\n\npackage os\n",
+		"/r/tests/a_test.go":          "package tests\n",
+		"/r/tests/b_test.go":          "package tests_test\n",
+		"/r/internal/a/a.go":          "package a\n",
+		"/r/internal/a/linux.go":      hdrPlain + "\n\npackage a\n",
+		"/r/internal/a/a_test.go":     hdrTagged + "\n\npackage a\n",
+		"/r/internal/a/x_test.go":     ownHdrTagged + "\n\npackage a\n",
+		"/r/internal/a/comment.go":    "// the ataniq_canary tag is not a constraint\n\npackage a\n",
+		"/r/internal/t/canary.go":     hdrTagged + "\n\npackage t\n",
+		"/r/internal/t/release.go":    hdrNegated + "\n\npackage t\n",
+		"/r/internal/t/owner.go":      ownHdrTagged + "\n\npackage t\n",
+		"/r/internal/t/plus.go":       hdrPlusTagged + "\n\npackage t\n",
+		"/r/internal/t/bad.go":        "//go:build linux && (ataniq_canary\n\npackage t\n",
+		"/r/tests/canary_x_test.go":   hdrTagged + "\n\npackage tests\n",
+		"/r/tests/release_x_test.go":  ownHdrNegated + "\n\npackage tests\n",
+		"/r/tests/bom_x_test.go":      "\uFEFF" + hdrTagged + "\n\npackage tests\n",
+		"/r/internal/s/asm_amd64.s":   ownHdrTagged + "\n\n#include \"textflag.h\"\n",
+		"/r/internal/s/asm_other.s":   hdrNegated + "\n\n#include \"textflag.h\"\n",
+		"/r/internal/s/plain_amd64.s": "#include \"textflag.h\"\n\n" + ownHdrTagged + "\n",
+		"/r/internal/s/c.c":           hdrTagged + "\n\nint x;\n",
+		"/cache/testmain.go":          "package main\n",
+		"/std/os/os.go":               hdrTagged + "\n\npackage os\n",
 	}
 	read := func(name string) ([]byte, error) {
 		data, ok := files[name]
@@ -183,6 +267,11 @@ func TestCanaryTagTestsClosureCheck(t *testing.T) {
 		{"a constraint line that does not parse", with(closurePackage{ImportPath: "m/internal/t", Dir: "/r/internal/t", IgnoredGoFiles: []string{"bad.go"}}), []string{"/r/internal/t/bad.go"}},
 		{"a tagged test file of ./tests/", with(closurePackage{ImportPath: "m/tests", Dir: testsDir, IgnoredGoFiles: []string{"canary_x_test.go"}}), []string{"/r/tests/canary_x_test.go"}},
 		{"a release counterpart among the tests of ./tests/", with(closurePackage{ImportPath: "m/tests_test [m/tests.test]", Dir: testsDir, XTestGoFiles: []string{"release_x_test.go"}}), []string{"/r/tests/release_x_test.go"}},
+		{"a byte order mark before a tagged test file of ./tests/", with(closurePackage{ImportPath: "m/tests", Dir: testsDir, IgnoredGoFiles: []string{"bom_x_test.go"}}), []string{"/r/tests/bom_x_test.go"}},
+		{"a tagged assembly file of an import, selected", with(closurePackage{ImportPath: "m/internal/s", Dir: "/r/internal/s", SFiles: []string{"asm_amd64.s"}}), []string{"/r/internal/s/asm_amd64.s"}},
+		{"a tagged assembly file of an import, left out", with(closurePackage{ImportPath: "m/internal/s", Dir: "/r/internal/s", IgnoredOtherFiles: []string{"asm_amd64.s", "asm_other.s"}}), []string{"/r/internal/s/asm_amd64.s", "/r/internal/s/asm_other.s"}},
+		{"an untagged assembly file whose tag is below its code", with(closurePackage{ImportPath: "m/internal/s", Dir: "/r/internal/s", SFiles: []string{"plain_amd64.s"}}), nil},
+		{"a tagged C file of an import", with(closurePackage{ImportPath: "m/internal/s", Dir: "/r/internal/s", CFiles: []string{"c.c"}}), []string{"/r/internal/s/c.c"}},
 		{"a file that cannot be read", with(closurePackage{ImportPath: "m/internal/gone", Dir: "/r/internal/gone", GoFiles: []string{"gone.go"}}), []string{"/r/internal/gone/gone.go"}},
 		{"no test file of ./tests/", clean[:2], []string{"no test file of " + testsDir}},
 		{"an empty listing", nil, []string{"no test file of " + testsDir}},
@@ -198,6 +287,35 @@ func TestCanaryTagTestsClosureCheck(t *testing.T) {
 				}
 			}
 		})
+	}
+
+	// A tag set that selects other sources than the untagged build: a tagged
+	// assembly file of an import, and a test file of ./tests/ that only the tag
+	// builds.
+	asmUntagged := with(closurePackage{ImportPath: "m/internal/s", Dir: "/r/internal/s", GoFiles: []string{"s.go"}, IgnoredOtherFiles: []string{"asm_amd64.s"}})
+	asmTagged := with(closurePackage{ImportPath: "m/internal/s", Dir: "/r/internal/s", GoFiles: []string{"s.go"}, SFiles: []string{"asm_amd64.s"}})
+	if got := compareClosureInputs("x", closureInputs(asmUntagged, testsDir), closureInputs(asmTagged, testsDir)); len(got) != 1 ||
+		!strings.Contains(got[0], "selects m/internal/s /r/internal/s/asm_amd64.s") {
+		t.Errorf("a tagged assembly file selected by the tag: %q", got)
+	}
+	if got := compareClosureInputs("x", closureInputs(asmTagged, testsDir), closureInputs(asmUntagged, testsDir)); len(got) != 1 ||
+		!strings.Contains(got[0], "leaves out m/internal/s /r/internal/s/asm_amd64.s") {
+		t.Errorf("an assembly file the tag leaves out: %q", got)
+	}
+	testTagged := slices.Clone(clean)
+	testTagged[2].TestGoFiles = []string{"a_test.go", "bom_x_test.go"}
+	if got := compareClosureInputs("x", closureInputs(clean, testsDir), closureInputs(testTagged, testsDir)); len(got) != 1 ||
+		!strings.Contains(got[0], "/r/tests/bom_x_test.go") {
+		t.Errorf("a test file of ./tests/ that only the tag builds: %q", got)
+	}
+	// An imported package's test files are not built, so they are not inputs.
+	importTests := slices.Clone(clean)
+	importTests[1].TestGoFiles = []string{"x_test.go", "y_test.go"}
+	if got := compareClosureInputs("x", closureInputs(clean, testsDir), closureInputs(importTests, testsDir)); len(got) != 0 {
+		t.Errorf("an import's test files counted as inputs: %q", got)
+	}
+	if got := compareClosureInputs("x", closureInputs(clean, testsDir), closureInputs(clean, testsDir)); len(got) != 0 {
+		t.Errorf("the same closure: %q", got)
 	}
 
 	// The listing go list prints, a stream of objects, is read whole.

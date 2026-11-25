@@ -116,8 +116,10 @@ func headerConstraints(data string) ([]constraint.Expr, []string) {
 // before anything else and no block comment comes before it. It reports
 // whether the file has a go:build line. Placement uses every line that names
 // the tag, which is the conservative reading, and requirement uses the applied
-// constraints.
+// constraints. A UTF-8 byte order mark at the start is dropped first, as the go
+// command drops it: a constraint after it still applies.
 func headerConstraintsGo(data string) (all, applied []constraint.Expr, hasGoBuild bool, bad []string) {
+	data = strings.TrimPrefix(data, "\uFEFF")
 	var goBuild, plusBuild, pending []constraint.Expr
 	inBlock, ended := false, false
 	for _, line := range strings.Split(data, "\n") {
@@ -1560,6 +1562,9 @@ func TestCanaryTagHeaderConstraints(t *testing.T) {
 		{"a block comment closed on its line, a constraint below", "/* c */\n" + hdrTagged + "\n\npackage a\n", 1, 1, true},
 		{"two block comments on a line", "/* c */ /* d */\n" + hdrTagged + "\n\npackage a\n", 1, 1, true},
 		{"a block comment that closes then opens again", "/* c\n*/ /* d\n*/\n" + hdrTagged + "\n\npackage a\n", 1, 1, true},
+		{"a byte order mark before a go:build line", "\uFEFF" + hdrTagged + "\n\npackage a\n", 1, 1, true},
+		{"a byte order mark before a plus build line", "\uFEFF" + hdrPlusTagged + "\n\npackage a\n", 1, 1, false},
+		{"a go:build line of an assembly file", hdrTagged + "\n\n#include \"textflag.h\"\n", 1, 1, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			all, applied, hasGoBuild, bad := headerConstraintsGo(tc.data)
