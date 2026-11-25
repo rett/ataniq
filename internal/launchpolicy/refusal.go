@@ -28,16 +28,30 @@ func refuse(code string, stage int, at string) *Refusal {
 
 var safeComponent = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
 
-func location(kind, name string, ordinal int) string {
-	if !safeComponent.MatchString(name) {
+func (s *Snapshot) sensitive(text string) bool {
+	return s.Resume != "" && strings.Contains(text, s.Resume)
+}
+
+func (s *Snapshot) location(kind, name string, ordinal int) string {
+	if s.sensitive(name) || !safeComponent.MatchString(name) {
 		name = "#" + strconv.Itoa(ordinal)
 	}
 	return kind + "[" + name + "]"
 }
+
+func (s *Snapshot) slotLocation(slot pack.Slot) string {
+	ordinal := 0
+	for _, other := range slots {
+		if other < slot {
+			ordinal++
+		}
+	}
+	return s.location("slot", string(slot), ordinal)
+}
 func argvAt(index int) string { return "argv[" + strconv.Itoa(index) + "]" }
-func tokenFault(code string, stage, index int, f *form, token string) *Refusal {
+func (s *Snapshot) tokenFault(code string, stage, index int, f *form, token string) *Refusal {
 	r := refuse(code, stage, argvAt(index))
-	if f == nil || f.Slot == pack.ResumeSlot || strings.HasPrefix(token, "--resume") {
+	if s.sensitive(token) || f == nil || f.Slot == pack.ResumeSlot || strings.HasPrefix(token, "--resume") {
 		return r
 	}
 	switch code {
