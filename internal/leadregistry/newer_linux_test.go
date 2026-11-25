@@ -227,3 +227,43 @@ func TestRequestedDigestOfThisBuild(t *testing.T) {
 		}
 	}
 }
+
+// TestNewerBuildValueIsDamage: the tolerance of other builds covers members
+// this build does not know, not values. A value this build does not know in a
+// member it knows (a provider, a desired state, a shown state) fails the
+// record's check, and the journal does not open (ErrCorrupt); the same record
+// with a known value and a member this build does not know opens.
+func TestNewerBuildValueIsDamage(t *testing.T) {
+	alpha := lead(t, "alpha")
+	dir := regDir(t)
+	r := openReg(t, dir)
+	okf(t)(r.Define(alpha, ManagerAtaniq, goodProfile()))
+	r.Close()
+	base, err := os.ReadFile(filepath.Join(dir, FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer := goodProfile()
+	newer.Provider = "a-provider-of-a-newer-build"
+	for name, c := range map[string]struct {
+		kind       string
+		known, bad any
+	}{
+		"provider": {kindDefine,
+			&definePayload{Manager: ManagerAtaniq, Requested: goodProfile()},
+			&definePayload{Manager: ManagerAtaniq, Requested: newer}},
+		"desired state": {kindDesired,
+			map[string]any{"desired": DesiredRunning, "hold": true},
+			map[string]any{"desired": "paused"}},
+		"shown state": {kindState,
+			map[string]any{"epoch": 0, "state": StateDesired, "evidence": EvidenceOwner, "reason": map[string]any{"code": "owner-wants"}, "note": "x"},
+			map[string]any{"epoch": 0, "state": "hibernating", "evidence": EvidenceOwner, "reason": map[string]any{"code": "owner-wants"}}},
+	} {
+		if err := openErr(t, appendRecord(t, base, c.kind, alpha, c.known)); err != nil {
+			t.Errorf("%s: a known value with an unknown member: %v", name, err)
+		}
+		if err := openErr(t, appendRecord(t, base, c.kind, alpha, c.bad)); !errors.Is(err, ErrCorrupt) {
+			t.Errorf("%s: an unknown value: %v, want ErrCorrupt", name, err)
+		}
+	}
+}

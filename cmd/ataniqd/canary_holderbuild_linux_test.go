@@ -22,9 +22,9 @@ func sameHolderBuild() *buildid.Checker {
 	return &buildid.Checker{
 		Expected:   testHolderBuild,
 		Executable: func(string) (buildid.Identity, error) { return testHolderBuild, nil },
-		Record: func(string) (buildid.Record, error) {
+		Record: func(_ string, epoch uint64) (buildid.Record, error) {
 			b := testHolderBuild
-			return buildid.Record{Build: &b}, nil
+			return buildid.Record{Epoch: epoch, Build: &b}, nil
 		},
 	}
 }

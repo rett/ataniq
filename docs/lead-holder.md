@@ -104,18 +104,20 @@ sh scripts/go-tool.sh build -o build/ataniq-console ./cmd/ataniq-console
 `build/`, or name the holder with `--holder /absolute/path`. `build/` is
 ignored by git.
 
-Build the two from one checkout, in a git checkout: `start` and `ticket`
-refuse a holder that is not the build of `ataniq-scratch` itself, with
+Build the two from one checkout, in a git checkout: `start` and `ticket` refuse
+a holder that is not the build of `ataniq-scratch` itself, with
 `refused: holder-version-skew: ...` and exit status 1, and change nothing.
 `start` reads the build from the holder binary before it takes an epoch;
 `ticket` reads the build the running holder recorded in its `holder.json`
-before it asks the holder anything. The same build is the same main module
-version, VCS revision and modified flag (the build tags and the Go version
-are not compared), and a build without a VCS revision (built with
-`-buildvcs=false` or outside a git checkout) is never the same build. A
-holder that records no build, which is every holder built before build
-identities, is refused as an older holder: stop it (`stop` and `status` are
-not checked) and start it again with the new build. The message names what
+before it asks the holder anything. A `holder.json` of another epoch than the
+last one `start` took is refused first, with `refused: stale-epoch: ...`, which
+names both epochs: it is not the record of the holder that would be asked. The
+same build is the same main module version, VCS revision and modified flag (the
+build tags and the Go version are not compared), and a build without a VCS
+revision (built with `-buildvcs=false` or outside a git checkout) is never the
+same build. A holder that records no build, which is every holder built before
+build identities, is refused as an older holder: stop it (`stop` and `status`
+are not checked) and start it again with the new build. The message names what
 was found and both builds.
 
 The holder refuses to start, with exit status 2 and a line on its standard

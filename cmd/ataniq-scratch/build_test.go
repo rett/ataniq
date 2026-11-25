@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -58,19 +59,22 @@ func TestStartRefusesAHolderWhoseBuildCannotBeRead(t *testing.T) {
 
 // TestTicketChecksTheRunningHolder is the mixed-pair test of attach, through
 // the real reader of holder.json: an old holder that records no build, a
-// holder of another build, and the same build. Only the same build gets a
-// ticket; the others are refused by name and the holder is asked nothing.
+// holder of another build, a state file of another epoch, and the same build
+// of the epoch. Only the same build of the epoch gets a ticket; the others are
+// refused by name and the holder is asked nothing.
 func TestTicketChecksTheRunningHolder(t *testing.T) {
-	newRecord := func(id buildid.Identity) string {
-		return `{"version":1,"role":"scratch/tk","epoch":1,"scratch":true,"build":{"module":"` + id.Module +
+	epochRecord := func(epoch int, id buildid.Identity) string {
+		return `{"version":1,"role":"scratch/tk","epoch":` + strconv.Itoa(epoch) + `,"scratch":true,"build":{"module":"` + id.Module +
 			`","version":"` + id.Version + `","revision":"` + id.Revision + `"}}`
 	}
+	newRecord := func(id buildid.Identity) string { return epochRecord(1, id) }
 	for _, c := range []struct {
 		name, record, want string
 	}{
-		{"old holder, no build recorded", `{"version":1,"role":"scratch/tk","epoch":1,"scratch":true}`, "the holder records no build (an older holder)"},
-		{"holder of another build", newRecord(otherBuild), "the holder is another build"},
-		{"no state file", "", "the holder has no state file"},
+		{"old holder, no build recorded", `{"version":1,"role":"scratch/tk","epoch":1,"scratch":true}`, "holder-version-skew: the holder records no build (an older holder)"},
+		{"holder of another build", newRecord(otherBuild), "holder-version-skew: the holder is another build"},
+		{"no state file", "", "holder-version-skew: the holder has no state file"},
+		{"state file of the epoch before", epochRecord(0, testBuild), "stale-epoch: the holder's state file is of epoch 0, not of epoch 1"},
 		{"same build", newRecord(testBuild), ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -93,8 +97,8 @@ func TestTicketChecksTheRunningHolder(t *testing.T) {
 				return
 			}
 			msg := errout.String()
-			if code != exitFail || !strings.HasPrefix(msg, "refused: holder-version-skew: "+c.want) ||
-				!strings.Contains(msg, "expected build "+testBuild.Short()) {
+			if code != exitFail || !strings.HasPrefix(msg, "refused: "+c.want) ||
+				strings.HasPrefix(c.want, "holder-version-skew") && !strings.Contains(msg, "expected build "+testBuild.Short()) {
 				t.Fatalf("exit %d %q", code, msg)
 			}
 			if len(h.requests()) != 0 || out.String() != "" {
@@ -112,13 +116,13 @@ func TestTicketChecksTheRunningHolder(t *testing.T) {
 func TestStatusAndStopAreNotChecked(t *testing.T) {
 	e, _, h := started(t, "tk", 1)
 	a, _, errout := e.newApp(&fakeLauncher{})
-	a.build.Record = func(string) (buildid.Record, error) { return buildid.Record{}, nil }
+	a.build.Record = func(string, uint64) (buildid.Record, error) { return buildid.Record{}, nil }
 	a.build.Executable = func(string) (buildid.Identity, error) { return otherBuild, nil }
 	if code := a.run([]string{"status", "tk"}); code != exitOK {
 		t.Fatalf("status: %d %q", code, errout.String())
 	}
 	a, _, errout = e.newApp(&fakeLauncher{runFn: func([]string) (int, error) { return 3, nil }})
-	a.build.Record = func(string) (buildid.Record, error) { return buildid.Record{}, nil }
+	a.build.Record = func(string, uint64) (buildid.Record, error) { return buildid.Record{}, nil }
 	if code := a.run([]string{"stop", "tk"}); code != exitOK {
 		t.Fatalf("stop: %d %q", code, errout.String())
 	}

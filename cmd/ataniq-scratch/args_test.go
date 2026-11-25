@@ -149,6 +149,37 @@ func TestHelp(t *testing.T) {
 	}
 }
 
+// TestHelpCommandListIsWhole: the entries of the commands follow one another
+// in the order of the usage lines, with no other paragraph between them, so
+// each entry reads as its command's.
+func TestHelpCommandListIsWhole(t *testing.T) {
+	lines := strings.Split(usageText, "\n")
+	first, last := -1, -1
+	for i, l := range lines {
+		switch {
+		case strings.HasPrefix(l, "start    "):
+			first = i
+		case strings.HasPrefix(l, "stop     "):
+			last = i
+		}
+	}
+	if first < 0 || last < first {
+		t.Fatalf("no command list from start to stop in the help")
+	}
+	var names []string
+	for _, l := range lines[first : last+1] {
+		if l == "" {
+			t.Fatalf("a blank line splits the command list:\n%s", strings.Join(lines[first:last+1], "\n"))
+		}
+		if !strings.HasPrefix(l, " ") {
+			names = append(names, strings.Fields(l)[0])
+		}
+	}
+	if got, want := strings.Join(names, " "), "start ticket status release-writer stop"; got != want {
+		t.Fatalf("the command list is %q, want %q", got, want)
+	}
+}
+
 func TestLangFrom(t *testing.T) {
 	for in, want := range map[string]string{
 		"":                      "C.UTF-8",

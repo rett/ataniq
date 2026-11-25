@@ -43,9 +43,17 @@ func newRecord(id Identity) string {
 		`","version":"` + id.Version + `","revision":"` + id.Revision + `","go":"go1.27.2","tags":"ataniq_canary"}}` + "\n"
 }
 
-// TestMixedPairs is the mixed-pair test: an old holder against a new launcher,
-// a new holder against an old record, a new holder against an old launcher,
-// and the same build, at launch and at attach. Each case is answered by name.
+// TestMixedPairs is the mixed-pair test of the check: an old holder against a
+// new launcher, a new holder against an old record, a launcher of this check
+// that expects the old build against a new holder, and the same build, at
+// launch and at attach. Each case is answered by name.
+//
+// It does not cover a launcher built before this package: such a launcher
+// makes no check and never reads holder.json. What it relies on is that the
+// control frames of version 1 are the bytes they were (in the wire package,
+// TestControlFrameV1IsWrittenWithoutTheMember) and that the member "build"
+// is added to holder.json, which no older reader refuses (see the package
+// documentation).
 func TestMixedPairs(t *testing.T) {
 	oldB, newB := build(revOld, false), build(revNew, false)
 	exe := func(id Identity) func(string) (Identity, error) {
@@ -60,11 +68,11 @@ func TestMixedPairs(t *testing.T) {
 	}{
 		{"old holder against a new daemon", newB, exe(oldB), newRecord(oldB), WhyDiffer},
 		{"new holder against an old record", newB, exe(newB), oldRecord, WhyNoRecord},
-		{"new holder against an old daemon", oldB, exe(newB), newRecord(newB), WhyDiffer},
+		{"a checker expecting the old build against a new holder", oldB, exe(newB), newRecord(newB), WhyDiffer},
 		{"same build", newB, exe(newB), newRecord(newB), ""},
 	} {
 		ch := &Checker{Expected: c.expected, Executable: c.launch}
-		attach := ch.BeforeAttach(writeRecord(t, c.record))
+		attach := ch.BeforeAttach(writeRecord(t, c.record), 3)
 		launch := ch.BeforeLaunch("/not/read")
 		if c.why == "" {
 			if attach != nil || launch != nil {
@@ -288,10 +296,59 @@ func TestReadRecord(t *testing.T) {
 	}
 	// No state file: the attach is refused, and says so.
 	var se *SkewError
-	if err := (&Checker{Expected: b}).BeforeAttach(t.TempDir()); !errors.As(err, &se) || se.Why != WhyNoStateFile {
+	if err := (&Checker{Expected: b}).BeforeAttach(t.TempDir(), 3); !errors.As(err, &se) || se.Why != WhyNoStateFile {
 		t.Errorf("no state file: %v", err)
 	}
-	if err := (&Checker{Expected: b}).BeforeAttach(writeRecord(t, "garbage")); !errors.As(err, &se) || se.Why != WhyUnreadable {
+	if err := (&Checker{Expected: b}).BeforeAttach(writeRecord(t, "garbage"), 3); !errors.As(err, &se) || se.Why != WhyUnreadable {
 		t.Errorf("a bad state file: %v", err)
+	}
+}
+
+// TestBeforeAttachComparesTheEpoch: the state file must be of the epoch to be
+// attached. One of another epoch is refused with stale-epoch, naming both
+// epochs, whatever build it records, the expected one included; the state
+// file of the epoch is checked for its build as before. The reader is given
+// the epoch.
+func TestBeforeAttachComparesTheEpoch(t *testing.T) {
+	b := build(revNew, false)
+	ch := &Checker{Expected: b}
+	dir := writeRecord(t, newRecord(b)) // epoch 3
+	if err := ch.BeforeAttach(dir, 3); err != nil {
+		t.Fatalf("the epoch of the file: %v", err)
+	}
+	for _, want := range []uint64{2, 4} {
+		err := ch.BeforeAttach(dir, want)
+		var ee *EpochError
+		if !errors.As(err, &ee) || !errors.Is(err, ErrOtherEpoch) || errors.Is(err, ErrSkew) || ee.Want != want || ee.Got != 3 {
+			t.Fatalf("epoch %d: %v", want, err)
+		}
+		msg := err.Error()
+		if !strings.HasPrefix(msg, EpochReason+": ") || !strings.Contains(msg, "of epoch 3, not of epoch") || len(msg) > 256 {
+			t.Fatalf("epoch %d: %q", want, msg)
+		}
+	}
+	// The epoch comes first: an old holder's file of another epoch is not
+	// called an older holder, and one of the epoch is.
+	old := writeRecord(t, oldRecord) // epoch 3, no build
+	if err := ch.BeforeAttach(old, 4); !errors.Is(err, ErrOtherEpoch) {
+		t.Fatalf("an old record of another epoch: %v", err)
+	}
+	var se *SkewError
+	if err := ch.BeforeAttach(old, 3); !errors.As(err, &se) || se.Why != WhyNoRecord {
+		t.Fatalf("an old record of the epoch: %v", err)
+	}
+	// A file without an epoch is of no epoch that is attached.
+	if err := ch.BeforeAttach(writeRecord(t, `{"build":null}`), 1); !errors.Is(err, ErrOtherEpoch) {
+		t.Fatalf("no epoch: %v", err)
+	}
+	// The reader is given the epoch.
+	var asked []uint64
+	ch.Record = func(_ string, epoch uint64) (Record, error) {
+		asked = append(asked, epoch)
+		id := b
+		return Record{Epoch: epoch, Build: &id}, nil
+	}
+	if err := ch.BeforeAttach("unused", 7); err != nil || len(asked) != 1 || asked[0] != 7 {
+		t.Fatalf("%v, asked %v", err, asked)
 	}
 }

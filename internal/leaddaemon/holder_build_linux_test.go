@@ -5,6 +5,7 @@ package leaddaemon
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -23,24 +24,30 @@ var (
 )
 
 // sameHolderBuild is a check of the holder's build that finds every holder to
-// be the expected build: the tests' holders are fakes and their executable
-// does not exist.
+// be the expected build, of whatever epoch is attached: the tests' holders are
+// fakes, their executable does not exist and they write no state file.
 func sameHolderBuild() *buildid.Checker {
 	return &buildid.Checker{
 		Expected:   testHolderBuild,
 		Executable: func(string) (buildid.Identity, error) { return testHolderBuild, nil },
-		Record: func(string) (buildid.Record, error) {
+		Record: func(_ string, epoch uint64) (buildid.Record, error) {
 			b := testHolderBuild
-			return buildid.Record{Build: &b}, nil
+			return buildid.Record{Epoch: epoch, Build: &b}, nil
 		},
 	}
 }
 
 // TestHolderVersionSkewCodeIsBuildidReason: the receipt's code is the name
-// the build check gives the refusal.
+// the build check gives the refusal, and the code of a state file of another
+// epoch is the name it gives that one.
 func TestHolderVersionSkewCodeIsBuildidReason(t *testing.T) {
 	if codeHolderVersionSkew != buildid.Reason {
 		t.Fatalf("%q is not %q", codeHolderVersionSkew, buildid.Reason)
+	}
+	for _, name := range []string{buildid.EpochReason, leadwire.CodeStaleEpoch} {
+		if codeStaleEpoch != name {
+			t.Fatalf("%q is not %q", codeStaleEpoch, name)
+		}
 	}
 }
 
@@ -75,8 +82,9 @@ func TestCanaryStartRefusesAHolderOfAnotherBuild(t *testing.T) {
 
 // TestCanaryTicketChecksTheRunningHolder is the mixed-pair test of attach,
 // through the real reader of the holder's holder.json in its state folder: an
-// old holder that records no build, a holder of another build, and the same
-// build. Only the same build is asked for a ticket.
+// old holder that records no build, a holder of another build, a state file
+// of another epoch that records the same build, and the same build of the
+// epoch. Only the same build of the epoch is asked for a ticket.
 func TestCanaryTicketChecksTheRunningHolder(t *testing.T) {
 	c := newCanaryEnv(t)
 	c.build = sameHolderBuild()
@@ -86,9 +94,9 @@ func TestCanaryTicketChecksTheRunningHolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	record := func(build string) {
+	record := func(epoch, build string) {
 		t.Helper()
-		content := `{"version":1,"role":"throwaway-one/lead","epoch":1` + build + `}`
+		content := `{"version":1,"role":"throwaway-one/lead","epoch":` + epoch + build + `}`
 		if err := os.WriteFile(filepath.Join(layout.Holder(), buildid.RecordFileName), []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -97,22 +105,27 @@ func TestCanaryTicketChecksTheRunningHolder(t *testing.T) {
 		return `,"build":{"module":"` + id.Module + `","version":"` + id.Version + `","revision":"` + id.Revision + `"}`
 	}
 	for _, tc := range []struct {
-		name, build, why string
+		name, epoch, build, prefix string
 	}{
-		{"old holder, no build recorded", "", buildid.WhyNoRecord},
-		{"holder of another build", build(otherHolderBuild), buildid.WhyDiffer},
+		{"old holder, no build recorded", "1", "", "holder-version-skew: " + buildid.WhyNoRecord},
+		{"holder of another build", "1", build(otherHolderBuild), "holder-version-skew: " + buildid.WhyDiffer},
+		{"state file of the epoch before", "0", build(testHolderBuild), "stale-epoch: the holder's state file is of epoch 0, not of epoch 1"},
+		{"state file of another epoch", "2", build(testHolderBuild), "stale-epoch: the holder's state file is of epoch 2, not of epoch 1"},
 	} {
-		record(tc.build)
+		record(tc.epoch, tc.build)
 		var r CanaryTicketResult
 		ce := wantCode(t, c.call(OpCanaryTicket, CanaryTicketParams{Role: canaryRoleText, AttachRole: "writer"}, &r), CodeRefused)
-		if !strings.HasPrefix(ce.Message, "holder-version-skew: "+tc.why) || !strings.Contains(ce.Message, "expected build "+testHolderBuild.Short()) {
+		if !strings.HasPrefix(ce.Message, tc.prefix) {
+			t.Fatalf("%s: refusal %q", tc.name, ce.Message)
+		}
+		if strings.HasPrefix(tc.prefix, "holder-version-skew") && !strings.Contains(ce.Message, "expected build "+testHolderBuild.Short()) {
 			t.Fatalf("%s: refusal %q", tc.name, ce.Message)
 		}
 		if n := len(c.holder.requests(wire.OpTicket)); n != 0 {
 			t.Fatalf("%s: the holder was asked %d times", tc.name, n)
 		}
 	}
-	record(build(testHolderBuild))
+	record("1", build(testHolderBuild))
 	var r CanaryTicketResult
 	c.mustCall(OpCanaryTicket, CanaryTicketParams{Role: canaryRoleText, AttachRole: "writer"}, &r)
 	if n := len(c.holder.requests(wire.OpTicket)); n != 1 || r.Epoch != 1 {
@@ -123,7 +136,8 @@ func TestCanaryTicketChecksTheRunningHolder(t *testing.T) {
 // TestLeadStartAndTicketRefuseASkewedHolder: in scratch mode the start of a
 // lead whose holder executable is another build is refused with the code
 // holder-version-skew and changes nothing; a running lead whose holder records
-// no build gets no ticket, with the same code.
+// no build gets no ticket, with the same code, and one whose state file is of
+// another epoch gets none, with the code stale-epoch.
 func TestLeadStartAndTicketRefuseASkewedHolder(t *testing.T) {
 	l := newLeadEnv(t)
 	other := sameHolderBuild()
@@ -143,7 +157,7 @@ func TestLeadStartAndTicketRefuseASkewedHolder(t *testing.T) {
 
 	// The same build starts; then the running holder records no build.
 	other.Executable = func(string) (buildid.Identity, error) { return testHolderBuild, nil }
-	other.Record = func(string) (buildid.Record, error) { return buildid.Record{Epoch: 1}, nil }
+	other.Record = func(string, uint64) (buildid.Record, error) { return buildid.Record{Epoch: 1}, nil }
 	s := l.startLead("alpha")
 	want(t, s, leadwire.StatusDone, "")
 	tk := l.ticket("alpha", 1, "writer")
@@ -153,5 +167,83 @@ func TestLeadStartAndTicketRefuseASkewedHolder(t *testing.T) {
 	}
 	if n := len(l.holders["alpha"].requests(wire.OpTicket)); n != 0 {
 		t.Fatalf("the holder was asked %d times", n)
+	}
+	// A message is checked as a ticket is, and the refusal spends nothing.
+	in := l.inject("alpha", 1, "msg-one", "body one")
+	want(t, in, leadwire.StatusRefused, "holder-version-skew")
+	if !strings.Contains(in.Message, buildid.WhyNoRecord) {
+		t.Fatalf("message %q", in.Message)
+	}
+
+	// A state file of the epoch before, of the same build: the holder of the
+	// epoch has not written its own, and the ticket is refused stale-epoch.
+	other.Record = func(string, uint64) (buildid.Record, error) {
+		b := testHolderBuild
+		return buildid.Record{Epoch: 0, Build: &b}, nil
+	}
+	tk = l.ticket("alpha", 1, "writer")
+	want(t, tk, leadwire.StatusRefused, "stale-epoch")
+	if !strings.Contains(tk.Message, "of epoch 0, not of epoch 1") {
+		t.Fatalf("message %q", tk.Message)
+	}
+	in = l.inject("alpha", 1, "msg-one", "body one")
+	want(t, in, leadwire.StatusRefused, "stale-epoch")
+	if !strings.Contains(in.Message, "of epoch 0, not of epoch 1") {
+		t.Fatalf("message %q", in.Message)
+	}
+	h := l.holders["alpha"]
+	if n := len(h.requests(wire.OpTicket)) + len(h.requests(wire.OpInject)); n != 0 {
+		t.Fatalf("the holder was asked %d times", n)
+	}
+	if row := l.row("alpha"); row.MessageSpent {
+		t.Fatal("a refused message spent the epoch")
+	}
+
+	// The holder of the epoch records the same build: the message goes.
+	other.Record = sameHolderBuild().Record
+	want(t, l.inject("alpha", 1, "msg-one", "body one"), leadwire.StatusDone, "")
+	if n := len(h.requests(wire.OpInject)); n != 1 {
+		t.Fatalf("%d inject frames", n)
+	}
+}
+
+// TestCanaryInjectChecksTheRunningHolder: the canary's message is checked
+// as its ticket is, through the real reader of holder.json: a holder of
+// another build is refused by name before any frame is written, with an
+// inject-refused line of the code, and the epoch's message is not spent; the
+// same build of the epoch then takes it.
+func TestCanaryInjectChecksTheRunningHolder(t *testing.T) {
+	c := newCanaryEnv(t)
+	c.build = sameHolderBuild()
+	c.build.Record = nil // buildid.ReadRecord
+	started := c.up(submitted)
+	layout, err := c.cfg.Layout()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(id buildid.Identity) {
+		t.Helper()
+		content := `{"version":1,"role":"throwaway-one/lead","epoch":` + strconv.FormatUint(started.Epoch, 10) +
+			`,"build":{"module":"` + id.Module + `","version":"` + id.Version + `","revision":"` + id.Revision + `"}}`
+		if err := os.WriteFile(filepath.Join(layout.Holder(), buildid.RecordFileName), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record(otherHolderBuild)
+	_, err = c.inject("msg-one", "body text\n")
+	ce := wantCode(t, err, CodeRefused)
+	if !strings.HasPrefix(ce.Message, "holder-version-skew: "+buildid.WhyDiffer) {
+		t.Fatalf("refusal %q", ce.Message)
+	}
+	if l := c.lastEvidence(); l["event"] != "inject-refused" || l["code"] != "holder-version-skew" || l["message_id"] != "msg-one" {
+		t.Fatalf("line %v", l)
+	}
+	if n := len(c.holder.requests(wire.OpInject)); n != 0 {
+		t.Fatalf("%d inject frames reached the holder", n)
+	}
+	record(testHolderBuild)
+	got, err := c.inject("msg-one", "body text\n")
+	if err != nil || got.Epoch != started.Epoch || got.Result.Outcome != wire.InjectOutcomeSubmitted {
+		t.Fatalf("%+v %v", got, err)
 	}
 }

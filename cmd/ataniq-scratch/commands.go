@@ -317,9 +317,10 @@ func (a *app) cmdTicket(cfg ticketConfig) int {
 	if err != nil {
 		return a.fail("%v", err)
 	}
-	// The running holder recorded the build of this command, or no ticket
-	// is minted.
-	if code, done := a.buildRefusal(func(ch *buildid.Checker) error { return ch.BeforeAttach(l.state) }); done {
+	// The running holder recorded the build of this command for the epoch, or
+	// no ticket is minted: a state file of another epoch is refused with
+	// stale-epoch.
+	if code, done := a.buildRefusal(func(ch *buildid.Checker) error { return ch.BeforeAttach(l.state, epoch) }); done {
 		return code
 	}
 	ticket, err := wire.NewTicket()

@@ -559,20 +559,42 @@ func TestUnsettledWordsNameTheWindowAndTheFallback(t *testing.T) {
 	}
 }
 
-// A holder of another build is refused before a start and before a ticket; the
-// words say what the owner does: stop the lead and start it with the current
-// holder.
+// A holder of another build is refused before a start, a ticket and a
+// message; the words say what the owner does in each case: run the holder and
+// the daemon of one checkout (a refused start leaves the lead stopped, and
+// starting it again alone is refused again), and restart a lead that runs.
 func TestTheVersionSkewWordsSayWhatTheOwnerDoes(t *testing.T) {
 	w := reasonWords["holder-version-skew"]
-	for _, part := range []string{"another build", "stop the lead", "start it"} {
+	for _, part := range []string{"builds differ", "holder and daemon from one checkout", "restart a running lead"} {
 		if !strings.Contains(w, part) {
 			t.Errorf("holder-version-skew: %q lacks %q", w, part)
 		}
 	}
-	for _, op := range []Op{OpStart, OpTicket} {
+	// No way out that does not fit a refused start, whose lead is stopped.
+	for _, part := range []string{"stop the lead", "start it with"} {
+		if strings.Contains(w, part) {
+			t.Errorf("holder-version-skew: %q says %q", w, part)
+		}
+	}
+	for _, op := range []Op{OpStart, OpTicket, OpInject} {
 		line := receiptLine(Receipt{Op: op, Status: Refused, Code: "holder-version-skew"}, heldUnknown)
 		if !strings.HasSuffix(line, w) {
 			t.Errorf("%v: %q", op, line)
 		}
+	}
+}
+
+// A start of a lead whose recorded profile this build does not launch (written
+// by another build, or naming a pack) is refused with its own code, and the
+// words name the way out, a define of the lead, which the words of
+// launch-refused do not.
+func TestTheProfileNotLaunchableWordsSayDefineTheLeadAgain(t *testing.T) {
+	w := reasonWords["profile-not-launchable"]
+	if !strings.Contains(w, "define the lead again") || w == reasonWords["launch-refused"] {
+		t.Errorf("profile-not-launchable: %q", w)
+	}
+	line := receiptLine(Receipt{Op: OpStart, Status: Refused, Code: "profile-not-launchable"}, heldUnknown)
+	if line != "start: refused: "+w {
+		t.Errorf("%q", line)
 	}
 }

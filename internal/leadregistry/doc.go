@@ -106,10 +106,31 @@
 // a newer build whose profile has a member this build lacks still replays.
 // What this build cannot read whole it does not act on: BeginLaunch refuses a
 // role whose stored profile is not what this build would write for it, with
-// ErrLaunchProfile, until the role is defined again. An unknown record kind,
-// and a header of another format version, are still damage. testdata/v1-base
-// holds a journal an older build wrote, with the digests it recorded; the
-// tests read it back byte for byte.
+// ErrLaunchProfile, until the role is defined again. testdata/v1-base holds a
+// journal an older build wrote, with the digests it recorded; the tests read
+// it back byte for byte.
+//
+// The tolerance is of members, not of values. A value this build does not
+// know in a member it knows is damage, as before: a provider, a manager, a
+// desired or shown state, an evidence kind or an outcome outside this build's
+// sets, a text over its bound, a required member left empty, or a member of
+// another JSON type fails the record's check, and the journal does not open
+// (ErrCorrupt; the daemon exits 14). So are an unknown record kind and a
+// header of another format version. A journal a newer build wrote opens only
+// when that build added members and nothing else.
+//
+// The rule for a later build follows from that. Replay ignores an unknown
+// member in every record kind, and only the requested profile of a define
+// record is checked for one (ErrLaunchProfile): a member added to any other
+// kind is dropped by an older build without a word, which replays the record
+// as the record it knows and may act on it (resolve an intent, launch, stop).
+// A member may therefore be added to an existing record kind only when an
+// older build that ignores it does nothing the newer build would not: a note,
+// a piece of evidence, provenance. A member that restricts what a reader may
+// do (a hold, a fence, a guard, a precondition) must not be added to an
+// existing kind. It needs a new record kind or a new format version, both of
+// which an older build refuses as damage, or a value of a known member that
+// an older build refuses, which has the same effect for that record.
 //
 // This package is provisional and unqualified: it is part of the lead daemon
 // work in progress, the file format is version 1 and may change before any

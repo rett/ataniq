@@ -209,15 +209,16 @@ func (e *testEnv) newApp(l launcher) (*app, *lockedBuffer, *lockedBuffer) {
 var testBuild = buildid.Identity{Module: "ataniq", Version: "v0.0.14-0.20261124010203-222222222222",
 	Revision: "2222222222222222222222222222222222222222"}
 
-// sameBuild is a build check that finds every holder to be testBuild: the
-// stand-in holders of the tests are not builds of this command.
+// sameBuild is a build check that finds every holder to be testBuild, of
+// whatever epoch is attached: the stand-in holders of the tests are not builds
+// of this command.
 func sameBuild() *buildid.Checker {
 	return &buildid.Checker{
 		Expected:   testBuild,
 		Executable: func(string) (buildid.Identity, error) { return testBuild, nil },
-		Record: func(string) (buildid.Record, error) {
+		Record: func(_ string, epoch uint64) (buildid.Record, error) {
 			b := testBuild
-			return buildid.Record{Build: &b}, nil
+			return buildid.Record{Epoch: epoch, Build: &b}, nil
 		},
 	}
 }

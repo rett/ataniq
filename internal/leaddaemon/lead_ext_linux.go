@@ -90,8 +90,14 @@ const (
 	codeReceipt          = "receipt-not-recorded"
 	codeChatFolder       = "chat-folder"
 	// codeHolderVersionSkew is buildid.Reason: the holder is not the
-	// daemon's own build (a start or a ticket; see canaryExt.holderSkew).
+	// daemon's own build (a start or a ticket; see canaryExt.launchSkew and
+	// canaryExt.attachSkew).
 	codeHolderVersionSkew = "holder-version-skew"
+	// codeProfileNotLaunchable is the launch refusal of a recorded profile
+	// this build does not launch (leadregistry.ErrLaunchProfile): written by
+	// another build with members this one does not know, or naming a pack.
+	// Defining the lead again lifts it, which launch-refused does not say.
+	codeProfileNotLaunchable = "profile-not-launchable"
 )
 
 // The fixed texts of the receipts and the errors this file answers. They are
@@ -138,6 +144,10 @@ const (
 // The proof a stop of a lead that was defined and never started carries: the
 // registry holds none for it, and the receipt never shows an empty proof.
 const msgProofNeverStarted = "no launch was ever recorded and no unit of the role is loaded"
+
+// msgProfileNotLaunchable is the text of codeProfileNotLaunchable, which the
+// canary's start answers too: the way out it names is a define of the role.
+const msgProfileNotLaunchable = "the recorded profile was written by another build or names a pack, and this build does not launch it; define the role again"
 
 // outcome is what a command ended with, before it is made the receipt's final
 // answer.
@@ -618,7 +628,7 @@ func (m *leadMode) start(ctx context.Context, lr *leadRole) outcome {
 		}
 		// The holder the unit would run is the daemon's own build, before
 		// anything changes.
-		if f := lr.in.ext.holderSkew("scratch start "+strconv.Quote(lr.key), false); f != nil {
+		if f := lr.in.ext.launchSkew("scratch start " + strconv.Quote(lr.key)); f != nil {
 			return fromFail(f)
 		}
 		// The reply folder and the instruction text, before the unit starts:
@@ -695,6 +705,10 @@ func (m *leadMode) startFailure(lr *leadRole, err error) outcome {
 		return refusedOut(codeUnitLoaded, msgUnitLoaded)
 	case errors.Is(err, leadunit.ErrInvalidSpec):
 		return refusedOut(codeLimits, msgLimits)
+	case errors.Is(err, leadregistry.ErrLaunchProfile):
+		// Before ErrLaunchRefused, which it matches too: its own code says
+		// that defining the lead again lifts it.
+		return refusedOut(codeProfileNotLaunchable, msgProfileNotLaunchable)
 	case errors.Is(err, leadregistry.ErrLaunchRefused):
 		return refusedOut(codeLaunchRefused, msgLaunchRefused)
 	case errors.Is(err, leadregistry.ErrEpochExhausted):
