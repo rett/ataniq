@@ -1283,7 +1283,10 @@ keeps its sample leads.
    every lead's reply folder; the daemon refuses a drop folder in the state
    root. This adapter can collect requests from the drop folder and run the
    suite in the verification sandbox: the word stand-in on its door does not
-   make every host action inert.
+   make every host action inert. On a state root that keeps other settings
+   in `owner/scratch.json` (a phone trial's), the owner gives the folder of
+   the non-trial settings with `--owner-settings` instead (below), and
+   `owner/scratch.json` stays as it is.
 3. The gate's identity and the pinned seat key: `ataniqd seat-gate init
    --state-dir STATE` with the config's state root as `STATE` prints the gate's
    fingerprint, which the seat on the authority host pins, and
@@ -1314,6 +1317,121 @@ and it is keyed by a secret the daemon makes at each start and never sends, so
 its value means nothing after a restart. It only hints that the seat should
 read again: it never allows a read, which the desk checks on every one.
 
+**Settings from a folder of their own.** With `--owner-settings DIR` the
+owner channel reads its settings from `DIR/scratch.json` and not from
+`owner/scratch.json` of the state root, which is not read at all, so a phone
+trial's state folder keeps its own settings while the scratch daemon serves its
+gate identity, its pins and its paired phones. `DIR` sits beside the state
+root and the runtime root, not inside either (the runbook puts it at
+`ROOT/owner-settings`, beside `ROOT/runtime`, with the state root elsewhere):
+
+```sh
+build/scratch-seat/ataniqd run --scratch CONFIG --owner-channel --seat-gate IP:PORT --owner-settings DIR
+```
+
+The flag's name follows run's other flags (`--owner-channel` says what is
+served; `--scratch`, `--seat-gate` and `--owner-settings` name what it is
+served from), and it names a folder because the folder is what is checked and
+held: the daemon resolves `DIR` through every link and `..`, opens it with no
+link followed and opens `scratch.json` beneath that handle each time, without
+following a link, so a link planted after the check changes nothing. The
+file's bytes are read once, from the descriptor that was checked, and the
+settings are decoded from those bytes; the file is never opened by its name
+a second time. It
+refuses to start (exit 10, one line naming every rule that fails, before any
+lock and with nothing made) when `DIR` is not a private folder (mode 0700) of
+the daemon's user, or when it is, lies in or holds:
+
+- `owner/` of the state root, the trial's own settings folder ("not the
+  trial's settings folder");
+- the state root or the runtime root ("beside the state and runtime
+  folders, not inside them");
+- a path a lead's sandbox reaches: each lead's folder (home, provider config,
+  tree and the copies its sandbox binds), mirror, mailbox, published folder and
+  holder runtime folder, whether or not the lead is defined, the agent install
+  and the probe of the config, and the host paths every sandbox binds ("out of
+  every lead's reach");
+- `owner/gate`, the gate's identity and pins ("not the key list, the journal
+  or the gate identity");
+- once the settings are read, the drop folder, the mirror, the work folder or
+  the sandbox template they name ("apart from the folders the settings
+  name"): the drop folder, the mirror and the work folder are where others
+  write or run, and the template decides which command wraps the gates, as
+  the settings file does, so neither is kept with the other (the template is
+  kept out of the first three for the same reason).
+
+Each rule is decided two ways: by the resolved paths, and by the identities
+(device and inode) of the open folder and of each folder above it, which also
+catch a bind mount of a guarded folder itself given as `DIR`. The checks
+guard against mistakes (a wrong path, a link, a guarded folder given by its
+other name), not against an attacker. A mount layout the owner or root makes
+is outside them: a bind mount of a folder within a guard given as `DIR`,
+nested mounts, a mount made after the check and a mount in another mount
+namespace are not looked at. A lead cannot make a mount on the host.
+`scratch.json` must be a regular
+file of the user's, mode 0600, with one name, that is not the key list, its
+head, the journal, a file of the gate or the trial's settings file by another
+name, and that holds non-trial settings. The start then prints, after the
+STAND-IN banner, `owner channel: settings read from DIR/scratch.json
+(--owner-settings); owner/scratch.json of the state folder is not read`. The
+journal (`owner/journal.db`), the records, the list of keys and the gate's key
+and pins are the state root's all the same: the gate's identity and pins are
+read and never written, and the key list only grows by a pairing, a revocation
+or a raised sign counter. The folder is the user's own: a process of the
+owner's user, not a lead (the folder is out of every lead's reach), could still
+change the file between the two reads the daemon makes, before its locks and
+when it builds the service, and each read is checked again.
+
+`--check` with the same flags makes every check the daemon makes before it
+takes a lock and prints one line each, `pass` with what holds or `FAIL` with
+why: the folder and its four rules, the settings file and the settings, the
+folders the settings name, the scratch roots, the suite, the root marker, the
+gate's address, key and pins, and the socket paths of the daemon and of every
+lead's holder. The last of these is one the daemon's start does not make: a
+holder meets the limit of a socket address only when it starts, so the check
+is the place to find a runtime root too long for a holder. Then it lists
+what the daemon would read and open, says that `owner/scratch.json` is not
+read, and ends `check: no refusal` (exit 0) or `check: N refusal(s): the
+sitting failed preflight` (exit 10), which then names the start that would
+fail: the daemon's, or, when a holder's socket path is the one refusal, the
+later start of that lead's holder (the daemon would start). It binds, locks, makes and starts nothing; the locks and the gate's port,
+which it does not take, are the start's own refusals (exit 12, 17 and 18).
+
+`--check --keys-prefix` and `--check --keys-since LEN:SHA256` check the key
+list of the state root alone (`owner/keys.log` and its head
+`owner/keys.head`), with the journal's own checks read only
+(`ownerjournal.VerifyKeys`), on the files themselves: the folder and both
+files opened without following a link and held to the ownership, mode and
+link-count checks of the journal's opener, the records well formed, in
+sequence, on the digest chain and within the list's rules, and the head's
+count and digest exactly the list's. Nothing is created, repaired, locked or
+written, in the state root or anywhere else: a missing list or head (the
+opener would make one) and a head that lags the list (a start would make it
+right) do not pass. A pass is a snapshot of the files' identity, their
+ownership, mode and link count, their content and the head's agreement with
+the list, at the moment of the check; it does not say that the daemon's
+start will open the list. The check opens the files read only and takes no
+lock, so whether the list can be opened for writing (a read-only file
+system, say) and whether its lock is free (another daemon holds it) are
+checked only when the daemon starts. It is a guard for the owner's trial
+against his own mistakes: whoever can write the folder can write a list and
+a head that hold.
+With `--check`, `--expect-state DIR` binds the check to the trial its
+caller means: before any file of the state root is read, the daemon refuses
+(exit 10) unless DIR is, by device and inode, the state root the scratch
+config of that invocation decoded to; it applies to `--check`,
+`--keys-prefix` and `--keys-since` alike, and the attended proof's
+`prepare.sh --status` passes it to each.
+`--keys-prefix` prints one line, the list's prefix, its length in bytes and
+its SHA-256, as `LEN:SHA256`, a space and the SHA-256 of the head: both of
+the bytes the checks read from the descriptors they checked, one snapshot. `--keys-since` checks that a prefix taken earlier
+is the list's beginning, ending at a whole record, and names the type of
+each record appended since: counter records alone (a phone login whose
+passkey's sign counter rises) end `keys: holds` (exit 0); any other record,
+a changed or missing old byte and any damage end `keys: CHANGED` (exit 1).
+The attended proof takes the prefix before its sitting and checks the list
+against it after.
+
 **Reading a lead's replies.** The owner defines and starts a lead from the
 console ([the console guide](terminal-console.md)). Its chat is off, like every
 lead's whenever the daemon starts; `"inject": false` is enough for replies, and
@@ -1337,6 +1455,29 @@ control plane and the approvals in one process: any process of the owner's user
 can call `chat.set` and the `lead.*` operations on its socket, as [the
 same-user limit](#what-scratch-mode-leaves-open) says. The host setup, the pins,
 the deployment of the seat and every live run are the owner's.
+
+## The attended proof of real replies
+
+[The attended proof of real replies](scratch-seat-proof.md) is the owner's
+runbook for one sitting with this daemon on the phone trial's state folder, so
+that the trial's gate key, seat pins and paired phones are reused: first the
+stand-in lead, then, once the drop rule is in place, one real Claude lead,
+each reply read on the phone and the desktop. Without `--owner-settings` the
+daemon refuses that folder, whose `owner/scratch.json` holds the trial's
+settings (`"trial": true`); with `--owner-settings` it reads the proof's own
+settings from a folder of the proof's and leaves the trial's where they are.
+Nothing of the trial is renamed, moved, masked or swapped: the owner stops
+the trial and starts it again with his own commands, and the state folder's
+daemon lock refuses a second daemon. `qualification/scratch-seat/prepare.sh`
+writes the scratch config, the settings folder and the files they name in a
+folder of the proof's own (`--dry` reads and writes nothing of the owner's;
+`--self-test` computes only; `--write` never writes in the trial's state
+folder or starts anything; `--status` runs the daemon's `--check` and
+compares the trial's files with the digests the owner recorded, and writes
+nothing). Each sitting has leads of its own (`standin-N`, `live-N`).
+`TestScratchSeatTakesThePhoneTrialsStateFolder` in `cmd/ataniqd` proves the
+folder's way there and back in process, on the files `--write` makes, and
+shows the trial's gate key, pins, keys and settings the same bytes after it.
 
 ## Failure handling and owner recovery
 

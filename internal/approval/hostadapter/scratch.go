@@ -116,9 +116,14 @@ type ScratchSeat struct {
 	SeatRev int64 `json:"seat_rev"`
 }
 
+// MaxScratchBytes is the largest settings file: 64 KiB.
+const MaxScratchBytes = maxScratchBytes
+
 // LoadScratch reads the settings file at path. The file must be a regular
 // file of the caller's, not reachable by the group or by others, of at most
-// 64 KiB.
+// 64 KiB. A caller that has opened and checked the file itself reads it with
+// [ReadScratch] or [ParseScratch] instead, so that the file is not opened by
+// its name a second time.
 func LoadScratch(path string) (Scratch, error) {
 	st, err := os.Lstat(path)
 	if err != nil {
@@ -130,6 +135,31 @@ func LoadScratch(path string) (Scratch, error) {
 	b, err := readSmall(path, maxScratchBytes)
 	if err != nil {
 		return Scratch{}, errors.New("hostadapter: the scratch settings file could not be read")
+	}
+	return ParseScratch(b)
+}
+
+// ReadScratch reads the settings from r, at most [MaxScratchBytes] of them
+// (more is refused), and decodes them with [ParseScratch]. It reads r once
+// and opens nothing: the caller owns r and every check of the file it reads.
+func ReadScratch(r io.Reader) (Scratch, error) {
+	b, err := io.ReadAll(io.LimitReader(r, maxScratchBytes+1))
+	if err != nil {
+		return Scratch{}, errors.New("hostadapter: the scratch settings file could not be read")
+	}
+	if len(b) > maxScratchBytes {
+		return Scratch{}, errors.New("hostadapter: the scratch settings file could not be read: it is larger than its cap")
+	}
+	return ParseScratch(b)
+}
+
+// ParseScratch decodes the settings from b, the bytes of a settings file, with
+// the strict rules of [LoadScratch]: no key twice in one object, no unknown
+// key, nothing after the object, and the checks of trial and non-trial
+// settings. It reads no file.
+func ParseScratch(b []byte) (Scratch, error) {
+	if len(b) > maxScratchBytes {
+		return Scratch{}, errors.New("hostadapter: the scratch settings file could not be read: it is larger than its cap")
 	}
 	if err := noRepeatedKey(b); err != nil {
 		return Scratch{}, errors.New("hostadapter: the scratch settings are not valid: a key appears twice in one object")
