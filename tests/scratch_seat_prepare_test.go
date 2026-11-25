@@ -268,6 +268,25 @@ func TestScratchSeatPrepareIsPlainShell(t *testing.T) {
 	}
 }
 
+// An exported CDPATH does not change where the script finds itself (review
+// finding 7): run by its relative path from the checkout, with CDPATH=. and
+// with CDPATH naming another folder, --self-test passes as without one.
+func TestScratchSeatPrepareIgnoresCDPATH(t *testing.T) {
+	other := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(other, "qualification", "scratch-seat"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, cdpath := range []string{"", ".", other, ".:" + other} {
+		cmd := exec.Command("/bin/sh", scratchSeatPrepare, "--self-test")
+		cmd.Dir = root(t)
+		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=/nonexistent", "CDPATH=" + cdpath}
+		out, err := cmd.CombinedOutput()
+		if err != nil || !strings.HasPrefix(string(out), "prepare.sh self-test: ") || !strings.Contains(string(out), " checks passed") {
+			t.Errorf("--self-test with CDPATH=%q: %v\n%s", cdpath, err, out)
+		}
+	}
+}
+
 // --self-test with no name checks the script's own promises and prints one
 // line; it reads, writes and runs nothing. The named entries compute only:
 // the gate address, the config, the settings and the owner's steps.

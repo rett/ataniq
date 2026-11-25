@@ -44,7 +44,8 @@
   writes the scratch config and the settings folder (modes 0600 and 0700)
   and the files they name in a folder of the proof's own, with leads fresh
   for each sitting (`standin-N`, `live-N`): `--dry` prints from the values
-  alone, `--self-test` computes only, `--write` checks the state folder, the
+  alone, `--self-test` computes only (an exported `CDPATH` is cleared
+  before the script finds its own folder), `--write` checks the state folder, the
   tools and the root first (physical paths, an existing parent that is not
   and lies not in the state folder, its `owner/`, the checkout or a
   temporary folder, by path and by identity, and a root that is not there

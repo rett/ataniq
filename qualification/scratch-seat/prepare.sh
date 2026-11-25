@@ -102,6 +102,11 @@
 # not one record is CHANGED too. --status writes nothing but the baseline.
 set -eu
 umask 077
+# A CDPATH of the caller's would make cd print the folder it found, and the
+# script's own folder be read wrong; the repository's Go wrapper clears it
+# too.
+CDPATH=
+export CDPATH
 
 NAME=prepare.sh
 case $0 in
