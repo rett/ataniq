@@ -287,6 +287,10 @@ func TestRecognizeBusyDeadline(t *testing.T) {
 			db := fixtureDB(t, path)
 			execFixture(t, db, "PRAGMA journal_mode=DELETE")
 			execFixture(t, db, "BEGIN EXCLUSIVE")
+			// The look for leaked ownership below uses the fixture's own
+			// options: the case's short bounds would fail a healthy
+			// recognition that a loaded host slows.
+			reopenOptions := o
 			o.OperationTimeout, o.BusyTimeout = tc.op, tc.busy
 			ctx := context.Background()
 			if tc.caller > 0 {
@@ -310,10 +314,72 @@ func TestRecognizeBusyDeadline(t *testing.T) {
 			}
 			execFixture(t, db, "ROLLBACK")
 			db.Close()
-			if _, err := Recognize(context.Background(), path, o); err != nil {
+			if _, err := Recognize(context.Background(), path, reopenOptions); err != nil {
 				t.Fatal("deadline leaked ownership", err)
 			}
 		})
+	}
+}
+
+// stalledConn is a connection whose first query after the connection is
+// set up, the read of the application id, waits until its context ends, and
+// reports the context's error; noDeadline ends the wait, with errNoDeadline,
+// when no deadline does.
+type stalledConn struct {
+	driver.Conn
+	sqlite.ExecQuerierContext
+	saw        chan error
+	noDeadline time.Duration
+}
+
+var errNoDeadline = errors.New("the query outlived every deadline")
+
+func (c *stalledConn) QueryContext(ctx context.Context, q string, args []driver.NamedValue) (driver.Rows, error) {
+	if q != "PRAGMA application_id" {
+		return c.ExecQuerierContext.QueryContext(ctx, q, args)
+	}
+	select {
+	case <-ctx.Done():
+		c.saw <- ctx.Err()
+		return nil, ctx.Err()
+	case <-time.After(c.noDeadline):
+		c.saw <- errNoDeadline
+		return nil, errNoDeadline
+	}
+}
+
+// TestRecognizeOperationDeadline: Recognize bounds its own work by
+// OperationTimeout. Nothing else can end the stalled query: the caller gives
+// no deadline, no other connection holds a lock (so the engine's busy timeout
+// has nothing to wait for), and the query waits on its context alone. It
+// ends with the context's deadline, which Recognize returns, with no Info,
+// and the ownership is released.
+func TestRecognizeOperationDeadline(t *testing.T) {
+	path, o := fixture(t)
+	mustCreate(t, path, o).Close()
+	reopenOptions := o
+	o.OperationTimeout, o.BusyTimeout = 50*time.Millisecond, 50*time.Millisecond
+	saw := make(chan error, 1)
+	d := recognitionDriver{Driver: &sqlite.Driver{}, wrap: func(raw driver.Conn) driver.Conn {
+		return &stalledConn{Conn: raw, ExecQuerierContext: raw.(sqlite.ExecQuerierContext), saw: saw, noDeadline: 10 * time.Second}
+	}}
+	got, err := recognizeWithDriver(context.Background(), path, o, d)
+	if got != (Info{}) {
+		t.Fatal("a recognition past its deadline returned an Info", got, err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("the recognition ended with %v, want its operation deadline", err)
+	}
+	select {
+	case qerr := <-saw:
+		if !errors.Is(qerr, context.DeadlineExceeded) {
+			t.Fatalf("the stalled query ended with %v, want the operation deadline", qerr)
+		}
+	default:
+		t.Fatal("the stalled query was never made")
+	}
+	if _, err := Recognize(context.Background(), path, reopenOptions); err != nil {
+		t.Fatal("the deadline leaked ownership", err)
 	}
 }
 
