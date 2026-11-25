@@ -208,6 +208,19 @@ func waitTimers(t *testing.T, ft *fakeTimers, n int) {
 	}
 }
 
+// stillTimers puts the rig's streams on fake timers that the test never
+// advances: no heartbeat, rotation or session timer of a stream fires. A
+// test that waits for a stream to end, with a bound generous for a loaded
+// host, then sees the end that the event it tests makes and no other: on
+// real timers the heartbeat (streamBeat), which looks at the session and the
+// server's end, or the rotation (streamLife) would end the stream inside
+// that bound too, and the test would pass with the event ignored.
+func stillTimers(r *rig) *fakeTimers {
+	ft := &fakeTimers{clk: r.clock}
+	r.app.streamTimer = ft.timer
+	return ft
+}
+
 // dueIn reports whether a timer is armed to fire d after the clock's now.
 // The stream arms its timers on this clock, so the arming of one is told by
 // its due time: the heartbeat's is the clock plus streamBeat, an event's gap
@@ -610,12 +623,16 @@ func TestSeatStreamDoesNotExtendTheSession(t *testing.T) {
 }
 
 // TestSeatStreamEndsAtLogout: a logout ends the stream at once, in silence.
+// The stream's timers stand still: its heartbeat, which looks at the session,
+// cannot end it, so the logout's wake alone can.
 func TestSeatStreamEndsAtLogout(t *testing.T) {
 	r, _ := newWatchRig(t, "aa", time.Minute)
+	ft := stillTimers(r)
 	s := r.login(t)
 	srv := streamServer(t, r)
 	c := openStream(t, srv, streamOK, s)
 	c.next(t, waitBound)
+	waitTimers(t, ft, 3) // the life, the heartbeat and the session's end
 	if w := r.postWith("/api/logout", "{}", s); w.Code != 200 {
 		t.Fatalf("logout: %d", w.Code)
 	}
@@ -814,10 +831,15 @@ func TestSeatStreamPerCredentialAndGlobalLimits(t *testing.T) {
 		within(t, o, waitBound)
 	}
 	r.waitStreams(t, 0)
+	// A logout frees the place too. The stream's timers stand still from
+	// here, so that the logout, not a heartbeat, ends it.
+	ft := stillTimers(r)
 	got := r.streamAsync(context.Background(), streamOK, other)
 	r.waitStreams(t, 1)
+	waitTimers(t, ft, 3)
 	r.postWith("/api/logout", "{}", other)
 	within(t, got, waitBound)
+	r.waitStreams(t, 0)
 }
 
 // TestSeatStreamOpensPerMinute: a credential opens at most 12 streams a
@@ -849,10 +871,16 @@ func TestSeatStreamOpensPerMinute(t *testing.T) {
 // TestSeatStreamEndsAtShutdown: the server's Shutdown ends the open streams
 // at once, cleanly, rather than waiting for their life; a stream asked after
 // it is refused; and no goroutine of a stream is left.
+//
+// The streams' timers stand still, so neither their heartbeat (which looks at
+// the server's end) nor their life can end them: the shutdown's own context,
+// the bound of the wait, runs out while a stream that ignores the shutdown is
+// open, and Shutdown fails.
 func TestSeatStreamEndsAtShutdown(t *testing.T) {
 	for _, viaOpen := range []bool{false, true} {
 		t.Run(fmt.Sprintf("open=%v", viaOpen), func(t *testing.T) {
 			r, _ := newWatchRig(t, "aa", time.Minute)
+			ft := stillTimers(r)
 			s := r.login(t)
 			var h http.Handler = r.h
 			if viaOpen {
@@ -871,16 +899,11 @@ func TestSeatStreamEndsAtShutdown(t *testing.T) {
 			c2 := openStream(t, ts, streamOK, s)
 			c2.next(t, waitBound)
 			r.waitStreams(t, 2)
+			waitTimers(t, ft, 6) // each stream's life, heartbeat and session's end
 			ctx, cancel := context.WithTimeout(context.Background(), waitBound)
 			defer cancel()
-			start := time.Now()
 			if err := srv.Shutdown(ctx); err != nil {
-				t.Fatalf("shutdown: %v", err)
-			}
-			// At once, not at the streams' life: a shutdown that waited for
-			// it would take about streamLife.
-			if el := time.Since(start); el > streamLife/2 {
-				t.Errorf("shutdown took %v, a stream's life is %v", el, streamLife)
+				t.Fatalf("shutdown: %v (the streams did not end at the shutdown)", err)
 			}
 			c.ended(t, waitBound)
 			c2.ended(t, waitBound)
@@ -922,12 +945,17 @@ func TestSeatStreamAppCloseEndsStreams(t *testing.T) {
 		wd.fakeDaemon = c.Daemon.(*fakeDaemon)
 		c.Daemon = wd
 	})
+	// The stream's timers stand still: its rotation, which would end it
+	// inside the wait's bound, cannot, so Close alone can.
+	ft := stillTimers(r)
 	s := r.login(t)
 	x := &App{Handler: r.h, stop: func() {}}
 	got := r.streamAsync(context.Background(), streamOK, s)
 	r.waitStreams(t, 1)
+	waitTimers(t, ft, 3) // the life, the heartbeat and the session's end
 	x.Close()
 	within(t, got, waitBound)
+	r.waitStreams(t, 0)
 }
 
 // TestSeatStreamCheckInIsTheForeground: a stream's opening takes a lease
@@ -971,11 +999,15 @@ func TestSeatStreamCheckInIsTheForeground(t *testing.T) {
 		t.Errorf("closed streams left a lease to %v", got.Sub(now))
 	}
 	// The lease ends with the session: at its idle end, and at a logout.
+	// The stream's timers stand still from here, so that the logout, not a
+	// heartbeat, ends the stream.
+	ft := stillTimers(r)
 	r.clock.Advance(SessionIdle - 10*time.Second)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	got := r.streamAsync(ctx, `{"version":"bb"}`, s)
 	r.waitStreams(t, 1)
+	waitTimers(t, ft, 3)
 	k, _ := keyOf(s.Value)
 	until, _ := r.app.sess.liveUntil(k)
 	if fu := r.app.foregroundUntil(r.clock.Now()); !fu.Equal(until) {
@@ -1335,12 +1367,19 @@ func TestSeatStreamBoundsHandshakes(t *testing.T) {
 	if w := within(t, outs[0], waitBound); w.Code != 400 {
 		t.Errorf("a bad body: %d", w.Code)
 	}
+	// The stream's timers stand still, so that it cannot end on its own
+	// (at its rotation, say), which gives its handshake back too.
+	stillTimers(r)
 	ctx, cancel := context.WithCancel(context.Background())
 	opened := r.streamAsync(ctx, streamOK, cookies[0])
 	r.waitStreams(t, 1)
 	// The stream counts as open when its place is taken, and gives its
-	// handshake back once its first heartbeat is written, a moment after.
+	// handshake back once its first heartbeat is written, a moment after,
+	// while it is still open.
 	r.waitHandshakes(t, streamHandshakes-1)
+	if n := r.streams(); n != 1 {
+		t.Errorf("the handshake was given back with %d streams open, want the one still open", n)
+	}
 	cancel()
 	within(t, opened, waitBound)
 	for i, b := range bodies[1:] {
