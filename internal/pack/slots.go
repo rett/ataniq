@@ -101,6 +101,9 @@ var outsideCeiling = []string{
 	strings.Repeat("a", 65),
 }
 
+// Declaration validation checks anchors and a fixed refusal corpus. A grammar
+// may admit other values outside the ceiling, so callers must still call
+// CheckSlotValue for every supplied slot value.
 func compileGrammar(pattern string) (*regexp.Regexp, error) {
 	expr, err := syntax.Parse(pattern, syntax.Perl)
 	if err != nil {
@@ -125,7 +128,9 @@ func compileGrammar(pattern string) (*regexp.Regexp, error) {
 // pattern would accept ^abc|xyz$, an escaped dollar or multiline anchors.
 func anchored(r *syntax.Regexp, end syntax.Op) bool {
 	switch r.Op {
-	case syntax.OpCapture:
+	case syntax.OpRepeat:
+		return r.Min > 0 && anchored(r.Sub[0], end)
+	case syntax.OpCapture, syntax.OpPlus:
 		return anchored(r.Sub[0], end)
 	case syntax.OpConcat:
 		if end == syntax.OpBeginText {

@@ -139,6 +139,9 @@ func TestDeclaredGrammar(t *testing.T) {
 		pattern string
 		valid   bool
 	}{
+		{`(?:^low$){1}`, true}, {`(?:^low$)+`, true}, {`(?:^low$){1,3}`, true},
+		{`(?:^low$)?`, false}, {`(?:^low$)*`, false}, {`(?:^low$){0,3}`, false},
+		{`(?:low$)+`, false}, {`(?:^low){1}`, false},
 		{modelGrammar, true}, {`^[A-Z]{1,3}$`, true}, {`^a$|^b$`, true},
 		{`^(abc|def)$`, true}, {`^x|y$`, false}, {`(?m)^x$`, false}, {`^x\$`, false},
 		{`[a-z]+`, false}, {`^([a-z]$`, false}, {`^.*$`, false},
