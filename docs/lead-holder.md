@@ -104,6 +104,20 @@ sh scripts/go-tool.sh build -o build/ataniq-console ./cmd/ataniq-console
 `build/`, or name the holder with `--holder /absolute/path`. `build/` is
 ignored by git.
 
+Build the two from one checkout, in a git checkout: `start` and `ticket`
+refuse a holder that is not the build of `ataniq-scratch` itself, with
+`refused: holder-version-skew: ...` and exit status 1, and change nothing.
+`start` reads the build from the holder binary before it takes an epoch;
+`ticket` reads the build the running holder recorded in its `holder.json`
+before it asks the holder anything. The same build is the same main module
+version, VCS revision and modified flag (the build tags and the Go version
+are not compared), and a build without a VCS revision (built with
+`-buildvcs=false` or outside a git checkout) is never the same build. A
+holder that records no build, which is every holder built before build
+identities, is refused as an older holder: stop it (`stop` and `status` are
+not checked) and start it again with the new build. The message names what
+was found and both builds.
+
 The holder refuses to start, with exit status 2 and a line on its standard
 error, in these cases, among others, each checked before the agent starts:
 
@@ -117,6 +131,16 @@ error, in these cases, among others, each checked before the agent starts:
   handling.
 - Its state folder or runtime folder is not a real folder of your user with
   mode 0700 (a link is refused too).
+- It cannot read its own build identity from the executable that runs
+  (`/proc/<pid>/exe`).
+
+**The build identity.** The holder reads which build it is from the Go build
+information of the executable that actually runs, through `/proc/<pid>/exe`,
+never from the path it was started by: the main module and its version, the
+VCS revision and whether the checkout was modified, and as provenance the Go
+version and the build tags. It records it in `holder.json`, as the member
+`build`, and in the `start` event of its event log. A holder built before this
+records none.
 
 In unit mode `start` then reports only that the holder did not answer, and the
 reason is in the journal of the unit (`journalctl --user -u
@@ -261,7 +285,7 @@ The state folder, `$XDG_STATE_HOME/ataniq/scratch/demo/` (`~/.local/state` when
 
 | File | Mode | What |
 | --- | --- | --- |
-| `holder.json` | 0600 | What the holder was started with (role, epoch, launch intent, runtime and version, profile digest, tree), written before the agent starts, and which process it is (its pid and start time), the screen size, the agent's program (`ARGV[0]` only, never its arguments or environment) and `scratch: true`. |
+| `holder.json` | 0600 | What the holder was started with (role, epoch, launch intent, runtime and version, profile digest, tree), written before the agent starts, and which process it is (its pid and start time), the screen size, the agent's program (`ARGV[0]` only, never its arguments or environment), `scratch: true`, and `build`, the holder's own build identity (see below). |
 | `events.jsonl` | 0600 | The event log. At 4 MiB it is renamed to `events.jsonl.1` (replacing an older one) and a new file starts, so the two together stay under 8 MiB. |
 | `final.json` | 0600 | The final record, written when the session is over. |
 | `final.json.previous` | 0600 | The final record of an earlier epoch. At the next start that takes the role lock, a `final.json` that is there is renamed to this name (replacing an older one) before the new `holder.json` is written, so that `final.json` is never the record of an epoch other than the last one that ended. A start that fails or is stopped by a signal leaves no `final.json`, and the last record is then only here. |
@@ -415,8 +439,10 @@ sequence number, a kind and a name. The names are `start`, `exit`, `attach`,
 `detach`, `writer-change`, `resize`, `state`, `inject`, `refusal`, `counters`,
 `check-mismatch`, `resync` and `key-held`. A line carries codes and identities
 only: the role and epoch, the client's name, process ID and command line, sizes,
-a reason code, counters, the command ID of a control command, and the three
-facts. It holds no keystrokes and no output text; the logging API has no field
+a reason code, counters, the command ID of a control command, the three facts,
+and on the `start` event the holder's build identity as one token
+(`module:version:rev=REVISION`, with `:modified` for a modified checkout). It
+holds no keystrokes and no output text; the logging API has no field
 that could take them. Its sequence number starts at 1 in each holder process, so
 a restart shows as the number going back to 1. An event is one write and
 survives a crash of the holder, but is not synced to disk each time.

@@ -421,10 +421,24 @@ operation; every code is a word of lower-case letters, digits and dashes.
 | Operation | Refused | Unavailable | Uncertain |
 | --- | --- | --- | --- |
 | `lead.define` | `role-busy`, `record-invalid`, `provision-incomplete`, `digest-pin`, `provision-refused`, `registry-refused` | `provision-failed` | `registry-broken`, `failed` |
-| `lead.start` | `role-busy`, `not-provisioned`, `folder-missing`, `max-running`, `role-not-defined`, `not-managed`, `preflight`, `record-folder-left`, `foreign-unit`, `unit-loaded`, `limits`, `launch-refused`, `epoch-exhausted`, `registry-refused` | `start-failed`, `previous-unit-not-gone`, `intent-pending` | `launch-uncertain`, `daemon-stopping`, `registry-check`, `registry-broken`, `failed` |
+| `lead.start` | `role-busy`, `not-provisioned`, `folder-missing`, `holder-version-skew`, `max-running`, `role-not-defined`, `not-managed`, `preflight`, `record-folder-left`, `foreign-unit`, `unit-loaded`, `limits`, `launch-refused`, `epoch-exhausted`, `registry-refused` | `start-failed`, `previous-unit-not-gone`, `intent-pending` | `launch-uncertain`, `daemon-stopping`, `registry-check`, `registry-broken`, `failed` |
 | `lead.stop` | `role-busy`, `stale-epoch`, `role-not-defined`, `not-managed` | `intent-pending`, `failed` | `stop-unproven`, `daemon-stopping`, `registry-broken`, `failed` |
-| `lead.ticket` | `stale-epoch`, `not-running`, `ticket-refused` | `holder-unreachable`, `ticket-failed`, `ticket-lost`, `ticket-file` | |
+| `lead.ticket` | `stale-epoch`, `not-running`, `holder-version-skew`, `ticket-refused` | `holder-unreachable`, `ticket-failed`, `ticket-lost`, `ticket-file` | |
 | `lead.inject` | `stale-epoch`, `inject-off`, `not-running`, `second-message`, `message-in-flight`, and the admission codes of the canary slice (`bad-id`, `body-too-long`, `empty-body` and the like) | `holder-unreachable`, and `holder-` with the holder's refusal (`disabled`, `busy`, `bad-request`; the epoch's message stays free after `disabled` and `bad-request`, and stays spent after `busy`) | |
+
+`holder-version-skew` refuses a holder that is not the daemon's own build,
+before anything changes: `lead.start` reads the build of the holder executable
+of the lead's config, and `lead.ticket` the build the running holder recorded
+in its `holder.json`, before the holder is asked anything. The same build is the
+same main module version, VCS revision and modified flag; the build tags and
+the Go version are not compared, so the daemon of `make scratch-seat-build` and
+the holder of `make canary-build` from one checkout are the same build. A build
+without a VCS revision is never the expected one, and a holder that records no
+build (a holder older than build identities) is refused as such. Its message,
+unlike the other codes' fixed texts, names what was found and both builds, as
+read from the binary or the record: a version, the first 12 characters of the
+revision and `modified`, in a restricted character set. Stop a skewed lead
+(`lead.stop` is not checked) and start it again with the new holder.
 
 Every operation can also end `refused` with `daemon-broken` (the registry or the
 table cannot be written, and the daemon admits no new command until it is

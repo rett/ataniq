@@ -169,6 +169,10 @@ type Config struct {
 	// and to the final record. They must come from the holder's own
 	// configuration and never from the terminal.
 	Role, Epoch string
+	// Build is the holder's build identity as a code (the holder's
+	// buildid.Identity.Token), written in the start event of the event log;
+	// empty writes none.
+	Build string
 
 	// Argv, Env and Dir are passed to ptyhost as they are: Argv[0] is a
 	// path, Env is exactly the agent's environment, Dir its working
@@ -402,7 +406,7 @@ func Start(cfg Config) (_ *Session, err error) {
 	}
 	s.host = host
 
-	s.event(eventlog.EventStart, eventlog.Fields{Role: cfg.Role, Epoch: cfg.Epoch, Cols: cols, Rows: rows})
+	s.event(eventlog.EventStart, eventlog.Fields{Role: cfg.Role, Epoch: cfg.Epoch, Cols: cols, Rows: rows, Build: cfg.Build})
 	go s.readLoop()
 	go s.replies.run()
 	go s.lifecycle()

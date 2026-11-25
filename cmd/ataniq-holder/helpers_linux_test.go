@@ -19,6 +19,7 @@ import (
 	uv "github.com/charmbracelet/ultraviolet"
 	"golang.org/x/sys/unix"
 
+	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/eventlog"
 	"ataniq/internal/leadholder/fakeagent"
 	"ataniq/internal/leadholder/serve"
@@ -145,6 +146,9 @@ type rig struct {
 	ignored []syscall.Signal
 	// stopGrace, when set, replaces the session's two seconds.
 	stopGrace time.Duration
+	// build, when set, replaces the reading of the holder's own build
+	// identity.
+	build func() (buildid.Identity, error)
 
 	done chan int
 }
@@ -244,6 +248,7 @@ func (r *rig) deps() deps {
 		tweakServe: func(c *serve.Config) {
 			c.PollInterval = 20 * time.Millisecond
 		},
+		build: r.build,
 	}
 }
 

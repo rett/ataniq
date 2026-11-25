@@ -1,5 +1,7 @@
 package wire
 
+import "encoding/json"
+
 // Operation is what the daemon asks of the holder on the control socket.
 type Operation string
 
@@ -64,6 +66,9 @@ const (
 // only together; an OpInject with neither is the form of an earlier version
 // and still decodes, and the holder answers it with [CodeBadRequest] when it
 // would deliver. A MessageID or a Text on any other operation is refused.
+//
+// Version is the control version of the frame (see [ControlVersion]): 0, the
+// member left out, is version 1. [Request.FrameVersion] reads it.
 type Request struct {
 	Op        Operation `json:"op" wire:"required"`
 	Epoch     uint64    `json:"epoch" wire:"required"`
@@ -72,6 +77,55 @@ type Request struct {
 	CommandID string    `json:"command_id,omitempty"`
 	MessageID string    `json:"message_id,omitempty"`
 	Text      string    `json:"text,omitempty"`
+	Version   int       `json:"version,omitempty"`
+}
+
+// ControlVersion is the version of the control frames (a [Request] and a
+// [Response]) that this package speaks. The frames are versioned from 1: a
+// frame carries its version in the member "version", and a frame without it
+// is version 1, which is every frame a build before the member wrote. A
+// version 1 frame is written without the member, so it is byte for byte what
+// those builds write, and their decoders, which refuse a member they do not
+// know, read it as before. A frame of a later version is written only to a
+// peer that has said it reads that version (the holder's control hello, which
+// does not exist yet); this package reads version 1 only and refuses a frame
+// of any other version, an explicit 0 or null included, as it refuses any
+// frame it cannot read.
+const ControlVersion = 1
+
+// checkControlVersion checks the version member of a control frame as it was
+// decoded: v is the value, and present says the member was in the payload.
+func checkControlVersion(v int, present bool) error {
+	if v == ControlVersion || (v == 0 && !present) {
+		return nil
+	}
+	return invalidf("control version %d; this build reads version %d", v, ControlVersion)
+}
+
+// FrameVersion is the control version of the request: [ControlVersion] when
+// the member is left out.
+func (r Request) FrameVersion() int { return frameVersion(r.Version) }
+
+// FrameVersion is the control version of the response: [ControlVersion] when
+// the member is left out.
+func (r Response) FrameVersion() int { return frameVersion(r.Version) }
+
+func frameVersion(v int) int {
+	if v == 0 {
+		return ControlVersion
+	}
+	return v
+}
+
+// hasMember reports whether the JSON object of a payload that has already
+// been decoded has a top-level member named key.
+func hasMember(payload []byte, key string) bool {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &obj); err != nil {
+		return false
+	}
+	_, ok := obj[key]
+	return ok
 }
 
 // checkCommandID checks a command id: 1 to [MaxCommandID] bytes of letters,
@@ -90,6 +144,9 @@ func checkCommandID(s string) error {
 }
 
 func (r *Request) validate() error {
+	if err := checkControlVersion(r.Version, false); err != nil {
+		return err
+	}
 	if err := r.Op.check(); err != nil {
 		return err
 	}
@@ -125,13 +182,25 @@ func (r *Request) validate() error {
 	return nil
 }
 
-// EncodeRequest returns the payload of a control request frame.
-func EncodeRequest(r Request) ([]byte, error) { return encodeMessage(TypeRequest, &r) }
+// EncodeRequest returns the payload of a control request frame. A request of
+// version 1 is written without the version member (see [ControlVersion]); a
+// request of another version is refused.
+func EncodeRequest(r Request) ([]byte, error) {
+	if r.Version == ControlVersion {
+		r.Version = 0
+	}
+	return encodeMessage(TypeRequest, &r)
+}
 
 // DecodeRequest decodes and validates the payload of a control request frame.
+// A request without a version member is version 1; one of another version is
+// refused (see [ControlVersion]).
 func DecodeRequest(payload []byte) (Request, error) {
 	var r Request
 	err := decodeMessage(&r, payload)
+	if err == nil {
+		err = checkControlVersion(r.Version, hasMember(payload, "version"))
+	}
 	return pick(r, err)
 }
 
@@ -185,15 +254,20 @@ func (s *Status) validate() error {
 // code and a short text. A status answer carries Status; the answer of a
 // delivery that was tried carries Inject; an answer to any other operation is
 // a bare OK. Inject is only on an ok response and never together with Status.
+// Version is the control version of the frame, as on a [Request].
 type Response struct {
-	OK     bool          `json:"ok"`
-	Code   string        `json:"code,omitempty"`
-	Text   string        `json:"text,omitempty"`
-	Status *Status       `json:"status,omitempty"`
-	Inject *InjectResult `json:"inject,omitempty"`
+	OK      bool          `json:"ok"`
+	Code    string        `json:"code,omitempty"`
+	Text    string        `json:"text,omitempty"`
+	Status  *Status       `json:"status,omitempty"`
+	Inject  *InjectResult `json:"inject,omitempty"`
+	Version int           `json:"version,omitempty"`
 }
 
 func (r *Response) validate() error {
+	if err := checkControlVersion(r.Version, false); err != nil {
+		return err
+	}
 	if r.OK {
 		if r.Code != "" || r.Text != "" {
 			return invalidf("an ok response has a refusal code or text")
@@ -221,8 +295,13 @@ func (r *Response) validate() error {
 	return checkText("text", r.Text, 0, MaxNoticeText, false)
 }
 
-// EncodeResponse returns the payload of a control response frame.
+// EncodeResponse returns the payload of a control response frame. A response
+// of version 1 is written without the version member (see [ControlVersion]);
+// a response of another version is refused.
 func EncodeResponse(r Response) ([]byte, error) {
+	if r.Version == ControlVersion {
+		r.Version = 0
+	}
 	if r.Status != nil && r.Status.Counters == nil {
 		s := *r.Status
 		s.Counters = map[string]uint64{}
@@ -232,9 +311,13 @@ func EncodeResponse(r Response) ([]byte, error) {
 }
 
 // DecodeResponse decodes and validates the payload of a control response
-// frame.
+// frame. A response without a version member is version 1; one of another
+// version is refused (see [ControlVersion]).
 func DecodeResponse(payload []byte) (Response, error) {
 	var r Response
 	err := decodeMessage(&r, payload)
+	if err == nil {
+		err = checkControlVersion(r.Version, hasMember(payload, "version"))
+	}
 	return pick(r, err)
 }

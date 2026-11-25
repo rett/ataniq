@@ -91,6 +91,26 @@
 // not decide when a launch is safe beyond the checks documented on
 // BeginLaunch; the caller must still prove that the previous unit is gone.
 //
+// Builds of other versions. A journal outlives the build that wrote it, so
+// replay reads a record by what it says and tolerates what it does not know:
+// a member of a line or of a payload that this build has no field for is
+// ignored (the hash chain still covers the line's bytes as they are), and a
+// member this build added is written only when it is set (omitempty or
+// omitzero), so a record that does not use it is encoded as an older build
+// encoded it. The identity of a requested profile is its stored bytes: the
+// profile digest a launch intent carries, and the one replay checks it
+// against, is the digest of the define record's requested member as stored,
+// compacted and escaped as json.Marshal escapes (see Requested.Digest), which
+// for a profile this build wrote is Requested.Digest. So a launch-begin line
+// keeps matching its profile whatever members later builds add, and a line of
+// a newer build whose profile has a member this build lacks still replays.
+// What this build cannot read whole it does not act on: BeginLaunch refuses a
+// role whose stored profile is not what this build would write for it, with
+// ErrLaunchProfile, until the role is defined again. An unknown record kind,
+// and a header of another format version, are still damage. testdata/v1-base
+// holds a journal an older build wrote, with the digests it recorded; the
+// tests read it back byte for byte.
+//
 // This package is provisional and unqualified: it is part of the lead daemon
 // work in progress, the file format is version 1 and may change before any
 // release. Version 1 has no compatibility promise until the first deployment:

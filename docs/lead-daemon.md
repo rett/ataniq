@@ -911,6 +911,23 @@ JSON object per line. The first line is a header that names the format
   wider permission bits than 0600 (0700 for the folder) fail with
   `ErrInsecure`. Damage other than an unfinished last line fails with
   `ErrCorrupt` and names the line; nothing is repaired, and the daemon exits 14.
+- **Records of other builds.** Replay ignores a member of a line or of a
+  payload that this build does not know, so a journal a newer build wrote
+  still opens, and a member a build adds is written only when it is set, so a
+  record that does not use it is the bytes an older build wrote. The identity
+  of a requested profile is its stored bytes: a launch intent carries the
+  digest of the profile as its define record stores it, so recorded launch
+  digests stay valid whatever members later builds add. A role whose stored
+  profile has a member this build does not know is not launched
+  (`ErrLaunchProfile`, which the start answers as a refusal of the registry)
+  until it is defined again. `internal/leadregistry/testdata/v1-base` holds a
+  journal an older build wrote, and the tests read it back byte for byte. An
+  unknown record kind and another format version are still damage.
+- **A reserved pack reference.** The requested profile has a member `pack`
+  (a pack's name and the SHA-256 of its manifest) for the provider packs. No
+  build sets it yet: `Define` refuses a profile that names a pack, a role whose
+  record names one replays and is not launched (`ErrLaunchProfile`), and a
+  profile without one is encoded and digested as before the member existed.
 
 Format version 1 has no compatibility promise until a first deployment: a rule
 may be tightened so that a journal written by an earlier build is no longer
@@ -1227,6 +1244,16 @@ intent, with the boot identity when the manager reported one, and call `Start`
 once. It never waits for readiness, and it never sets `ready`. (In scratch
 mode a background observer sets `ready` afterwards, on the holder's word: see
 [the scratch leads guide](scratch-leads.md#ready).)
+
+**The holder's build.** In canary and scratch mode the daemon also checks,
+before the lifecycle is asked to start anything, that the holder executable of
+the config is the daemon's own build, and before it mints an attach ticket
+that the running holder recorded that build in its `holder.json`. A holder
+that is not is refused with `holder-version-skew`, with a message that names
+both builds, and nothing changes (see `internal/leadholder/buildid` for what
+"the same build" means, and [the scratch leads guide](scratch-leads.md) for the
+receipt). A daemon whose own build cannot be read does not start (the config
+step).
 
 A reply that is lost is its own error. The caller inspects and does not start
 again. A unit with exactly this epoch and intent is adopted. Otherwise the

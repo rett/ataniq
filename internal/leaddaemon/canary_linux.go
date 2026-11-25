@@ -11,6 +11,7 @@ import (
 
 	"ataniq/internal/clientapi"
 	"ataniq/internal/leadcanary"
+	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadlifecycle"
 	"ataniq/internal/leadlock"
 	"ataniq/internal/leadregistry"
@@ -71,6 +72,20 @@ type Canary struct {
 	// DialTimeout bounds the dial of the holder's control socket and the write
 	// of a request frame, the two together; default [DefaultDialTimeout].
 	DialTimeout time.Duration
+	// HolderBuild is the holder build the daemon expects and how it reads a
+	// holder's (see [holderBuildCheck]); nil is the daemon's own build
+	// (buildid.NewChecker).
+	HolderBuild *buildid.Checker
+}
+
+// holderBuildCheck returns the build check of the daemon: the given one, or
+// one that expects the daemon's own build. A daemon whose own build cannot be
+// read does not start (the config step): it could launch no holder.
+func holderBuildCheck(given *buildid.Checker) (*buildid.Checker, error) {
+	if given != nil {
+		return given, nil
+	}
+	return buildid.NewChecker()
 }
 
 // newHolderCommand builds the canary holder command. It is a variable so that a
@@ -96,6 +111,8 @@ type canaryMode struct {
 	idPrefix string
 	// lead is the scratch mode's own parts; nil in canary mode.
 	lead *leadMode
+	// build is the check of a holder's build before a launch or an attach.
+	build *buildid.Checker
 }
 
 // canarySetup checks the canary config and builds the parts that need no file.
@@ -134,7 +151,11 @@ func (d *daemon) canarySetup() (*canaryMode, error) {
 	if err := router.add(&leadInstance{cfg: cfg, preflight: pre, holder: holder}); err != nil {
 		return nil, fail(StepConfig, "canary mode: %v", err)
 	}
-	m := &canaryMode{d: d, router: router, injectFor: c.InjectWait, dialFor: c.DialTimeout}
+	build, err := holderBuildCheck(c.HolderBuild)
+	if err != nil {
+		return nil, fail(StepConfig, "canary mode: %v", err)
+	}
+	m := &canaryMode{d: d, router: router, injectFor: c.InjectWait, dialFor: c.DialTimeout, build: build}
 	if m.injectFor <= 0 {
 		m.injectFor = DefaultInjectWait
 	}
