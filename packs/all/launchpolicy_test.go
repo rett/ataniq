@@ -369,7 +369,9 @@ func inventory(d document, help []byte) error {
 		switch e.Source {
 		case "help":
 			row := defs[e.Line]
-			if row.scope != e.Scope || !slices.Contains(row.words, w) {
+			// Both reviewed launches invoke the main command. Exec is captured
+			// for the refusal inventory only, including names shared with main.
+			if e.Scope != "main" || row.scope != e.Scope || !slices.Contains(row.words, w) {
 				faults = append(faults, fmt.Errorf("wrong help locator for %s at %s line %d", w, e.Scope, e.Line))
 			}
 		case "pending":
@@ -468,11 +470,62 @@ func TestHelpInventory(t *testing.T) {
 	}
 }
 
+func TestCodexTerminalHelpScope(t *testing.T) {
+	raw, help, _ := builds[1].load(t)
+	for _, tc := range []struct {
+		word string
+		line int
+	}{{"--strict-config", 179}, {"--model", 186}, {"-m", 186}} {
+		t.Run(tc.word, func(t *testing.T) {
+			d := parse(t, raw)
+			d.locators(func(word string, e *locator) {
+				if word == tc.word {
+					*e = locator{Source: "help", Scope: "exec", Line: tc.line}
+				}
+			})
+			err := inventory(d, help)
+			if err == nil || !strings.Contains(err.Error(), "wrong help locator for "+tc.word) {
+				t.Fatalf("accepted the exec definition of %s: %v", tc.word, err)
+			}
+		})
+	}
+}
+
+func TestClaudeProseRefusals(t *testing.T) {
+	x := baseline(t, builds[0])
+	_, help, _ := x.b.load(t)
+	lines := strings.Split(string(help), "\n")
+	for _, tc := range []struct {
+		line   int
+		prose  string
+		tokens []string
+	}{
+		{56, "--system-prompt[-file]", []string{"--system-prompt-file", "--system-prompt-file=sample"}},
+		{57, "--append-system-prompt[-file]", []string{"--append-system-prompt-file", "--append-system-prompt-file=sample"}},
+		{156, "--permission-prompt-tool", []string{"--permission-prompt-tool", "--permission-prompt-tool=sample"}},
+		{255, "--tmux=classic", []string{"--tmux=classic"}},
+	} {
+		if !strings.Contains(lines[tc.line-1], tc.prose) {
+			t.Fatalf("review prose spelling on help line %d", tc.line)
+		}
+		for _, token := range tc.tokens {
+			t.Run(token, func(t *testing.T) {
+				y := x
+				y.l.Argv = slices.Insert(slices.Clone(x.l.Argv), 1, token)
+				spec := x.expand(t)
+				spec.Argv = slices.Insert(spec.Argv, 1, token)
+				line(t, y.judge(spec), "refused-option", 1, "argv[1]")
+				line(t, x.recheck(t, spec), "refused-option", 2, "argv[1]")
+			})
+		}
+	}
+}
+
 func TestHelpModeClasses(t *testing.T) {
 	// Reviewed against the permission option's choices and behavior in each capture.
 	want := map[pack.Name]map[string]pack.ModeClass{
 		"claude": {"acceptEdits": pack.Bypass, "auto": pack.Bypass, "bypassPermissions": pack.Bypass, "dontAsk": pack.Bypass, "manual": pack.Bypass, "plan": pack.Bypass},
-		"codex":  {"never": pack.NoPrompt, "on-request": pack.Bypass},
+		"codex":  {"on-request": pack.Bypass},
 	}
 	for _, b := range builds {
 		raw, _, p := b.load(t)
@@ -563,15 +616,17 @@ func baseline(t *testing.T, b build) launchCase {
 	if b.name == "claude" {
 		x.prefix, x.strict, x.refused = "--permission-mode=", "--strict-mcp-config", "--dangerously-skip-permissions"
 		x.s.Mode, x.s.Recognizer, x.s.Agent = "manual", "manual", "reviewer"
-		x.l.Agents = []pack.Agent{{Name: "reviewer", Builtin: true}}
+		x.l.Agents = []pack.Agent{{Name: "reviewer", Definition: "/config/agents/reviewer.md"}}
 		x.l.Grammars[pack.EffortSlot] = "^(low|medium|high|xhigh|max)$"
 	} else {
 		x.prefix, x.strict, x.refused = "--ask-for-approval=", "--strict-config", "--dangerously-bypass-approvals-and-sandbox"
-		x.s.Mode, x.s.Recognizer = "never", "never"
+		x.s.Mode, x.s.Recognizer = "on-request", "on-request"
 	}
 	x.l.Argv = []string{string(b.name), x.prefix + "{permission_mode}", "--model={model}"}
 	if b.name == "claude" {
 		x.l.Argv = append(x.l.Argv, "--agent={agent}", "--effort={effort}", "--resume={resume}")
+	} else {
+		x.l.Argv = append(x.l.Argv, "--no-daemon")
 	}
 	for _, m := range d.Slots.Permission.Values {
 		x.l.PermissionModes = append(x.l.PermissionModes, pack.PermissionMode{Name: m.Name})
@@ -646,18 +701,9 @@ func TestRealTerminalModes(t *testing.T) {
 						bad.l.PermissionModes = []pack.PermissionMode{{Name: m.Name, Lead: true}}
 						line(t, bad.judge(spec), "selection-outside-policy", 0, "policy")
 					}
-					if b.name == "codex" && role == "demo/coord/f1" && m.Name == "never" {
-						v, r := lp.Judge(x.p, x.l, x.s, spec, intent)
-						line(t, r, "", 0, "")
-						line(t, x.recheck(t, spec), "", 0, "")
-						if v.Class != pack.NoPrompt || v.Recognizer != "never" || v.PolicyDigest != x.p.Digest() {
-							t.Fatal(v)
-						}
-					} else {
-						line(t, x.recheck(t, spec), "mode-class-refused", 2, "argv[1]", m.Name)
-						if role == "demo/coord/f1" {
-							line(t, x.judge(spec), "mode-class-refused", 2, "argv[1]", m.Name)
-						}
+					line(t, x.recheck(t, spec), "mode-class-refused", 2, "argv[1]", m.Name)
+					if role == "demo/coord/f1" {
+						line(t, x.judge(spec), "mode-class-refused", 2, "argv[1]", m.Name)
 					}
 				}
 			}
@@ -672,7 +718,7 @@ func TestRealTemplates(t *testing.T) {
 			spec := x.expand(t)
 			bin, mode := string(b.name), x.prefix+"{permission_mode}"
 			literal := x.prefix + x.s.Mode
-			other := "on-request"
+			other := "never"
 			if b.name == "claude" {
 				other = "plan"
 			}
@@ -710,6 +756,8 @@ func TestRealTemplates(t *testing.T) {
 					y.l.Argv = slices.Clone(tc.argv)
 					if b.name == "claude" {
 						y.l.Argv = append(y.l.Argv, "--agent={agent}")
+					} else {
+						y.l.Argv = append(y.l.Argv, "--no-daemon")
 					}
 					line(t, y.judge(spec), tc.code, 1, tc.at, tc.detail...)
 				})
@@ -754,7 +802,7 @@ func TestRealTemplates(t *testing.T) {
 				line(t, y.judge(spec), "form-not-admitted", 1, "argv[5]")
 			} else {
 				y.l.Argv = append(slices.Clone(x.l.Argv), "--agent={agent}")
-				line(t, y.judge(spec), "unknown-token", 1, "argv[3]")
+				line(t, y.judge(spec), "unknown-token", 1, "argv[4]")
 			}
 			y = x
 			y.s.Mode = ""
@@ -811,11 +859,7 @@ func TestRealExpandedValues(t *testing.T) {
 				// Model first so a passing grammar reaches the real mode gate.
 				y.l.Argv = slices.Clone(x.l.Argv)
 				y.l.Argv[1], y.l.Argv[2] = y.l.Argv[2], y.l.Argv[1]
-				if b.name == "claude" {
-					line(t, y.judge(y.expand(t)), "mode-class-refused", 2, "argv[2]", y.s.Mode)
-				} else {
-					line(t, y.judge(y.expand(t)), "", 0, "")
-				}
+				line(t, y.judge(y.expand(t)), "mode-class-refused", 2, "argv[2]", y.s.Mode)
 			}
 			line(t, x.recheck(t, beforeMode("--model=Gpt")), "value-grammar", 2, "argv[1]", "Gpt")
 			if b.name == "claude" {
@@ -955,21 +999,11 @@ func TestRealAuthenticatedRequest(t *testing.T) {
 					line(t, y.judge(spec), "transport-not-admitted", 0, "snapshot")
 				}
 			}
-			// T29/62: turning just the terminal vector pending never permits a launch.
-			d, help = synthetic(t, b)
-			for i := range d.Slots.Permission.Values {
-				m := &d.Slots.Permission.Values[i]
-				if m.Name == x.s.Mode {
-					m.Vector["terminal"] = json.RawMessage(`"pending"`)
-				}
-			}
-			y = x
+			// T29/62: exercise the pending-vector check after the class check.
+			y, d, help = testOnlyMode(t, x)
+			d.Slots.Permission.Values[len(d.Slots.Permission.Values)-1].Vector["terminal"] = json.RawMessage(`"pending"`)
 			y.p = decoded(t, d, help)
-			if b.name == "codex" {
-				line(t, y.judge(spec), "mode-vector-pending", 2, "argv[1]", x.s.Mode)
-			} else {
-				line(t, y.judge(spec), "mode-class-refused", 2, "argv[1]", x.s.Mode)
-			}
+			line(t, y.judge(y.expand(t)), "mode-vector-pending", 2, "argv[1]", y.s.Mode)
 			// An observation cannot be rebound to another build or transport.
 			d, help = synthetic(t, b)
 			m := &d.Slots.Permission.Values[0]
@@ -997,10 +1031,29 @@ func TestRealAuthenticatedRequest(t *testing.T) {
 	}
 }
 
-// Codex's explicitly requested coordinator mode is the real policy with a
-// passing stage-2 baseline. Stage 3 can therefore compare independent values.
+// testOnlyMode adds a separately named coordinator mode to a recorded test copy.
+// It makes later matcher gates reachable without reclassifying any provider mode.
+func testOnlyMode(t *testing.T, x launchCase) (launchCase, document, []byte) {
+	t.Helper()
+	d, help := synthetic(t, x.b)
+	const name = "test-only"
+	m := mode{Name: name, Class: pack.NoPrompt, Recognizer: name, Basis: "documented",
+		Evidence: locator{Source: "doc", Ref: "stand-in/test-only"},
+		Vector: map[string]json.RawMessage{"terminal": wire(t, map[string]any{
+			"fixture_sha256": d.Fixture.SHA, "build": x.b.version, "transport": "terminal",
+			"value": name, "sitting": "synthetic", "profiles": []string{},
+		})},
+	}
+	d.Slots.Permission.Values = append(d.Slots.Permission.Values, m)
+	x.p = decoded(t, d, help)
+	x.l.PermissionModes = append(slices.Clone(x.l.PermissionModes), pack.PermissionMode{Name: name})
+	x.s.Mode, x.s.Recognizer = name, name
+	x.bind(t)
+	return x, d, help
+}
+
 func TestRealExpectedSpec(t *testing.T) {
-	x := baseline(t, builds[1])
+	x, d, h := testOnlyMode(t, baseline(t, builds[1]))
 	x.s.Model = "o3"
 	x.bind(t)
 	spec := x.expand(t)
@@ -1023,7 +1076,7 @@ func TestRealExpectedSpec(t *testing.T) {
 	s.Argv[2] = "--model=gpt-5"
 	line(t, x.judge(s), "template-expansion-differs", 2, "argv[2]")
 	check(s, "expected-differs", "slot[model]")
-	s.Argv = s.Argv[:2]
+	s.Argv = slices.Delete(s.Argv, 2, 3)
 	line(t, x.judge(s), "template-expansion-differs", 2, "argv[2]")
 	check(s, "expected-missing", "slot[model]")
 	y = x
@@ -1034,7 +1087,7 @@ func TestRealExpectedSpec(t *testing.T) {
 	line(t, y.recheck(t, s), "expected-unexpected", 3, "slot[model]")
 	s = spec
 	s.Argv = append(slices.Clone(spec.Argv), x.strict)
-	line(t, x.judge(s), "template-expansion-differs", 2, "argv[3]")
+	line(t, x.judge(s), "template-expansion-differs", 2, "argv[4]")
 	line(t, x.recheck(t, s), "", 0, "")
 	for _, slot := range []string{"agent", "resume", "effort"} {
 		y = x
@@ -1051,15 +1104,14 @@ func TestRealExpectedSpec(t *testing.T) {
 		s.ProfileDigest = y.s.ProfileDigest
 		line(t, y.recheck(t, s), "expected-unplaceable", 3, "slot["+slot+"]")
 	}
-	d, h := synthetic(t, x.b)
 	d.Forms = slices.DeleteFunc(d.Forms, func(f form) bool { return f.Slot == "model" })
 	y = x
 	y.p = decoded(t, d, h)
 	s = spec
-	s.Argv = slices.Clone(spec.Argv[:2])
+	s.Argv = slices.Delete(slices.Clone(spec.Argv), 2, 3)
 	line(t, y.recheck(t, s), "expected-unplaceable", 3, "slot[model]")
 	// T39: evaluate the valid substituted spec before comparing it with
-	// the authenticated request. The request names a different real mode.
+	// the authenticated request. The request names the real requirements mode.
 	y = x
 	y.s.Mode = "on-request"
 	y.s.Recognizer = "on-request"
@@ -1080,9 +1132,11 @@ func TestRealResumeAndAgent(t *testing.T) {
 	// sandbox declaration yet, so assemble its launch document in memory.
 	files := map[string][]byte{
 		pack.ManifestPath: read(t, "../claude/declaration.json"),
-		pack.SandboxPath:  wire(t, map[string]any{"schema": pack.DeclarationSchema, "builds": map[string]any{x.b.version: pack.Sandbox{Launch: &x.l}}}),
+		pack.SandboxPath: wire(t, map[string]any{"schema": pack.DeclarationSchema, "builds": map[string]any{x.b.version: pack.Sandbox{Launch: &x.l, Binds: []pack.Bind{
+			{Role: pack.ConfigOverlay, Kind: "folder", Inside: "/config/agents"},
+		}}}}),
 	}
-	d, err := pack.DecodeDeclaration(files, pack.BindLayout{})
+	d, err := pack.DecodeDeclaration(files, pack.BindLayout{Config: "/config", Tree: "/tree", CoreRows: []string{"/config", "/tree"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1138,88 +1192,98 @@ func TestRealResumeAndAgent(t *testing.T) {
 	line(t, y.judge(s), "mode-class-refused", 2, "argv[1]", "manual")
 }
 
+func TestClaudeResumeAndEnvWithTestOnlyMode(t *testing.T) {
+	x, _, _ := testOnlyMode(t, baseline(t, builds[0]))
+	t.Run("resume", func(t *testing.T) {
+		fresh := x.expand(t)
+		resuming := x
+		resuming.s.Resume = nativeID
+		resumed := resuming.expand(t)
+		for _, tc := range []struct {
+			session launchCase
+			spec    lp.Spec
+		}{{x, fresh}, {resuming, resumed}} {
+			line(t, tc.session.judge(tc.spec), "", 0, "")
+			line(t, tc.session.recheck(t, tc.spec), "", 0, "")
+		}
+		line(t, x.judge(resumed), "template-expansion-differs", 2, "argv[3]")
+		line(t, resuming.judge(fresh), "template-expansion-differs", 2, "argv[3]")
+		line(t, x.recheck(t, resumed), "expected-unexpected", 3, "slot[resume]")
+		line(t, resuming.recheck(t, fresh), "expected-missing", 3, "slot[resume]")
+		resumed.Argv[3] = "--resume=00000000-0000-4000-8000-000000000002"
+		line(t, resuming.recheck(t, resumed), "expected-differs", 3, "slot[resume]")
+	})
+	t.Run("environment", func(t *testing.T) {
+		x.l.Env = map[string]string{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_TELEMETRY": "1"}
+		spec := x.expand(t)
+		line(t, x.judge(spec), "", 0, "")
+		line(t, x.recheck(t, spec), "", 0, "")
+		delete(spec.Env, "DISABLE_TELEMETRY")
+		line(t, x.judge(spec), "template-expansion-differs", 2, "env[DISABLE_TELEMETRY]")
+		spec.Env["DISABLE_TELEMETRY"] = "other"
+		line(t, x.judge(spec), "env-refused", 2, "env[DISABLE_TELEMETRY]")
+		line(t, x.recheck(t, spec), "env-refused", 2, "env[DISABLE_TELEMETRY]")
+	})
+}
+
 func TestRealPolicyFiles(t *testing.T) {
 	for _, b := range builds {
 		t.Run(string(b.name), func(t *testing.T) {
 			x := baseline(t, b)
 			raw, _, _ := b.load(t)
-			// File views are inputs supplied by the renderer. Build the passing
-			// fixture from the canonical required scalars and preserve path types.
-			var rows []struct {
-				Role     string `json:"path_role"`
-				Required []struct {
-					Path       []any
-					Type, Text string
+			// Check each admitted file role with a renderer fixture independent
+			// of the policy. Claude's managed file is exercised separately.
+			want := lp.ExpectedFile{PathRole: "provider-policy", Dest: "requirements.toml"}
+			entries := codexRequirements
+			if b.name == "claude" {
+				want = lp.ExpectedFile{PathRole: "agent", Dest: "/config/agents/reviewer.md", Definition: true, AgentName: "reviewer"}
+				entries = func() []lp.Entry {
+					return []lp.Entry{{Path: []lp.Comp{"name"}, Type: "string", Text: "reviewer"}}
 				}
 			}
-			if err := json.Unmarshal(parse(t, raw).Files, &rows); err != nil {
-				t.Fatal(err)
+			at := "file[requirements.toml]"
+			if want.Definition {
+				at = "file[#0]"
 			}
 			makeFiles := func() (lp.Inventory, []lp.FileView) {
 				hash := digest([]byte("stand-in installed file"))
-				var inv lp.Inventory
-				var files []lp.FileView
-				for _, row := range rows {
-					w := lp.ExpectedFile{PathRole: row.Role, Dest: "a-policy"}
-					f := lp.FileView{PathRole: row.Role, BytesSHA256: hash, InstalledSHA256: hash}
-					for _, r := range row.Required {
-						path := slices.Clone(r.Path)
-						for i, c := range path {
-							if n, ok := c.(float64); ok {
-								path[i] = int(n)
-							}
-						}
-						f.Entries = append(f.Entries, lp.Entry{Path: path, Type: r.Type, Text: r.Text})
-					}
-					if row.Role == "agent" {
-						w.Dest = "b-agent"
-						w.Definition = true
-						w.AgentName = x.s.Agent
-						f.Entries = append(f.Entries, lp.Entry{Path: []lp.Comp{"name"}, Type: "string", Text: x.s.Agent})
-					}
-					f.Dest = w.Dest
-					inv = append(inv, w)
-					files = append(files, f)
-				}
-				slices.SortFunc(inv, func(a, b lp.ExpectedFile) int { return strings.Compare(a.Dest, b.Dest) })
-				slices.SortFunc(files, func(a, b lp.FileView) int { return strings.Compare(a.Dest, b.Dest) })
-				return inv, files
+				return lp.Inventory{want}, []lp.FileView{{PathRole: want.PathRole, Dest: want.Dest,
+					Entries: entries(), BytesSHA256: hash, InstalledSHA256: hash}}
 			}
 			inv, files := makeFiles()
 			line(t, lp.JudgeFiles(x.p, x.s, inv, files), "", 0, "")
-			line(t, lp.JudgeFiles(x.p, x.s, nil, nil), "", 0, "")
 			for _, tc := range []struct {
 				name, code, at string
 				mutate         func(lp.Inventory, []lp.FileView) (lp.Inventory, []lp.FileView)
 			}{
-				{"a required entry missing", "file-refused", "file[a-policy]", func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
+				{"a required entry missing", "file-refused", at, func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
 					f[0].Entries = f[0].Entries[1:]
 					return i, f
 				}},
-				{"b extra key", "file-refused", "file[a-policy]", func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
-					f[0].Entries = append(f[0].Entries, lp.Entry{Path: []lp.Comp{"extra"}, Type: "bool", Text: "true"})
+				{"b extra key", "file-refused", at, func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
+					f[0].Entries = append(f[0].Entries, lp.Entry{Path: []lp.Comp{"description", "extra"}, Type: "bool", Text: "true"})
 					return i, f
 				}},
-				{"c wrong type", "file-refused", "file[a-policy]", func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
-					f[0].Entries[0].Type = "string"
+				{"c wrong type", "file-refused", at, func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
+					f[0].Entries[0].Type = "int"
 					return i, f
 				}},
-				{"d wrong value", "file-refused", "file[a-policy]", func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
+				{"d wrong value", "file-refused", at, func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
 					f[0].Entries[0].Text = "false"
 					return i, f
 				}},
-				{"e missing file", "file-refused", "file[a-policy]", func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) { return i, f[1:] }},
-				{"f duplicate destination", "file-refused", "file[a-policy]", func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) { return i, append(f, f[0]) }},
-				{"g unknown role", "file-refused", "file[a-policy]", func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
+				{"e missing file", "file-refused", at, func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) { return i, f[1:] }},
+				{"f duplicate destination", "file-refused", at, func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) { return i, append(f, f[0]) }},
+				{"g unknown role", "file-refused", at, func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
 					i[0].PathRole = "unknown"
 					f[0].PathRole = "unknown"
 					return i, f
 				}},
-				{"h substituted role", "file-refused", "file[a-policy]", func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
-					f[0].PathRole = "agent"
+				{"h substituted role", "file-refused", at, func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
+					f[0].PathRole = "config-overlay"
 					return i, f
 				}},
-				{"l installed bytes", "file-binding", "file[a-policy]", func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
+				{"l installed bytes", "file-binding", at, func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
 					f[0].InstalledSHA256 = digest([]byte("different file"))
 					return i, f
 				}},
@@ -1232,16 +1296,13 @@ func TestRealPolicyFiles(t *testing.T) {
 				})
 			}
 			if b.name == "claude" {
-				line(t, lp.JudgeFiles(x.p, x.s, inv, files[:1]), "file-refused", 2, "file[b-agent]")
-				line(t, lp.JudgeFiles(x.p, x.s, inv[:1], files[:1]), "", 0, "")
-				files[1].Entries[0].Text = "other"
-				line(t, lp.JudgeFiles(x.p, x.s, inv, files), "file-refused", 2, "file[b-agent]")
-				files[1].Entries[0].Text = x.s.Agent
+				files[0].Entries[0].Text = "other"
+				line(t, lp.JudgeFiles(x.p, x.s, inv, files), "file-refused", 2, at)
 				for _, bad := range forbiddenKeys[b.name] {
 					t.Run("k "+bad, func(t *testing.T) {
 						inv, f := makeFiles()
-						f[1].Entries = append(f[1].Entries, lp.Entry{Path: []lp.Comp{bad}, Type: "string", Text: "private-env"})
-						line(t, lp.JudgeFiles(x.p, x.s, inv, f), "agent-key-refused", 2, "file[b-agent]")
+						f[0].Entries = append(f[0].Entries, lp.Entry{Path: []lp.Comp{bad}, Type: "string", Text: "private-env"})
+						line(t, lp.JudgeFiles(x.p, x.s, inv, f), "agent-key-refused", 2, at)
 						doc := parse(t, raw)
 						doc.Slots.Agent.Keys = append(doc.Slots.Agent.Keys, key{Key: bad})
 						if frontmatter(doc) == nil {
@@ -1250,11 +1311,10 @@ func TestRealPolicyFiles(t *testing.T) {
 					})
 				}
 				// T52 first sorted file with two faults in reversed input order.
-				files[0].Entries = nil
-				files[1].InstalledSHA256 = ""
+				files[0].InstalledSHA256 = ""
+				inv = append(inv, lp.ExpectedFile{PathRole: "provider-policy", Dest: "/etc/managed-settings.json"})
 				slices.Reverse(inv)
-				slices.Reverse(files)
-				line(t, lp.JudgeFiles(x.p, x.s, inv, files), "file-refused", 2, "file[a-policy]")
+				line(t, lp.JudgeFiles(x.p, x.s, inv, files), "file-binding", 2, at)
 			} else {
 				// T53m: a numeric requirements index is distinct from the object key "0".
 				found := false
@@ -1267,11 +1327,114 @@ func TestRealPolicyFiles(t *testing.T) {
 				if !found {
 					t.Fatal("missing indexed approval requirement")
 				}
-				line(t, lp.JudgeFiles(x.p, x.s, inv, files), "file-refused", 2, "file[a-policy]")
+				line(t, lp.JudgeFiles(x.p, x.s, inv, files), "file-refused", 2, at)
 				inv = append(inv, lp.ExpectedFile{PathRole: "agent", Dest: "b-agent", Definition: true, AgentName: "other"})
 				_, files = makeFiles()
 				line(t, lp.JudgeFiles(x.p, x.s, inv, files), "file-refused", 2, "file[b-agent]")
 			}
 		})
+	}
+}
+
+// Renderer view of the pinned requirements.toml, specified independently of the policy.
+func codexRequirements() []lp.Entry {
+	return []lp.Entry{
+		{Path: []lp.Comp{"allow_managed_hooks_only"}, Type: "bool", Text: "true"},
+		{Path: []lp.Comp{"allowed_approval_policies", 0}, Type: "string", Text: "on-request"},
+		{Path: []lp.Comp{"allowed_approvals_reviewers", 0}, Type: "string", Text: "user"},
+		{Path: []lp.Comp{"features", "hooks"}, Type: "bool", Text: "true"},
+	}
+}
+
+func TestCodexRequirementsAndMode(t *testing.T) {
+	x := baseline(t, builds[1])
+	hash := digest([]byte("stand-in requirements"))
+	inv := lp.Inventory{{PathRole: "provider-policy", Dest: "requirements.toml"}}
+	files := []lp.FileView{{PathRole: "provider-policy", Dest: "requirements.toml", Entries: codexRequirements(), BytesSHA256: hash, InstalledSHA256: hash}}
+	line(t, lp.JudgeFiles(x.p, x.s, inv, files), "", 0, "")
+	for _, role := range []string{"demo/coord/f1", "demo/lead"} {
+		x.s.Role = role
+		x.s.Mode, x.s.Recognizer = "never", "never"
+		x.bind(t)
+		spec := x.expand(t)
+		line(t, x.recheck(t, spec), "value-unadmitted", 2, "argv[1]", "never")
+		if role == "demo/coord/f1" {
+			line(t, x.judge(spec), "value-unadmitted", 2, "argv[1]", "never")
+		}
+	}
+	files[0].Entries = append(files[0].Entries, lp.Entry{Path: []lp.Comp{"allowed_approval_policies", 1}, Type: "string", Text: "never"})
+	line(t, lp.JudgeFiles(x.p, x.s, inv, files), "file-refused", 2, "file[requirements.toml]")
+}
+
+func TestCodexIsolatedTerminal(t *testing.T) {
+	x, _, _ := testOnlyMode(t, baseline(t, builds[1]))
+	for _, role := range []string{"demo/coord/f1", "demo/lead"} {
+		x.s.Role = role
+		x.l.Argv = []string{"codex", "--ask-for-approval={permission_mode}", "--no-daemon"}
+		spec := x.expand(t)
+		if !slices.Contains(spec.Argv, "--no-daemon") {
+			t.Fatal("expanded terminal can use a shared daemon")
+		}
+		if role == "demo/coord/f1" {
+			line(t, x.judge(spec), "", 0, "")
+			line(t, x.recheck(t, spec), "", 0, "")
+			spec.Argv = spec.Argv[:2]
+			line(t, x.recheck(t, spec), "required-missing", 2, "form[no-daemon]")
+		}
+		x.l.Argv = x.l.Argv[:2]
+		_, r := lp.Expand(x.p, x.l, x.s)
+		line(t, r, "required-missing", 1, "form[no-daemon]")
+	}
+}
+
+func TestClaudeReviewerSource(t *testing.T) {
+	x := baseline(t, builds[0])
+	// The capture shows reviewer as a custom agent. Its definition must be
+	// resolved in the reviewed overlay even if the declaration calls it built-in.
+	want := pack.Agent{Name: "reviewer", Definition: "/config/agents/reviewer.md"}
+	if !slices.Equal(x.l.Agents, []pack.Agent{want}) || x.s.Agent != want.Name {
+		t.Fatalf("reviewer source: got %+v, want %+v", x.l.Agents, want)
+	}
+	inv := lp.Inventory{{PathRole: "agent", Dest: want.Definition, Definition: true, AgentName: want.Name}}
+	line(t, lp.JudgeFiles(x.p, x.s, inv, nil), "file-refused", 2, "file[#0]")
+	hash := digest(read(t, "testdata/launchpolicy/claude/reviewer.md"))
+	file := lp.FileView{PathRole: "agent", Dest: want.Definition, InstalledSHA256: hash, BytesSHA256: hash,
+		Entries: []lp.Entry{
+			{Path: []lp.Comp{"name"}, Type: "string", Text: "reviewer"},
+			{Path: []lp.Comp{"description"}, Type: "string", Text: "Reviews code changes."},
+		},
+	}
+	line(t, lp.JudgeFiles(x.p, x.s, inv, []lp.FileView{file}), "", 0, "")
+	file.InstalledSHA256 = digest([]byte("substituted agent"))
+	line(t, lp.JudgeFiles(x.p, x.s, inv, []lp.FileView{file}), "file-binding", 2, "file[#0]")
+}
+
+// Delta §6.1 requires these settings and an exact version range. Neither
+// the pinned help nor the delta identifies how to encode the range.
+func claudeManagedSettings() []lp.Entry {
+	return []lp.Entry{
+		{Path: []lp.Comp{"allowManagedHooksOnly"}, Type: "bool", Text: "true"},
+		{Path: []lp.Comp{"allowManagedMcpServersOnly"}, Type: "bool", Text: "true"},
+		{Path: []lp.Comp{"allowManagedPermissionRulesOnly"}, Type: "bool", Text: "true"},
+		{Path: []lp.Comp{"disableRemoteControl"}, Type: "bool", Text: "true"},
+		{Path: []lp.Comp{"disableSideloadFlags"}, Type: "bool", Text: "true"},
+		{Path: []lp.Comp{"permissions", "defaultMode"}, Type: "string", Text: "default"},
+		{Path: []lp.Comp{"permissions", "disableAutoMode"}, Type: "string", Text: "disable"},
+		{Path: []lp.Comp{"permissions", "disableBypassPermissionsMode"}, Type: "string", Text: "disable"},
+	}
+}
+
+func TestClaudeUnqualifiedVersionRange(t *testing.T) {
+	x := baseline(t, builds[0])
+	hash := digest([]byte("stand-in managed settings"))
+	inv := lp.Inventory{{PathRole: "provider-policy", Dest: "managed-settings.json"}}
+	file := lp.FileView{PathRole: inv[0].PathRole, Dest: inv[0].Dest, InstalledSHA256: hash, BytesSHA256: hash}
+	for _, pin := range []string{"", "2.1.332", "2.1.331"} {
+		file.Entries = claudeManagedSettings()
+		if pin != "" {
+			// A guessed representation has no authority, even with the right value.
+			file.Entries = append(file.Entries, lp.Entry{Path: []lp.Comp{"test-only-version-range"}, Type: "string", Text: pin})
+		}
+		line(t, lp.JudgeFiles(x.p, x.s, inv, []lp.FileView{file}), "file-refused", 2, "file[managed-settings.json]")
 	}
 }

@@ -352,6 +352,8 @@
     {"token": "--allowedTools", "reason": "tools"},
     {"prefix": "--allowedTools=", "reason": "tools"},
     {"token": "--append-system-prompt", "reason": "outside launch forms"},
+    {"token": "--append-system-prompt-file", "reason": "configuration"},
+    {"prefix": "--append-system-prompt-file=", "reason": "configuration"},
     {"prefix": "--append-system-prompt=", "reason": "outside launch forms"},
     {"token": "--autocompact", "reason": "outside launch forms"},
     {"prefix": "--autocompact=", "reason": "outside launch forms"},
@@ -406,6 +408,8 @@
     {"token": "--no-session-persistence", "reason": "outside launch forms"},
     {"token": "--output-format", "reason": "outside launch forms"},
     {"prefix": "--output-format=", "reason": "outside launch forms"},
+    {"token": "--permission-prompt-tool", "reason": "approval"},
+    {"prefix": "--permission-prompt-tool=", "reason": "approval"},
     {"token": "--permission-prompts", "reason": "approval"},
     {"prefix": "--permission-prompts=", "reason": "approval"},
     {"token": "--plugin-dir", "reason": "extension source"},
@@ -429,12 +433,15 @@
     {"token": "--settings", "reason": "configuration"},
     {"prefix": "--settings=", "reason": "configuration"},
     {"token": "--system-prompt", "reason": "outside launch forms"},
+    {"token": "--system-prompt-file", "reason": "configuration"},
+    {"prefix": "--system-prompt-file=", "reason": "configuration"},
     {"token": "--system-prompt-snapshot", "reason": "outside launch forms"},
     {"prefix": "--system-prompt-snapshot=", "reason": "outside launch forms"},
     {"prefix": "--system-prompt=", "reason": "outside launch forms"},
     {"token": "--teleport", "reason": "outside launch forms"},
     {"prefix": "--teleport=", "reason": "outside launch forms"},
     {"token": "--tmux", "reason": "outside launch forms"},
+    {"prefix": "--tmux=", "reason": "outside launch forms"},
     {"token": "--tools", "reason": "tools"},
     {"prefix": "--tools=", "reason": "tools"},
     {"token": "--verbose", "reason": "outside launch forms"},
@@ -455,80 +462,12 @@
   "files": [
     {
       "path_role": "agent",
-      "required": [],
-      "allowed": [
-        [
-          "description"
-        ],
-        [
-          "name"
-        ]
-      ]
-    },
-    {
-      "path_role": "provider-policy",
       "required": [
-        {
-          "path": [
-            "allowManagedHooksOnly"
-          ],
-          "type": "bool",
-          "text": "true"
-        },
-        {
-          "path": [
-            "allowManagedMcpServersOnly"
-          ],
-          "type": "bool",
-          "text": "true"
-        },
-        {
-          "path": [
-            "allowManagedPermissionRulesOnly"
-          ],
-          "type": "bool",
-          "text": "true"
-        },
-        {
-          "path": [
-            "disableRemoteControl"
-          ],
-          "type": "bool",
-          "text": "true"
-        },
-        {
-          "path": [
-            "disableSideloadFlags"
-          ],
-          "type": "bool",
-          "text": "true"
-        },
-        {
-          "path": [
-            "permissions",
-            "defaultMode"
-          ],
-          "type": "string",
-          "text": "default"
-        },
-        {
-          "path": [
-            "permissions",
-            "disableAutoMode"
-          ],
-          "type": "string",
-          "text": "disable"
-        },
-        {
-          "path": [
-            "permissions",
-            "disableBypassPermissionsMode"
-          ],
-          "type": "string",
-          "text": "disable"
-        }
+        {"path": ["name"], "type": "string", "text": "reviewer"}
       ],
-      "allowed": []
+      "allowed": [
+        ["description"]
+      ]
     }
   ]
 }
