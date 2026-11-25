@@ -3042,7 +3042,7 @@ func TestCanaryRunKitPrepareRefuses(t *testing.T) {
 		{"a root with a quote", e.prepareArgs(t, filepath.Join(e.dir, "a\"b")), "character"},
 		{"a root that is a link", e.prepareArgs(t, link), "symbolic link"},
 		{"pass B without --claude", e.prepareArgs(t, filepath.Join(e.dir, "b"), "--pass", "B"), "--pass B needs --claude"},
-		{"a missing binary", append([]string{"--root", filepath.Join(e.dir, "c"), "--bin", noBin, "--pasta", e.pasta(t)}), "not built in"},
+		{"a missing binary", []string{"--root", filepath.Join(e.dir, "c"), "--bin", noBin, "--pasta", e.pasta(t)}, "not built in"},
 		{"a pasta link", []string{"--root", filepath.Join(e.dir, "d"), "--bin", e.bin, "--pasta", link}, "link is refused"},
 		{"an unknown argument", []string{"--root", filepath.Join(e.dir, "e"), "--yes"}, "usage:"},
 	} {

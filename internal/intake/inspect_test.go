@@ -195,7 +195,7 @@ func TestInspectNotFastForward(t *testing.T) {
 	u := newLab(t)
 	u.put("other.txt", "o\n")
 	orphan := u.commit("unrelated\n")
-	u.w("push", "--quiet", "--force", s.bare, orphan+":refs/leads/role/heads/orphan")
+	u.pushInto(s.bare, orphan+":refs/leads/role/heads/orphan", "--force")
 	req := s.request()
 	req.TipRef = "refs/leads/role/heads/orphan"
 	_, err = Inspect(context.Background(), s.source(), req)
