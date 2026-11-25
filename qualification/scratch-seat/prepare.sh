@@ -16,8 +16,8 @@
 # taken from its flag, else from the environment: OWNER_STATE_DIR (--state:
 # the phone trial's state folder, which becomes the scratch state root, so
 # that the gate's key, its seat pins and the paired phones' keys stay the
-# trial's), ROOT (--root: a new or empty folder for the proof's own files,
-# whose parent exists), SEAT_GATE (--gate: the gate's IPv4 address and port),
+# trial's), ROOT (--root: a new folder for the proof's own files, which
+# prepare makes, in a parent that exists), SEAT_GATE (--gate: the gate's IPv4 address and port),
 # SITTING (--sitting: the sitting's number, 1 to 999, which makes the leads'
 # keys standin-N and live-N fresh for this sitting), CLAUDE_FILE and
 # CLAUDE_MODEL (--claude, --model: the tested claude, one regular file, and
@@ -36,10 +36,18 @@
 # alone: it reads no folder of the owner's and writes nothing, and what
 # depends on the file system is printed as a condition. --write checks the
 # state folder (a real folder at its physical path, with an owner/ folder, and
-# nothing of this sitting's leads), the tools and ROOT (its parent exists; it
-# is new or empty; physically outside the state folder, the checkout, /tmp,
-# /var/tmp and $TMPDIR), then makes ROOT (mode 0700, only that folder) and
-# writes in it only: the scratch config scratch.json (0600), the owner
+# nothing of this sitting's leads), the tools and ROOT (its parent exists and
+# is at its physical path; by that path and by the identity, device and
+# inode, of the parent and of each folder above it, it is not and lies not in
+# the state folder, its owner/ folder, the checkout, /tmp, /var/tmp or
+# $TMPDIR), then makes ROOT with mkdir of a new name (mode 0700, only that
+# folder) and writes only into folders it has just made: a name that is
+# already there is refused, so nothing is written through an existing path
+# that could be another name of the trial's storage. The one exception is a
+# folder that holds prepare's own mark from an earlier run (.prepare-made,
+# which names the folder's own device and inode) and none of the names prepare
+# makes in it: a run that stopped right after making it. In it go only: the
+# scratch config scratch.json (0600), the owner
 # channel's settings owner-settings/scratch.json (the folder 0700, the file
 # 0600), the managed settings and the guard hook (a no-op the holder's marker
 # check needs; it guards nothing), the replay screens of the checkout, copies
@@ -109,7 +117,7 @@ usage() {
     '       --status       run the daemon'"'"'s check (yours; it writes nothing)' \
     '       --compare      with --status: also compare the trial'"'"'s files with the record of step g, and have the daemon judge the key list' \
     '       --state DIR    the phone trial'"'"'s state folder (or OWNER_STATE_DIR)' \
-    '       --root DIR     a new or empty folder for the proof (or ROOT); its parent exists; outside /tmp and the checkout' \
+    '       --root DIR     a new folder for the proof (or ROOT), which prepare makes; its parent exists; outside /tmp and the checkout' \
     '       --gate IP:PORT the seat gate'"'"'s IPv4 address and port (or SEAT_GATE)' \
     '       --sitting N    the sitting'"'"'s number, 1 to 999 (or SITTING): the leads are standin-N and live-N' \
     '       --claude FILE  the tested claude, one regular file (or CLAUDE_FILE); it is copied, never run' \
@@ -630,7 +638,7 @@ if [ -n "$COMPARE" ] && [ "$MODE" != status ]; then usage; fi
 
 # The values, checked as text before anything is read.
 [ -n "$S" ] || die 'no state folder: give --state DIR or OWNER_STATE_DIR, the phone trial'"'"'s state folder'
-[ -n "$ROOT" ] || die 'no root: give --root DIR or ROOT, a new or empty folder for the proof'
+[ -n "$ROOT" ] || die 'no root: give --root DIR or ROOT, a new folder for the proof, which prepare makes'
 safe_path 'the state folder' "$S"
 safe_path 'the root' "$ROOT"
 safe_path 'the checkout' "$REPO"
@@ -671,7 +679,8 @@ if [ "$MODE" = dry ]; then
   PASTA_USE=${PASTA:-/usr/bin/pasta}
   BWRAP=${BWRAP:-bwrap}
   say "[dry] prepare.sh would make, and writes nothing now (the paths of pasta and bubblewrap are decided at --write):"
-  say "[dry]   folder $ROOT (0700; its parent must exist) with conf/, agent-install/, bin/, upstream/, evidence/, owner-settings/, owner-channel/ and owner-channel/drop/ (0700)"
+  say "[dry]   folder $ROOT, made new with mkdir (0700; its parent must exist; a name already there is refused), with conf/, agent-install/, bin/,"
+  say "[dry]     upstream/, evidence/, owner-settings/, owner-channel/ and owner-channel/drop/ (0700), each made new; it writes only into folders it has just made"
   say "[dry]   $CONFIG (0600): the scratch config; state_root $S (the trial's state folder), runtime_root $RUNTIME, max_running 1"
   say "[dry]     lead $KEY_STANDIN: the stand-in, runtime claude $RUNTIME_VERSION, footer_mode manual, inject true, limits 4 GiB, no swap, 512 tasks"
   if [ -n "$LIVE" ]; then
@@ -696,8 +705,9 @@ if [ "$MODE" = dry ]; then
   say "[dry]   $ROOT/upstream: a throwaway repository, one commit on develop, author example.invalid, made by git in a clean environment"
   say "[dry]   --write refuses, before it makes anything: a state folder that is a link, not at its physical path or without an owner/ folder;"
   say "[dry]   anything of $KEY_STANDIN or $KEY_LIVE in the state folder; a missing binary, daemon, pasta, bubblewrap or /usr/bin/git; a root whose"
-  say "[dry]   parent is missing or a link, that is not new or empty or cannot be read, or that lies physically in the state folder, the"
-  say "[dry]   checkout, /tmp, /var/tmp or \$TMPDIR; and a HOME that is not a real folder. The daemon's check (--status) judges the rest."
+  say "[dry]   parent is missing or a link, or is or lies in the state folder, its owner/, the checkout, /tmp, /var/tmp or \$TMPDIR by path or by"
+  say "[dry]   identity; a root that is already there (unless it holds only prepare's own mark of an earlier run); and a HOME that is not a"
+  say "[dry]   real folder. The daemon's check (--status) judges the rest."
   say "[dry]   nothing in $S is written by --dry, --write or --status"
   say ""
   commands "$GATE" "$LIVE"
@@ -893,23 +903,79 @@ for _x in json txt; do
   done
 done
 
-# The root: its parent exists and is at its physical path; the root is new,
-# or an empty folder that can be read; physically it lies outside the state
-# folder, the checkout, /tmp, /var/tmp and $TMPDIR, and none of them in it.
+# id_of PATH prints the identity of a folder, its device and inode (of what a
+# link leads to), or fails.
+id_of() { stat -L -c '%d:%i' -- "$1" 2>/dev/null; }
+
+# MARK is prepare's own mark in a folder it made: a file whose one line names
+# the folder's own identity, so that a copy of the mark in another folder is
+# not the mark of that folder.
+MARK=.prepare-made
+mark_line() { printf 'prepare.sh made this folder (%s)\n' "$1"; }
+
+# marked DIR succeeds when DIR is a real folder that holds prepare's mark for
+# itself.
+marked() {
+  [ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/$MARK" ] && [ ! -L "$1/$MARK" ] || return 1
+  _mid=$(id_of "$1") || return 1
+  [ "$(cat -- "$1/$MARK" 2>/dev/null)" = "$(mark_line "$_mid")" ]
+}
+
+# fresh_dir DIR WHAT makes DIR with mkdir of a new name (mode 0700) and puts
+# prepare's mark in it. A name that is already there is refused, unless it is
+# a folder of prepare's own mark that holds nothing else (a run that stopped
+# right after making it), which is taken again. It never writes through a
+# path that was there before.
+fresh_dir() {
+  if mkdir -m 0700 -- "$1" 2>/dev/null; then
+    _fid=$(id_of "$1") || die "$2 $1 was made but cannot be looked at"
+    (set -C && mark_line "$_fid" >"$1/$MARK") || die "the mark of $2 $1 cannot be written"
+    return 0
+  fi
+  if marked "$1"; then
+    _rest=$(find "$1" -mindepth 1 -maxdepth 1 ! -name "$MARK" -print) || die "$2 $1 cannot be listed"
+    [ -z "$_rest" ] || die "$2 $1 is an earlier run's and holds more than prepare's mark: choose a new --root"
+    return 0
+  fi
+  die "$2 $1 is already there (or cannot be made) and holds no mark of prepare's: prepare writes only into a folder it has just made; choose a new --root"
+}
+
+# The root: its parent exists and is at its physical path. By that path and
+# by identity (the device and inode of the parent and of each folder above
+# it, against those of each protected folder), the parent is not and lies not
+# in the state folder, its owner/ folder, the checkout, /tmp, /var/tmp or
+# $TMPDIR, so a parent that is another name of one of them (a bind mount of
+# it, say) is refused before anything is made; and none of them lies in the
+# root. The checks guard against mistakes, not attackers: a mount made of a
+# folder within one of them, or after the check, is outside them.
 _parent=${ROOT%/*}
 [ -n "$_parent" ] || _parent=/
 if [ -L "$ROOT" ]; then die "the root is a link: $ROOT"; fi
 _pp=$(phys "$_parent") || die "the root's parent folder does not exist: $_parent (prepare makes only the root itself)"
 [ "$_pp" = "$_parent" ] || die "the root's parent is not at its physical path (a folder on the way is a link): give ${_pp%/}/${ROOT##*/}"
-for _t in "$S" "$REPO" /tmp /var/tmp ${TMPDIR:+"$TMPDIR"}; do
+for _t in "$S" "$OWNER" "$REPO" /tmp /var/tmp ${TMPDIR:+"$TMPDIR"}; do
   _tp=$(phys "$_t") || continue
   if inside "$ROOT" "$_tp" || inside "$_tp" "$ROOT"; then die "the root lies physically in or around $_t ($_tp): choose another folder"; fi
 done
-if [ -e "$ROOT" ]; then
-  [ -d "$ROOT" ] || die "the root is not a folder: $ROOT"
-  [ -r "$ROOT" ] && [ -x "$ROOT" ] || die "the root cannot be read: $ROOT"
-  _list=$(find "$ROOT" -mindepth 1 -maxdepth 1 -print) || die "the root cannot be listed: $ROOT"
-  [ -z "$_list" ] || die "the root is not empty: $ROOT (prepare writes a new set-up; choose another folder)"
+_up=$_pp
+while :; do
+  _uid=$(id_of "$_up") || die "the folder $_up above the root cannot be looked at"
+  for _t in "$S" "$OWNER" "$REPO" /tmp /var/tmp ${TMPDIR:+"$TMPDIR"}; do
+    _tid=$(id_of "$_t") || continue
+    if [ "$_tid" = "$_uid" ]; then
+      die "the root's parent is or lies in $_t by another name ($_up has its device and inode: a bind mount of it, say): choose another folder"
+    fi
+  done
+  [ "$_up" != / ] || break
+  _up=${_up%/*}
+  [ -n "$_up" ] || _up=/
+done
+if [ -e "$ROOT" ] && ! marked "$ROOT"; then
+  die "the root $ROOT is already there and holds no mark of prepare's: prepare makes the root new and writes only into folders it has just made; choose a new --root"
+fi
+if marked "$ROOT"; then
+  _rest=$(find "$ROOT" -mindepth 1 -maxdepth 1 ! -name "$MARK" -print) || die "the root cannot be listed: $ROOT"
+  [ -z "$_rest" ] || die "the root $ROOT is an earlier run's and holds more than prepare's mark ($(printf '%s' "$_rest" | head -n 1)): choose a new --root"
 fi
 
 # --write. From here a failure leaves a half-made root, which is never
@@ -921,12 +987,15 @@ half_made() {
   fi
   exit "$_rc"
 }
-if [ ! -d "$ROOT" ]; then mkdir -m 0700 -- "$ROOT"; fi
-chmod 0700 -- "$ROOT"
-ROOT_MADE=1
 trap half_made EXIT
+fresh_dir "$ROOT" 'the root'
+ROOT_MADE=1
 say "making $ROOT"
-mkdir -m 0700 -- "$ROOT/conf" "$ROOT/agent-install" "$ROOT/bin" "$ROOT/upstream" "$EVIDENCE" "$SETTINGS_DIR" "$OC" "$OC/drop"
+# Every folder below is made new, and no file is written over one that is
+# there (noclobber), so nothing is written through a path that was there.
+set -C
+mkdir -m 0700 -- "$ROOT/conf" "$ROOT/agent-install" "$ROOT/bin" "$ROOT/upstream" "$EVIDENCE" "$OC" "$OC/drop"
+fresh_dir "$SETTINGS_DIR" 'the settings folder'
 
 # The managed settings name the guard hook, bound at /ataniq/qargi/guard-hook,
 # and hold the marker text guard-hook, as the canary run kit's do. The hook

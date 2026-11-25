@@ -42,9 +42,14 @@
   and the files they name in a folder of the proof's own, with leads fresh
   for each sitting (`standin-N`, `live-N`): `--dry` prints from the values
   alone, `--self-test` computes only, `--write` checks the state folder, the
-  tools and the root (physical paths, an existing parent, an empty or new
-  folder) first, runs git in a cleared environment, never writes in the
-  trial's state folder, never deletes and starts nothing, and `--status`
+  tools and the root first (physical paths, an existing parent that is not
+  and lies not in the state folder, its `owner/`, the checkout or a
+  temporary folder, by path and by identity, and a root that is not there
+  yet), makes the root and every folder below it with `mkdir` of a new name
+  and writes only into folders it has just made (a root holding only
+  prepare's own mark of an earlier run is taken again), runs git in a
+  cleared environment, never writes in the trial's state folder, never
+  deletes and starts nothing, and `--status`
   runs the daemon's `--check`; with `--compare` it then refuses a record of
   the digests taken before the sitting that does not list each of the six
   files once, compares the trial's gate key, certificate, pins and settings

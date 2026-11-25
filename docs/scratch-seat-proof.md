@@ -67,7 +67,7 @@ quotes), then paste the block.
 
 ```sh
 OWNER_STATE_DIR='/path/of/the/trial/state/folder'   # the trial daemon's --state-dir
-ROOT='/path/of/a/new/folder/for/the/proof'          # its parent exists; outside /tmp, the checkout and the state folder
+ROOT='/path/of/a/new/folder/for/the/proof'          # not there yet; its parent exists; outside /tmp, the checkout and the state folder
 SEAT_GATE='192.0.2.10:7443'                         # the trial daemon's --seat-gate (IPv4 only)
 SITTING='1'                                         # this sitting's number, 1 to 999; the leads are standin-1 and live-1
 TRIAL_UNIT='name-of-the-trial.service'              # the user unit that runs the trial daemon, for your own stop and start
@@ -253,18 +253,32 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    anything: a state folder that is a link, not at its physical path or
    without an `owner/` folder; anything of this sitting's leads in the state
    folder; a missing binary, daemon, pasta, bubblewrap or `/usr/bin/git`; a
-   root whose parent is missing or reached through a link, that is not new or
-   empty or cannot be read or listed, or that lies physically in or around the
-   state folder, the checkout, `/tmp`, `/var/tmp` or `$TMPDIR`; and a `HOME`
-   that is not a real folder at its physical path. What only the daemon can
-   judge (the settings folder against the trial's folder and the leads'
-   reach, the gate's key and pins, the root marker, the socket paths) is the
-   daemon's check of step g. It makes only the root folder itself, never a
-   parent. It writes, in `$ROOT` only:
+   root whose parent is missing or reached through a link, or whose parent,
+   by its physical path or by the identity (device and inode) of it and of
+   each folder above it, is or lies in the state folder, its `owner/`, the
+   checkout, `/tmp`, `/var/tmp` or `$TMPDIR` (so a parent that is one of them
+   by another name, a bind mount of it, is refused); a root that is already
+   there; and a `HOME` that is not a real folder at its physical path. What
+   only the daemon can judge (the settings folder against the trial's folder
+   and the leads' reach, the gate's key and pins, the root marker, the
+   socket paths) is the daemon's check of step g. It makes the root with
+   `mkdir` of a new name, never a parent, and writes only into folders it
+   has just made: every folder below the root, `owner-settings/` among
+   them, is made new, and no file is written over one that is there, so
+   nothing is written through a path that could be another name of the
+   trial's storage. The root and `owner-settings/` hold prepare's mark,
+   `.prepare-made`, which names the folder's own device and inode; a root
+   that holds that mark and nothing else (a run that stopped right after
+   making it) is taken again, and any other root that is there is refused:
+   choose a new `ROOT`. Like the daemon's, these checks guard against
+   mistakes, not attackers: a mount you or root make of a folder within one
+   of them, or after the check, is outside them. It writes, in `$ROOT`
+   only:
 
    | File | What it is |
    | --- | --- |
    | `scratch.json` | The scratch config (mode 0600): `state_root` the trial's state folder, `runtime_root` `$ROOT/runtime` (the daemon makes it), `max_running` 1, and the leads below. |
+   | `.prepare-made`, `owner-settings/.prepare-made` | Prepare's mark: one line naming the folder's own device and inode. |
    | `owner-settings/scratch.json` | The owner channel's non-trial settings (the folder 0700, the file 0600), which the daemon reads with `--owner-settings`: the stand-in door, the sample project `proof-project`, the scratch root `$ROOT/owner-channel` with the drop folder in it, and a sandbox template that is never written, so that no request can be verified and no suite sandbox starts. |
    | `conf/` | The managed settings, which name a PreToolUse hook and hold the marker `guard-hook`; the hook itself, which exits 0 and guards nothing (the holder refuses a claude start without the marker, the canary kit writes the same no-op); and the replay screens of the checkout. |
    | `agent-install/` | A copy of the stand-in and of the claude file (`claude`, mode 0700). The copy is not run. |
