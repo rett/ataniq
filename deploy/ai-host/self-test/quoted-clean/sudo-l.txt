@@ -1,0 +1,9 @@
+Matching Defaults entries for agent on aihost:
+    env_reset, env_keep+="LANG LC_ALL TZ", timestamp_timeout=0
+
+Runas and Command-specific defaults for agent:
+    Defaults!/usr/bin/sudoedit env_keep+="EDITOR VISUAL", !env_reset
+    Defaults>backup env_keep="HOME TERM"
+
+User agent may run the following commands on aihost:
+    (ALL : ALL) ALL

@@ -147,6 +147,13 @@ your notes of the sitting, run the check again with `--other-root-login`:
 the case becomes a `note:` and the result can be clean. When there is none,
 give the user a grant that asks for the password first (step 3).
 
+Every word of each default is judged, without its quotes, so a
+quoted value with blanks (`exempt_group="wheel admins"`, or
+`Defaults>root exempt_group="a b"`) is a finding like an unquoted one. A word
+of another setting's value that reads as an option (for example `targetpw`
+inside an `env_keep` list) is then a finding too: check it, and leave it if
+it is only a value.
+
 What the check trusts: sudo's own listing, which resolves host lists,
 aliases, groups, includes and other sudoers sources (LDAP, sssd) for this
 user on this host. What that listing does not show: which file holds a rule;
