@@ -1323,26 +1323,23 @@ the deployment of the seat and every live run are the owner's.
 [The attended proof of real replies](scratch-seat-proof.md) is the owner's
 runbook for one sitting with this daemon on the phone trial's state folder, so
 that the trial's gate key, seat pins and paired phones are reused: first the
-stand-in lead, then one real Claude lead, each reply read on the phone and the
-desktop. The daemon refuses that folder while it holds the trial's settings
-(`"trial": true` in `owner/scratch.json`). Of the trial's own files the
-runbook swaps only that one, within `owner/`, by the owner's
-`prepare.sh --swap-in` and back by `--swap-out` (the root marker, the
-proof's settings and the leads' folders are added beside them), with the
-trial's unit stopped meanwhile (a transient one is then gone; a unit file is
-masked, or has no activation source when the mask cannot take) and the
-gate's port free, which the swaps check against the unit's kind that the
-owner's `prepare.sh --record-trial` recorded; a transient trial is made
-again at the end by the `trial-restart.sh` that record wrote. The state
-folder's daemon lock still refuses a second daemon.
-`qualification/scratch-seat/prepare.sh` writes the scratch config and the
-files it names in a folder of the proof's own (`--dry` reads and writes
-nothing of the owner's; `--self-test` computes only; `--write` never writes
-in the trial's state folder or starts anything; `--status` only reads).
-Each sitting has leads of its own (`standin-N`, `live-N`).
+stand-in lead, then, once the drop rule is in place, one real Claude lead,
+each reply read on the phone and the desktop. Without `--owner-settings` the
+daemon refuses that folder, whose `owner/scratch.json` holds the trial's
+settings (`"trial": true`); with `--owner-settings` it reads the proof's own
+settings from a folder of the proof's and leaves the trial's where they are.
+Nothing of the trial is renamed, moved, masked or swapped: the owner stops
+the trial and starts it again with his own commands, and the state folder's
+daemon lock refuses a second daemon. `qualification/scratch-seat/prepare.sh`
+writes the scratch config, the settings folder and the files they name in a
+folder of the proof's own (`--dry` reads and writes nothing of the owner's;
+`--self-test` computes only; `--write` never writes in the trial's state
+folder or starts anything; `--status` runs the daemon's `--check` and
+compares the trial's files with the digests the owner recorded, and writes
+nothing). Each sitting has leads of its own (`standin-N`, `live-N`).
 `TestScratchSeatTakesThePhoneTrialsStateFolder` in `cmd/ataniqd` proves the
-folder's way there and back in process, on the files `--write` makes and
-with the swaps.
+folder's way there and back in process, on the files `--write` makes, and
+shows the trial's gate key, pins, keys and settings the same bytes after it.
 
 ## Failure handling and owner recovery
 

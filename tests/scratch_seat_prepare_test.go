@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,29 +12,26 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 )
 
 // Tests of qualification/scratch-seat/prepare.sh, the preparation of the
 // owner-attended proof of real lead replies (docs/scratch-seat-proof.md).
 // Nothing here starts a unit, a daemon, a sandbox or an agent: the binaries,
-// pasta and claude of these tests are recording stubs, the PATH puts recording
-// stubs of systemctl, systemd-run, bwrap and claude first (the systemctl stub
-// answers "show" from a file of the test's and refuses every other verb), and
-// the trial's state folder is a sample one in a private folder of the test.
-// --write, --status and the swaps run only in that folder.
+// pasta, claude and the daemon of these tests are recording stubs, the PATH
+// puts recording stubs of systemctl, systemd-run, bwrap, claude and curl
+// first, and the trial's state folder is a sample one in a private folder of
+// the test. --write and --status run only in that folder.
 
 const scratchSeatPrepare = "qualification/scratch-seat/prepare.sh"
 
 // scratchSeatKit is the sample world of one run of the script.
 type scratchSeatKit struct {
-	dir, bin, tools, calls, state, home, units string
+	dir, bin, tools, calls, state, home string
 }
 
-// scratchSeatStubs are the programs on PATH that the script must never run;
-// systemctl is a stub too, which answers "show" only.
-var scratchSeatStubs = []string{"systemd-run", "bwrap", "pasta", "claude", "ataniqd", "ataniq-console", "curl"}
+// scratchSeatStubs are the programs on PATH that the script must never run.
+var scratchSeatStubs = []string{"systemctl", "systemd-run", "journalctl", "bwrap", "pasta", "claude", "ataniqd", "ataniq-console", "curl"}
 
 // scratchSeatTmp is a private folder for a kit: in TMPDIR when that is not
 // in /tmp or /var/tmp (which the script refuses for its root), else where
@@ -68,8 +64,7 @@ func newScratchSeatKit(t *testing.T) scratchSeatKit {
 	t.Helper()
 	dir := scratchSeatTmp(t)
 	k := scratchSeatKit{dir: dir, bin: filepath.Join(dir, "bin"), tools: filepath.Join(dir, "tools"),
-		calls: filepath.Join(dir, "calls"), state: filepath.Join(dir, "trial-state"), home: filepath.Join(dir, "home"),
-		units: filepath.Join(dir, "units")}
+		calls: filepath.Join(dir, "calls"), state: filepath.Join(dir, "trial-state"), home: filepath.Join(dir, "home")}
 	for _, d := range []string{k.bin, k.tools, k.home, k.state, filepath.Join(k.state, "owner"), filepath.Join(k.state, "owner", "gate")} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			t.Fatal(err)
@@ -78,7 +73,7 @@ func newScratchSeatKit(t *testing.T) scratchSeatKit {
 	for name, body := range map[string]string{
 		"owner/gate/cert.pem": "sample certificate\n", "owner/gate/key.pem": "sample key\n",
 		"owner/gate/seat-pins": strings.Repeat("ab", 32) + "\n", "owner/scratch.json": "{\n  \"trial\": true\n}\n",
-		"owner/keys.log": "sample keys\n",
+		"owner/keys.log": "sample keys\n", "owner/keys.head": "sample head\n",
 	} {
 		if err := os.WriteFile(filepath.Join(k.state, name), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
@@ -95,34 +90,13 @@ func newScratchSeatKit(t *testing.T) scratchSeatKit {
 			t.Fatal(err)
 		}
 	}
-	// systemctl --user show -p PROP --value -- UNIT answers from the units
-	// file ("UNIT PROP VALUE" lines, the value the rest of the line); an
-	// unlisted ActiveState is inactive and an unlisted LoadState not-found.
-	// Every other call is refused.
-	systemctl := "#!/bin/sh\necho \"systemctl $*\" >>'" + k.calls + "'\n" +
-		"[ \"$1 $2 $3\" = '--user show -p' ] && [ \"$5 $6\" = '--value --' ] || exit 97\n" +
-		"v=$(awk -v u=\"$7\" -v p=\"$4\" '$1 == u && $2 == p { s = $0; sub(/^[^ ]+ [^ ]+ ?/, \"\", s); print s; exit }' '" + k.units + "' 2>/dev/null)\n" +
-		"if [ -z \"$v\" ]; then case $4 in ActiveState) v=inactive ;; LoadState) v=not-found ;; esac; fi\n" +
-		"printf '%s\\n' \"$v\"\n"
-	if err := os.WriteFile(filepath.Join(k.tools, "systemctl"), []byte(systemctl), 0o700); err != nil {
-		t.Fatal(err)
-	}
 	return k
 }
 
-// unitsSay sets the answers of the systemctl stub.
-func (k scratchSeatKit) unitsSay(t *testing.T, lines ...string) {
-	t.Helper()
-	if err := os.WriteFile(k.units, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // args are the flags of a run with the kit's binaries, the root given, the
-// sample gate, sitting 3, the sample unit and, with live, the claude stub and
-// a model.
+// sample gate, sitting 3 and, with live, the claude stub and a model.
 func (k scratchSeatKit) args(mode, root string, live bool, more ...string) []string {
-	a := []string{mode, "--state", k.state, "--root", root, "--gate", "192.0.2.10:7443", "--sitting", "3", "--unit", "sample-trial.service",
+	a := []string{mode, "--state", k.state, "--root", root, "--gate", "192.0.2.10:7443", "--sitting", "3",
 		"--bin", k.bin, "--daemon", filepath.Join(k.bin, "ataniqd"), "--pasta", filepath.Join(k.bin, "pasta"), "--bwrap", filepath.Join(k.tools, "bwrap")}
 	if live {
 		a = append(a, "--claude", filepath.Join(k.bin, "claude-file"), "--model", "sample-model")
@@ -155,21 +129,6 @@ func (k scratchSeatKit) noCalls(t *testing.T) {
 	t.Helper()
 	if b, err := os.ReadFile(k.calls); err == nil {
 		t.Fatalf("the script ran a program it must never run:\n%s", b)
-	}
-}
-
-// onlyShows fails the test when a stub ran for anything but systemctl's
-// read-only "show".
-func (k scratchSeatKit) onlyShows(t *testing.T) {
-	t.Helper()
-	b, err := os.ReadFile(k.calls)
-	if err != nil {
-		return
-	}
-	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-		if !strings.HasPrefix(line, "systemctl --user show -p ") {
-			t.Fatalf("the script ran %q", line)
-		}
 	}
 }
 
@@ -218,11 +177,11 @@ func sameScratchSeatFiles(a, b map[string]string) bool {
 // The script and the network check's template are plain POSIX sh; the
 // script sets -eu, and names neither build tag nor the make target that
 // builds the daemon of both tags: it only names the binary,
-// build/scratch-seat/ataniqd. It never deletes a file and never starts
-// anything itself: no line of it runs rm, systemd-run, bwrap, pasta, the
-// daemon or the console (they are only printed for the owner); systemctl
-// runs on one line, a read-only "show"; git runs only through proof_git;
-// unlink runs only where a name of a file that has another is removed.
+// build/scratch-seat/ataniqd. It never deletes, moves or links a file and
+// never starts anything itself: no line of it runs rm, mv, ln, unlink,
+// systemctl, systemd-run, bwrap, pasta, claude or the console (they are only
+// printed for the owner); git runs only through proof_git; and the daemon
+// runs on one line, its --check, which binds, locks and starts nothing.
 func TestScratchSeatPrepareIsPlainShell(t *testing.T) {
 	canaryPlainShell(t, scratchSeatPrepare, true)
 	canaryPlainShell(t, "qualification/scratch-seat/netcheck.sh.in", false)
@@ -243,9 +202,7 @@ func TestScratchSeatPrepareIsPlainShell(t *testing.T) {
 	// printed) that runs one of these programs.
 	inDoc := false
 	allowed := map[string]string{
-		"systemctl":    `systemctl --user show -p "$2" --value -- "$1"`,
-		"unlink":       `unlink -- "$1"`,
-		"ln":           `ln -P -T -- "$1" "$2"`,
+		`"$DAEMON"`:    `"$DAEMON" run --scratch "$CONFIG" --owner-channel --seat-gate "$GATE" --owner-settings "$SETTINGS_DIR" --check || RC=$?`,
 		"/usr/bin/git": `/usr/bin/git -c core.hooksPath=/dev/null -c commit.gpgSign=false -c tag.gpgSign=false -c core.fsmonitor=false \`,
 	}
 	seen := map[string]int{}
@@ -270,9 +227,9 @@ func TestScratchSeatPrepareIsPlainShell(t *testing.T) {
 			}
 			word := fields[0]
 			switch word {
-			case "rm", "rmdir", "mv", "git", "systemd-run", "bwrap", "\"$BWRAP\"", "\"$PASTA_USE\"", "\"$DAEMON\"", "\"$CLAUDE_SRC\"":
+			case "rm", "rmdir", "mv", "ln", "unlink", "git", "systemctl", "journalctl", "systemd-run", "bwrap", "\"$BWRAP\"", "\"$PASTA_USE\"", "\"$CLAUDE_SRC\"":
 				t.Errorf("line %d runs %s: %q", i+1, word, trimmed)
-			case "systemctl", "unlink", "ln", "/usr/bin/git":
+			case "\"$DAEMON\"", "/usr/bin/git":
 				seen[word]++
 				if !strings.Contains(trimmed, allowed[word]) {
 					t.Errorf("line %d runs %s other than as allowed: %q", i+1, word, trimmed)
@@ -355,7 +312,8 @@ func TestScratchSeatPrepareSelfTest(t *testing.T) {
 			t.Fatalf("--self-test config %q: exit %d:\n%s", model, code, out)
 		}
 		if cfg.StateRoot != "/srv/sample/trial" || cfg.RuntimeRoot != "/srv/sample/proof/runtime" || cfg.MaxRunning != 1 ||
-			!slices.Contains(cfg.Sandbox.NeverMounted, "/srv/sample/trial/owner") || !slices.Contains(cfg.Sandbox.NeverMounted, root(t)) {
+			!slices.Contains(cfg.Sandbox.NeverMounted, "/srv/sample/trial/owner") || !slices.Contains(cfg.Sandbox.NeverMounted, root(t)) ||
+			!slices.Contains(cfg.Sandbox.NeverMounted, "/srv/sample/proof/owner-settings") {
 			t.Errorf("the config: %+v", cfg)
 		}
 		for _, p := range []string{".ssh", ".claude", ".codex"} {
@@ -407,12 +365,14 @@ func TestScratchSeatPrepareSelfTest(t *testing.T) {
 
 // scratchSeatCommandsHold checks the owner's steps the script prints: every
 // step is there in order; every step that starts a process, changes a unit
-// or defines a lead says OWNER ONLY; nothing is deleted or moved by hand (the
-// swaps are prepare's modes); the trial's unit is the quoted reference
-// "$TRIAL_UNIT", never its value, and no line holds a placeholder; the
-// trial is stopped and masked before the swap and started after the way
-// back; the daemon's exit status is printed; the commands of the leads name
-// only the leads configured, by their keys.
+// or defines a lead says OWNER ONLY; nothing is deleted, moved, masked or
+// swapped; the trial's unit is the quoted reference "$TRIAL_UNIT", never its
+// value, and no line holds a placeholder; the daemon's check passes and the
+// trial's digests are recorded before the trial is stopped, the daemon reads
+// the settings folder, and the digests are compared before the trial starts
+// again by the owner's own command; the daemon's exit status is printed; the
+// live lead waits for the drop rule; the commands of the leads name only the
+// leads configured, by their keys.
 func scratchSeatCommandsHold(t *testing.T, out, state, root string, live bool) {
 	t.Helper()
 	i := strings.Index(out, "Your steps, in order")
@@ -420,39 +380,37 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root string, live bool) {
 		t.Fatalf("no steps:\n%s", out)
 	}
 	out = out[i:]
-	for n := 1; n <= 16; n++ {
-		if (n >= 9 && n <= 11) && !live {
+	for n := 1; n <= 14; n++ {
+		if (n >= 7 && n <= 10) && !live {
 			continue
 		}
 		if !strings.Contains(out, fmt.Sprintf("%2d. ", n)) && !strings.Contains(out, fmt.Sprintf(" %d. ", n)) {
 			t.Errorf("the steps lack %d:\n%s", n, out)
 		}
 	}
-	prep := " --state " + state + " --root " + root
+	prep := " --state " + state + " --root " + root + " --gate 192.0.2.10:7443"
 	for _, want := range []string{
 		"A for the daemon, B for the console, C for the desk",
+		"Nothing of the trial is renamed, moved or masked: the proof's daemon reads its settings from " + root + "/owner-settings.",
 		"OWNER ONLY (starts pasta, bubblewrap, curl and a throwaway user unit): { sh " + root + "/netcheck.sh; echo \"netcheck: exit status $?\"; } 2>&1 | tee -a " + root + "/evidence/netcheck.txt",
-		"--record-trial" + prep + " --unit \"$TRIAL_UNIT\"",
-		"--status" + prep,
-		"OWNER ONLY: systemctl --user stop -- \"$TRIAL_UNIT\"",
-		"a unit file only (step g names the kind): OWNER ONLY: systemctl --user mask --runtime -- \"$TRIAL_UNIT\"",
-		"(inactive; not-found for a transient unit, masked for a unit file)",
-		"a unit file still loaded (the mask did not take): OWNER ONLY: systemctl --user unmask --runtime -- \"$TRIAL_UNIT\"",
 		"scratch-init --config " + root + "/scratch.json",
-		"--swap-in" + prep + " --gate 192.0.2.10:7443 --sitting 3 --unit \"$TRIAL_UNIT\"",
+		"--status" + prep + "   (the daemon's check: it must end \"check: no refusal\")",
+		"(cd " + state + "/owner && sha256sum -- gate/key.pem gate/cert.pem gate/seat-pins keys.log keys.head scratch.json) >" + root + "/evidence/trial-before.sha256",
+		"OWNER ONLY: systemctl --user stop -- \"$TRIAL_UNIT\"",
+		"(inactive; nothing is masked)",
 		"sh -c 'trap : INT; \"$@\" 2>&1; echo \"ataniqd: exit status $?\"' sh ",
-		" run --scratch " + root + "/scratch.json --owner-channel --seat-gate 192.0.2.10:7443 | tee -ai " + root + "/evidence/daemon.log",
+		" run --scratch " + root + "/scratch.json --owner-channel --seat-gate 192.0.2.10:7443 --owner-settings " + root + "/owner-settings | tee -ai " + root + "/evidence/daemon.log",
 		"ataniq-console --daemon " + root + "/runtime",
+		"On the phone and in a desktop browser: the seat's web app, its Leads page.",
 		"OWNER ONLY (the daemon runs git to define it): d on standin-3",
 		"chat set standin-3 read --config " + root + "/scratch.json",
 		"canary-token: proof-standin-0001",
-		"Only after NOT delivered (nothing was written)",
+		"submitted: the fence put it in; no paste.",
+		"NOT delivered (nothing was written)",
 		"Ctrl+\\ then q",
-		"no paste; stop and reconcile",
-		"--swap-out" + prep + " --gate 192.0.2.10:7443 --unit \"$TRIAL_UNIT\"",
-		"a transient unit (step 14 printed the kind): OWNER ONLY: sh " + root + "/trial-restart.sh",
-		"a unit file: OWNER ONLY: systemctl --user unmask --runtime -- \"$TRIAL_UNIT\"",
-		"a unit file: OWNER ONLY: systemctl --user start -- \"$TRIAL_UNIT\"",
+		"no paste; write it in " + root + "/evidence/notes.txt; stop and reconcile",
+		"(cd " + state + "/owner && sha256sum -c -- " + root + "/evidence/trial-before.sha256)",
+		"OWNER ONLY: start the trial again with your own command (systemctl --user start -- \"$TRIAL_UNIT\" for a unit file, or your systemd-run)",
 		"journalctl --user --unit \"$TRIAL_UNIT\" -I",
 	} {
 		if !strings.Contains(out, want) {
@@ -460,30 +418,42 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root string, live bool) {
 		}
 	}
 	if live != strings.Contains(out, "chat set live-3 read") || live != strings.Contains(out, "claude --version") ||
-		live != strings.Contains(out, "d on live-3") || live != strings.Contains(out, "systemctl --user status -- ataniq-lead-scratch-live-3.service") {
+		live != strings.Contains(out, "d on live-3") || live != strings.Contains(out, "systemctl --user status -- ataniq-lead-scratch-live-3.service") ||
+		live != strings.Contains(out, "The drop rule (a separate change, SB-1) is in place") {
 		t.Errorf("the live lead's steps, live %v:\n%s", live, out)
+	}
+	if live && !strings.Contains(out, "H=$(mktemp -d "+root+"/version-home.XXXXXX) && env -i HOME=\"$H\" "+root+"/agent-install/claude --version") {
+		t.Errorf("the version check does not make its home in the root and check it was made:\n%s", out)
+	}
+	if live && (!strings.Contains(out, "submitted: w, Enter, approve only the write of the one reply into its outbox") ||
+		!strings.Contains(out, "stay for the approval of that one write") || !strings.Contains(out, "cannot-identify")) {
+		t.Errorf("the live lead's approval, paste and revocation steps:\n%s", out)
 	}
 	if live && !strings.Contains(out, "chat set live-3 off") || !live && !strings.Contains(out, "chat set standin-3 off") {
 		t.Errorf("the off step, live %v:\n%s", live, out)
 	}
-	order := []string{"--record-trial", "systemctl --user stop", "mask --runtime", "--swap-in", "run --scratch", "--swap-out",
-		"OWNER ONLY: sh " + root + "/trial-restart.sh", "systemctl --user start"}
+	order := []string{"scratch-init", "--status", "sha256sum --", "systemctl --user stop", "--owner-settings " + root + "/owner-settings |",
+		"d on standin-3", "sha256sum -c", "start the trial again"}
+	if live {
+		order = append(order[:6], append([]string{"The drop rule", "d on live-3"}, order[6:]...)...)
+	}
 	for i := 1; i < len(order); i++ {
 		if strings.Index(out, order[i-1]) > strings.Index(out, order[i]) {
 			t.Errorf("%q comes after %q:\n%s", order[i-1], order[i], out)
 		}
 	}
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, " rm ") || strings.Contains(line, "rm -") || strings.Contains(line, " mv ") || strings.Contains(line, "unlink") {
-			t.Errorf("a step deletes or moves by hand: %q", line)
+		if strings.Contains(line, " rm ") || strings.Contains(line, "rm -") || strings.Contains(line, " mv ") || strings.Contains(line, "unlink") ||
+			strings.Contains(line, "swap") || strings.Contains(line, "mask --") || strings.Contains(line, "record-trial") || strings.Contains(line, "trial-restart") {
+			t.Errorf("a step deletes, moves, masks or swaps: %q", line)
 		}
-		if strings.Contains(line, "sample-trial.service") || strings.Contains(line, "<") && strings.Contains(line, ">") && strings.Index(line, "<") < strings.LastIndex(line, ">") && !strings.Contains(line, "2>&1") {
-			t.Errorf("a step names the unit's value or holds a placeholder: %q", line)
+		if strings.Contains(line, "<") && strings.Contains(line, ">") && strings.Index(line, "<") < strings.LastIndex(line, ">") && !strings.Contains(line, "2>&1") {
+			t.Errorf("a step holds a placeholder: %q", line)
 		}
 		if strings.Contains(line, "KEY") {
 			t.Errorf("a step names a lead KEY: %q", line)
 		}
-		for _, starts := range []string{"systemctl --user stop", "systemctl --user start", "mask --runtime", "run --scratch", "ataniq-console", "--version", "d on ", "s on ", "trial-restart.sh"} {
+		for _, starts := range []string{"systemctl --user stop", "systemctl --user start", "run --scratch", "ataniq-console", "--version", "d on ", "s on ", "netcheck.sh"} {
 			if strings.Contains(line, starts) && !strings.Contains(line, "OWNER ONLY") {
 				t.Errorf("a step starts a process, changes a unit or defines a lead and is not marked OWNER ONLY: %q", line)
 			}
@@ -505,7 +475,8 @@ func TestScratchSeatPrepareDryWritesNothing(t *testing.T) {
 		}
 		for _, want := range []string{
 			"[dry]", r + "/scratch.json (0600)", "state_root " + k.state + " (the trial's state folder)", "runtime_root " + r + "/runtime",
-			"max_running 1", "lead standin-3", r + "/owner-scratch.json (0600)", "\"" + k.state + "/owner\"", "\"" + k.home + "/.claude\"",
+			"max_running 1", "lead standin-3", r + "/owner-settings/scratch.json (0600, in a folder of 0700)", "--owner-settings " + r + "/owner-settings",
+			"owner/scratch.json of the state folder is never read, moved or changed", "\"" + k.state + "/owner\"", "\"" + k.home + "/.claude\"",
 			"it guards nothing", r + "/netcheck.sh (0700)", "--write refuses, before it makes anything",
 		} {
 			if !strings.Contains(out, want) {
@@ -521,13 +492,13 @@ func TestScratchSeatPrepareDryWritesNothing(t *testing.T) {
 	// that are not there at all.
 	gone := filepath.Join(k.dir, "not-there")
 	out, code := k.run(t, nil, "--dry", "--state", gone+"/state", "--root", gone+"/a/proof", "--gate", "192.0.2.10:7443",
-		"--sitting", "3", "--unit", "sample-trial.service", "--bin", gone+"/bin", "--daemon", gone+"/ataniqd", "--claude", gone+"/claude", "--model", "m")
+		"--sitting", "3", "--bin", gone+"/bin", "--daemon", gone+"/ataniqd", "--claude", gone+"/claude", "--model", "m")
 	if code != 0 || !strings.Contains(out, "state_root "+gone+"/state") || !strings.Contains(out, "pasta: /usr/bin/pasta when it is") ||
 		!strings.Contains(out, "bubblewrap: the bwrap on PATH at --write") {
 		t.Errorf("--dry with nothing there: exit %d:\n%s", code, out)
 	}
 	// The values from the environment, as the guide sets them.
-	out, code = k.run(t, []string{"OWNER_STATE_DIR=" + k.state, "ROOT=" + r, "SEAT_GATE=192.0.2.10:7443", "SITTING=3", "TRIAL_UNIT=sample-trial.service"},
+	out, code = k.run(t, []string{"OWNER_STATE_DIR=" + k.state, "ROOT=" + r, "SEAT_GATE=192.0.2.10:7443", "SITTING=3"},
 		"--dry", "--bin", k.bin, "--daemon", filepath.Join(k.bin, "ataniqd"), "--pasta", filepath.Join(k.bin, "pasta"))
 	if code != 0 || !strings.Contains(out, "state_root "+k.state) || !strings.Contains(out, "--seat-gate 192.0.2.10:7443") || !strings.Contains(out, "\"$TRIAL_UNIT\"") {
 		t.Errorf("--dry from the environment: exit %d:\n%s", code, out)
@@ -540,10 +511,11 @@ func TestScratchSeatPrepareDryWritesNothing(t *testing.T) {
 
 // What the script refuses from the values alone, in --dry and --write
 // alike, before anything is printed or made: no mode, a missing value, a
-// trial unit that is not one NAME.service, a sitting that is not 1 to 999, a
-// root in /tmp, inside the state folder or the checkout, a claude without a
-// model, a gate that is not one IPv4 address and port, and a HOME that
-// cannot give the never-mounted paths.
+// sitting that is not 1 to 999, a root in /tmp, inside the state folder or
+// the checkout, a claude without a model, a gate that is not one IPv4
+// address and port, a HOME that cannot give the never-mounted paths, and the
+// trial's unit or a mode of the retired settings swap, which the script no
+// longer takes.
 func TestScratchSeatPrepareRefusesValues(t *testing.T) {
 	k := newScratchSeatKit(t)
 	r := filepath.Join(k.dir, "proof")
@@ -575,13 +547,10 @@ func TestScratchSeatPrepareRefusesValues(t *testing.T) {
 		{"no sitting", set(base, "--sitting", ""), nil, 1, "no sitting"},
 		{"a sitting 0", set(base, "--sitting", "0"), nil, 1, "sitting"},
 		{"a sitting 1000", set(base, "--sitting", "1000"), nil, 1, "sitting"},
-		{"no unit", set(base, "--unit", ""), nil, 1, "no trial unit"},
-		{"two units", set(base, "--unit", "a.service b.service"), nil, 1, "one unit name"},
-		{"a unit option", set(base, "--unit", "-x.service"), nil, 1, "starts with -"},
-		{"a unit pattern", set(base, "--unit", "sample*.service"), nil, 1, "one unit name"},
-		{"a unit with shell text", set(base, "--unit", "a;b.service"), nil, 1, "one unit name"},
-		{"a socket unit", set(base, "--unit", "sample.socket"), nil, 1, "not a NAME.service"},
-		{"a lead's unit", set(base, "--unit", "ataniq-lead-scratch-x.service"), nil, 1, "a lead's unit"},
+		{"a trial unit", append(slices.Clone(base), "--unit", "sample-trial.service"), nil, 2, "usage"},
+		{"the swap in", append([]string{"--swap-in"}, base[1:]...), nil, 2, "usage"},
+		{"the swap out", append([]string{"--swap-out"}, base[1:]...), nil, 2, "usage"},
+		{"the trial's record", append([]string{"--record-trial"}, base[1:]...), nil, 2, "usage"},
 		{"claude without a model", append(slices.Clone(base), "--claude", filepath.Join(k.bin, "claude-file")), nil, 1, "--claude needs --model"},
 		{"a model without claude", append(slices.Clone(base), "--model", "sample-model"), nil, 1, "--model needs --claude"},
 		{"a bad model", append(slices.Clone(base), "--claude", filepath.Join(k.bin, "claude-file"), "--model", "-x"), nil, 1, "--model is a model name"},
@@ -610,19 +579,19 @@ func TestScratchSeatPrepareRefusesValues(t *testing.T) {
 	k.noCalls(t)
 }
 
-// What --write refuses after it has looked, before it makes anything: a
-// state folder without usable gate material or whose settings are not the
-// trial's private settings, one with the trial's settings set aside or with
-// anything of this sitting's leads, a missing tool, and a root whose parent
-// is missing or reached through a link, that is linked into the state
-// folder, that cannot be read or listed, or that holds something.
+// What --write refuses after it has looked, before it makes anything: a state
+// folder that is a link or has no owner/ folder, one with anything of this
+// sitting's leads, a missing tool, and a root whose parent is missing or
+// reached through a link, that is linked into the state folder, that cannot
+// be read or listed, or that holds something. What only the daemon judges
+// (the gate's material, the settings) is left to the daemon's check, which
+// --status runs.
 func TestScratchSeatPrepareWriteRefuses(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("modes do not bind root")
 	}
 	k := newScratchSeatKit(t)
 	r := filepath.Join(k.dir, "proof")
-	owner := filepath.Join(k.state, "owner")
 	full := filepath.Join(k.dir, "full")
 	if err := os.MkdirAll(filepath.Join(full, "x"), 0o700); err != nil {
 		t.Fatal(err)
@@ -679,33 +648,12 @@ func TestScratchSeatPrepareWriteRefuses(t *testing.T) {
 		env   []string
 		want  string
 	}{
-		{"no gate key", base, func() func() {
-			p := filepath.Join(owner, "gate", "key.pem")
+		{"no owner folder", base, func() func() {
+			p := filepath.Join(k.state, "owner")
 			os.Rename(p, p+".x")
 			return func() { os.Rename(p+".x", p) }
-		}, nil, "has no owner/gate/key.pem"},
-		{"a key readable by others", base, func() func() { return write("owner/gate/key.pem", "sample key\n", 0o644) }, nil, "group or other"},
-		{"empty pins", base, func() func() { return write("owner/gate/seat-pins", "", 0o600) }, nil, "empty"},
-		{"no pin", base, func() func() { return write("owner/gate/seat-pins", "# none\n", 0o600) }, nil, "pins no seat key"},
-		{"settings not the trial's", base, func() func() { return write("owner/scratch.json", "{\"door\": \"stand-in\"}\n", 0o600) }, nil, "not the trial's settings"},
-		{"settings readable by others", base, func() func() { return write("owner/scratch.json", "{\"trial\": true}\n", 0o644) }, nil, "not private"},
-		{"settings missing", base, func() func() {
-			p := filepath.Join(owner, "scratch.json")
-			os.Rename(p, p+".x")
-			return func() { os.Rename(p+".x", p) }
-		}, nil, "--status"},
-		{"settings a link", base, func() func() {
-			p := filepath.Join(owner, "scratch.json")
-			os.Rename(p, p+".x")
-			os.Symlink(p+".x", p)
-			return func() { os.Remove(p); os.Rename(p+".x", p) }
-		}, nil, "is a link"},
-		{"settings set aside", base, func() func() { return write("owner/scratch.json.trial", "{}\n", 0o600) }, nil, "scratch.json.trial is there already"},
-		{"a dangling link set aside", base, func() func() {
-			p := filepath.Join(owner, "scratch.json.trial")
-			os.Symlink(filepath.Join(k.dir, "nowhere"), p)
-			return func() { os.Remove(p) }
-		}, nil, "scratch.json.trial is there already"},
+		}, nil, "has no owner/ folder"},
+		{"a state folder through a link", set(base, "--state", filepath.Join(k.dir, "linked", "trial-state")), nil, nil, "not at its physical path"},
 		{"an earlier lead of the sitting", base, func() func() { return mkdir("leads/scratch-standin-3-lead", 0o700) }, nil, "earlier sitting"},
 		{"an earlier role in the registry", base, func() func() {
 			undo := mkdir("registry", 0o700)
@@ -802,7 +750,8 @@ func TestScratchSeatPrepareWriteTouchesOnlyTheRoot(t *testing.T) {
 	}
 	k.noCalls(t)
 	for rel, mode := range map[string]os.FileMode{
-		".": 0o700 | fs.ModeDir, "scratch.json": 0o600, "owner-scratch.json": 0o600, "evidence": 0o700 | fs.ModeDir,
+		".": 0o700 | fs.ModeDir, "scratch.json": 0o600, "owner-settings": 0o700 | fs.ModeDir, "owner-settings/scratch.json": 0o600,
+		"evidence":      0o700 | fs.ModeDir,
 		"owner-channel": 0o700 | fs.ModeDir, "owner-channel/drop": 0o700 | fs.ModeDir, "conf/managed-settings.json": 0o600,
 		"conf/guard-hook": 0o700, "agent-install/ataniq-canary-standin": 0o700, "agent-install/claude": 0o700,
 		"bin/ataniq-probe": 0o700, "upstream/README.txt": 0o600, "conf/replay-screens/1.txt": 0o600, "netcheck.sh": 0o700,
@@ -812,12 +761,15 @@ func TestScratchSeatPrepareWriteTouchesOnlyTheRoot(t *testing.T) {
 			t.Errorf("%s: %v, %v, want %v", rel, st, err, mode)
 		}
 	}
-	for _, rel := range []string{"runtime", "owner-channel/work", "owner-channel/no-template.json", "owner-channel/mirror.git", "swap-record"} {
+	for _, rel := range []string{"runtime", "owner-channel/work", "owner-channel/no-template.json", "owner-channel/mirror.git", "evidence/trial-before.sha256", "owner-scratch.json"} {
 		if _, err := os.Lstat(filepath.Join(r, rel)); err == nil {
-			t.Errorf("--write made %s, which is the daemon's or a swap's to make, or is never made", rel)
+			t.Errorf("--write made %s, which is the daemon's or the owner's to make, or is never made", rel)
 		}
 	}
-	for _, rel := range []string{"scratch.json", "owner-scratch.json"} {
+	if names, err := os.ReadDir(filepath.Join(r, "owner-settings")); err != nil || len(names) != 1 {
+		t.Errorf("the settings folder holds more than the settings: %v %v", names, err)
+	}
+	for _, rel := range []string{"scratch.json", "owner-settings/scratch.json"} {
 		var v map[string]any
 		if err := json.Unmarshal(mustRead(t, filepath.Join(r, rel)), &v); err != nil {
 			t.Errorf("%s is not JSON: %v", rel, err)
@@ -848,362 +800,103 @@ func TestScratchSeatPrepareWriteTouchesOnlyTheRoot(t *testing.T) {
 	}
 }
 
-// inodeOf is the device and inode of a file.
-func inodeOf(t *testing.T, p string) string {
-	t.Helper()
-	st, err := os.Lstat(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := st.Sys().(*syscall.Stat_t)
-	return fmt.Sprintf("%d:%d", s.Dev, s.Ino)
-}
-
-// freeTCPPort is a port no socket listens on a moment ago.
-func freeTCPPort(t *testing.T) string {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, port, _ := net.SplitHostPort(l.Addr().String())
-	l.Close()
-	return port
-}
-
-// The settings swap, in a sample state folder: --status reads the three
-// names and prints one next step; --swap-in refuses a running or unmasked
-// trial unit, a gate port that something listens on, a lead's unit the user
-// manager knows and a taken archive name (a dangling link too), then moves
-// the trial's settings aside within owner/ and puts the proof's in their
-// place, recorded in ROOT; --swap-out puts the same file back. A swap
-// stopped half way is named by --status and finished by --swap-out; a
-// layout that is not one of the three is refused with nothing moved. Only
-// systemctl's read-only "show" runs, and nothing of the state folder is
-// removed.
-func TestScratchSeatPrepareSwaps(t *testing.T) {
+// --status runs the daemon's own check on the files --write made, with the
+// flags the daemon is started with and --check, and passes its lines and its
+// exit status through; it then compares the trial's gate key, certificate,
+// pins, key list and settings with the digests the owner recorded at step g
+// (sha256sum -c), says when none are recorded yet, and names a file that
+// changed. It writes nothing anywhere and runs nothing but the daemon's
+// check, here a stub that records its arguments.
+func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 	k := newScratchSeatKit(t)
 	r := filepath.Join(k.dir, "proof")
 	if out, code := k.run(t, nil, k.args("--write", r, false)...); code != 0 {
 		t.Fatalf("--write: exit %d:\n%s", code, out)
 	}
-	owner := filepath.Join(k.state, "owner")
-	canon, aside, archive := filepath.Join(owner, "scratch.json"), filepath.Join(owner, "scratch.json.trial"), filepath.Join(owner, "scratch.json.leads-3")
-	trialBytes, trialID := mustRead(t, canon), inodeOf(t, canon)
-	proofBytes := mustRead(t, filepath.Join(r, "owner-scratch.json"))
-	port := freeTCPPort(t)
-	gate := "192.0.2.10:" + port
-	vals := []string{"--state", k.state, "--root", r}
-	swapIn := append(append([]string{"--swap-in"}, vals...), "--gate", gate, "--sitting", "3", "--unit", "sample-trial.service")
-	swapOut := append(append([]string{"--swap-out"}, vals...), "--gate", gate, "--unit", "sample-trial.service")
-	status := func(want, next string) {
-		t.Helper()
-		out, code := k.run(t, nil, append([]string{"--status"}, vals...)...)
-		if code != 0 || !strings.Contains(out, "status: "+want) || !strings.Contains(out, "next: ") || !strings.Contains(out, next) ||
-			strings.Count(out, "next: ") != 1 {
-			t.Fatalf("--status: exit %d, want %q and %q:\n%s", code, want, next, out)
-		}
-	}
-	names := func() []string {
-		t.Helper()
-		e, err := os.ReadDir(owner)
-		if err != nil {
+	args := filepath.Join(k.dir, "daemon-args")
+	daemon := filepath.Join(k.dir, "check-daemon")
+	stub := func(code int) {
+		body := "#!/bin/sh\nfor a; do printf '%s\\n' \"$a\"; done >'" + args + "'\necho 'check: from the stub'\nexit " + strconv.Itoa(code) + "\n"
+		if err := os.WriteFile(daemon, []byte(body), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		var n []string
-		for _, x := range e {
-			n = append(n, x.Name())
-		}
-		return n
 	}
-	ownerBefore := names()
-	status("trial in place (not swapped)", "record the trial's unit while it runs (--record-trial, step f)")
-	masked := "sample-trial.service LoadState masked"
-	// Without a record of the trial's unit, --swap-in refuses.
-	k.unitsSay(t, masked)
-	if out, code := k.run(t, nil, swapIn...); code != 1 || !strings.Contains(out, "no record of the trial's unit") {
-		t.Fatalf("--swap-in without a record: exit %d:\n%s", code, out)
-	}
-	k.recordTrial(t, r, k.fileUnit("UnitFileState enabled", "WantedBy default.target"))
-	status("trial in place (not swapped)", "mask it for this boot (step 1)")
-	enabled := []string{"sample-trial.service UnitFileState enabled", "sample-trial.service WantedBy default.target"}
+	status := []string{"--status", "--state", k.state, "--root", r, "--gate", "192.0.2.10:7443", "--daemon", daemon}
+	beforeState, beforeRoot := scratchSeatFiles(t, k.state), scratchSeatFiles(t, r)
 
-	// Refusals before anything moves.
-	for _, c := range []struct {
-		name  string
-		units []string
-		setup func() func()
-		want  string
-	}{
-		{"a running trial", []string{"sample-trial.service ActiveState active", masked}, nil, "not inactive"},
-		{"an unmasked trial", append([]string{"sample-trial.service LoadState loaded"}, enabled...), nil, "can be started: WantedBy=default.target UnitFileState=enabled"},
-		{"another unit", []string{masked}, func() func() {
-			i := slices.Index(swapIn, "sample-trial.service")
-			swapIn[i] = "other-trial.service"
-			return func() { swapIn[i] = "sample-trial.service" }
-		}, "recorded the trial's unit sample-trial.service, not other-trial.service"},
-		{"a listener on the gate's port", []string{masked}, func() func() {
-			l, err := net.Listen("tcp", "127.0.0.1:"+port)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return func() { l.Close() }
-		}, "listens on the gate's port"},
-		{"a known lead unit", []string{masked, "ataniq-lead-scratch-live-3.service LoadState loaded"}, nil, "another scratch root uses the key live-3"},
-		{"a taken archive name", []string{masked}, func() func() {
-			os.Symlink(filepath.Join(k.dir, "nowhere"), archive)
-			return func() { os.Remove(archive) }
-		}, "scratch.json.leads-3 is taken"},
-	} {
-		k.unitsSay(t, c.units...)
-		undo := func() {}
-		if c.setup != nil {
-			undo = c.setup()
-		}
-		out, code := k.run(t, nil, swapIn...)
-		undo()
-		if code != 1 || !strings.Contains(out, c.want) {
-			t.Errorf("--swap-in with %s: exit %d, want %q:\n%s", c.name, code, c.want, out)
-		}
-		if !bytes.Equal(mustRead(t, canon), trialBytes) || inodeOf(t, canon) != trialID {
-			t.Fatalf("--swap-in with %s moved the trial's settings", c.name)
-		}
-		if _, err := os.Lstat(filepath.Join(r, "swap-record")); err == nil {
-			t.Fatalf("--swap-in with %s wrote the record", c.name)
-		}
+	stub(0)
+	out, code := k.run(t, nil, status...)
+	if code != 0 || !strings.Contains(out, "check: from the stub\n") || !strings.Contains(out, "status: the daemon's check found no refusal") ||
+		!strings.Contains(out, "status: no "+r+"/evidence/trial-before.sha256 yet") {
+		t.Fatalf("--status: exit %d:\n%s", code, out)
 	}
-	if out, code := k.run(t, nil, append(slices.Clone(swapIn[:len(swapIn)-4]), "--sitting", "4", "--unit", "sample-trial.service")...); code != 1 || !strings.Contains(out, "no lead standin-4") {
-		t.Errorf("--swap-in with another sitting: exit %d:\n%s", code, out)
+	want := []string{"run", "--scratch", r + "/scratch.json", "--owner-channel", "--seat-gate", "192.0.2.10:7443", "--owner-settings", r + "/owner-settings", "--check"}
+	if got := strings.Split(strings.TrimSpace(string(mustRead(t, args))), "\n"); !slices.Equal(got, want) {
+		t.Fatalf("the daemon's check was run with %q, want %q", got, want)
+	}
+	stub(10)
+	if out, code := k.run(t, nil, status...); code != 10 || !strings.Contains(out, "ended with exit status 10: the daemon would not start") {
+		t.Fatalf("--status with a refusal: exit %d:\n%s", code, out)
 	}
 
-	// The swap in.
-	k.unitsSay(t, masked)
-	out, code := k.run(t, nil, swapIn...)
-	if code != 0 || !strings.Contains(out, "swapped in:") || !strings.Contains(out, "status: swapped in") {
-		t.Fatalf("--swap-in: exit %d:\n%s", code, out)
+	// The digests the owner records at step g, then a file of the trial that
+	// changes, and one that comes back.
+	record := exec.Command("/bin/sh", "-c", "cd \"$1\" && sha256sum -- gate/key.pem gate/cert.pem gate/seat-pins keys.log keys.head scratch.json >\"$2\"",
+		"sh", filepath.Join(k.state, "owner"), filepath.Join(r, "evidence", "trial-before.sha256"))
+	if b, err := record.CombinedOutput(); err != nil {
+		t.Fatalf("recording the digests: %v %s", err, b)
 	}
-	if !bytes.Equal(mustRead(t, canon), proofBytes) || !bytes.Equal(mustRead(t, aside), trialBytes) || inodeOf(t, aside) != trialID {
-		t.Fatal("after --swap-in the names do not hold the proof's and the trial's settings")
+	stub(0)
+	out, code = k.run(t, nil, status...)
+	if code != 0 || !strings.Contains(out, "status:   gate/key.pem: OK") ||
+		!strings.Contains(out, "status: the trial's gate key, certificate, pins, key list and settings are the same bytes as recorded in "+r+"/evidence/trial-before.sha256") {
+		t.Fatalf("--status with the same files: exit %d:\n%s", code, out)
 	}
-	if st, err := os.Lstat(canon); err != nil || st.Mode() != 0o600 {
-		t.Fatalf("owner/scratch.json after --swap-in: %v %v", st, err)
-	}
-	rec := string(mustRead(t, filepath.Join(r, "swap-record")))
-	if !strings.Contains(rec, "trial_id "+trialID+"\n") || !strings.Contains(rec, "archive scratch.json.leads-3\n") {
-		t.Fatalf("the record: %s", rec)
-	}
-	status("swapped in", "--swap-out (step 14)")
-	if out, code := k.run(t, nil, swapIn...); code != 1 || !strings.Contains(out, "nothing was moved") {
-		t.Errorf("a second --swap-in: exit %d:\n%s", code, out)
-	}
-	// --swap-out refuses while a daemon listens on the gate's port.
-	l, err := net.Listen("tcp", "127.0.0.1:"+port)
-	if err != nil {
+	pins := filepath.Join(k.state, "owner", "gate", "seat-pins")
+	old := mustRead(t, pins)
+	if err := os.WriteFile(pins, append(old, []byte(strings.Repeat("cd", 32)+"\n")...), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, code = k.run(t, nil, swapOut...)
-	l.Close()
-	if code != 1 || !strings.Contains(out, "listens on the gate's port") || !bytes.Equal(mustRead(t, canon), proofBytes) {
-		t.Fatalf("--swap-out with a listener: exit %d:\n%s", code, out)
+	out, code = k.run(t, nil, status...)
+	if code != 1 || !strings.Contains(out, "status:   gate/seat-pins: FAILED") || !strings.Contains(out, "status: CHANGED: a file of the trial is not the bytes recorded") {
+		t.Fatalf("--status with a changed pin file: exit %d:\n%s", code, out)
 	}
-
-	// A swap-out stopped half way, after the proof's settings got their
-	// archive name and before the old name went: one file, two names.
-	if err := os.Link(canon, archive); err != nil {
+	stub(10)
+	if out, code := k.run(t, nil, status...); code != 10 || !strings.Contains(out, "status: CHANGED") {
+		t.Fatalf("--status with a refusal and a changed file: exit %d:\n%s", code, out)
+	}
+	if err := os.WriteFile(pins, old, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	status("interrupted or ambiguous (a rename stopped half way", "--swap-out (step 14)")
-	out, code = k.run(t, nil, swapOut...)
-	if code != 0 || !strings.Contains(out, "swapped out:") || !strings.Contains(out, "status: trial in place (the way back is done)") {
-		t.Fatalf("--swap-out from half way: exit %d:\n%s", code, out)
+	os.Remove(args)
+	os.Remove(filepath.Join(r, "evidence", "trial-before.sha256"))
+	if !sameScratchSeatFiles(beforeState, scratchSeatFiles(t, k.state)) || !sameScratchSeatFiles(beforeRoot, scratchSeatFiles(t, r)) {
+		t.Error("--status changed the state folder or the root")
 	}
-	if !bytes.Equal(mustRead(t, canon), trialBytes) || inodeOf(t, canon) != trialID || !bytes.Equal(mustRead(t, archive), proofBytes) {
-		t.Fatal("after --swap-out the trial's settings are not back as the same file")
-	}
-	if _, err := os.Lstat(aside); err == nil {
-		t.Fatal("owner/scratch.json.trial is still there")
-	}
-	status("trial in place (the way back is done)", "unmask the trial's unit if it is masked and start it again (step 15)")
-	if out, code := k.run(t, nil, swapOut...); code != 0 || !strings.Contains(out, "nothing to do") {
-		t.Errorf("a second --swap-out: exit %d:\n%s", code, out)
-	}
-	ownerAfter := names()
-	for _, n := range ownerBefore {
-		if !slices.Contains(ownerAfter, n) {
-			t.Errorf("owner/%s is gone after the cycle", n)
-		}
-	}
-	if len(ownerAfter) != len(ownerBefore)+1 || !slices.Contains(ownerAfter, "scratch.json.leads-3") {
-		t.Errorf("owner/ after the cycle: %v, before %v", ownerAfter, ownerBefore)
-	}
-	if g := string(mustRead(t, filepath.Join(r, "evidence", "trial-unit-guard.txt"))); g != "swap-in, sitting 3, unit sample-trial.service: kind file, ActiveState=inactive, LoadState=masked: the runtime mask took: accepted\n" {
-		t.Errorf("the guard's evidence: %q", g)
-	}
-	k.onlyShows(t)
-}
+	k.noCalls(t)
 
-// A swap stopped in each other place: --status names it and --swap-out puts
-// the trial's settings back; a layout of none of the three states (a
-// dangling link at owner/scratch.json, a set-aside no record names) is
-// refused by every mode with nothing moved.
-func TestScratchSeatPrepareSwapRecovery(t *testing.T) {
-	newSwapped := func(t *testing.T) (scratchSeatKit, string, []string, []string, string) {
-		k := newScratchSeatKit(t)
-		r := filepath.Join(k.dir, "proof")
-		if out, code := k.run(t, nil, k.args("--write", r, false)...); code != 0 {
-			t.Fatalf("--write: exit %d:\n%s", code, out)
-		}
-		k.recordTrial(t, r, k.transientUnit("/srv/sample/bin/ataniqd", "Sample trial"))
-		k.unitsSay(t)
-		gate := "192.0.2.10:" + freeTCPPort(t)
-		vals := []string{"--state", k.state, "--root", r}
-		in := append(append([]string{"--swap-in"}, vals...), "--gate", gate, "--sitting", "3", "--unit", "sample-trial.service")
-		out := append(append([]string{"--swap-out"}, vals...), "--gate", gate, "--unit", "sample-trial.service")
-		return k, r, in, out, filepath.Join(k.state, "owner")
+	// Without the config, or without the daemon, nothing is run.
+	if out, code := k.run(t, nil, "--status", "--state", k.state, "--root", filepath.Join(k.dir, "other"), "--gate", "192.0.2.10:7443", "--daemon", daemon); code != 1 ||
+		!strings.Contains(out, "run --write first") {
+		t.Errorf("--status without a config: exit %d:\n%s", code, out)
 	}
-	statusOf := func(t *testing.T, k scratchSeatKit, r string) string {
-		out, code := k.run(t, nil, "--status", "--state", k.state, "--root", r)
-		if code != 0 {
-			t.Fatalf("--status: exit %d:\n%s", code, out)
-		}
-		return out
+	if out, code := k.run(t, nil, "--status", "--state", k.state, "--root", r, "--gate", "192.0.2.10:7443", "--daemon", filepath.Join(k.dir, "missing")); code != 1 ||
+		!strings.Contains(out, "no daemon of both tags") {
+		t.Errorf("--status without a daemon: exit %d:\n%s", code, out)
 	}
-
-	t.Run("stopped after the trial's settings went aside", func(t *testing.T) {
-		k, r, in, out, owner := newSwapped(t)
-		trial := mustRead(t, filepath.Join(owner, "scratch.json"))
-		if o, code := k.run(t, nil, in...); code != 0 {
-			t.Fatalf("--swap-in: %d\n%s", code, o)
-		}
-		// Undo the second rename's effect as if it never ran: the proof's
-		// settings go back to a dot name (as the copy was).
-		if err := os.Rename(filepath.Join(owner, "scratch.json"), filepath.Join(owner, ".scratch.json.proof.sample")); err != nil {
-			t.Fatal(err)
-		}
-		if s := statusOf(t, k, r); !strings.Contains(s, "status: interrupted or ambiguous (owner/scratch.json is missing") ||
-			!strings.Contains(s, "next: --swap-out (step 14)") || !strings.Contains(s, "other name in owner/: "+filepath.Join(owner, ".scratch.json.proof.sample")) {
-			t.Fatalf("--status:\n%s", s)
-		}
-		if o, code := k.run(t, nil, in...); code != 1 || !strings.Contains(o, "nothing was moved") {
-			t.Fatalf("--swap-in from there: %d\n%s", code, o)
-		}
-		if o, code := k.run(t, nil, out...); code != 0 || !strings.Contains(o, "swapped out:") {
-			t.Fatalf("--swap-out: %d\n%s", code, o)
-		}
-		if !bytes.Equal(mustRead(t, filepath.Join(owner, "scratch.json")), trial) {
-			t.Fatal("the trial's settings are not back")
-		}
-	})
-
-	t.Run("stopped with the trial's settings under both names", func(t *testing.T) {
-		k, r, in, out, owner := newSwapped(t)
-		canon, aside := filepath.Join(owner, "scratch.json"), filepath.Join(owner, "scratch.json.trial")
-		id := inodeOf(t, canon)
-		if o, code := k.run(t, nil, in...); code != 0 {
-			t.Fatalf("--swap-in: %d\n%s", code, o)
-		}
-		// Back to the moment after the first link: the proof's settings not
-		// yet in place, the trial's file with both names.
-		if err := os.Rename(canon, filepath.Join(owner, ".scratch.json.proof.sample")); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Link(aside, canon); err != nil {
-			t.Fatal(err)
-		}
-		if s := statusOf(t, k, r); !strings.Contains(s, "rename stopped half way: the recorded trial settings have both names") {
-			t.Fatalf("--status:\n%s", s)
-		}
-		if o, code := k.run(t, nil, out...); code != 0 || !strings.Contains(o, "status: trial in place") {
-			t.Fatalf("--swap-out: %d\n%s", code, o)
-		}
-		if inodeOf(t, canon) != id {
-			t.Fatal("owner/scratch.json is not the trial's file")
-		}
-		if _, err := os.Lstat(aside); err == nil {
-			t.Fatal("the second name is still there")
-		}
-	})
-
-	t.Run("layouts of no state", func(t *testing.T) {
-		k, r, in, out, owner := newSwapped(t)
-		canon := filepath.Join(owner, "scratch.json")
-		if o, code := k.run(t, nil, in...); code != 0 {
-			t.Fatalf("--swap-in: %d\n%s", code, o)
-		}
-		// The proof's settings replaced by a dangling link.
-		if err := os.Rename(canon, filepath.Join(k.dir, "kept-proof")); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(filepath.Join(k.dir, "nowhere"), canon); err != nil {
-			t.Fatal(err)
-		}
-		before := scratchSeatFiles(t, k.state)
-		s := statusOf(t, k, r)
-		if !strings.Contains(s, "status: interrupted or ambiguous") || !strings.Contains(s, "a link (a dangling one counts as taken)") ||
-			!strings.Contains(s, "keep the trial stopped (a unit file masked as in step 1) and both daemons stopped") {
-			t.Fatalf("--status:\n%s", s)
-		}
-		for _, args := range [][]string{in, out} {
-			if o, code := k.run(t, nil, args...); code != 1 || !strings.Contains(o, "nothing was moved") {
-				t.Errorf("%s: %d\n%s", args[0], code, o)
-			}
-		}
-		if after := scratchSeatFiles(t, k.state); !sameScratchSeatFiles(before, after) {
-			t.Fatal("a refused swap changed the state folder")
-		}
-	})
-
-	t.Run("a set-aside of another sitting", func(t *testing.T) {
-		k := newScratchSeatKit(t)
-		r := filepath.Join(k.dir, "proof")
-		if out, code := k.run(t, nil, k.args("--write", r, false)...); code != 0 {
-			t.Fatalf("--write: exit %d:\n%s", code, out)
-		}
-		if err := os.WriteFile(filepath.Join(k.state, "owner", "scratch.json.trial"), []byte("{\"trial\": true}\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if s := statusOf(t, k, r); !strings.Contains(s, "set aside by another sitting") {
-			t.Fatalf("--status:\n%s", s)
-		}
-	})
-}
-
-// The swap record's numbers are what the swap found.
-func TestScratchSeatPrepareSwapRecordIsPlain(t *testing.T) {
-	k := newScratchSeatKit(t)
-	r := filepath.Join(k.dir, "proof")
-	if out, code := k.run(t, nil, k.args("--write", r, false)...); code != 0 {
-		t.Fatalf("--write: %d\n%s", code, out)
-	}
-	k.recordTrial(t, r, k.fileUnit())
-	k.unitsSay(t, "sample-trial.service LoadState masked")
-	if out, code := k.run(t, nil, "--swap-in", "--state", k.state, "--root", r, "--gate", "192.0.2.10:"+freeTCPPort(t), "--sitting", "3", "--unit", "sample-trial.service"); code != 0 {
-		t.Fatalf("--swap-in: %d\n%s", code, out)
-	}
-	lines := strings.Split(strings.TrimSpace(string(mustRead(t, filepath.Join(r, "swap-record")))), "\n")
-	if len(lines) != 7 || lines[0] != "swap-record 1" || lines[1] != "state "+k.state || lines[2] != "sitting 3" {
-		t.Fatalf("the record: %q", lines)
-	}
-	for _, l := range lines[3:] {
-		f := strings.Fields(l)
-		if len(f) != 2 {
-			t.Errorf("a record line: %q", l)
-		}
-		if strings.HasSuffix(f[0], "_sha") {
-			if _, err := strconv.ParseUint(f[1][:8], 16, 64); err != nil || len(f[1]) != 64 {
-				t.Errorf("a digest: %q", l)
-			}
-		}
-	}
-	if st, err := os.Lstat(filepath.Join(r, "swap-record")); err != nil || st.Mode() != 0o600 {
-		t.Errorf("the record's mode: %v %v", st, err)
+	if _, err := os.Lstat(args); err == nil {
+		t.Error("a refused --status ran the daemon")
 	}
 }
 
 // Every shell block of the runbook parses as sh and holds no placeholder in
 // angle brackets; the block of the values is assignments only; the trial's
-// unit is always the quoted reference "$TRIAL_UNIT"; and the runbook marks
-// both defines and every unit change OWNER ONLY.
+// unit is always the quoted reference "$TRIAL_UNIT"; the runbook marks both
+// defines and every start and stop OWNER ONLY; the daemon reads the settings
+// folder; the live lead waits for the drop rule; the version check makes its
+// home in the root and runs claude only when it was made; the network
+// check's exit status is kept; and nothing of the retired swap is left: no
+// step masks, records, renames or swaps the trial.
 func TestScratchSeatProofRunbookShellIsSafe(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(root(t), "docs", "scratch-seat-proof.md"))
 	if err != nil {
@@ -1252,17 +945,35 @@ func TestScratchSeatProofRunbookShellIsSafe(t *testing.T) {
 	}
 	flat := strings.Join(strings.Fields(text), " ")
 	for _, want := range []string{
-		"**OWNER ONLY (B): define it;", "**OWNER ONLY (B):** `d` on `live-N`", "**OWNER ONLY (C): stop the trial (and mask a unit file).**",
-		"**OWNER ONLY (C): start the trial again.**", "A full quarantine ends the sitting",
-		"a start during the sitting fails closed", "A transient trial does not come back after a reboot", "never archive the state folder",
+		"**OWNER ONLY (B): define it;", "**OWNER ONLY (B):** `d` on `live-N`", "**OWNER ONLY (C): stop the trial**, by your own command; nothing is masked or moved",
+		"**OWNER ONLY (C): start the trial again**, by your own command", "A full quarantine ends the sitting",
+		"the state folder's lock refuses whichever daemon comes second (exit 12)", "A transient trial does not come back after a reboot", "never archive the state folder",
 		"`holder/final.json.previous`", "`config/claude`", "A fresh `ROOT` alone does not make a fresh Claude login",
 		"exit status N", "Approve only the one expected operation", "A project's approvals go through Cards",
+		"--owner-settings \"$SETTINGS\" | tee -ai \"$ROOT/evidence/daemon.log\"",
+		"The rule comes from a separate change (SB-1): you install it as root at the start of sitting 1",
+		"Without it, the sitting has no live lead",
+		"H=$(mktemp -d \"$ROOT/version-home.XXXXXX\") && env -i HOME=\"$H\" \"$ROOT/agent-install/claude\" --version",
+		"unset CLAUDE_FILE CLAUDE_MODEL",
+		"{ sh \"$ROOT/netcheck.sh\"; echo \"netcheck: exit status $?\"; } 2>&1 | tee -a \"$ROOT/evidence/netcheck.txt\"",
+		"(cd \"$S/owner\" && sha256sum -c -- \"$ROOT/evidence/trial-before.sha256\")",
+		"byte-identical to step g",
+		"open the seat's web app (the same seat, on the authority host)",
+		"`submitted`: the fence put it in. claude will ask to approve the write of its reply. `w` attaches as the writer",
+		"Stay attached: claude asks next.",
+		"`cannot-identify:`", "`uncertain delivery:`",
+		"in the leads view (not attached), `x` and `y` on `live-N`",
 	} {
 		if !strings.Contains(flat, want) {
 			t.Errorf("the runbook does not say %q", want)
 		}
 	}
-	for _, stale := range []string{"chat purge", "plain Yes", "leads/scratch-live-lead/home", "test ! -e"} {
+	if i, j := strings.Index(flat, "### The live lead (only once the drop rule is in place)"), strings.Index(flat, "**OWNER ONLY (B):** `d` on `live-N`"); i < 0 || j < i ||
+		!strings.Contains(flat[i:j], "7. **The drop rule is in place.**") {
+		t.Error("the live lead is defined before the drop rule's step")
+	}
+	for _, stale := range []string{"chat purge", "plain Yes", "leads/scratch-live-lead/home", "test ! -e", "--swap-in", "--swap-out",
+		"--record-trial", "trial-restart.sh", "mask --runtime", "swap-record", "scratch.json.trial", "owner-scratch.json", "env -i HOME=\"$(mktemp -d)\""} {
 		if strings.Contains(text, stale) {
 			t.Errorf("the runbook still says %q", stale)
 		}
@@ -1281,7 +992,7 @@ func TestScratchSeatPrepareAgentRule(t *testing.T) {
 		text := string(data)
 		for _, want := range []string{
 			"`qualification/scratch-seat/prepare.sh`", "only with `--dry` or `--self-test`",
-			"its `--write`, `--status`, `--swap-in` and `--swap-out` are the owner's", "the `ROOT/netcheck.sh` its `--write` writes",
+			"its `--write` and `--status` are the owner's", "the `ROOT/netcheck.sh` its `--write` writes",
 		} {
 			if !strings.Contains(text, want) {
 				t.Errorf("%s does not say %q", name, want)
@@ -1290,10 +1001,18 @@ func TestScratchSeatPrepareAgentRule(t *testing.T) {
 		if i, j := strings.Index(text, "canary-prepare.sh` only with"), strings.Index(text, "`qualification/scratch-seat/prepare.sh`"); name == "CLAUDE.md" && (i < 0 || j < i) {
 			t.Errorf("%s does not put the rule after the canary prepare's", name)
 		}
+		for _, stale := range []string{"--swap-in", "--swap-out", "--record-trial"} {
+			if strings.Contains(text, stale) {
+				t.Errorf("%s still names %s", name, stale)
+			}
+		}
 	}
 	agents := string(mustRead(t, filepath.Join(root(t), "AGENTS.md")))
-	if !strings.Contains(agents, "-run ScratchSeatPrepare` after doctor") {
-		t.Error("AGENTS.md does not name the targeted check of the script")
+	for _, want := range []string{"`sh scripts/go-tool.sh test ./tests/ -run ScratchSeat`",
+		"`sh scripts/go-tool.sh test -tags ataniq_ownerchannel,ataniq_canary -run 'ScratchSeat|OwnerSettings|ScratchLeadReach' ./cmd/ataniqd/ ./internal/leaddaemon/`"} {
+		if !strings.Contains(agents, want) {
+			t.Errorf("AGENTS.md does not name the targeted check %s", want)
+		}
 	}
 }
 
