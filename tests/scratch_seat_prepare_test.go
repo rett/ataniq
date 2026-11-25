@@ -1243,10 +1243,33 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 		}
 	}
 	digests(all)
+	// A record is checked as bytes (review finding 5): a NUL, which the
+	// shell's command substitution would drop, is refused wherever it is,
+	// in a name, in a digest or after the last line, and the record's own
+	// lines are those of the one reading the checks passed. No listed file
+	// is opened for it.
+	whole := mustRead(t, before)
+	for _, c := range []struct{ name, from, to, want string }{
+		{"a NUL in a name", "  keys.log\n", "  keys.\x00log\n", "its line 4 names a file that is not one of the six"},
+		{"a NUL in a digest", string(whole[:4]), string(whole[:2]) + "\x00" + string(whole[2:4]), "its line 1 is not a digest, two spaces and a name"},
+		{"a NUL after the last line", "  scratch.json\n", "  scratch.json\n\x00", "holds 6 whole line(s)"},
+	} {
+		noErr(t, os.WriteFile(before, bytes.Replace(whole, []byte(c.from), []byte(c.to), 1), 0o600))
+		os.Remove(keysArgs)
+		out, code := k.run(t, nil, compare...)
+		if code != 1 || !strings.Contains(out, "status: CHANGED: the record "+before+" is incomplete: ") || !strings.Contains(out, c.want) ||
+			strings.Contains(out, ": OK") {
+			t.Errorf("%s: exit %d, want CHANGED and %q:\n%s", c.name, code, c.want, out)
+		}
+		if _, err := os.Lstat(keysArgs); err == nil {
+			t.Errorf("%s: the key list was judged on a record with a NUL", c.name)
+		}
+	}
+	noErr(t, os.WriteFile(before, whole, 0o600))
 	// A prefix that is missing or not of the daemon's form is CHANGED, and
-	// the daemon's key check is not run.
+	// the daemon's key check is not run; a NUL in it is not dropped.
 	for _, bad := range []string{"", "12", "12:" + strings.Repeat("0123456789abcdef", 4) + "\nmore", "012:" + strings.Repeat("0123456789abcdef", 4),
-		"12:" + strings.Repeat("0123456789ABCDEF", 4), "12:" + strings.Repeat("0123456789abcdef", 3)} {
+		"12:" + strings.Repeat("0123456789ABCDEF", 4), "12:" + strings.Repeat("0123456789abcdef", 3), prefix[:4] + "\x00" + prefix[4:]} {
 		if err := os.WriteFile(prefixFile, []byte(bad+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}

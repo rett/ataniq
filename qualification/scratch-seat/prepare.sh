@@ -86,7 +86,9 @@
 # a baseline that is there is never replaced. With --compare (step 13) it then compares the trial's files with
 # the baseline of step g, which must be there: step-g/trial-before.sha256
 # must be six lines naming each of the six files once, the names compared as
-# text, before any file it lists is opened, and the trial's gate key,
+# text, checked as bytes (a NUL is refused, not dropped) and read once, the
+# checks below being of that one reading, before any file it lists is
+# opened, and the trial's gate key,
 # certificate, pins and settings must be the same bytes: sha256sum -c checks
 # their four lines, and any exit status of it but 0 is CHANGED. The key list
 # and its head are judged by the daemon, not here: prepare passes the prefix
@@ -884,19 +886,30 @@ manifest_ok() {
   return 0
 }
 
-# record_complete FILE prints nothing and succeeds when FILE, a record of step
-# g, is six whole lines that manifest_ok passes; else it prints what is wrong
-# and fails. It is called before any file the record lists is opened: without
-# it, sha256sum -c would confirm only the files a partial record names.
+# read_bytes FILE prints the bytes of FILE with each NUL as the byte 001,
+# and then a dot. The shell's command substitution drops a NUL and the
+# newlines at the end; read through this, neither is lost: a NUL becomes a
+# byte that no line of a record holds, and the dot keeps the last newline.
+read_bytes() {
+  LC_ALL=C tr '\000' '\001' <"$1" && printf .
+}
+
+# record_complete TEXT prints nothing and succeeds when TEXT, the bytes of a
+# record of step g as read_bytes read them (the dot removed), is six whole
+# lines that manifest_ok passes; else it prints what is wrong and fails. It
+# is called before any file the record lists is opened: without it,
+# sha256sum -c would confirm only the files a partial record names. It
+# opens nothing: the caller checks, and then uses, the one reading.
 record_complete() {
-  _lines=$(wc -l <"$1") || { echo "it cannot be read"; return 1; }
+  _lines=$(printf '%s' "$1" | wc -l)
   _lines=$((_lines + 0))
-  if [ "$_lines" -ne 6 ] || [ "$(tail -c 1 -- "$1" | wc -l)" -ne 1 ]; then
+  _whole=0
+  case $1 in *"$_nl") _whole=1 ;; esac
+  if [ "$_lines" -ne 6 ] || [ "$_whole" -ne 1 ]; then
     echo "it holds $_lines whole line(s), not exactly the six of the files"
     return 1
   fi
-  _text=$(cat -- "$1") || { echo "it cannot be read"; return 1; }
-  manifest_ok "$_text"
+  manifest_ok "${1%"$_nl"}"
 }
 
 # prefix_form TEXT prints TEXT when it is a prefix of the daemon's form,
@@ -1040,16 +1053,25 @@ compare_record() {
     status_failed
     return 0
   fi
-  if ! _why=$(record_complete "$BEFORE"); then
+  # The record is read once, as bytes; the checks below and the digests
+  # they compare are of that one reading, and the file is not opened again.
+  if ! _raw=$(read_bytes "$BEFORE"); then
+    say "status: CHANGED: the record $BEFORE cannot be read; it confirms nothing"
+    status_failed
+    return 0
+  fi
+  _raw=${_raw%.}
+  if ! _why=$(record_complete "$_raw"); then
     say "status: CHANGED: the record $BEFORE is incomplete: $_why; it confirms nothing"
     status_failed
     return 0
   fi
+  _record=${_raw%"$_nl"}
   # The four files other than the key list and its head, which a phone
   # login changes and the daemon judges below: their lines of the record,
   # checked by sha256sum -c, whose exit status decides.
   _four=
-  _rec=$(cat -- "$BEFORE")$_nl
+  _rec=$_record$_nl
   while [ -n "$_rec" ]; do
     _l=${_rec%%"$_nl"*}
     _rec=${_rec#*"$_nl"}
@@ -1068,7 +1090,7 @@ compare_record() {
   # step g. A prefix that is missing or not of the daemon's form is CHANGED.
   _prefix=
   if [ -f "$KEYS_BEFORE" ] && [ ! -L "$KEYS_BEFORE" ] && [ "$(wc -l <"$KEYS_BEFORE")" -eq 1 ]; then
-    _prefix=$(cat -- "$KEYS_BEFORE")
+    _prefix=$(LC_ALL=C tr '\000' '\001' <"$KEYS_BEFORE")
   fi
   _prefix=$(prefix_form "$_prefix")
   if [ -z "$_prefix" ]; then
@@ -1076,7 +1098,7 @@ compare_record() {
     status_failed
     return 0
   fi
-  if [ "${_prefix#*:}" != "$(keys_digest "$(cat -- "$BEFORE")")" ]; then
+  if [ "${_prefix#*:}" != "$(keys_digest "$_record")" ]; then
     say "status: CHANGED: the prefix in $KEYS_BEFORE is not of the list whose digest $BEFORE holds: the two are not one baseline of step g, so the key list is not confirmed"
     status_failed
     return 0

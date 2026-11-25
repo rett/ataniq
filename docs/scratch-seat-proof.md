@@ -746,7 +746,9 @@ it, the sitting has no live lead: go on with step 11.
     must be six whole lines, each a digest, two spaces and a name, whose
     names are `gate/key.pem`, `gate/cert.pem`, `gate/seat-pins`, `keys.log`,
     `keys.head` and `scratch.json`, each once, compared as text (no
-    pattern: `keys-log` is not `keys.log`), or it confirms nothing and the
+    pattern: `keys-log` is not `keys.log`), checked as bytes (a NUL
+    anywhere in it is refused, not dropped) and read once: the digests
+    compared below are of that one reading, or it confirms nothing and the
     line is `status: CHANGED: the record ... is incomplete` (a record cut
     short at step g, say). Then `sha256sum -c` checks the four lines of the
     gate key, certificate, pins and settings and prints a line per file:

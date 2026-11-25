@@ -69,8 +69,9 @@
   taken again);
   with `--compare` it then refuses a record of
   the digests taken before the sitting that does not name each of the six
-  files once (the names compared as text, before any listed file is
-  opened), compares the trial's gate key, certificate, pins and settings
+  files once (the names compared as text, checked as bytes so that a NUL
+  is refused rather than dropped, read once and compared from that one
+  reading, before any listed file is opened), compares the trial's gate key, certificate, pins and settings
   with it (any exit status of `sha256sum -c` but 0 is CHANGED), and has the daemon judge the key list. For that the daemon of
   both tags takes `run --scratch CONFIG --owner-channel --check
   --keys-prefix`, which checks the key list and its head with the journal's
