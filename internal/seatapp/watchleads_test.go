@@ -65,13 +65,31 @@ func (w *fakeChatWatcher) calls() int {
 }
 
 // leadsChat is the sample chat port, whose offer a test can take back while
-// streams read it.
+// streams read it. It counts the reads of its offer that have sampled it.
 type leadsChat struct {
 	*fakeChat
-	gone atomic.Bool
+	gone   atomic.Bool
+	offers atomic.Int64
 }
 
-func (c *leadsChat) ChatOffered() bool { return !c.gone.Load() && c.fakeChat.ChatOffered() }
+func (c *leadsChat) ChatOffered() bool {
+	offered := !c.gone.Load() && c.fakeChat.ChatOffered()
+	c.offers.Add(1)
+	return offered
+}
+
+// waitOfferReads waits until the offer has been read, to the end of its
+// sample, n times.
+func waitOfferReads(t *testing.T, c *leadsChat, n int64) {
+	t.Helper()
+	deadline := time.Now().Add(waitBound)
+	for c.offers.Load() < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("the offer was read %d times, want %d", c.offers.Load(), n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
 
 // leadsDaemon is the fake daemon that watches the Cards, has the chat port
 // and learns the chat hint.
@@ -362,9 +380,11 @@ func TestSeatLeadsStreamEndsWhenTheHintDies(t *testing.T) {
 	// heartbeat can find it. The stream's timers stand still, so neither a
 	// heartbeat the host happens to run nor the rotation can end it. The
 	// test waits until the stream has read the view after its opening
-	// heartbeat, so that read cannot be the one that finds the dead hint,
-	// then kills the hint and fires exactly one heartbeat: the stream ends
-	// at it, cleanly, and writes nothing more, the heartbeat included.
+	// heartbeat, the hint and then the offer, each to the end of its
+	// sample, so that read cannot be the one that finds the dead hint or
+	// the offer taken back, then kills the hint and fires exactly one
+	// heartbeat: the stream ends at it, cleanly, and writes nothing more,
+	// the heartbeat included.
 	for name, kill := range map[string]func(*leadsDaemon){
 		"no wake":      func(ld *leadsDaemon) { ld.fakeChatWatcher.setQuiet(ChatHint{}) },
 		"offer, quiet": func(ld *leadsDaemon) { ld.gone.Store(true) },
@@ -377,13 +397,15 @@ func TestSeatLeadsStreamEndsWhenTheHintDies(t *testing.T) {
 			ft := stillTimers(r)
 			s := r.login(t)
 			srv := streamServer(t, r)
-			read := ld.fakeChatWatcher.calls()
+			read, offered := ld.fakeChatWatcher.calls(), ld.offers.Load()
 			c := openStream(t, srv, leadsOK, s)
 			if b, ok := c.next(t, waitBound); !ok || b != ":" {
 				t.Fatalf("the first block %q %v, want the heartbeat", b, ok)
 			}
-			// The admission's read and the one after the opening heartbeat.
+			// The admission's read and the one after the opening heartbeat:
+			// each reads the hint, then (the hint is live) the offer.
 			waitChatHintCalls(t, ld.fakeChatWatcher, read+2)
+			waitOfferReads(t, ld.leadsChat, offered+2)
 			kill(ld)
 			waitDue(t, ft, r.app.streamBeat)
 			ft.advance(r.app.streamBeat)
