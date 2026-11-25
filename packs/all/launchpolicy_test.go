@@ -369,7 +369,9 @@ func inventory(d document, help []byte) error {
 		switch e.Source {
 		case "help":
 			row := defs[e.Line]
-			if row.scope != e.Scope || !slices.Contains(row.words, w) {
+			// Both reviewed launches invoke the main command. Exec is captured
+			// for the refusal inventory only, including names shared with main.
+			if e.Scope != "main" || row.scope != e.Scope || !slices.Contains(row.words, w) {
 				faults = append(faults, fmt.Errorf("wrong help locator for %s at %s line %d", w, e.Scope, e.Line))
 			}
 		case "pending":
@@ -465,6 +467,27 @@ func TestHelpInventory(t *testing.T) {
 		if err != nil || !slices.Equal(words, tc.want) {
 			t.Fatal(tc, words, err)
 		}
+	}
+}
+
+func TestCodexTerminalHelpScope(t *testing.T) {
+	raw, help, _ := builds[1].load(t)
+	for _, tc := range []struct {
+		word string
+		line int
+	}{{"--strict-config", 179}, {"--model", 186}, {"-m", 186}} {
+		t.Run(tc.word, func(t *testing.T) {
+			d := parse(t, raw)
+			d.locators(func(word string, e *locator) {
+				if word == tc.word {
+					*e = locator{Source: "help", Scope: "exec", Line: tc.line}
+				}
+			})
+			err := inventory(d, help)
+			if err == nil || !strings.Contains(err.Error(), "wrong help locator for "+tc.word) {
+				t.Fatalf("accepted the exec definition of %s: %v", tc.word, err)
+			}
+		})
 	}
 }
 
