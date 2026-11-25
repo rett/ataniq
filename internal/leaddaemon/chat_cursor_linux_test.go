@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -129,10 +130,30 @@ func TestLeadChatCursorCoversTheEnabledLeadsOnly(t *testing.T) {
 	if c := cursorOf(t, port); c != none || closed(ch0) {
 		t.Fatalf("the start of leads whose chat is off moved the cursor (%d) or the broadcast", c)
 	}
+	// Every scan that ends is counted, by lead, so that a check can wait
+	// for a whole scan of a lead that is on, begun after something it did.
+	// The hook is set while no lead has a scanner.
+	d := deskOf(t, port)
+	var scanMu sync.Mutex
+	scans := map[string]int{}
+	d.afterScan = func(_ context.Context, cl *chatLead, _ bool) {
+		scanMu.Lock()
+		scans[cl.key]++
+		scanMu.Unlock()
+	}
+	scansOf := func(key string) int {
+		scanMu.Lock()
+		defer scanMu.Unlock()
+		return scans[key]
+	}
 
-	// beta is off: its activity moves nothing.
+	// beta is off: its activity moves nothing. Its replies are written, and
+	// then every chance of a scan is had before the cursor and the broadcast
+	// are looked at: beta has no scanner and a scan of it is refused, and
+	// each lead that is on finishes a scan begun after the replies were
+	// written.
 	requireTestClock(t, port)
-	offActivity := func(what string, n int) {
+	offActivity := func(what string, n int, on ...string) {
 		t.Helper()
 		before := cursorOf(t, port)
 		ch := port.ChatCursorChanged()
@@ -142,15 +163,28 @@ func TestLeadChatCursorCoversTheEnabledLeadsOnly(t *testing.T) {
 		}
 		// Names a scan takes: a reply left alone is left by the switch,
 		// not refused for its name.
+		var names []string
 		for i := 0; i < n; i++ {
-			reply(t, out, fmt.Sprintf("off-%s-%c.txt", strings.ReplaceAll(what, " ", "-"), 'a'+i), "an off lead's reply")
+			name := fmt.Sprintf("off-%s-%c.txt", strings.ReplaceAll(what, " ", "-"), 'a'+i)
+			reply(t, out, name, "an off lead's reply")
+			names = append(names, name)
 		}
-		time.Sleep(10 * l.scratch.ChatScanEvery)
+		requireOffLeadLeftAlone(t, d, "beta", nil)
+		for _, key := range on {
+			// A scan that ends twice from now began after the replies.
+			from := scansOf(key)
+			waitFor(t, chatWatchdog, key+" scans after "+what, func() bool { return scansOf(key) >= from+2 })
+		}
 		if c := cursorOf(t, port); c != before {
 			t.Fatalf("%s: an off lead's activity moved the cursor from %d to %d", what, before, c)
 		}
 		if closed(ch) {
 			t.Fatalf("%s: an off lead's activity closed the broadcast", what)
+		}
+		for _, name := range names {
+			if _, err := os.Lstat(filepath.Join(out, name)); err != nil {
+				t.Fatalf("%s: an off lead's reply was taken: %v", what, err)
+			}
 		}
 	}
 	offActivity("all off", 3)
@@ -160,7 +194,6 @@ func TestLeadChatCursorCoversTheEnabledLeadsOnly(t *testing.T) {
 	if !closed(ch) {
 		t.Fatal("a turn-on did not close the broadcast")
 	}
-	d := deskOf(t, port)
 	gen := func() int64 {
 		cl := d.byKey["alpha"]
 		cl.mu.Lock()
@@ -176,7 +209,7 @@ func TestLeadChatCursorCoversTheEnabledLeadsOnly(t *testing.T) {
 	if want := cursorFor(t, port, []ownerwire.ChatCursorLead{{Lead: "daemon:alpha", Gen: g1, Head: r.Head}}); on != want {
 		t.Fatalf("with alpha on the cursor is %d, want %d", on, want)
 	}
-	offActivity("alpha on", 2)
+	offActivity("alpha on", 2, "alpha")
 
 	ch = port.ChatCursorChanged()
 	reply(t, l.outboxOf("alpha"), "0001-done.txt", "done")
@@ -188,6 +221,7 @@ func TestLeadChatCursorCoversTheEnabledLeadsOnly(t *testing.T) {
 	}
 
 	ch = port.ChatCursorChanged()
+	scanner := workerNow(d, "alpha")
 	l.mustChatSet("alpha", leadwire.ChatOff)
 	if !closed(ch) {
 		t.Fatal("a turn-off did not close the broadcast")
@@ -195,6 +229,7 @@ func TestLeadChatCursorCoversTheEnabledLeadsOnly(t *testing.T) {
 	if c := cursorOf(t, port); c != none {
 		t.Fatalf("after the turn-off the cursor is %d, want that of no lead %d: the old head left a trace", c, none)
 	}
+	requireOffLeadLeftAlone(t, d, "alpha", scanner)
 	offActivity("alpha off again", 2)
 
 	l.mustChatSet("alpha", leadwire.ChatRead)
@@ -399,6 +434,10 @@ func TestChatScanAdmittedBeforeATurnOffEndsBeforeTheOffIsSeen(t *testing.T) {
 			}
 
 			l.mustChatSet("alpha", leadwire.ChatRead)
+			scanner := workerNow(d, "alpha")
+			if scanner == nil {
+				t.Fatal("alpha is read and has no scanner")
+			}
 			out := l.outboxOf("alpha")
 			reply(t, out, "0001-first.txt", "first")
 			waitFor(t, 15*time.Second, "the first reply is taken", func() bool { return l.chatRow("alpha").Entries == 2 })
@@ -474,11 +513,15 @@ func TestChatScanAdmittedBeforeATurnOffEndsBeforeTheOffIsSeen(t *testing.T) {
 				t.Fatalf("the head at the turn-off is %d, want 3", offHead)
 			}
 
-			// While the lead is off a reply moves nothing.
+			// While the lead is off a reply moves nothing: its scanner has
+			// ended, it has none, and a scan of it is refused.
 			reply(t, out, "0003-while-off.txt", "while off")
-			time.Sleep(10 * l.scratch.ChatScanEvery)
+			requireOffLeadLeftAlone(t, d, "alpha", scanner)
 			if h := storeHead(t, d, "alpha"); h != offHead {
 				t.Fatalf("a reply written while the lead is off moved the head from %d to %d", offHead, h)
+			}
+			if _, err := os.Lstat(filepath.Join(out, "0003-while-off.txt")); err != nil {
+				t.Fatalf("a reply written while the lead is off was taken: %v", err)
 			}
 			r := l.mustChatSet("alpha", leadwire.ChatRead)
 			if r.Head != offHead+1 {
