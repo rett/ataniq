@@ -1192,6 +1192,40 @@ func TestRealResumeAndAgent(t *testing.T) {
 	line(t, y.judge(s), "mode-class-refused", 2, "argv[1]", "manual")
 }
 
+func TestClaudeResumeAndEnvWithTestOnlyMode(t *testing.T) {
+	x, _, _ := testOnlyMode(t, baseline(t, builds[0]))
+	t.Run("resume", func(t *testing.T) {
+		fresh := x.expand(t)
+		resuming := x
+		resuming.s.Resume = nativeID
+		resumed := resuming.expand(t)
+		for _, tc := range []struct {
+			session launchCase
+			spec    lp.Spec
+		}{{x, fresh}, {resuming, resumed}} {
+			line(t, tc.session.judge(tc.spec), "", 0, "")
+			line(t, tc.session.recheck(t, tc.spec), "", 0, "")
+		}
+		line(t, x.judge(resumed), "template-expansion-differs", 2, "argv[3]")
+		line(t, resuming.judge(fresh), "template-expansion-differs", 2, "argv[3]")
+		line(t, x.recheck(t, resumed), "expected-unexpected", 3, "slot[resume]")
+		line(t, resuming.recheck(t, fresh), "expected-missing", 3, "slot[resume]")
+		resumed.Argv[3] = "--resume=00000000-0000-4000-8000-000000000002"
+		line(t, resuming.recheck(t, resumed), "expected-differs", 3, "slot[resume]")
+	})
+	t.Run("environment", func(t *testing.T) {
+		x.l.Env = map[string]string{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_TELEMETRY": "1"}
+		spec := x.expand(t)
+		line(t, x.judge(spec), "", 0, "")
+		line(t, x.recheck(t, spec), "", 0, "")
+		delete(spec.Env, "DISABLE_TELEMETRY")
+		line(t, x.judge(spec), "template-expansion-differs", 2, "env[DISABLE_TELEMETRY]")
+		spec.Env["DISABLE_TELEMETRY"] = "other"
+		line(t, x.judge(spec), "env-refused", 2, "env[DISABLE_TELEMETRY]")
+		line(t, x.recheck(t, spec), "env-refused", 2, "env[DISABLE_TELEMETRY]")
+	})
+}
+
 func TestRealPolicyFiles(t *testing.T) {
 	for _, b := range builds {
 		t.Run(string(b.name), func(t *testing.T) {
