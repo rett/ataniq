@@ -18,7 +18,11 @@
   reaches (each lead's folder, mirror, mailbox, published and holder
   runtime folders, the agent install, the probe, the host paths every
   sandbox binds), the gate's folder, the key list or the journal, decided on
-  the resolved path and on the folders' identities, and a settings file that
+  the resolved path, on the folders' identities and on their places in their
+  filesystems from the mount table (so a bind mount of a guarded folder or of
+  a folder within one given as the folder, and a mount that shows the folder
+  within a guarded one, are caught; a mount made later is not), and a
+  settings file that
   is a link, not private, has a second name, is the key list, the journal,
   a gate file or the trial's settings, or holds a trial's settings; the
   folder is opened by its handle with no link followed and the file read

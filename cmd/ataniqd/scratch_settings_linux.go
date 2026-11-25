@@ -45,9 +45,15 @@ import (
 //     lead's folder, mirror, mailbox, published folder and holder runtime
 //     folder, whether or not the lead is defined);
 //   - the gate's identity (owner/gate).
-// Each is decided twice, on the resolved path and on the identity (device and
-// inode) of the open folder and of each folder above it, so that a second
-// name of a folder (a bind mount of it elsewhere) is caught as well. The file
+// Each is decided three ways: on the resolved paths; on the identity (device
+// and inode) of the open folder and of each folder above it, which catches a
+// bind mount of a guarded folder itself; and on the places of the folder and of
+// the guard within their filesystems, from the daemon's mount table
+// (scratch_mounts_linux.go), which catches a bind mount of a folder within a
+// guard given as the folder and a mount that shows the folder, or a part of
+// it, within a guard (inside a lead's folder, say). A mount made after the
+// check, or in another mount namespace, is not seen; only the owner or root
+// can make one on the host. The file
 // scratch.json is opened beneath the folder's handle without following a link
 // and refused when it is not a regular private file of the user with one name
 // or is the key list, the journal, a file of the gate or the trial's settings
@@ -153,6 +159,10 @@ type settingsDir struct {
 	// up are the identities of the folder and of every folder above it, as
 	// the open folder's ".." leads.
 	up []fileID
+	// mnt is the daemon's mount table, read once when the folder is opened,
+	// and place the folder's place within its filesystem.
+	mnt   mountTable
+	place fsPlace
 }
 
 // openSettingsDir resolves the folder, opens it with no link followed and
@@ -220,7 +230,40 @@ func openSettingsDir(dir string) (*settingsDir, error) {
 		d.up = append(d.up, pid)
 		cur = pfd
 	}
+	// The folder's place in its filesystem: the mount the handle lies on,
+	// from the mount table, and the handle's own path below its mount point.
+	if err := d.placeSelf(fd); err != nil {
+		d.f.Close()
+		return nil, fmt.Errorf("the folder %s cannot be placed in its filesystem: %v", dir, err)
+	}
 	return d, nil
+}
+
+// placeSelf reads the mount table and places the open folder in it, by the
+// path the kernel gives its handle (/proc/self/fd/N, which follows the folder
+// when it is renamed), on the mount the handle lies on.
+func (d *settingsDir) placeSelf(fd int) error {
+	t, err := readMountTable()
+	if err != nil {
+		return err
+	}
+	id, err := mountIDOfFD(fd)
+	if err != nil {
+		return err
+	}
+	at, err := os.Readlink("/proc/self/fd/" + strconv.Itoa(fd))
+	if err != nil {
+		return err
+	}
+	if !filepath.IsAbs(at) || filepath.Clean(at) != at {
+		return fmt.Errorf("the open folder has no path from the root (%q)", at)
+	}
+	pl, err := t.placeOf(id, at)
+	if err != nil {
+		return err
+	}
+	d.mnt, d.place = t, pl
+	return nil
 }
 
 // private refuses a folder that is not a folder of the user's, closed to the
@@ -276,7 +319,8 @@ func hasID(list []fileID, id fileID) bool {
 }
 
 // against decides one guard: the folder must not be, lie in or hold it, by
-// its resolved path and by the identities of the folders.
+// its resolved path, by the identities of the folders and by their places in
+// their filesystems.
 func (d *settingsDir) against(g settingsGuard) error {
 	rp, err := resolvePath(g.path)
 	if err != nil {
@@ -295,6 +339,20 @@ func (d *settingsDir) against(g settingsGuard) error {
 	}
 	if hasID(aboveIDs(rp), d.id) {
 		return fmt.Errorf("the folder %s holds %s (%s), by another name (a bind mount)", d.given, g.what, g.path)
+	}
+	id, err := mountIDOfPath(rp)
+	if err != nil {
+		return fmt.Errorf("%s (%s) cannot be placed in its filesystem: %v", g.what, g.path, err)
+	}
+	pl, err := d.mnt.placeOf(id, rp)
+	if err != nil {
+		return fmt.Errorf("%s (%s) cannot be placed in its filesystem: %v", g.what, g.path, err)
+	}
+	switch m := d.mnt.meet(d.real, d.place, rp, pl); {
+	case m.in:
+		return fmt.Errorf("the folder %s is or lies in %s (%s), by another name: %s", d.given, g.what, g.path, m.how)
+	case m.holds:
+		return fmt.Errorf("the folder %s holds %s (%s), by another name: %s", d.given, g.what, g.path, m.how)
 	}
 	return nil
 }
@@ -493,7 +551,7 @@ func (a *app) ownerSettingsCheck(o *ownerFlags, cfg *leaddaemon.Config, p settin
 				line(r, gerr, "")
 				continue
 			}
-			line(r, rules[r], oks[r]+", by path and by identity")
+			line(r, rules[r], oks[r]+", by path, by identity and by place in the filesystem")
 		}
 		folderOK := perr == nil && gerr == nil && rules[ruleTrial] == nil && rules[ruleRoots] == nil && rules[ruleLead] == nil && rules[ruleSecret] == nil
 		if !folderOK {

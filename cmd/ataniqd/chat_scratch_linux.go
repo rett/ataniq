@@ -66,8 +66,12 @@ with the seat gate together:
                     published folder and holder runtime folder, the agent
                     install, the probe, the host paths every sandbox binds);
                     or owner/gate (the gate's identity). Each is decided on
-                    the resolved path and on the identities of the folders,
-                    so a second name of a folder is caught. scratch.json is
+                    the resolved path, on the identities of the folders and
+                    on their places in their filesystems (from the mount
+                    table), so a bind mount of a guarded folder or of a
+                    folder within it, given as DIR, and a mount that shows
+                    DIR within a guarded folder are caught; a mount made
+                    after the check is not. scratch.json is
                     opened beneath the folder's handle without following a
                     link and must be a private regular file with one name
                     that is not the key list, the journal, a file of the gate

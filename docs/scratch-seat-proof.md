@@ -165,11 +165,18 @@ without it (exit 10, nothing made): the trial's `owner/` folder, a folder in
 it, a link to it, a link whose target climbs with `..`, the state folder, the
 runtime folder, a folder in a lead's home, in the agent install, the folder
 of the probe, the proof's root (which holds the agent install), the gate's
-folder, a folder others can enter, a second name of a folder (the identity
-rule a bind mount meets), and a settings file that is a link, a hard link of
-the key list, readable by others, missing or a trial's; a link planted after
-the folder was opened changes nothing, and a settings file replaced between
-its check and its read is refused. `TestScratchLeadReachCoversEveryBind` in
+folder, a folder others can enter, and a settings file that is a link, a
+hard link of the key list, readable by others, missing or a trial's; a link
+planted after the folder was opened changes nothing, and a settings file
+replaced between its check and its read is refused. No test makes a mount, so
+the mount cases are held on the rules themselves: a bind mount of a guarded
+folder itself (by its identity), and a bind mount of a folder within `owner/`
+given as the folder, the settings folder bound into a lead's folder and
+`owner/` bound into the settings folder (by their places in the filesystem, on
+the daemon's mount table with the mount's line added), with the reading of
+mount tables held on tables written out in
+`cmd/ataniqd/scratch_mounts_linux_test.go` (a plain host, a bind of a
+subfolder, a bind into a lead's folder, btrfs subvolumes and escaped spaces). `TestScratchLeadReachCoversEveryBind` in
 `internal/leaddaemon` holds the leads' reach to every source of their bind
 tables. `tests/scratch_seat_prepare_test.go` holds the script: `--dry` and
 `--self-test` read and write nothing, `--write` writes in the root only and
@@ -358,7 +365,9 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    folder, no path a lead's sandbox reaches (each lead's folder, mirror,
    mailbox, published folder and holder runtime folder, the agent install,
    the probe, the host paths every sandbox binds) and not `owner/gate`, the
-   key list or the journal, by path and by identity; the settings file is a
+   key list or the journal, by path, by identity and by place in the
+   filesystem (so a bind mount of a guarded folder, of a folder within one,
+   or of the settings folder into one is caught); the settings file is a
    private regular file with one name and the proof's settings; the scratch
    roots and the suite; the root marker (step f); the gate's address, key
    fingerprint and pins; and the socket paths of the daemon and of every

@@ -1268,9 +1268,19 @@ the daemon's user, or when it is, lies in or holds:
 - `owner/gate`, the gate's identity and pins ("not the key list, the journal
   or the gate identity").
 
-Each rule is decided on the resolved path and on the identities (device and
-inode) of the open folder and of each folder above it, so a second name of a
-folder, such as a bind mount, is caught too. `scratch.json` must be a regular
+Each rule is decided three ways. By the resolved paths. By the identities
+(device and inode) of the open folder and of each folder above it, which
+catch a bind mount of a guarded folder itself given as `DIR`. And by the
+places of the folder and of each guard within their filesystems, read from
+the daemon's mount table (`/proc/self/mountinfo`: a mount's device, the folder
+of the filesystem it shows and where it shows it), which catch a bind mount
+of a folder within a guard given as `DIR` (`..` from the root of such a mount
+leads above its mount point, so no identity above it is the guard's) and a
+mount that shows `DIR`, or a part of it, within a guarded folder, such as a
+lead's. A mount whose root is not `/` is ordinary (a btrfs subvolume, say)
+and is not refused by itself. A mount made after the check, or in another
+mount namespace, is not seen; only the owner or root can make one on the
+host, and a lead cannot. `scratch.json` must be a regular
 file of the user's, mode 0600, with one name, that is not the key list, its
 head, the journal, a file of the gate or the trial's settings file by another
 name, and that holds non-trial settings. The start then prints, after the
