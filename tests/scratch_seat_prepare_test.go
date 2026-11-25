@@ -1215,7 +1215,7 @@ func TestScratchSeatPrepareAgentRule(t *testing.T) {
 	checks := []string{"`sh scripts/go-tool.sh test ./tests/ -run ScratchSeat`",
 		"`sh scripts/go-tool.sh test -tags ataniq_ownerchannel,ataniq_canary -run 'ScratchSeat|OwnerSettings|KeysCheck|ScratchLeadReach' ./cmd/ataniqd/ ./internal/leaddaemon/`",
 		"`sh scripts/go-tool.sh test -tags ataniq_canary -run BindTable ./internal/leadholder/sandboxstart/`",
-		"`sh scripts/go-tool.sh test -tags ataniq_ownerchannel -run TheScratchSettings ./internal/approval/hostadapter/`"}
+		"`sh scripts/go-tool.sh test -tags ataniq_ownerchannel -run 'TheScratchSettings|VerifyKeys' ./internal/approval/hostadapter/ ./internal/approval/ownerjournal/`"}
 	for _, want := range checks {
 		if !strings.Contains(agents, want) {
 			t.Errorf("AGENTS.md does not name the targeted check %s", want)
@@ -1243,7 +1243,8 @@ func TestScratchSeatPrepareAgentRule(t *testing.T) {
 	}
 	for _, file := range []string{"tests/scratch_seat_prepare_test.go", "tests/scratch_seat_netcheck_test.go",
 		"cmd/ataniqd/scratch_settings_linux_test.go", "cmd/ataniqd/scratch_keys_linux_test.go", "cmd/ataniqd/scratch_seat_proof_linux_test.go",
-		"internal/leaddaemon/lead_reach_linux_test.go", "internal/leadholder/sandboxstart/bindtable_test.go"} {
+		"internal/leaddaemon/lead_reach_linux_test.go", "internal/leadholder/sandboxstart/bindtable_test.go",
+		"internal/approval/ownerjournal/keys_verify_linux_test.go"} {
 		dir := filepath.Dir(file)
 		re, ok := filterOf[dir]
 		if !ok {

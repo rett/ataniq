@@ -164,16 +164,23 @@ passkey of the platform's keeps its counter at 0 and appends nothing. A
 digest alone cannot tell that record from a pairing, a revocation or damage,
 so the key list is the daemon's to judge: at step g its `--check
 --keys-prefix` records the list's prefix (its length and SHA-256) once the
-journal's own reader passes the list and its head, and at step 13 its
-`--check --keys-since` checks the list and its head with the same reader,
+journal's own checks, read only, pass the list and its head, and at step 13 its
+`--check --keys-since` checks the list and its head with the same checks,
 checks that the prefix is the list's beginning and names the type of each
 record appended after it. The test takes both while the trial runs and after
 it ran again, with nothing appended; `cmd/ataniqd/scratch_keys_linux_test.go`
 holds the verdicts on lists the journal wrote (counter records hold; a
-pairing, a revocation and a refused pairing are CHANGED) and on damage (a
-record the chain holds but the reader refuses, a garbage head, a head that
-lags the list, no head, a changed old byte, another prefix): each is CHANGED,
-never a catch-up.
+pairing, a revocation and a refused pairing are CHANGED), on damage (a
+record the chain holds but the replay refuses, a garbage head, a head that
+lags the list, no head, a changed old byte, another prefix, a prefix whose
+digest matches the list up to one byte inside a record) and on what the
+daemon's opener refuses before it reads (the list or its head of mode 0640,
+the list with a second name or as a final link): each is CHANGED, never a
+catch-up, and the `owner/` folder and `TMPDIR` are as they were.
+`internal/approval/ownerjournal/keys_verify_linux_test.go` runs each refusal
+through `VerifyKeys` and then the opener on the same files (another owner,
+faked, among them), and holds that where the opener would make or repair a
+file the check refuses and writes nothing.
 
 The tests of the flag (`cmd/ataniqd/scratch_settings_linux_test.go`) hold its
 refusals, each with `--check` (the line of its rule says `FAIL` and why) and
@@ -430,9 +437,12 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    digests of the trial's gate key, certificate, pins, key list and settings,
    and the key list's prefix are the record that step 13 compares with. The
    last line is **OWNER ONLY**: the daemon's read-only check of the key list
-   and its head, which reads the trial's `owner/keys.log` and `keys.head`,
-   has the journal's own reader judge them on a private copy in a temporary
-   folder that it removes, and prints one line, `LEN:SHA256`, the list's
+   and its head, which has the journal's own checks judge the trial's
+   `owner/keys.log` and `keys.head` read only, on the files themselves
+   (`ownerjournal.VerifyKeys`: the folder and both files opened without
+   following a link and held to the ownership, mode and link-count checks of
+   the journal's opener, the records under its replay, and a head that counts
+   them exactly; it creates, repairs, locks and writes nothing), and prints one line, `LEN:SHA256`, the list's
    length and SHA-256 (a digest, not the keys). When the list or its head
    does not hold it prints the reason, nothing goes into the file, and step
    13 will say CHANGED: run it again, and if it fails again, stop. Nothing of
@@ -684,7 +694,7 @@ it, the sitting has no live lead: go on with step 11.
     which a phone login changes: `--status` passes the prefix of step g
     (`keys-before.prefix`) to the daemon's `--check --keys-since` and prints
     its lines. The daemon checks the list and its head with the journal's
-    own reader, checks that the prefix of step g is the list's beginning and
+    own checks, read only, checks that the prefix of step g is the list's beginning and
     names the type of each record appended since: `keys  since step g (N
     bytes): M record(s) appended: counter ...`. Counter records alone are a
     phone login with a passkey whose sign counter rises (see [What was

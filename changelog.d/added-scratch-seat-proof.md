@@ -56,8 +56,10 @@
   with it, and has the daemon judge the key list. For that the daemon of
   both tags takes `run --scratch CONFIG --owner-channel --check
   --keys-prefix`, which checks the key list and its head with the journal's
-  own reader on a private copy (nothing of the state root is written) and
-  prints the list's length and SHA-256, and `--check --keys-since
+  own checks read only, on the files themselves (the ownership, mode and
+  link-count checks of the journal's opener and its replay, with an exact
+  head; nothing is created, repaired or written, anywhere), and prints the
+  list's length and SHA-256, and `--check --keys-since
   LEN:SHA256`, which checks them again, checks that the prefix is the
   list's beginning and names the type of each record appended since:
   counter records alone (a phone login) hold, and any other record, a

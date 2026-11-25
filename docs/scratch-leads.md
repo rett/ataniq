@@ -1316,11 +1316,17 @@ which it does not take, are the start's own refusals (exit 12, 17 and 18).
 
 `--check --keys-prefix` and `--check --keys-since LEN:SHA256` check the key
 list of the state root alone (`owner/keys.log` and its head
-`owner/keys.head`), with the journal's own reader: the records well formed,
-in sequence, on the digest chain and within the list's rules, and the head's
-count and digest the list's. The reader runs on a private copy in a
-temporary folder that is removed, so nothing of the state root is written,
-and a head that lags the list (a start would make it right) does not pass.
+`owner/keys.head`), with the journal's own checks read only
+(`ownerjournal.VerifyKeys`), on the files themselves: the folder and both
+files opened without following a link and held to the ownership, mode and
+link-count checks of the journal's opener, the records well formed, in
+sequence, on the digest chain and within the list's rules, and the head's
+count and digest exactly the list's. Nothing is created, repaired, locked or
+written, in the state root or anywhere else: a list or head the daemon's
+opener would refuse, a missing list or head (the opener would make one) and
+a head that lags the list (a start would make it right) do not pass. It is a
+guard for the owner's trial against his own mistakes: whoever can write the
+folder can write a list and a head that hold.
 `--keys-prefix` prints the list's prefix, its length in bytes and its
 SHA-256, as `LEN:SHA256`. `--keys-since` checks that a prefix taken earlier
 is the list's beginning, ending at a whole record, and names the type of
