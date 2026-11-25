@@ -209,6 +209,51 @@ func TestT6Canonical(t *testing.T) {
 		t.Fatal("pending locator encoding")
 	}
 }
+
+func TestT5ProtocolProfileRequiresItsOwnSitting(t *testing.T) {
+	const hash = "ecf2ffecfebfd6330f0a5bda285f7bb44ad6e74dc8b8311b8b7e5dd91fe93a88"
+	first := ProtocolExercise{Pack: "alpha", Build: "1.0", FixtureSHA256: hash,
+		Observation: "synthetic", Mode: "m-quiet", ProfileDigest: "d1"}
+	ask := first
+	ask.Mode = "m-ask"
+	records := map[ProtocolExercise]string{first: "quiet-first", ask: "ask-first"}
+	p := decode(t, alphaPolicy)
+	if err := p.CheckProtocolSittings(records); err != nil {
+		t.Fatal(err)
+	}
+
+	d := tree(t, alphaPolicy)
+	modeRow(d, "m-quiet")["vector"].(obj)["protocol"].(obj)["profiles"] = []string{"d1", "d2"}
+	p = decode(t, wire(t, d))
+	if err := p.CheckProtocolSittings(records); err == nil {
+		t.Fatal("qualified an appended profile without a sitting")
+	}
+	second := first
+	second.ProfileDigest = "d2"
+	for _, wrong := range []func(*ProtocolExercise){
+		func(e *ProtocolExercise) { e.Observation = "other" },
+		func(e *ProtocolExercise) { e.FixtureSHA256 = "other" },
+		func(e *ProtocolExercise) { e.Build = "2.0" },
+		func(e *ProtocolExercise) { e.Pack = "beta" },
+		func(e *ProtocolExercise) { e.Mode = "m-ask" },
+	} {
+		e := second
+		wrong(&e)
+		records[e] = "other-sitting"
+		if err := p.CheckProtocolSittings(records); err == nil {
+			t.Fatal("qualified an appended profile with unrelated evidence")
+		}
+		delete(records, e)
+	}
+	records[second] = records[first]
+	if err := p.CheckProtocolSittings(records); err == nil {
+		t.Fatal("qualified two profiles with one sitting")
+	}
+	records[second] = "quiet-second"
+	if err := p.CheckProtocolSittings(records); err != nil {
+		t.Fatal(err)
+	}
+}
 func unrecorded(t *testing.T, b []byte) []byte {
 	d := tree(t, b)
 	d["fixture"].(obj)["sha256"] = ""
