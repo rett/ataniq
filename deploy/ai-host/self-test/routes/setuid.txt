@@ -1,2 +1,0 @@
-/usr/bin/sudo
-/usr/local/bin/helper

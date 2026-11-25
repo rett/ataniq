@@ -1,7 +1,0 @@
-/dev/vda2 / btrfs rw,relatime 0 0
-/dev/vda2 /home btrfs rw,nosuid,relatime 0 0
-proc /proc proc rw,nosuid,nodev,noexec 0 0
-/dev/vda1 /boot vfat rw 0 0
-/dev/vda2 /.snapshots btrfs rw 0 0
-tmpfs /tmp tmpfs rw,nosuid,nodev 0 0
-/dev/vda3 /srv ext4 rw 0 0

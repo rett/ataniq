@@ -1,13 +1,13 @@
 package tests
 
-// The checks of deploy/ai-host/ap14-level1.sh, the AP14 level-1 script for
-// the AI hosts. No test runs it with --dry, and --apply or --verify only where
-// it must be refused before anything is read (and never as root): every other
-// run is --self-test, which reads the fake root a test writes (--fixtures) or
-// the fixture folders beside the script, writes only temporary copies of them,
-// and runs nothing on the host.
+// The checks of deploy/ai-host/ap14-level1.sh, the read-only AP14 level-1
+// check of an AI host. No test runs it with --check, which runs sudo: every
+// run is --self-test (on the cases beside the script, on a case a test
+// writes with --fixtures, or on a tree a test makes with --register-tree),
+// or an argument refusal, which comes before anything is read.
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
@@ -15,30 +15,32 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 )
 
 const (
 	ap14Script = "deploy/ai-host/ap14-level1.sh"
 	ap14Dir    = "deploy/ai-host"
-	// ap14Delete, as the content of a file of ap14Root, leaves out a file the
-	// fake root has by default.
+	// ap14Delete, as the content of a file of ap14Case, leaves out a file the
+	// case has by default.
 	ap14Delete = "\x00delete"
 )
 
-// ap14Root writes files below a new fake root and returns it. The accounts
-// are always there: agent (uid 1001, primary group agent 1001, in wheel 998)
-// and other (uid 1002, in nothing), and agent has a usable password and a
-// sudo -l that lists a grant asking for it, unless files says otherwise.
-func ap14Root(t *testing.T, files map[string]string) string {
+// ap14Good is a sudo -l of agent that the check finds clean, and ap14Reg a
+// clean register listing.
+const (
+	ap14Good = "Matching Defaults entries for agent on aihost:\n    env_reset, timestamp_timeout=0\n\n" +
+		"User agent may run the following commands on aihost:\n    (ALL : ALL) ALL\n"
+	ap14Reg = "d 0 755 /\nd 0 755 /etc\nd 0 755 /etc/ataniq\nd 0 755 /etc/ataniq/grants\nf 0 644 /etc/ataniq/grants/README\n"
+)
+
+// ap14Case writes a case folder: sudo-l.txt and register.txt are clean
+// unless files says otherwise.
+func ap14Case(t *testing.T, files map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
-	all := map[string]string{
-		"etc/passwd":   "root:x:0:0::/root:/bin/sh\nagent:x:1001:1001::/nonexistent:/bin/sh\nother:x:1002:1002::/nonexistent:/bin/sh\n",
-		"etc/group":    "root:x:0:\nwheel:x:998:agent\nagent:x:1001:\nother:x:1002:\n",
-		"passwd-S.txt": "agent P 2026-01-01 0 99999 7 -1\n",
-		"sudo-l.txt":   "User agent may run the following commands on host:\n    (ALL : ALL) ALL\n",
-	}
+	all := map[string]string{"sudo-l.txt": ap14Good, "register.txt": ap14Reg}
 	for name, data := range files {
 		all[name] = data
 	}
@@ -46,11 +48,7 @@ func ap14Root(t *testing.T, files map[string]string) string {
 		if data == ap14Delete {
 			continue
 		}
-		p := filepath.Join(dir, name)
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(data), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -72,23 +70,13 @@ func ap14Unprivileged(t *testing.T) {
 	}
 }
 
-// ap14Report runs the self-test report of the fake root dir for the user and
-// returns its output and exit status.
-func ap14Report(t *testing.T, dir, name string) (string, int) {
+// ap14Report runs the self-test report of the case dir for agent and returns
+// its output and exit status.
+func ap14Report(t *testing.T, dir string, extra ...string) (string, int) {
 	t.Helper()
 	ap14Unprivileged(t)
-	return ahRun(t, ap14Script, t.TempDir(), ap14Env(t), "--self-test", "--fixtures", dir, "--user", name)
-}
-
-// ap14Lines returns the lines of out that start with prefix.
-func ap14Lines(out, prefix string) []string {
-	var got []string
-	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(line, prefix) {
-			got = append(got, line)
-		}
-	}
-	return got
+	args := append([]string{"--self-test", "--fixtures", dir, "--user", "agent"}, extra...)
+	return ahRun(t, ap14Script, t.TempDir(), ap14Env(t), args...)
 }
 
 func ap14Has(t *testing.T, out string, want ...string) {
@@ -109,27 +97,26 @@ func ap14Lacks(t *testing.T, out string, bad ...string) {
 	}
 }
 
-// ap14Summary returns the summary line of a report.
-func ap14Summary(t *testing.T, out string) string {
+// ap14Cases lists the case folders beside the script.
+func ap14Cases(t *testing.T) []string {
 	t.Helper()
-	got := ap14Lines(out, "changes: ")
-	if len(got) != 1 {
-		t.Fatalf("no summary line:\n%s", out)
+	ents, err := os.ReadDir(filepath.Join(root(t), ap14Dir, "self-test"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	return got[0]
-}
-
-// ap14Dropin is the drop-in the script writes for the user.
-func ap14Dropin(name string) string {
-	return "# AP14 level 1, written by ap14-level1.sh: sudo asks " + name + " for the password\n" +
-		"# every time; no cached credentials.\n" +
-		"Defaults:" + name + " timestamp_timeout=0\n"
+	var cases []string
+	for _, e := range ents {
+		if e.IsDir() {
+			cases = append(cases, e.Name())
+		}
+	}
+	return cases
 }
 
 // The built-in self-test passes from the repository root and from another
-// folder: the audit of each fixture as expected, and --apply against
-// temporary copies of the transaction cases, with a failure at every step. As
-// root it refuses before it reads anything.
+// folder, with every case and the capture check; it writes nothing (its
+// temporary folder stays empty and the fixtures do not change). As root it
+// refuses before it reads anything.
 func TestAiHostAP14SelfTest(t *testing.T) {
 	env := ap14Env(t)
 	if os.Geteuid() == 0 {
@@ -139,25 +126,26 @@ func TestAiHostAP14SelfTest(t *testing.T) {
 		}
 		return
 	}
+	cases := ap14Cases(t)
+	if len(cases) < 20 {
+		t.Fatalf("only %d cases", len(cases))
+	}
 	check := func(where, out string, code int) {
 		t.Helper()
-		if code != 0 || !strings.Contains(out, "self-test: ok, 13 checks; it read only the fixtures, wrote only temporary copies of them, and ran nothing from them") {
-			t.Errorf("%s: exit %d\n%s", where, code, out)
+		want := fmt.Sprintf("self-test: ok, %d checks; it read only the fixtures, in place, never ran sudo, and wrote nothing\n", len(cases)+1)
+		if code != 0 || !strings.HasSuffix(out, want) {
+			t.Errorf("%s: exit %d, want 0 and %q\n%s", where, code, want, out)
 		}
-		for _, c := range []string{"clean", "routes", "stop", "sole", "shared", "mixed", "collision"} {
-			if !strings.Contains(out, "self-test: ok "+c+" (audit)\n") {
-				t.Errorf("%s: the audit of %s did not pass:\n%s", where, c, out)
+		for _, c := range append([]string{"capture"}, cases...) {
+			if !strings.Contains(out, "self-test: ok "+c+"\n") {
+				t.Errorf("%s: the case %s did not pass:\n%s", where, c, out)
 			}
 		}
-		for _, c := range []string{"sole", "shared", "mixed", "collision"} {
-			if !strings.Contains(out, "self-test: ok "+c+" (transaction: --apply refused, nothing written)\n") {
-				t.Errorf("%s: --apply was not refused for %s:\n%s", where, c, out)
-			}
-		}
-		if !regexp.MustCompile(`self-test: ok apply-new \(transaction of steps: (1[0-9]|[2-9][0-9]); each failure undone, each rerun recovers\)\n`).MatchString(out) {
-			t.Errorf("%s: the transaction of apply-new did not pass with each of its steps failing:\n%s", where, out)
+		if strings.Contains(out, "FAIL") {
+			t.Errorf("%s: a FAIL line:\n%s", where, out)
 		}
 	}
+	before := ahSnapshot(t, filepath.Join(root(t), ap14Dir))
 	// By its absolute path, from another folder.
 	out, code := ahRun(t, ap14Script, t.TempDir(), env, "--self-test")
 	check("absolute", out, code)
@@ -175,7 +163,6 @@ func TestAiHostAP14SelfTest(t *testing.T) {
 		code = exit.ExitCode()
 	}
 	check("relative", string(data), code)
-	// It left nothing in its temporary folder.
 	for _, e := range env {
 		if tmp, ok := strings.CutPrefix(e, "TMPDIR="); ok {
 			if left, _ := os.ReadDir(tmp); len(left) != 0 {
@@ -183,761 +170,554 @@ func TestAiHostAP14SelfTest(t *testing.T) {
 			}
 		}
 	}
+	if after := ahSnapshot(t, filepath.Join(root(t), ap14Dir)); !slices.Equal(before, after) {
+		t.Error("the self-test changed deploy/ai-host")
+	}
 }
 
-// The fixtures of a sole sudo grant, a grant shared with another account and
-// a two-account rule that mixes passwordless and password-asking commands
-// each stop the run: the owner gets the edit, and the warning that sudo would
-// then refuse the user. Nothing is planned to move.
-func TestAiHostAP14SoleSharedMixedStop(t *testing.T) {
-	for _, c := range []string{"sole", "shared", "mixed"} {
+// Every case beside the script has the files the self-test reads, and its
+// expected.txt ends with the exit status its findings and stops call for.
+func TestAiHostAP14CaseFiles(t *testing.T) {
+	for _, c := range ap14Cases(t) {
 		dir := filepath.Join(root(t), ap14Dir, "self-test", c)
-		out, code := ap14Report(t, dir, "agent")
-		if code != 1 {
-			t.Errorf("%s: exit %d", c, code)
+		for _, f := range []string{"user.txt", "sudo-l.txt", "register.txt", "expected.txt"} {
+			info, err := os.Lstat(filepath.Join(dir, f))
+			if err != nil || !info.Mode().IsRegular() {
+				t.Errorf("%s: %s is not a regular file", c, f)
+			}
 		}
-		ap14Has(t, out,
-			"stop: no other rule gives agent sudo with a password: once the passwordless rules are gone, sudo would refuse agent, not ask for a password\n",
-			"by hand 1: /etc/sudoers.d/10-",
-			"  do: as root, open the file with: visudo -f '/etc/sudoers.d/10-",
-			"--apply refuses while a stop or a by-hand edit is listed",
-		)
-		if got := ap14Summary(t, out); !strings.Contains(got, "by hand: 1; stops: 1;") {
-			t.Errorf("%s: %s", c, got)
+		data, err := os.ReadFile(filepath.Join(dir, "expected.txt"))
+		if err != nil {
+			continue
 		}
-		ap14Lacks(t, out, "move ", "aside", "backup")
+		exp := string(data)
+		want := "exit: 0\n"
+		switch {
+		case strings.Contains(exp, "\nstop: "):
+			want = "exit: 3\n"
+		case strings.Contains(exp, "\nfinding: "):
+			want = "exit: 1\n"
+		}
+		if !strings.HasSuffix(exp, want) {
+			t.Errorf("%s: expected.txt does not end with %q", c, want)
+		}
 	}
-	out, _ := ap14Report(t, filepath.Join(root(t), ap14Dir, "self-test", "shared"), "agent")
-	ap14Has(t, out, "it also applies to others (agent,other), and the edit changes their sudo too")
 }
 
-// Sudoers: includes of every form, in sudo's order; aliases with negation;
-// files of an includedir that sudo skips; where the drop-in would sit; what
-// the audit cannot read is a stop.
-func TestAiHostAP14SudoersIncludes(t *testing.T) {
-	files := map[string]string{
-		"etc/sudoers": "Defaults env_reset\n" +
-			"User_Alias ADMINS = TEAM, !other\n" +
-			"User_Alias TEAM = %wheel, other\n" +
-			"#include /etc/sudoers.extra\n" +
-			"@include local/one\n" +
-			"@includedir /etc/sudoers.d\n",
-		"etc/sudoers.extra":      "ADMINS ALL = (ALL) NOPASSWD: /usr/bin/a\n",
-		"etc/local/one":          "Runas_Alias SVC = daemon, ROOTS\nRunas_Alias ROOTS = root\nagent ALL = (SVC) NOPASSWD: /usr/bin/b\n",
-		"etc/sudoers.d/10-x":     "# only rule\nagent ALL=(ALL) NOPASSWD: ALL\n",
-		"etc/sudoers.d/a.conf":   "agent ALL=(ALL) NOPASSWD: /ignored-dot\n",
-		"etc/sudoers.d/b~":       "agent ALL=(ALL) NOPASSWD: /ignored-tilde\n",
-		"etc/sudoers.d/zzz":      "@include /etc/sudoers.deep\n",
-		"etc/sudoers.deep":       "%#998 ALL = NOPASSWD: /usr/bin/c\n",
-		"etc/sudoers.d/30-other": "other ALL=(ALL) NOPASSWD: ALL\n",
-	}
-	dir := ap14Root(t, files)
-	out, code := ap14Report(t, dir, "agent")
-	if code != 1 {
-		t.Errorf("exit %d, want 1", code)
-	}
-	ap14Has(t, out,
-		"read: /etc/sudoers, /etc/sudoers.extra, /etc/local/one, /etc/sudoers.d/10-x, /etc/sudoers.d/30-other, /etc/sudoers.d/zzz, /etc/sudoers.deep\n",
-		"rule: /etc/sudoers.extra:1: users ADMINS; applies to agent: yes; password: not asked (as root): ADMINS ALL = (ALL) NOPASSWD: /usr/bin/a\n",
-		"rule: /etc/local/one:3: users agent; applies to agent: yes; password: not asked (as root): agent ALL = (SVC) NOPASSWD: /usr/bin/b\n",
-		"rule: /etc/sudoers.d/10-x:2: users agent; applies to agent: yes; password: not asked (as root): agent ALL=(ALL) NOPASSWD: ALL\n",
-		"rule: /etc/sudoers.deep:1: users %#998; applies to agent: yes; password: not asked (as root): %#998 ALL = NOPASSWD: /usr/bin/c\n",
-		"rule: /etc/sudoers.d/30-other:1: users other; applies to agent: no; password: not asked (as root): other ALL=(ALL) NOPASSWD: ALL\n",
-		"change 1: write /etc/sudoers.d/zz-ap14-level1-agent (a new file), mode 0440, owner root, with:\n",
-		"    | Defaults:agent timestamp_timeout=0\n",
-		"by hand 1: /etc/sudoers.extra:1: ADMINS ALL = (ALL) NOPASSWD: /usr/bin/a\n",
-		"  do: as root, open the file with: visudo -f '/etc/sudoers.extra'\n",
-		"by hand 2: /etc/local/one:3: ",
-		"by hand 3: /etc/sudoers.d/10-x:2: ",
-		"by hand 4: /etc/sudoers.deep:1: ",
-		"--apply refuses while a stop or a by-hand edit is listed",
-	)
-	ap14Lacks(t, out, "/ignored-dot", "/ignored-tilde", "by hand 5:", "aside")
-	if got := ap14Lines(out, "rule: "); len(got) != 5 {
-		t.Errorf("want 5 rules, got %q", got)
-	}
-
-	// The negated member of the alias leaves other out; its own rule counts.
-	out, _ = ap14Report(t, dir, "other")
-	ap14Has(t, out, "rule: /etc/sudoers.d/30-other:1: users other; applies to other: yes; password: not asked (as root): other ALL=(ALL) NOPASSWD: ALL\n",
-		"by hand 1: /etc/sudoers.d/30-other:1: ",
-		"rule: /etc/sudoers.extra:1: users ADMINS; applies to other: no;")
-	ap14Lacks(t, out, "by hand 2:")
-
-	// Without an includedir of /etc/sudoers.d the drop-in would not be read.
-	dir = ap14Root(t, map[string]string{"etc/sudoers": "root ALL=(ALL) ALL\n@includedir /etc/elsewhere\n", "etc/elsewhere/x": "root ALL=(ALL) ALL\n"})
-	out, _ = ap14Report(t, dir, "agent")
-	ap14Has(t, out, "stop: /etc/sudoers does not read /etc/sudoers.d (no includedir for it): the drop-in would have no effect\n")
-	ap14Lacks(t, out, "change 1: write /etc/sudoers.d/zz-ap14-level1-agent")
-
-	// What the audit cannot read is a stop, never a clean result: an include
-	// loop, a missing include or includedir, one naming %h, one with a ..
-	// part.
-	for _, c := range []struct{ sudoers, want string }{
-		{"@include /etc/loop\n", "stop: /etc/loop:0: includes nested more than 16 deep; not followed: the audit cannot tell what sudo reads there\n"},
-		{"@include /etc/missing\n", "stop: /etc/missing:0: not a readable file; not read: the audit cannot tell what sudo reads there\n"},
-		{"@includedir /etc/nothing\n", "stop: /etc/sudoers:1: includedir names a missing or unreadable folder; not read"},
-		{"@include /etc/sudoers.%h\n", "stop: /etc/sudoers:1: an include names %h (the host name); not followed"},
-		{"@include ../outside\n", "stop: /etc/sudoers:1: an include path with a .. part; not followed"},
-		{"@include /etc/a/../loop\n", "stop: /etc/sudoers:1: an include path with a .. part; not followed"},
+// What sudo prints that leaves a way to run commands without NAME's own
+// password at each prompt is a finding, with the owner's steps in prose.
+func TestAiHostAP14SudoFindings(t *testing.T) {
+	grant := "User agent may run the following commands on aihost:\n    (ALL : ALL) ALL\n"
+	for _, c := range []struct {
+		sudo  string
+		want  []string
+		steps string
+	}{
+		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0\n\nUser agent may run the following commands on aihost:\n    (root) NOPASSWD: /usr/bin/a\n",
+			[]string{"finding: nopasswd: sudo runs this for agent without a password: (root) NOPASSWD: /usr/bin/a\n"},
+			"remove the NOPASSWD: tag; keep one password-asked grant for you"},
+		// A tag on a wrapped command line, and a second entry.
+		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0\n\nUser agent may run the following commands on aihost:\n    (ALL) ALL\n    (root) /usr/bin/a,\n        NOPASSWD: /usr/bin/b\n",
+			[]string{"finding: nopasswd: sudo runs this for agent without a password: (root) /usr/bin/a, NOPASSWD: /usr/bin/b\n"},
+			"Change only the tag: do not delete the rule"},
+		{"Matching Defaults entries for agent on aihost:\n    targetpw, timestamp_timeout=0\n\n" + grant,
+			[]string{"finding: otherpw: sudo asks for the target user's password (usually root's), not agent's: Matching Defaults has targetpw\n"},
+			"sudo asks for another account's password"},
+		{"Matching Defaults entries for agent on aihost:\n    env_reset,\n    rootpw,\n    timestamp_timeout=0\n\n" + grant,
+			[]string{"finding: otherpw: sudo asks for root's password, not agent's: Matching Defaults has rootpw\n"}, "remove the setting"},
+		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0\n\nRunas and Command-specific defaults for agent:\n    Defaults>root runaspw\n\n" + grant,
+			[]string{"finding: otherpw: sudo asks for the password of the runas_default user, not agent's: Defaults>root has runaspw\n"}, "remove the setting"},
+		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0\n\nRunas and Command-specific defaults for agent:\n    Defaults!/usr/bin/a, /usr/bin/b env_reset, targetpw\n\n" + grant,
+			[]string{"finding: otherpw: sudo asks for the target user's password (usually root's), not agent's: Defaults!/usr/bin/a has targetpw\n"}, "remove the setting"},
+		{"Matching Defaults entries for agent on aihost:\n    !authenticate, timestamp_timeout=0\n\n" + grant,
+			[]string{"finding: noauth: sudo asks no password at all: Matching Defaults has !authenticate\n"}, "!authenticate: sudo asks no password at all"},
+		{"Matching Defaults entries for agent on aihost:\n    exempt_group=wheel, timestamp_timeout=0\n\n" + grant,
+			[]string{"finding: exempt: members of that group are never asked for a password, and sudo -l does not say whether agent is one: Matching Defaults has exempt_group=wheel\n"},
+			"make sure agent is not a member of that group"},
+		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0, timestamp_timeout=15\n\n" + grant,
+			[]string{"finding: timeout: a cached ticket lets commands run unprompted after one password: Matching Defaults has timestamp_timeout=15\n"},
+			"an agent session included"},
+		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0\n\nRunas and Command-specific defaults for agent:\n    Defaults!/usr/bin/a timestamp_timeout=2.5\n\n" + grant,
+			[]string{"finding: timeout: a cached ticket lets commands run unprompted after one password: Defaults!/usr/bin/a has timestamp_timeout=2.5\n"}, "remove the setting"},
+		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=-1\n\n" + grant,
+			[]string{"finding: timeout: ", "Matching Defaults has timestamp_timeout=-1\n",
+				"finding: dropin: sudo -l lists no timestamp_timeout=0 for agent"}, "write the drop-in /etc/sudoers.d/zz-ap14-level1-agent by hand"},
+		// The drop-in's zero counts only in Matching Defaults.
+		{"Runas and Command-specific defaults for agent:\n    Defaults!/usr/bin/a timestamp_timeout=0\n\n" + grant,
+			[]string{"finding: dropin: sudo -l lists no timestamp_timeout=0 for agent: sudo's built-in default keeps a ticket for some minutes, so commands run unprompted after one password\n"},
+			"check the whole configuration with visudo -c"},
 	} {
-		dir = ap14Root(t, map[string]string{"etc/sudoers": c.sudoers + "%wheel ALL=(ALL) ALL\n@includedir /etc/sudoers.d\n", "etc/loop": "@include /etc/loop\n",
-			"etc/sudoers.d/zz-ap14-level1-agent": ap14Dropin("agent"), "modes.txt": "/etc/sudoers.d/zz-ap14-level1-agent 0440\n", "etc/ataniq/grants/README": "x\n"})
-		out, code = ap14Report(t, dir, "agent")
-		ap14Has(t, out, c.want)
-		if code != 1 || !strings.Contains(ap14Summary(t, out), "stops: 1;") {
-			t.Errorf("%q: exit %d, %s", c.sudoers, code, ap14Summary(t, out))
+		out, code := ap14Report(t, ap14Case(t, map[string]string{"sudo-l.txt": c.sudo}))
+		if code != 1 {
+			t.Errorf("exit %d, want 1:\n%s", code, out)
 		}
+		ap14Has(t, out, c.want...)
+		ap14Has(t, out, "== by hand, for the owner\n", c.steps, "result: findings remain: fix them by hand, then run --check again\n")
+		ap14Lacks(t, out, "stop: ", "result: clean")
 	}
-
-	// A cache time set after the drop-in, or for a command or runas user
-	// anywhere, is a finding; a general one before it is not.
-	dir = ap14Root(t, map[string]string{
-		"etc/sudoers": "Defaults timestamp_timeout=15\nDefaults!/usr/bin/x timestamp_timeout=7\nDefaults>root timestamp_timeout=8\nDefaults!/usr/bin/y timestamp_timeout=0\n" +
-			"@includedir /etc/sudoers.d\nDefaults:agent timestamp_timeout=5\nDefaults:other timestamp_timeout=9\n",
-		"etc/sudoers.d/00-a":  "Defaults timestamp_timeout=20\n",
-		"etc/sudoers.d/zzz-b": "Defaults:%wheel timestamp_timeout=-1\n",
-		"etc/sudoers.d/zzz-c": "Defaults timestamp_timeout=0\n",
-	})
-	out, _ = ap14Report(t, dir, "agent")
-	ap14Has(t, out,
-		"finding: sudo-timeout: /etc/sudoers:6: sets timestamp_timeout=5 after the drop-in",
-		"finding: sudo-timeout: /etc/sudoers.d/zzz-b:1: sets timestamp_timeout=-1 after the drop-in",
-		"finding: sudo-timeout: /etc/sudoers:2: sets timestamp_timeout=7 for a command or runas user, which sudo applies after the drop-in wherever it sits",
-		"finding: sudo-timeout: /etc/sudoers:3: sets timestamp_timeout=8 for a command or runas user",
-	)
-	ap14Lacks(t, out, "timestamp_timeout=15 after", "timestamp_timeout=20 after", "timestamp_timeout=9 after", "timestamp_timeout=0 ")
 }
 
-// Each rule form, alone in a file of /etc/sudoers.d: who it gives sudo,
-// whether it asks for a password, and the edit by hand for each one that
-// gives agent sudo without one. Nothing is moved.
-func TestAiHostAP14SudoersNopasswd(t *testing.T) {
-	cases := []struct {
-		rule string
-		// want: the rule line's "applies; password" part, "" for no rule
-		// line, or noauth, exempt or exempt-no; hand: whether it is an edit
-		// by hand.
+// The forms that are clean: a grant that asks for the password, a negated
+// setting, every zero, and no grant at all once the owner has answered the
+// question.
+func TestAiHostAP14Clean(t *testing.T) {
+	for _, c := range []struct {
+		sudo  string
+		rc    string
+		extra []string
+		want  []string
+	}{
+		{ap14Good, "", nil, []string{
+			"check: no command sudo lists for agent skips the password\n",
+			"check: timestamp_timeout=0 is listed for agent, and no other value\n",
+			"check: no default makes sudo ask for another account's password, or for none (targetpw, rootpw, runaspw, !authenticate, exempt_group)\n",
+		}},
+		{"Matching Defaults entries for agent on aihost:\n    !targetpw, !rootpw, !runaspw, authenticate, timestamp_timeout=0.0, timestamp_timeout=00\n\n" +
+			"Runas and Command-specific defaults for agent:\n    Defaults!/usr/bin/a timestamp_timeout=0, !targetpw\n\n" +
+			"User agent may run the following commands on aihost:\n    (ALL : ALL) ALL\n    (root) PASSWD: /usr/bin/b\n", "", nil,
+			[]string{"check: timestamp_timeout=0 is listed for agent, and no other value\n"}},
+		{"User agent is not allowed to run sudo on aihost.\n", "1\n", []string{"--other-root-login"}, []string{
+			"note: no sudo grant: make sure root can log in another way\n",
+			"note: you answered that it can (--other-root-login), so agent has no sudo route to root\n",
+		}},
+		{"User agent may not run sudo on aihost.\n", "0\n", []string{"--other-root-login"}, []string{"note: no sudo grant: make sure root can log in another way\n"}},
+	} {
+		files := map[string]string{"sudo-l.txt": c.sudo}
+		if c.rc != "" {
+			files["sudo-l.rc"] = c.rc
+		}
+		out, code := ap14Report(t, ap14Case(t, files), c.extra...)
+		if code != 0 {
+			t.Errorf("exit %d, want 0:\n%s", code, out)
+		}
+		ap14Has(t, out, c.want...)
+		ap14Has(t, out, "findings: 0; stops: 0\n", "result: clean: sudo itself shows no way for agent to skip the password, and the register is root's\n")
+		ap14Lacks(t, out, "finding: ", "stop: ", "== by hand")
+	}
+}
+
+// Whatever the check cannot judge whole is a stop, never clean: exit 3,
+// with the reason, and no check line for sudo's part.
+func TestAiHostAP14SudoStops(t *testing.T) {
+	for _, c := range []struct {
+		sudo, err, rc string
+		want          string
+	}{
+		{"", "sudo: unknown user agent\n", "1\n", "stop: sudo -n -l -U agent failed (exit 1)\n"},
+		{"", "sudo: unknown user agent\n", "1\n", "stop: sudo printed on its error output: sudo: unknown user agent\n"},
+		{ap14Good, "", "1\n", "stop: sudo -n -l -U agent failed (exit 1)\n"},
+		{"User agent is not allowed to run sudo on aihost.\n", "sudo: a warning\n", "1\n", "stop: sudo -n -l -U agent failed (exit 1)\n"},
+		{ap14Good, "sudo: unable to resolve host aihost\n", "", "stop: sudo printed on its error output: sudo: unable to resolve host aihost\n"},
+		{ap14Good + "Sudoers entry:\n", "", "", "stop: a line of sudo -l this check does not know: Sudoers entry:\n"},
+		{"User other may run the following commands on aihost:\n    (ALL) ALL\n", "", "", "stop: a line of sudo -l this check does not know: User other may run the following commands on aihost:\n"},
+		{"    env_reset\n" + ap14Good, "", "", "stop: a line of sudo -l this check does not know:     env_reset\n"},
+		{"User agent may run the following commands on aihost:\n        /usr/bin/a\n    (ALL) ALL\n", "", "", "stop: a line of sudo -l this check does not know:         /usr/bin/a\n"},
+		{"User agent may run the following commands on aihost:\n    ALL\n", "", "", "stop: a line of sudo -l this check does not know:     ALL\n"},
+		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0\n", "", "", "stop: sudo -l -U agent lists neither a grant nor that agent is not allowed to run sudo\n"},
+		{"", "", "", "stop: sudo -l -U agent lists neither a grant nor that agent is not allowed to run sudo\n"},
+		{"User agent may run the following commands on aihost:\n", "", "", "stop: sudo -l -U agent has a grant heading with no command under it\n"},
+		{ap14Good + "\nUser agent is not allowed to run sudo on aihost.\n", "", "", "stop: sudo -l -U agent says both that agent may run commands and that agent is not allowed to run sudo\n"},
+		{"Matching Defaults entries for agent on aihost:\n    !timestamp_timeout, timestamp_timeout=0\n\nUser agent may run the following commands on aihost:\n    (ALL) ALL\n", "", "",
+			"stop: a timestamp_timeout this check does not know: Matching Defaults has !timestamp_timeout\n"},
+		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0\n\nRunas and Command-specific defaults for agent:\n    Defaults!/usr/bin/a timestamp_timeout=soon\n\nUser agent may run the following commands on aihost:\n    (ALL) ALL\n", "", "",
+			"stop: a timestamp_timeout this check does not know: Defaults!/usr/bin/a has timestamp_timeout=soon\n"},
+		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0\n\nRunas and Command-specific defaults for agent:\n    targetpw\n\nUser agent may run the following commands on aihost:\n    (ALL) ALL\n", "", "",
+			"stop: a command-specific default this check does not know: targetpw\n"},
+		{"User agent is not allowed to run sudo on aihost.\n", "", "1\n", "stop: no sudo grant: make sure root can log in another way\n"},
+	} {
+		files := map[string]string{"sudo-l.txt": c.sudo}
+		if c.err != "" {
+			files["sudo-l.err"] = c.err
+		}
+		if c.rc != "" {
+			files["sudo-l.rc"] = c.rc
+		}
+		out, code := ap14Report(t, ap14Case(t, files))
+		if code != 3 {
+			t.Errorf("%q: exit %d, want 3:\n%s", c.want, code, out)
+		}
+		ap14Has(t, out, c.want, "result: STOPPED: the check could not see everything, so it is not clean; fix what each stop says and run --check again\n")
+		ap14Lacks(t, out, "check: no command sudo lists", "check: timestamp_timeout=0", "check: no default", "result: clean")
+	}
+	// The question for the owner, when the user has no grant.
+	out, _ := ap14Report(t, ap14Case(t, map[string]string{"sudo-l.txt": "User agent is not allowed to run sudo on aihost.\n", "sudo-l.rc": "1\n"}))
+	ap14Has(t, out, "question: agent has no sudo grant. How does root log in on this host without it",
+		"If there is such a way and you have written it down, run --check again with --other-root-login.")
+}
+
+// The register: the folders down to /etc/ataniq/grants must be root's
+// folders, not writable by group or others, and its entries regular files
+// of root's, not writable by group or others; a missing register is a
+// finding, and a listing the check cannot read whole is a stop.
+func TestAiHostAP14Register(t *testing.T) {
+	head := "d 0 755 /\nd 0 755 /etc\nd 0 755 /etc/ataniq\nd 0 755 /etc/ataniq/grants\n"
+	for _, c := range []struct {
+		reg  string
+		code int
 		want string
-		hand bool
 	}{
-		{"agent ALL=(ALL) NOPASSWD: ALL", "yes; password: not asked (as root)", true},
-		{"agent ALL=(ALL:ALL) NOPASSWD:ALL", "yes; password: not asked (as root)", true},
-		{"agent ALL=NOPASSWD: /bin/a", "yes; password: not asked (as root)", true},
-		{"agent ALL = (root) NOPASSWD: /bin/a, PASSWD: /bin/b", "yes; password: not asked for some commands (as root)", true},
-		{"agent ALL = (root) PASSWD: /bin/b, NOPASSWD: /bin/a", "yes; password: not asked for some commands (as root)", true},
-		{"agent ALL = (root) PASSWD: /bin/b, /bin/c", "yes; password: asked", false},
-		{"agent ALL = (root) /bin/b", "yes; password: asked", false},
-		{"agent ALL = (root) NOPASSWD: NOEXEC: /bin/a", "yes; password: not asked (as root)", true},
-		{"agent ALL = (root) NOEXEC:NOPASSWD: /bin/a", "yes; password: not asked (as root)", true},
-		{"agent ALL = (root) NOPASSWD: PASSWD: /bin/a", "yes; password: asked", false},
-		{"agent ALL = (postgres) NOPASSWD: /bin/psql", "yes; password: not asked (as other)", true},
-		{"agent ALL = (: wheel) NOPASSWD: /bin/x", "yes; password: not asked (as other)", true},
-		{"agent ALL = (postgres) /bin/psql, (root) NOPASSWD: /bin/y", "yes; password: not asked for some commands (as root)", true},
-		{"agent ALL = (root) NOPASSWD: /bin/y, (postgres) /bin/psql", "yes; password: not asked (as root)", true},
-		{"agent ALL = (postgres) NOPASSWD: /bin/psql, (root) PASSWD: /bin/y", "yes; password: not asked for some commands (as other)", true},
-		{"agent host1 = NOPASSWD: /a : host2 = PASSWD: /b", "yes; password: not asked for some commands (as root)", true},
-		{"agent host1 = PASSWD: /a : host2 = NOPASSWD: /b", "yes; password: not asked for some commands (as root)", true},
-		{"agent host1 = NOPASSWD: /a : host2 = /b", "yes; password: not asked for some commands (as root)", true},
-		{"agent ALL = NOPASSWD: \\\n    /bin/a", "yes; password: not asked (as root)", true},
-		{"agent ALL = CWD=/tmp NOPASSWD: /bin/a", "yes; password: not asked (as root)", true},
-		{"agent ALL=(ALL) NOPASSWD: ALL, !/usr/bin/su", "yes; password: not asked (as root)", true},
-		{"agent ALL=(ALL) ALL, NOPASSWD: !/usr/bin/su", "yes; password: asked", false},
-		{"ALL ALL=(ALL) NOPASSWD: ALL", "yes; password: not asked (as root)", true},
-		{"%wheel ALL=(ALL) NOPASSWD: ALL", "yes; password: not asked (as root)", true},
-		{"%#998 ALL=(ALL) NOPASSWD: ALL", "yes; password: not asked (as root)", true},
-		{"%#1001 ALL=(ALL) NOPASSWD: ALL", "yes; password: not asked (as root)", true},
-		{"#1001 ALL=(ALL) NOPASSWD: ALL", "yes; password: not asked (as root)", true},
-		{`"agent" ALL=(ALL) NOPASSWD: ALL`, "yes; password: not asked (as root)", true},
-		{"other, agent ALL=(ALL) NOPASSWD: ALL", "yes; password: not asked (as root)", true},
-		{"other ALL=(ALL) NOPASSWD: ALL", "no; password: not asked (as root)", false},
-		{"%other ALL=(ALL) NOPASSWD: ALL", "no; ", false},
-		{"%#1002 ALL=(ALL) NOPASSWD: ALL", "no; ", false},
-		{"#1002 ALL=(ALL) NOPASSWD: ALL", "no; ", false},
-		{"agentx ALL=(ALL) NOPASSWD: ALL", "no; ", false},
-		{"ALL, !agent ALL=(ALL) NOPASSWD: ALL", "no; ", false},
-		{"!agent, ALL ALL=(ALL) NOPASSWD: ALL", "yes; password: not asked (as root)", true},
-		{"%:Domain_Admins ALL=(ALL) NOPASSWD: ALL", "maybe; password: not asked (as root)", true},
-		{"+admins ALL=(ALL) NOPASSWD: ALL", "maybe; password: not asked (as root)", true},
-		{"# agent ALL=(ALL) NOPASSWD: ALL", "", false},
-		{"agent ALL=(ALL) ALL # NOPASSWD: in a comment", "yes; password: asked", false},
-		{"Defaults:agent !authenticate", "noauth", true},
-		{"Defaults !authenticate", "noauth", true},
-		{"Defaults:%wheel !lecture, !authenticate", "noauth", true},
-		{"Defaults!/usr/bin/x !authenticate", "noauth", true},
-		{"Defaults:other !authenticate", "", false},
-		{"Defaults:agent !requiretty", "", false},
-		{"Defaults exempt_group=wheel", "exempt", true},
-		{"Defaults exempt_group=\"%wheel\"", "exempt", true},
-		{"Defaults exempt_group=docker", "exempt-no", false},
-		{"Cmnd_Alias NOPASS = /bin/a", "", false},
-	}
-	files := map[string]string{"etc/sudoers": "root ALL=(ALL:ALL) ALL\n@includedir /etc/sudoers.d\n"}
-	name := func(i int) string { return "f" + string(rune('a'+i/26)) + string(rune('a'+i%26)) }
-	for i, c := range cases {
-		files["etc/sudoers.d/"+name(i)] = c.rule + "\n"
-	}
-	out, _ := ap14Report(t, ap14Root(t, files), "agent")
-	hand := ap14Lines(out, "by hand ")
-	for i, c := range cases {
-		prefix := "rule: /etc/sudoers.d/" + name(i) + ":1: "
-		got := ap14Lines(out, prefix)
-		switch c.want {
-		case "":
-			if len(got) != 0 {
-				t.Errorf("%q: unexpected %q", c.rule, got)
-			}
-		case "noauth":
-			if len(got) != 1 || !strings.Contains(got[0], ": Defaults !authenticate for ") || !strings.Contains(got[0], "; password: not asked: ") {
-				t.Errorf("%q: want a Defaults !authenticate rule, got %q", c.rule, got)
-			}
-		case "exempt", "exempt-no":
-			applies := "yes"
-			if c.want == "exempt-no" {
-				applies = "no"
-			}
-			if len(got) != 1 || !strings.Contains(got[0], "(its members never type a password); applies to agent: "+applies+": ") {
-				t.Errorf("%q: want an exempt_group rule that applies %s, got %q", c.rule, applies, got)
-			}
-		default:
-			if len(got) != 1 || !strings.Contains(got[0], "; applies to agent: "+c.want) {
-				t.Errorf("%q: want %q, got %q", c.rule, c.want, got)
-			}
-		}
-		found := false
-		for _, h := range hand {
-			if strings.Contains(h, ": /etc/sudoers.d/"+name(i)+":1: ") {
-				found = true
-			}
-		}
-		if found != c.hand {
-			t.Errorf("%q: an edit by hand %v, want %v", c.rule, found, c.hand)
-		}
-	}
-	ap14Has(t, out, "why: it may give agent sudo without a password (+admins is a netgroup or non-Unix group: check whether agent is in it)")
-	ap14Lacks(t, out, "aside", "backup", "move ")
-}
-
-// The warning that sudo would refuse the user once the passwordless rules are
-// gone: it stays away only while another rule, which itself asks for the
-// password, lets the user run ALL as root.
-func TestAiHostAP14SudoersLockout(t *testing.T) {
-	const stop = "stop: no other rule gives agent sudo with a password"
-	for _, c := range []struct {
-		other string
-		stop  bool
-	}{
-		{"", true},
-		{"agent ALL=(ALL:ALL) ALL\n", false},
-		{"%wheel ALL=(ALL) ALL\n", false},
-		{"agent ALL=(root) ALL\n", false},
-		{"agent ALL=(postgres) ALL\n", true},
-		{"agent ALL=(ALL) /usr/bin/b\n", true},
-		{"agent ALL=(ALL) ALL, NOPASSWD: /usr/bin/b\n", true},
-		{"+admins ALL=(ALL) ALL\n", true},
-		{"other ALL=(ALL) ALL\n", true},
+		{head, 0, "check: /etc/ataniq/grants and every folder above it are root's and not writable by group or others; its 0 entries are regular files of root's, not writable by group or others\n"},
+		{head + "f 0 600 /etc/ataniq/grants/x\nf 0 1644 /etc/ataniq/grants/y\n", 0, "its 2 entries are regular files"},
+		{"d 0 755 /\nd 0 755 /etc\nmissing - - /etc/ataniq\n", 1, "finding: register-missing: there is no register: /etc/ataniq is missing\n"},
+		{"d 0 755 /\nd 0 755 /etc\nd 0 755 /etc/ataniq\nmissing - - /etc/ataniq/grants\n", 1, "finding: register-missing: there is no register: /etc/ataniq/grants is missing\n"},
+		{"d 0 755 /\nd 0 775 /etc\nd 0 755 /etc/ataniq\nd 0 755 /etc/ataniq/grants\n", 1, "finding: register-folder: /etc is writable by its group or by others (mode 775)\n"},
+		{"d 0 755 /\nd 0 755 /etc\nd 0 757 /etc/ataniq\nd 0 755 /etc/ataniq/grants\n", 1, "finding: register-folder: /etc/ataniq is writable by its group or by others (mode 757)\n"},
+		{"d 0 755 /\nd 0 755 /etc\nd 1001 755 /etc/ataniq\nd 0 755 /etc/ataniq/grants\n", 1, "finding: register-folder: /etc/ataniq is owned by uid 1001, not root\n"},
+		{"d 0 755 /\nd 0 755 /etc\nl 0 777 /etc/ataniq\n", 1, "finding: register-folder: /etc/ataniq is not a folder of its own (a link)\n"},
+		{"d 0 755 /\nd 0 755 /etc\nd 0 755 /etc/ataniq\nf 0 644 /etc/ataniq/grants\n", 1, "finding: register-folder: /etc/ataniq/grants is not a folder of its own (a file or another kind)\n"},
+		{head + "f 1001 644 /etc/ataniq/grants/x\n", 1, "finding: register-entry: /etc/ataniq/grants/x is owned by uid 1001, not root\n"},
+		{head + "f 0 664 /etc/ataniq/grants/x\n", 1, "finding: register-entry: /etc/ataniq/grants/x is writable by its group or by others (mode 664)\n"},
+		{head + "f 0 646 /etc/ataniq/grants/x y\n", 1, "finding: register-entry: /etc/ataniq/grants/x y is writable by its group or by others (mode 646)\n"},
+		{head + "l 0 777 /etc/ataniq/grants/x\n", 1, "finding: register-entry: /etc/ataniq/grants/x is not a regular file (a link)\n"},
+		{head + "d 0 755 /etc/ataniq/grants/x\n", 1, "finding: register-entry: /etc/ataniq/grants/x is not a regular file (a folder)\n"},
+		{head + "o 0 644 /etc/ataniq/grants/x\n", 1, "finding: register-entry: /etc/ataniq/grants/x is not a regular file (another kind)\n"},
+		{head + "unreadable - - /etc/ataniq/grants\n", 3, "stop: the register cannot be read: /etc/ataniq/grants (run --check as root)\n"},
+		{"d 0 755 /\nd 0 755 /etc\nd 0 0 /etc/ataniq\nunreadable - - /etc/ataniq\n", 3, "stop: the register cannot be read: /etc/ataniq (run --check as root)\n"},
+		{head + "badname - - /etc/ataniq/grants/a?b\n", 3, "stop: a register entry's name holds a character this check cannot print: /etc/ataniq/grants/a?b\n"},
+		{head + "f 0 644 /etc/shadow\n", 3, "stop: a register listing line this check cannot judge: f 0 644 /etc/shadow\n"},
+		{head + "f 0 644 /etc/ataniq/grants/a/b\n", 3, "stop: a register listing line this check cannot judge: f 0 644 /etc/ataniq/grants/a/b\n"},
+		{head + "f 0 rw /etc/ataniq/grants/a\n", 3, "stop: a register listing line this check cannot judge: f 0 rw /etc/ataniq/grants/a\n"},
+		{head + "missing - - /etc\n", 3, "stop: a register listing line this check cannot judge: missing - - /etc\n"},
+		{"", 3, "stop: the register listing is empty\n"},
+		{"d 0 755 /\nd 0 755 /etc\nd 0 755 /etc/ataniq\n", 3, "stop: the register listing does not reach /etc/ataniq/grants\n"},
+		{"d 1001 755 /\nd 0 755 /etc\n", 3, "stop: the register listing does not reach /etc/ataniq/grants\n"},
 	} {
-		files := map[string]string{
-			"etc/sudoers":         "root ALL=(ALL:ALL) ALL\n@includedir /etc/sudoers.d\n",
-			"etc/sudoers.d/10-np": "agent ALL=(ALL) NOPASSWD: ALL\n",
+		out, code := ap14Report(t, ap14Case(t, map[string]string{"register.txt": c.reg}))
+		if code != c.code {
+			t.Errorf("%q: exit %d, want %d:\n%s", c.want, code, c.code, out)
 		}
-		if c.other != "" {
-			files["etc/sudoers.d/20-pw"] = c.other
-		}
-		out, _ := ap14Report(t, ap14Root(t, files), "agent")
-		if got := strings.Contains(out, stop); got != c.stop {
-			t.Errorf("%q: the lockout stop %v, want %v:\n%s", c.other, got, c.stop, out)
-		}
-		ap14Has(t, out, "by hand 1: /etc/sudoers.d/10-np:1: ")
-	}
-	// No passwordless rule: no edit and no lockout stop, though the user has
-	// no sudo at all.
-	out, code := ap14Report(t, ap14Root(t, map[string]string{"etc/sudoers": "root ALL=(ALL:ALL) ALL\n@includedir /etc/sudoers.d\n", "etc/sudoers.d/.keep": "",
-		"sudo-l.txt": "User agent is not allowed to run sudo on host.\n", "sudo-l.rc": "1\n"}), "agent")
-	ap14Has(t, out, "no rule gives agent sudo: sudo refuses agent (the drop-in changes nothing for it)\n",
-		"sudo -l -U agent: agent is not allowed to run sudo\n",
-		"nothing: no rule gives agent sudo without a password\n")
-	ap14Lacks(t, out, stop)
-	if code != 1 || !strings.Contains(ap14Summary(t, out), "by hand: 0; stops: 0;") {
-		t.Errorf("exit %d, %s", code, ap14Summary(t, out))
-	}
-}
-
-// What sudo itself says: a failed query is a stop, a passwordless command it
-// lists that the files do not explain is a stop, a later cache time a finding.
-func TestAiHostAP14SudoList(t *testing.T) {
-	base := map[string]string{"etc/sudoers": "root ALL=(ALL:ALL) ALL\n%wheel ALL=(ALL:ALL) ALL\n@includedir /etc/sudoers.d\n", "etc/sudoers.d/.keep": ""}
-	with := func(extra map[string]string) map[string]string {
-		m := map[string]string{}
-		for k, v := range base {
-			m[k] = v
-		}
-		for k, v := range extra {
-			m[k] = v
-		}
-		return m
-	}
-	for _, c := range []struct {
-		files map[string]string
-		want  string
-	}{
-		{map[string]string{"sudo-l.txt": ap14Delete}, "stop: sudo -l -U agent failed (exit 127): the effective policy is unknown: (no sudo-l.txt in the fixtures)\n"},
-		{map[string]string{"sudo-l.txt": "sudo: unable to resolve host\n", "sudo-l.rc": "1\n"}, "stop: sudo -l -U agent failed (exit 1): the effective policy is unknown: sudo: unable to resolve host\n"},
-		{map[string]string{"sudo-l.txt": "User agent is not allowed to run sudo on host.\n", "sudo-l.rc": "1\n"}, "stop: sudo -l -U agent says agent may not run sudo, but the files hold rules for it: the audit and sudo disagree\n"},
-		{map[string]string{"sudo-l.txt": "User agent may run the following commands on host:\n    (root) NOPASSWD: /usr/bin/a\n"}, "stop: sudo -l -U agent lists (root) NOPASSWD: /usr/bin/a, which needs no password, but the files read above hold no such rule for agent\n"},
-		{map[string]string{"sudo-l.txt": "Matching Defaults entries for agent on host:\n    env_reset, !authenticate\n"}, "stop: sudo -l -U agent lists !authenticate, which needs no password"},
-	} {
-		out, code := ap14Report(t, ap14Root(t, with(c.files)), "agent")
 		ap14Has(t, out, c.want)
-		if code != 1 {
-			t.Errorf("%q: exit %d", c.want, code)
-		}
 	}
-	out, _ := ap14Report(t, ap14Root(t, with(map[string]string{"sudo-l.txt": "Matching Defaults entries for agent on host:\n    env_reset, timestamp_timeout=0,\n    timestamp_timeout=10\n"})), "agent")
-	ap14Has(t, out, "finding: sudo-l: sudo -l -U agent shows timestamp_timeout=10 last: credentials are cached\n")
-	ap14Lacks(t, out, "stop: sudo -l")
+	// The owner's steps for an entry: a fresh file renamed over the old one,
+	// never a change of the old file in place.
+	out, _ := ap14Report(t, ap14Case(t, map[string]string{"register.txt": head + "f 1001 644 /etc/ataniq/grants/x\n"}))
+	ap14Has(t, out, "read it and confirm every word is yours", "write that text into a new file of root's (mode 0644) beside it and rename the new file over the old name",
+		"another process may still hold it open for writing", "Never change the owner or the mode of the old file in place.")
 }
 
-// --self-test --fixtures reads only below the fixture folder: / is refused, a
-// link that leads out of it is refused before anything is read, a link inside
-// it is fine, an include with a .. part is not followed, and a name with a
-// newline is refused.
-func TestAiHostAP14FixtureConfinement(t *testing.T) {
+// The register listing --check makes, read from a tree that stands for /:
+// one line per folder down to the register, then each entry, a link not
+// followed, a name it cannot print shown as a stop line, and a folder it
+// cannot enter or read as unreadable.
+func TestAiHostAP14RegisterTree(t *testing.T) {
 	ap14Unprivileged(t)
-	env := ap14Env(t)
-	if out, code := ahRun(t, ap14Script, t.TempDir(), env, "--self-test", "--fixtures", "/", "--user", "agent"); code != 2 || !strings.Contains(out, "--fixtures must not be /") {
-		t.Errorf("/: exit %d\n%s", code, out)
+	list := func(tree string) (string, int) {
+		return ahRun(t, ap14Script, t.TempDir(), ap14Env(t), "--self-test", "--register-tree", tree)
 	}
-	if out, code := ahRun(t, ap14Script, t.TempDir(), env, "--self-test", "--fixtures", t.TempDir()+"/missing", "--user", "agent"); code != 2 || !strings.Contains(out, "--fixtures must name a folder") {
-		t.Errorf("missing: exit %d\n%s", code, out)
-	}
-	// A file outside the fixtures that a link or a .. include would read.
-	outside := filepath.Join(t.TempDir(), "outside")
-	if err := os.WriteFile(outside, []byte("agent ALL=(ALL) NOPASSWD: /OUTSIDE-RULE\n"), 0o644); err != nil {
+	uid := fmt.Sprint(os.Getuid())
+	tree := t.TempDir()
+	reg := filepath.Join(tree, "etc/ataniq/grants")
+	if err := os.MkdirAll(filepath.Join(reg, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	sudoers := "root ALL=(ALL:ALL) ALL\n%wheel ALL=(ALL:ALL) ALL\n@includedir /etc/sudoers.d\n"
-	for _, link := range []string{"etc/sudoers.d/10-link", "etc/elsewhere"} {
-		dir := ap14Root(t, map[string]string{"etc/sudoers": sudoers, "etc/sudoers.d/.keep": ""})
-		if err := os.Symlink(outside, filepath.Join(dir, link)); err != nil {
+	for _, p := range []string{tree, filepath.Join(tree, "etc"), filepath.Join(tree, "etc/ataniq"), reg} {
+		if err := os.Chmod(p, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		out, code := ahRun(t, ap14Script, t.TempDir(), env, "--self-test", "--fixtures", dir, "--user", "agent")
-		if code != 2 || !strings.Contains(out, "refused: a link in the fixtures leads out of them (or cannot be resolved): /"+link) {
-			t.Errorf("%s: exit %d\n%s", link, code, out)
-		}
-		ap14Lacks(t, out, "OUTSIDE-RULE", "== sudo")
 	}
-	// A link to a file of the fixtures is fine, and read as sudo would.
-	dir := ap14Root(t, map[string]string{"etc/sudoers": sudoers + "@include /etc/inside\n", "etc/real": "agent ALL=(ALL) NOPASSWD: /INSIDE-RULE\n", "etc/sudoers.d/.keep": ""})
-	if err := os.Symlink("real", filepath.Join(dir, "etc/inside")); err != nil {
+	for name, mode := range map[string]os.FileMode{"a": 0o664, "b c": 0o644, "n\tl": 0o644} {
+		if err := os.WriteFile(filepath.Join(reg, name), []byte("x\n"), mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(reg, name), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("/etc/shadow", filepath.Join(reg, ".l")); err != nil {
 		t.Fatal(err)
 	}
-	out, _ := ap14Report(t, dir, "agent")
-	ap14Has(t, out, "rule: /etc/inside:1: users agent; applies to agent: yes; password: not asked (as root): agent ALL=(ALL) NOPASSWD: /INSIDE-RULE\n")
-	// An include with a .. part is not followed.
-	dir = ap14Root(t, map[string]string{"etc/sudoers": sudoers + "@include ../../" + filepath.Base(filepath.Dir(outside)) + "/outside\n", "etc/sudoers.d/.keep": ""})
-	out, _ = ap14Report(t, dir, "agent")
-	ap14Has(t, out, "stop: /etc/sudoers:4: an include path with a .. part; not followed")
-	ap14Lacks(t, out, "OUTSIDE-RULE")
-	// A name with a newline.
-	dir = ap14Root(t, map[string]string{"etc/sudoers": sudoers, "etc/sudoers.d/a\nb": "x\n"})
-	if out, code := ahRun(t, ap14Script, t.TempDir(), env, "--self-test", "--fixtures", dir, "--user", "agent"); code != 2 || !strings.Contains(out, "a file name in the fixtures holds a newline or a tab") {
-		t.Errorf("newline: exit %d\n%s", code, out)
+	if err := syscall.Mkfifo(filepath.Join(reg, "f"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-}
-
-// Polkit: what a YES applies to, comments, a file of /etc hiding the one of
-// the same name in /usr/share.
-func TestAiHostAP14Polkit(t *testing.T) {
-	rule := func(body string) string {
-		return "polkit.addRule(function(action, subject) {\n" + body + "\n});\n"
+	if err := os.Chmod(filepath.Join(reg, "f"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	files := map[string]string{
-		"etc/polkit-1/rules.d/10-group.rules": rule(`    if (action.id == "org.example.a" && subject.isInGroup("wheel")) {
-        return polkit.Result.YES;
-    }`),
-		"etc/polkit-1/rules.d/11-user.rules":       rule(`    if (subject.user === 'agent') return polkit.Result.YES;`),
-		"etc/polkit-1/rules.d/12-other.rules":      rule(`    if (subject.user == "other") return polkit.Result.YES;`),
-		"etc/polkit-1/rules.d/13-anyone.rules":     rule(`    if (action.id == "org.example.d" && subject.local) return polkit.Result.YES;`),
-		"etc/polkit-1/rules.d/14-variable.rules":   "var g = \"wheel\";\n" + rule(`    if (subject.isInGroup(g)) return polkit.Result.YES;`),
-		"etc/polkit-1/rules.d/15-negated.rules":    rule(`    if (subject.user != "other") return polkit.Result.YES;`),
-		"etc/polkit-1/rules.d/16-comment.rules":    rule("    // return polkit.Result.YES;\n    /* return polkit.Result.YES;\n       polkit.Result.YES */\n    return polkit.Result.NOT_HANDLED;"),
-		"etc/polkit-1/rules.d/17-admin.rules":      rule(`    if (subject.isInGroup("wheel")) return polkit.Result.AUTH_ADMIN;`),
-		"etc/polkit-1/rules.d/18-list.rules":       rule(`    if (["other", "agent"].indexOf(subject.user) >= 0) return polkit.Result.YES;`),
-		"etc/polkit-1/rules.d/19-others.rules":     rule(`    if (["other", "third"].indexOf(subject.user) >= 0) return polkit.Result.YES;`),
-		"etc/polkit-1/rules.d/README":              "polkit.Result.YES\n",
-		"etc/polkit-1/rules.d/50-hide.rules":       rule(`    return polkit.Result.NO;`),
-		"usr/share/polkit-1/rules.d/50-hide.rules": rule(`    return polkit.Result.YES;`),
-		"usr/share/polkit-1/rules.d/60-shown.rules": rule(`    if (subject.isInGroup("wheel"))
-        return polkit.Result.YES;`),
-		"usr/share/polkit-1/rules.d/70-admin.rules": "polkit.addAdminRule(function(action, subject) {\n    return [\"unix-group:wheel\"];\n});\n",
-		"usr/share/polkit-1/rules.d/80-loose.rules": "function f() { return polkit.Result.YES; }\n",
+	out, code := list(tree)
+	if code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
 	}
-	out, _ := ap14Report(t, ap14Root(t, files), "agent")
-	const (
-		any    = "returns YES without authentication for any user"
-		match  = "returns YES without authentication for agent or one of its groups"
-		unsure = "returns YES without authentication, for users the script cannot tell; read it"
-	)
+	got := strings.Split(strings.TrimSpace(out), "\n")
 	want := []string{
-		"finding: polkit: /etc/polkit-1/rules.d/10-group.rules:3: " + match + " (actions: org.example.a)",
-		"finding: polkit: /etc/polkit-1/rules.d/11-user.rules:2: " + match + " (actions: -)",
-		"finding: polkit: /etc/polkit-1/rules.d/13-anyone.rules:2: " + any + " (actions: org.example.d)",
-		"finding: polkit: /etc/polkit-1/rules.d/14-variable.rules:3: " + unsure,
-		"finding: polkit: /etc/polkit-1/rules.d/15-negated.rules:2: " + unsure,
-		"finding: polkit: /etc/polkit-1/rules.d/18-list.rules:2: " + match,
-		"finding: polkit: /usr/share/polkit-1/rules.d/60-shown.rules:3: " + match,
-		"finding: polkit: /usr/share/polkit-1/rules.d/80-loose.rules:1: " + unsure,
+		"d " + uid + " 755 /", "d " + uid + " 755 /etc", "d " + uid + " 755 /etc/ataniq", "d " + uid + " 755 /etc/ataniq/grants",
+		"f " + uid + " 664 /etc/ataniq/grants/a", "f " + uid + " 644 /etc/ataniq/grants/b c", "o " + uid + " 644 /etc/ataniq/grants/f",
+		"badname - - /etc/ataniq/grants/n?l", "d " + uid + " 755 /etc/ataniq/grants/sub", "l " + uid + " 777 /etc/ataniq/grants/.l",
 	}
-	ap14Has(t, out, want...)
-	if got := ap14Lines(out, "finding: polkit: "); len(got) != len(want) {
-		t.Errorf("want %d polkit findings, got %d: %q", len(want), len(got), got)
-	}
-	ap14Lacks(t, out, "12-other.rules", "16-comment.rules", "17-admin.rules", "19-others.rules", "50-hide.rules", "70-admin.rules", "rules.d/README")
-
-	// For a user outside wheel the group rules do not apply.
-	out, _ = ap14Report(t, ap14Root(t, files), "other")
-	ap14Lacks(t, out, "10-group.rules", "60-shown.rules", "11-user.rules")
-	ap14Has(t, out, "finding: polkit: /etc/polkit-1/rules.d/12-other.rules:2: returns YES without authentication for other or one of its groups")
-}
-
-// Group lists: the primary group, member lists (no substring matches), the
-// root-equivalent groups and gid 0.
-func TestAiHostAP14Groups(t *testing.T) {
-	files := map[string]string{
-		"etc/passwd": "root:x:0:0::/root:/bin/sh\nagent:x:1001:1500::/nonexistent:/bin/sh\n",
-		"etc/group": "root:x:0:agent\n" +
-			"docker:x:970:other,agent\n" +
-			"lxd:x:971:agent\n" +
-			"incus:x:972:agent\n" +
-			"incus-admin:x:973:agent\n" +
-			"libvirt:x:974:agent,other\n" +
-			"disk:x:6:agent\n" +
-			"kmem:x:9:agent\n" +
-			"shadow:x:42:agent\n" +
-			"input:x:97:agent\n" +
-			"video:x:985:agent\n" +
-			"wheel:x:998:agent\n" +
-			"agents:x:2000:agent2,xagent,agentx\n" +
-			"podman:x:2001:\n" +
-			"devs:x:1500:\n",
-	}
-	out, _ := ap14Report(t, ap14Root(t, files), "agent")
-	line := ap14Lines(out, "user: agent, uid 1001; groups: ")
-	if len(line) != 1 {
-		t.Fatalf("no user line:\n%s", out)
-	}
-	got := strings.Fields(strings.TrimPrefix(line[0], "user: agent, uid 1001; groups: "))
 	slices.Sort(got)
-	wantGroups := []string{"devs", "disk", "docker", "incus", "incus-admin", "input", "kmem", "libvirt", "lxd", "root", "shadow", "video", "wheel"}
-	if !slices.Equal(got, wantGroups) {
-		t.Errorf("groups %q, want %q", got, wantGroups)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("the listing:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
-	for _, g := range []string{"docker", "lxd", "incus", "incus-admin", "libvirt", "disk", "kmem", "shadow", "input"} {
-		ap14Has(t, out, "finding: group: agent is in "+g+": ", "  remedy: gpasswd -d agent "+g+" (it takes effect at the next login)")
-	}
-	ap14Has(t, out,
-		"finding: group: agent is in the group with gid 0: ",
-		"note: agent is in wheel: sudo and polkit admin actions ask for agent's password",
-	)
-	ap14Lacks(t, out, "agent is in video:", "agent is in agents", "agent is in devs:", "agent is in podman")
-	expr := ap14Lines(out, "note: user-writable test: ")
-	if len(expr) != 1 {
-		t.Fatalf("no writable test line:\n%s", out)
-	}
-	for _, w := range []string{"-user 1001 ", "-perm -0002", "-perm -0020", "-group 1500 ", "-group 0 ", "-group 970 ", "-group 985 "} {
-		if !strings.Contains(expr[0], w) {
-			t.Errorf("the writable test %q lacks %q", expr[0], w)
-		}
-	}
-	if strings.Contains(expr[0], "-group 2000") || strings.Contains(expr[0], "-group 2001") {
-		t.Errorf("the writable test names a group agent is not in: %q", expr[0])
-	}
-	// A user the files do not know is refused.
-	if out, code := ap14Report(t, ap14Root(t, files), "nobody"); code != 2 || !strings.Contains(out, "there is no user named nobody") {
-		t.Errorf("unknown user: exit %d\n%s", code, out)
-	}
-	// A user with uid 0 is refused.
-	zero := ap14Root(t, map[string]string{"etc/passwd": "toor:x:0:0::/root:/bin/sh\n"})
-	if out, code := ap14Report(t, zero, "toor"); code != 2 || !strings.Contains(out, "has uid 0") {
-		t.Errorf("uid 0: exit %d\n%s", code, out)
-	}
-}
-
-// doas.conf: permit rules with nopass or persist for the user or its groups.
-func TestAiHostAP14Doas(t *testing.T) {
-	files := map[string]string{
-		"etc/doas.conf": "# doas\n" +
-			"permit nopass agent\n" +
-			"permit persist :wheel\n" +
-			"permit agent as root cmd /usr/bin/true\n" +
-			"permit nopass other\n" +
-			"permit nopass :docker\n" +
-			"permit setenv { FOO=1 BAR } nopass keepenv agent as root\n" +
-			"deny agent\n" +
-			"  permit nolog nopass \\\n    :1001 cmd /bin/x  # a comment\n" +
-			"# permit nopass agent\n",
-		"usr/local/etc/doas.conf": "permit persist agent\n",
-	}
-	out, _ := ap14Report(t, ap14Root(t, files), "agent")
-	want := []string{
-		"finding: doas: /etc/doas.conf:2: permits agent with nopass: permit nopass agent\n",
-		"finding: doas: /etc/doas.conf:3: permits agent with persist: permit persist :wheel\n",
-		"finding: doas: /etc/doas.conf:7: permits agent with nopass: permit setenv { FOO=1 BAR } nopass keepenv agent as root\n",
-		"finding: doas: /etc/doas.conf:9: permits agent with nopass: permit nolog nopass :1001 cmd /bin/x\n",
-		"finding: doas: /usr/local/etc/doas.conf:1: permits agent with persist: permit persist agent\n",
-	}
-	ap14Has(t, out, want...)
-	ap14Has(t, out, "  remedy: remove nopass from the rule in /etc/doas.conf")
-	if got := ap14Lines(out, "finding: doas: "); len(got) != len(want) {
-		t.Errorf("want %d doas findings, got %q", len(want), got)
-	}
-}
-
-// Setuid files, root's PATH, writable paths and access control lists, with
-// their remedies' operands quoted.
-func TestAiHostAP14OtherRoutes(t *testing.T) {
-	files := map[string]string{
-		"proc/self/mounts": "/dev/vda2 / ext4 rw 0 0\n" +
-			"/dev/vda3 /home ext4 rw,nosuid 0 0\n" +
-			"/dev/vda4 /srv xfs rw 0 0\n" +
-			"/dev/vda4 /srv xfs rw 0 0\n" +
-			"server:/x /net nfs rw 0 0\n" +
-			"/dev/vda5 /a\\040b ext4 rw 0 0\n" +
-			"/dev/vda2 /.snapshots btrfs rw 0 0\n" +
-			"overlay /var/lib/docker/overlay2/x/merged overlay rw 0 0\n",
-		"setuid.txt":    "/usr/bin/sudo\n/usr/bin/passwd\n/opt/tool/helper\n/usr/bin/sudo\n/opt/it's\n",
-		"packaged.txt":  "/usr/bin/sudo\n/usr/bin/passwd\n",
-		"root-path.txt": "/usr/bin::.:bin:/usr/local/bin",
-		"writable.txt":  "/usr/local/bin\n/etc/cron.d/job\n",
-		"getfacl.txt": "# file: /etc/a\nuser::rw-\nuser:agent:rw-\ngroup::r--\nmask::rw-\nother::r--\n\n" +
-			"# file: /etc/b\nuser::rw-\nuser:1001:rwx\t#effective:r--\nmask::r-x\nother::r--\n\n" +
-			"# file: /etc/c\nuser::rw-\ngroup:wheel:rw-\nmask::rwx\nother::r--\n\n" +
-			"# file: /etc/d\nuser::rw-\ngroup:other:rw-\nuser:other:rw-\nmask::rwx\nother::r--\n" +
-			"default:user:agent:rwx\n",
-	}
-	out, _ := ap14Report(t, ap14Root(t, files), "agent")
-	ap14Has(t, out,
-		"note: setuid search covers: / /srv\n",
-		"note: setuid search leaves out /a\\040b\n",
-		"note: setuid search leaves out /.snapshots\n",
-		"finding: setuid: /opt/tool/helper is setuid or setgid root and no package owns it\n  remedy: remove it, or chmod u-s,g-s '/opt/tool/helper', unless",
-		`chmod u-s,g-s '/opt/it'\''s'`,
-		"finding: root-path: root's PATH holds '', a relative or empty entry",
-		"finding: root-path: root's PATH holds '.', a relative or empty entry",
-		"finding: root-path: root's PATH holds 'bin', a relative or empty entry",
-		"finding: writable: agent may write /usr/local/bin, which root runs",
-		"  remedy: chown root:root '/usr/local/bin' and chmod go-w '/usr/local/bin'",
-		"finding: writable: agent may write /etc/cron.d/job, which root runs",
-		"finding: acl: /etc/a grants user:agent:rw-: agent may write it\n  remedy: setfacl -x 'user:agent' '/etc/a'\n",
-		"finding: acl: /etc/c grants group:wheel:rw-: agent may write it\n",
-	)
-	ap14Lacks(t, out, "/usr/bin/sudo is setuid", "/usr/bin/passwd is setuid", "/net", "overlay2", "/etc/b grants", "/etc/d grants", "default:user")
-	if got := ap14Lines(out, "finding: setuid: "); len(got) != 2 {
-		t.Errorf("want two setuid findings, got %q", got)
-	}
-
-	// Without a package query every setuid file is listed, once noted.
-	delete(files, "packaged.txt")
-	out, _ = ap14Report(t, ap14Root(t, files), "agent")
-	ap14Has(t, out, "note: no package query (pacman, dpkg, rpm) here: every setuid file is listed\n",
-		"finding: setuid: /usr/bin/sudo is setuid or setgid root; its package is unknown\n")
-	if got := ap14Lines(out, "note: no package query"); len(got) != 1 {
-		t.Errorf("the note is printed %d times", len(got))
-	}
-}
-
-// The plan: the password, the drop-in (new, exactly ours, or someone else's),
-// the register and each of its entries, a folder someone else owns.
-func TestAiHostAP14Plan(t *testing.T) {
-	base := map[string]string{
-		"etc/sudoers":              "%wheel ALL=(ALL:ALL) ALL\n@includedir /etc/sudoers.d\n",
-		"etc/sudoers.d/10-a":       "agent ALL=(ALL) NOPASSWD: ALL\n",
-		"etc/ataniq/grants/README": "x\n",
-	}
-	with := func(extra map[string]string) map[string]string {
-		m := map[string]string{}
-		for k, v := range base {
-			m[k] = v
-		}
-		for k, v := range extra {
-			m[k] = v
-		}
-		return m
-	}
-	for _, st := range []string{"L", "LK", "NP"} {
-		out, _ := ap14Report(t, ap14Root(t, with(map[string]string{"passwd-S.txt": "agent " + st + " 2026-01-01\n"})), "agent")
-		ap14Has(t, out, "stop: agent has no usable password (passwd -S says "+st+")")
-	}
-	// An unknown password status is a stop.
-	for _, pw := range []string{ap14Delete, "agent ? 2026-01-01\n", ""} {
-		out, _ := ap14Report(t, ap14Root(t, with(map[string]string{"passwd-S.txt": pw})), "agent")
-		ap14Has(t, out, "stop: passwd -S did not say whether agent has a usable password")
-	}
-	out, _ := ap14Report(t, ap14Root(t, with(map[string]string{"passwd-S.txt": "agent PS 2026-01-01\n"})), "agent")
-	ap14Has(t, out, "agent has a usable password: sudo can still ask for it\n",
-		"no change: the standing-grants register /etc/ataniq/grants exists, owned by root, and every entry is root's\n")
-	ap14Lacks(t, out, "stop: ")
-
-	// The drop-in: exactly the script's (text, owner, mode 0440) is no
-	// change; anything else at that name is a stop, never replaced.
-	out, _ = ap14Report(t, ap14Root(t, with(map[string]string{"etc/sudoers.d/zz-ap14-level1-agent": ap14Dropin("agent"), "modes.txt": "/etc/sudoers.d/zz-ap14-level1-agent 0440\n"})), "agent")
-	ap14Has(t, out, "no change: /etc/sudoers.d/zz-ap14-level1-agent already says: Defaults:agent timestamp_timeout=0 (owner root, mode 0440)\n")
-	collision := "stop: /etc/sudoers.d/zz-ap14-level1-agent exists and is not the file this script writes (its text, owner root, mode 0440): the script never replaces it\n"
-	for name, extra := range map[string]map[string]string{
-		"other text":                    {"etc/sudoers.d/zz-ap14-level1-agent": "Defaults:agent timestamp_timeout=5\n", "modes.txt": "/etc/sudoers.d/zz-ap14-level1-agent 0440\n"},
-		"a restriction of someone else": {"etc/sudoers.d/zz-ap14-level1-agent": "Defaults:other !lecture\n", "modes.txt": "/etc/sudoers.d/zz-ap14-level1-agent 0440\n"},
-		"mode 0644":                     {"etc/sudoers.d/zz-ap14-level1-agent": ap14Dropin("agent"), "modes.txt": "/etc/sudoers.d/zz-ap14-level1-agent 0644\n"},
-		"no mode set":                   {"etc/sudoers.d/zz-ap14-level1-agent": ap14Dropin("agent")},
-		"not root's":                    {"etc/sudoers.d/zz-ap14-level1-agent": ap14Dropin("agent"), "modes.txt": "/etc/sudoers.d/zz-ap14-level1-agent 0440\n", "not-root.txt": "/etc/sudoers.d/zz-ap14-level1-agent\n"},
-	} {
-		out, _ = ap14Report(t, ap14Root(t, with(extra)), "agent")
-		if !strings.Contains(out, collision) {
-			t.Errorf("%s: no collision stop:\n%s", name, out)
-		}
-	}
-	out, _ = ap14Report(t, ap14Root(t, with(map[string]string{"etc/sudoers.d/zz-ap14-level1-agent/x": ""})), "agent")
-	ap14Has(t, out, "stop: /etc/sudoers.d/zz-ap14-level1-agent exists and is not a regular file: the script never replaces or removes it\n")
-	// Another account's drop-in is left alone: each user has its own name.
-	out, _ = ap14Report(t, ap14Root(t, with(map[string]string{"etc/sudoers.d/zz-ap14-level1-other": ap14Dropin("other")})), "agent")
-	ap14Has(t, out, "change 1: write /etc/sudoers.d/zz-ap14-level1-agent (a new file)")
-	ap14Lacks(t, out, "stop: /etc/sudoers.d/zz-ap14-level1-other")
-
-	// Folders someone else owns stop the plan.
-	for _, p := range []string{"/etc/ataniq", "/etc/ataniq/grants", "/etc/sudoers.d"} {
-		out, _ = ap14Report(t, ap14Root(t, with(map[string]string{"not-root.txt": p + "\n"})), "agent")
-		ap14Has(t, out, "stop: "+p+" ")
-	}
-	// Every register entry: a regular file root owns and only root writes.
-	out, _ = ap14Report(t, ap14Root(t, with(map[string]string{"not-root.txt": "/etc/ataniq/grants/README\n"})), "agent")
-	ap14Has(t, out, "stop: the register entry /etc/ataniq/grants/README is not owned by root or may be written by another account")
-	out, _ = ap14Report(t, ap14Root(t, with(map[string]string{"etc/ataniq/grants/standing-1": "words\n", "not-root.txt": "/etc/ataniq/grants/standing-1\n"})), "agent")
-	ap14Has(t, out, "stop: the register entry /etc/ataniq/grants/standing-1 is not owned by root or may be written by another account: that account can change the grant\n",
-		"  do: check its words with the owner, then chown root:root '/etc/ataniq/grants/standing-1' and chmod go-w '/etc/ataniq/grants/standing-1'")
-	ap14Lacks(t, out, "no change: the standing-grants register")
-	dir := ap14Root(t, with(map[string]string{"etc/ataniq/grants/real": "words\n", "etc/ataniq/grants/sub/x": "y\n"}))
-	if err := os.Symlink("real", filepath.Join(dir, "etc/ataniq/grants/standing-2")); err != nil {
+	// A folder it cannot enter ends the listing as unreadable.
+	if err := os.Chmod(filepath.Join(tree, "etc/ataniq"), 0); err != nil {
 		t.Fatal(err)
 	}
-	out, _ = ap14Report(t, dir, "agent")
-	ap14Has(t, out, "stop: the register entry /etc/ataniq/grants/standing-2 is a link",
-		"stop: the register entry /etc/ataniq/grants/sub is not a regular file")
-	// A register without its README gets one, a new file.
-	out, _ = ap14Report(t, ap14Root(t, with(map[string]string{"etc/ataniq/grants/README": ap14Delete, "etc/ataniq/grants/standing-1": "words\n"})), "agent")
-	ap14Has(t, out, "change 2: write /etc/ataniq/grants/README (a new file), mode 0644, owner root\n")
-
-	// No sudo at all: nothing to change for it.
-	out, _ = ap14Report(t, ap14Root(t, nil), "agent")
-	ap14Has(t, out, "sudo is not installed (no /etc/sudoers): nothing to change for sudo\n",
-		"change 1: create the folder /etc/ataniq (a new folder)",
-		"change 2: create the standing-grants register /etc/ataniq/grants (a new folder)",
-		"change 3: write /etc/ataniq/grants/README (a new file)")
-	// A temporary file of an earlier run is noted, never removed.
-	out, _ = ap14Report(t, ap14Root(t, with(map[string]string{"etc/sudoers.d/.ap14-level1.tmp.Ab12Cd": "x\n"})), "agent")
-	ap14Has(t, out, "note: /etc/sudoers.d/.ap14-level1.tmp.Ab12Cd is a temporary file of an earlier run (sudo skips it): remove it by hand: rm -f '/etc/sudoers.d/.ap14-level1.tmp.Ab12Cd'\n")
+	out, _ = list(tree)
+	if err := os.Chmod(filepath.Join(tree, "etc/ataniq"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(out, "d "+uid+" 0 /etc/ataniq\nunreadable - - /etc/ataniq\n") {
+		t.Errorf("an unreadable folder:\n%s", out)
+	}
+	// A register it can enter but not read.
+	if err := os.Chmod(reg, 0o311); err != nil {
+		t.Fatal(err)
+	}
+	out, _ = list(tree)
+	if err := os.Chmod(reg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(out, "d "+uid+" 311 /etc/ataniq/grants\nunreadable - - /etc/ataniq/grants\n") {
+		t.Errorf("an unreadable register:\n%s", out)
+	}
+	// A link in place of a folder ends it, not followed.
+	other := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(other, "etc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(tree, "etc/ataniq"), filepath.Join(other, "etc/ataniq")); err != nil {
+		t.Fatal(err)
+	}
+	out, _ = list(other)
+	if !strings.HasSuffix(out, "l "+uid+" 777 /etc/ataniq\n") {
+		t.Errorf("a linked folder:\n%s", out)
+	}
+	// No register.
+	out, _ = list(t.TempDir())
+	if !strings.HasSuffix(out, "missing - - /etc\n") {
+		t.Errorf("an empty tree:\n%s", out)
+	}
 }
 
-// The checks of --verify, read from the fixtures when they hold sudo-n.txt:
-// a password required, not allowed, and a probe that could not run are told
-// apart, and sudo -l -U must still list the grant that asks for the password.
-func TestAiHostAP14Verify(t *testing.T) {
-	good := "Matching Defaults entries for agent on host:\n    env_reset, timestamp_timeout=0\n\nUser agent may run the following commands on host:\n    (ALL : ALL) ALL\n"
-	base := map[string]string{
-		"etc/sudoers":                        "%wheel ALL=(ALL:ALL) ALL\n@includedir /etc/sudoers.d\n",
-		"etc/sudoers.d/zz-ap14-level1-agent": ap14Dropin("agent"),
-		"modes.txt":                          "/etc/sudoers.d/zz-ap14-level1-agent 0440\n",
-		"etc/ataniq/grants/README":           "x\n",
-		"sudo-l.txt":                         good,
+// --fixtures and --register-tree refuse the filesystem root by its identity,
+// whatever the spelling, and a case whose files are missing, links or not
+// usable; nothing is read then.
+func TestAiHostAP14FixtureRefusals(t *testing.T) {
+	ap14Unprivileged(t)
+	link := filepath.Join(t.TempDir(), "root")
+	if err := os.Symlink("/", link); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, opt := range []string{"--fixtures", "--register-tree"} {
+		for _, dir := range []string{"/", "//", "/.", "/../", "///.//", link} {
+			args := []string{"--self-test", opt, dir}
+			if opt == "--fixtures" {
+				args = append(args, "--user", "agent")
+			}
+			out, code := ahRun(t, ap14Script, t.TempDir(), ap14Env(t), args...)
+			if code != 2 || !strings.Contains(out, "refused: "+opt+" must not be the filesystem root (by any spelling or link)") {
+				t.Errorf("%s %q: exit %d\n%s", opt, dir, code, out)
+			}
+		}
+		for _, dir := range []string{file, filepath.Join(t.TempDir(), "none")} {
+			args := []string{"--self-test", opt, dir}
+			if opt == "--fixtures" {
+				args = append(args, "--user", "agent")
+			}
+			out, code := ahRun(t, ap14Script, t.TempDir(), ap14Env(t), args...)
+			if code != 2 || !strings.Contains(out, "refused: "+opt+" must name a folder") {
+				t.Errorf("%s %q: exit %d\n%s", opt, dir, code, out)
+			}
+		}
+	}
+	linked := ap14Case(t, map[string]string{"sudo-l.txt": ap14Delete})
+	if err := os.Symlink("/etc/passwd", filepath.Join(linked, "sudo-l.txt")); err != nil {
+		t.Fatal(err)
+	}
+	linkedReg := ap14Case(t, map[string]string{"register.txt": ap14Delete})
+	if err := os.Symlink(filepath.Join(linked, "x"), filepath.Join(linkedReg, "register.txt")); err != nil {
+		t.Fatal(err)
 	}
 	for _, c := range []struct {
-		files map[string]string
-		code  int
-		want  string
+		dir, want string
 	}{
-		{map[string]string{"sudo-n.txt": "sudo: a password is required\n", "sudo-n.rc": "1\n"}, 0, "check: sudo -n true run as agent fails: a password is required\n"},
-		{map[string]string{"sudo-n.txt": "", "sudo-n.rc": "0\n"}, 1, "finding: sudo-n: sudo -n true run as agent succeeds: agent still has sudo without a password\n"},
-		{map[string]string{"sudo-n.txt": "agent is not in the sudoers file.\n", "sudo-n.rc": "1\n"}, 1, "finding: sudo-n: sudo refuses agent outright (not allowed, no password asked): agent is not in the sudoers file.\n"},
-		{map[string]string{"sudo-n.txt": "Sorry, user agent is not allowed to execute '/usr/bin/true' as root on host.\n", "sudo-n.rc": "1\n"}, 1, "finding: sudo-n: sudo refuses agent outright"},
-		{map[string]string{"sudo-n.txt": "runuser: user agent does not exist\n", "sudo-n.rc": "1\n"}, 1, "finding: sudo-n: the probe sudo -n true as agent could not run or said something else (exit 1): runuser: user agent does not exist\n"},
-		{map[string]string{"sudo-n.txt": "sudo: a password is required\n", "sudo-l.txt": "User agent may run the following commands on host:\n    (ALL) /usr/bin/b\n"}, 1, "finding: verify: sudo -l -U agent lists no grant of ALL as root that asks for the password: agent's intended grant is not there\n"},
-		{map[string]string{"sudo-n.txt": "sudo: a password is required\n", "sudo-l.txt": "User agent may run the following commands on host:\n    (ALL : ALL) ALL\n"}, 1, "finding: verify: sudo -l -U agent shows no timestamp_timeout: is the drop-in read?\n"},
-		{map[string]string{"sudo-n.txt": "sudo: a password is required\n", "sudo-l.txt": "sudo: you are not root\n", "sudo-l.rc": "1\n"}, 1, "finding: verify: sudo -l -U agent failed (exit 1): sudo: you are not root\n"},
+		{ap14Case(t, map[string]string{"sudo-l.txt": ap14Delete}), "--fixtures: sudo-l.txt is missing or not a readable regular file"},
+		{ap14Case(t, map[string]string{"register.txt": ap14Delete}), "--fixtures: register.txt is missing or not a readable regular file"},
+		{linked, "--fixtures: sudo-l.txt is a link; a fixture file must be a regular file of its case"},
+		{linkedReg, "--fixtures: register.txt is a link; a fixture file must be a regular file of its case"},
+		{ap14Case(t, map[string]string{"sudo-l.rc": "one\n"}), "--fixtures: sudo-l.rc is not a number"},
+		{ap14Case(t, map[string]string{"sudo-l.rc": "-1\n"}), "--fixtures: sudo-l.rc is not a number"},
 	} {
-		m := map[string]string{}
-		for k, v := range base {
-			m[k] = v
+		out, code := ap14Report(t, c.dir)
+		if code != 2 || !strings.Contains(out, "refused: "+c.want) {
+			t.Errorf("%q: exit %d\n%s", c.want, code, out)
 		}
-		for k, v := range c.files {
-			m[k] = v
-		}
-		out, code := ap14Report(t, ap14Root(t, m), "agent")
-		ap14Has(t, out, "== checks of the result\n", c.want)
-		if code != c.code {
-			t.Errorf("%q: exit %d, want %d\n%s", c.want, code, c.code, out)
-		}
+		ap14Lacks(t, out, "== sudo")
 	}
-	m := map[string]string{"sudo-n.txt": "sudo: a password is required\n"}
-	for k, v := range base {
-		m[k] = v
-	}
-	out, _ := ap14Report(t, ap14Root(t, m), "agent")
-	ap14Has(t, out, "check: sudo -l -U agent lists a grant that asks for the password: (ALL : ALL) ALL\n", "check: sudo -l -U agent: the last timestamp_timeout is 0\n")
 }
 
-// --apply and --verify are refused, before anything is read or run, without
-// root and without --confirm equal to --user; --self-test is refused as root
-// (TestAiHostAP14SelfTest). The script sets its own PATH, so no stub can stand
-// in for a program: every case is refused on its arguments alone, and the
-// cases that reach the root check run only when the test does not run as
-// root (else --apply would run for real).
+// The arguments: every refusal comes before anything is read or run; the
+// modes that wrote files are gone, each with the pointer to the README.
 func TestAiHostAP14Refusals(t *testing.T) {
 	env := []string{"PATH=" + t.TempDir(), "HOME=" + t.TempDir()}
 	cases := []struct {
 		args []string
 		want string
-		root bool // whether the root check is reached
 	}{
-		{nil, "usage: ap14-level1.sh --dry --user NAME", false},
-		{[]string{"--apply"}, "--user NAME is required", false},
-		{[]string{"--verify"}, "--user NAME is required", false},
-		{[]string{"--dry"}, "--user NAME is required", false},
-		{[]string{"--apply", "--confirm", "agent"}, "--user NAME is required", false},
-		{[]string{"--apply", "--user", "agent"}, "--apply needs --confirm NAME, repeating the --user name", false},
-		{[]string{"--apply", "--user", "agent", "--confirm", "agent2"}, "--confirm must repeat the --user name exactly", false},
-		{[]string{"--apply", "--user", "agent", "--confirm", "Agent"}, "--confirm must repeat the --user name exactly", false},
-		{[]string{"--apply", "--user", "agent", "--confirm", ""}, "--confirm must repeat the --user name exactly", false},
-		{[]string{"--apply", "--user", "agent", "--confirm"}, "--confirm needs a value", false},
-		{[]string{"--verify", "--user", "agent", "--confirm", "agent"}, "--confirm goes with --apply only", false},
-		{[]string{"--apply", "--user", "root", "--confirm", "root"}, "--user must be the everyday user, not root", false},
-		{[]string{"--apply", "--user", "Bad Name", "--confirm", "Bad Name"}, "--user must be a login name", false},
-		{[]string{"--apply", "--user", "a;b", "--confirm", "a;b"}, "--user must be a login name", false},
-		{[]string{"--apply", "--user", "first.last", "--confirm", "first.last"}, "--user must be a login name (lowercase letters, digits, _ -; no dot, which sudo skips in a drop-in's name)", false},
-		{[]string{"--apply", "--user", strings.Repeat("a", 33), "--confirm", strings.Repeat("a", 33)}, "--user must be a login name", false},
-		{[]string{"--apply", "--user", "agent", "--confirm", "agent", "--fixtures", "/x"}, "--fixtures goes with --self-test only", false},
-		{[]string{"--self-test", "--user", "agent"}, "--user goes with --fixtures in a self-test", false},
-		{[]string{"--apply", "--self-test", "--user", "agent", "--confirm", "agent"}, "give one of --dry, --apply, --verify and --self-test", false},
-		{[]string{"--apply", "--user", "agent", "--confirm", "agent", "--extra"}, "unknown argument", false},
-		{[]string{"--apply", "--user", "agent", "--confirm", "agent"}, "--apply runs as root", true},
-		{[]string{"--verify", "--user", "agent"}, "--verify runs as root", true},
+		{nil, "usage: ap14-level1.sh --check --user NAME [--other-root-login]"},
+		{[]string{"--help"}, "usage: ap14-level1.sh --check --user NAME [--other-root-login]"},
+		{[]string{"--check"}, "refused: --user NAME is required"},
+		{[]string{"--check", "--user"}, "refused: --user needs a value"},
+		{[]string{"--check", "--user", "root"}, "refused: --user must be the everyday user, not root"},
+		{[]string{"--check", "--user", "Bad Name"}, "refused: --user must be a login name"},
+		{[]string{"--check", "--user", "a;b"}, "refused: --user must be a login name"},
+		{[]string{"--check", "--user", ""}, "refused: --user must be a login name"},
+		{[]string{"--check", "--user", "first.last"}, "refused: --user must be a login name (lowercase letters, digits, _ -; no dot, which sudo skips in a drop-in's name)"},
+		{[]string{"--check", "--user", strings.Repeat("a", 33)}, "refused: --user must be a login name"},
+		{[]string{"--check", "--user", "agent", "--fixtures", "/x"}, "refused: --fixtures and --register-tree go with --self-test only"},
+		{[]string{"--check", "--user", "agent", "--register-tree", "/x"}, "refused: --fixtures and --register-tree go with --self-test only"},
+		{[]string{"--check", "--self-test", "--user", "agent"}, "refused: give one of --check and --self-test"},
+		{[]string{"--check", "--user", "agent", "--extra"}, "refused: unknown argument"},
+		{[]string{"--self-test", "--user", "agent"}, "refused: --user goes with --fixtures in a self-test"},
+		{[]string{"--self-test", "--other-root-login"}, "refused: --other-root-login goes with --check, or with --fixtures in a self-test"},
+		{[]string{"--self-test", "--fixtures", "/x"}, "refused: --user NAME is required"},
+		{[]string{"--self-test", "--register-tree", "/x", "--user", "agent"}, "refused: --register-tree goes alone with --self-test"},
+		{[]string{"--self-test", "--register-tree", "/x", "--fixtures", "/y"}, "refused: --register-tree goes alone with --self-test"},
+		{[]string{"--self-test", "--register-tree"}, "refused: --register-tree needs a value"},
+	}
+	for _, gone := range []string{"--dry", "--apply", "--verify", "--confirm"} {
+		cases = append(cases, struct {
+			args []string
+			want string
+		}{[]string{gone, "--user", "agent"}, "refused: " + gone + " is gone: the script only checks (--check); the owner writes the drop-in and the register by hand, as README.md says"})
 	}
 	for _, c := range cases {
-		if c.root && os.Geteuid() == 0 {
-			continue
-		}
 		out, code := ahRun(t, ap14Script, t.TempDir(), env, c.args...)
 		if code != 2 || !strings.Contains(out, c.want) {
 			t.Errorf("%q: exit %d, want 2 and %q:\n%s", c.args, code, c.want, out)
 		}
-		if c.want != "usage: ap14-level1.sh --dry --user NAME" && !strings.Contains(out, "refused: ") {
-			t.Errorf("%q: the output does not say refused:\n%s", c.args, out)
+	}
+}
+
+// ap14Stops are the fixed parts of every stop the script prints. Each is in
+// the script, each appears in the expected.txt of a case beside it, and the
+// self-test fails when one is removed or turned into a plain line.
+var ap14Stops = []string{
+	" failed (exit ",
+	"sudo printed on its error output: ",
+	"a line of sudo -l this check does not know: ",
+	" lists neither a grant nor that ",
+	" has a grant heading with no command under it",
+	" says both that ",
+	"a timestamp_timeout this check does not know: ",
+	"a command-specific default this check does not know: ",
+	"no sudo grant: make sure root can log in another way",
+	"the register cannot be read: ",
+	"name holds a character this check cannot print: ",
+	"a register listing line this check cannot judge: ",
+	"the register listing is empty",
+	"the register listing does not reach ",
+}
+
+// ap14ExpectedText is a stop's fixed part as it reads in a report.
+func ap14ExpectedText(s string) string {
+	return strings.ReplaceAll(s, `\047`, "'")
+}
+
+func TestAiHostAP14StopsHaveCases(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(root(t), ap14Script))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(data)
+	var expected strings.Builder
+	for _, c := range ap14Cases(t) {
+		data, err := os.ReadFile(filepath.Join(root(t), ap14Dir, "self-test", c, "expected.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected.Write(data)
+	}
+	// Every stop( call of the script names one of ap14Stops.
+	calls := regexp.MustCompile(`stop\("[^\n]*`).FindAllString(script, -1)
+	if len(calls) < len(ap14Stops) {
+		t.Errorf("only %d stop calls in the script", len(calls))
+	}
+	for _, call := range calls {
+		if !slices.ContainsFunc(ap14Stops, func(s string) bool { return strings.Contains(call, s) }) {
+			t.Errorf("a stop the test does not list: %s", call)
+		}
+	}
+	for _, s := range ap14Stops {
+		if !strings.Contains(script, s) {
+			t.Errorf("the script has no stop %q", s)
+		}
+		lines := strings.Split(expected.String(), "\n")
+		if !slices.ContainsFunc(lines, func(l string) bool {
+			return strings.HasPrefix(l, "stop: ") && strings.Contains(l, ap14ExpectedText(s))
+		}) {
+			t.Errorf("no case beside the script stops with %q", ap14ExpectedText(s))
 		}
 	}
 }
 
-// The script's first commands fix PATH to the system folders, before any
-// external program; it never moves, renames or edits a file in place, keeps
-// no journal or backup folder, and removes only what its own run created.
+// The self-test fails when a stop is removed: with the stop's text taken
+// out, and with its stop( call turned into a plain print, a copy of the
+// script run against a copy of the cases fails.
+func TestAiHostAP14SelfTestCatchesRemovedStops(t *testing.T) {
+	ap14Unprivileged(t)
+	data, err := os.ReadFile(filepath.Join(root(t), ap14Script))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(data)
+	work := t.TempDir()
+	if err := os.CopyFS(filepath.Join(work, "self-test"), os.DirFS(filepath.Join(root(t), ap14Dir, "self-test"))); err != nil {
+		t.Fatal(err)
+	}
+	run := func(t *testing.T, name, text string) (string, int) {
+		path := filepath.Join(work, name)
+		if err := os.WriteFile(path, []byte(text), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("/bin/sh", path, "--self-test")
+		cmd.Dir = t.TempDir()
+		cmd.Env = ap14Env(t)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return string(out), 0
+		}
+		exit, ok := err.(*exec.ExitError)
+		if !ok {
+			t.Fatal(err)
+		}
+		return string(out), exit.ExitCode()
+	}
+	// The control: the copy passes as it is.
+	if out, code := run(t, "control.sh", script); code != 0 {
+		t.Fatalf("the unchanged copy fails: exit %d\n%s", code, out)
+	}
+	for i, s := range ap14Stops {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			t.Parallel()
+			removed := strings.ReplaceAll(script, s, "")
+			var demoted []string
+			for _, line := range strings.Split(script, "\n") {
+				if strings.Contains(line, s) {
+					line = strings.ReplaceAll(line, "stop(", "print(")
+				}
+				demoted = append(demoted, line)
+			}
+			for kind, text := range map[string]string{"removed": removed, "demoted": strings.Join(demoted, "\n")} {
+				if text == script {
+					t.Errorf("%q: the %s copy is unchanged", s, kind)
+					continue
+				}
+				out, code := run(t, fmt.Sprintf("%s-%d.sh", kind, i), text)
+				if code != 1 || !strings.Contains(out, "self-test: FAIL ") {
+					t.Errorf("%q %s: the self-test did not fail: exit %d\n%s", s, kind, code, out)
+				}
+			}
+		})
+	}
+}
+
+// The script reads only: its first commands fix PATH to the system folders;
+// it runs no program that writes, moves or removes a file, never redirects
+// into a file, and runs sudo once, as `sudo -n -l -U NAME`.
 func TestAiHostAP14Source(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(root(t), ap14Script))
 	if err != nil {
@@ -951,35 +731,90 @@ func TestAiHostAP14Source(t *testing.T) {
 		}
 		code = append(code, trim)
 	}
-	if len(code) < 3 || code[0] != "CALLER_PATH=${PATH-}" || code[1] != "PATH=/usr/sbin:/usr/bin:/sbin:/bin" || code[2] != "export PATH" {
-		t.Errorf("the script does not start by fixing PATH: %q", code[:3])
+	if len(code) < 2 || code[0] != "PATH=/usr/sbin:/usr/bin:/sbin:/bin" || code[1] != "export PATH" {
+		t.Errorf("the script does not start by fixing PATH: %q", code[:2])
 	}
-	for _, re := range []*regexp.Regexp{
-		regexp.MustCompile(`(^|[;&|({ ]|\$\()mv( |$)`),
-		regexp.MustCompile(`sed -i`),
-		regexp.MustCompile(`MOVED|BACKUP|backup-|journal`),
-		regexp.MustCompile(`\bln -[a-z]*[fs]`),
-	} {
-		for _, line := range code {
-			if re.MatchString(line) {
-				t.Errorf("the code matches %s: %s", re, line)
-			}
-		}
-	}
-	rm := regexp.MustCompile(`(^|[;&|({ ]|\$\()rm( |$)`)
+	cmdPos := `(^|[;&|({]\s*|\$\(\s*|\b(then|do|else|elif|if|!)\s+)`
+	writers := regexp.MustCompile(cmdPos + `(rm|mv|ln|cp|chmod|chown|chgrp|mkdir|rmdir|touch|install|tee|truncate|dd|mktemp|mkfifo|visudo|setfacl|gpasswd|usermod|sed|perl|python3?|runuser|su|doas)(\s|$)`)
 	for _, line := range code {
-		if !rm.MatchString(line) {
-			continue
+		if m := writers.FindString(line); m != "" {
+			t.Errorf("the code runs a program it must not (%q): %s", strings.TrimSpace(m), line)
 		}
-		switch {
-		case strings.Contains(line, `rm -f -- "$(hp "$tr_p")"`),
-			strings.Contains(line, `rm -f -- "$tp_tmp"`),
-			strings.Contains(line, `rm -rf -- "$st_w"`),
-			strings.Contains(line, "remove it by hand"):
-		default:
-			t.Errorf("an rm the rules do not allow: %s", line)
+		// Every > is a descriptor copy, /dev/null, or an awk comparison
+		// with =; never a file.
+		for i := strings.Index(line, ">"); i >= 0; {
+			rest := strings.TrimLeft(line[i+1:], " ")
+			if !strings.HasPrefix(rest, "&") && !strings.HasPrefix(rest, "/dev/null") && !strings.HasPrefix(rest, "=") {
+				t.Errorf("a redirection into a file: %s", line)
+				break
+			}
+			j := strings.Index(line[i+1:], ">")
+			if j < 0 {
+				break
+			}
+			i += j + 1
 		}
 	}
+	var sudo []string
+	for _, line := range code {
+		if strings.Contains(line, "sudo -n -l -U \"$NAME\"") || regexp.MustCompile(`(^|[;&|(]\s*|LC_ALL=C\s+)sudo\s`).MatchString(line) {
+			sudo = append(sudo, line)
+		}
+	}
+	want := `if sq_o=$(env -i PATH="$SYS_PATH" LC_ALL=C sudo -n -l -U "$NAME" </dev/null 2>&3); then sq_r=0; else sq_r=$?; fi`
+	if len(sudo) != 1 || sudo[0] != want {
+		t.Errorf("the script must run sudo once, as %q; it does: %q", want, sudo)
+	}
+	// Only --check reaches it: sudo_query is defined once and called once,
+	// from check_main, which only the check mode runs.
+	var uses []string
+	for _, line := range code {
+		if strings.Contains(line, "sudo_query") || strings.Contains(line, "check_main") {
+			uses = append(uses, line)
+		}
+	}
+	if !slices.Equal(uses, []string{"sudo_query() {", "check_main() {", "sudo_query", "check) check_main ;;"}) {
+		t.Errorf("sudo_query is not reached by --check alone: %q", uses)
+	}
+}
+
+// The owner's steps are prose: no edit command the owner would paste, and
+// no advice to delete a rule.
+func TestAiHostAP14StepsAreProse(t *testing.T) {
+	ap14Unprivileged(t)
+	sudo := "Matching Defaults entries for agent on aihost:\n    targetpw, !authenticate, exempt_group=x, timestamp_timeout=0, timestamp_timeout=5\n\n" +
+		"User agent may run the following commands on aihost:\n    (ALL) NOPASSWD: ALL\n"
+	reg := "d 0 755 /\nd 0 755 /etc\nd 0 777 /etc/ataniq\nd 0 755 /etc/ataniq/grants\nf 5 644 /etc/ataniq/grants/x\n"
+	out, code := ap14Report(t, ap14Case(t, map[string]string{"sudo-l.txt": sudo, "register.txt": reg}))
+	if code != 1 {
+		t.Errorf("exit %d\n%s", code, out)
+	}
+	_, steps, ok := strings.Cut(out, "== by hand, for the owner\n")
+	if !ok {
+		t.Fatalf("no steps:\n%s", out)
+	}
+	steps, _, _ = strings.Cut(steps, "== summary\n")
+	lines := strings.Split(strings.TrimSpace(steps), "\n")
+	if len(lines) != 7 {
+		t.Errorf("%d steps, want one for each of the 7 kinds:\n%s", len(lines), steps)
+	}
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "- ") {
+			t.Errorf("a step that is not a prose item: %s", line)
+		}
+	}
+	for _, bad := range []*regexp.Regexp{
+		regexp.MustCompile(`visudo -f '`), regexp.MustCompile("`"), regexp.MustCompile(`\b(rm|chmod|chown|sed|mv|ln) -?`),
+		regexp.MustCompile(`&&|\|\|`),
+	} {
+		if m := bad.FindString(steps); m != "" {
+			t.Errorf("the steps hold %q:\n%s", m, steps)
+		}
+	}
+	if strings.Count(strings.ToLower(steps), "delete") != strings.Count(steps, "do not delete") {
+		t.Errorf("the steps advise deleting something:\n%s", steps)
+	}
+	ap14Has(t, steps, "edit that file with visudo -f; remove the NOPASSWD: tag; keep one password-asked grant for you", "do not delete the rule")
 }
 
 // No file of deploy/ai-host names a real host, user or home path: no home
@@ -1000,7 +835,7 @@ func TestAiHostAP14NoPrivateNames(t *testing.T) {
 	}
 	for w := range words {
 		// Generic names (root, and the fixtures' own) say nothing private.
-		if len(w) < 3 || w == "root" || w == "agent" || w == "other" || w == "localhost" {
+		if len(w) < 3 || w == "root" || w == "agent" || w == "other" || w == "aihost" || w == "localhost" {
 			delete(words, w)
 		}
 	}

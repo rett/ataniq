@@ -1,0 +1,15 @@
+== sudo -n -l -U agent (exit 0)
+  | Matching Defaults entries for agent on aihost:
+  |     env_reset, timestamp_timeout=0
+  | 
+  | User agent may run the following commands on aihost:
+  |     (ALL : ALL) ALL
+check: no command sudo lists for agent skips the password
+check: timestamp_timeout=0 is listed for agent, and no other value
+check: no default makes sudo ask for another account's password, or for none (targetpw, rootpw, runaspw, !authenticate, exempt_group)
+== register /etc/ataniq/grants
+stop: the register listing is empty
+== summary
+findings: 0; stops: 1
+result: STOPPED: the check could not see everything, so it is not clean; fix what each stop says and run --check again
+exit: 3

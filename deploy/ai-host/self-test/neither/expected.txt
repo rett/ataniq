@@ -1,0 +1,16 @@
+== sudo -n -l -U agent (exit 0)
+  | Matching Defaults entries for agent on aihost:
+  |     env_reset, timestamp_timeout=0
+stop: sudo -l -U agent lists neither a grant nor that agent is not allowed to run sudo
+== register /etc/ataniq/grants
+  | d 0 755 /
+  | d 0 755 /etc
+  | d 0 755 /etc/ataniq
+  | d 0 755 /etc/ataniq/grants
+  | f 0 644 /etc/ataniq/grants/README
+  | f 0 644 /etc/ataniq/grants/backup-unit
+check: /etc/ataniq/grants and every folder above it are root's and not writable by group or others; its 2 entries are regular files of root's, not writable by group or others
+== summary
+findings: 0; stops: 1
+result: STOPPED: the check could not see everything, so it is not clean; fix what each stop says and run --check again
+exit: 3

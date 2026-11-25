@@ -1,5 +1,10 @@
-Matching Defaults entries for agent on host:
-    env_reset, timestamp_timeout=0
+Matching Defaults entries for agent on aihost:
+    env_reset, mail_badpass,
+    secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin,
+    !targetpw, timestamp_timeout=0
 
-User agent may run the following commands on host:
+Runas and Command-specific defaults for agent:
+    Defaults!/usr/bin/sudoedit !env_reset
+
+User agent may run the following commands on aihost:
     (ALL : ALL) ALL

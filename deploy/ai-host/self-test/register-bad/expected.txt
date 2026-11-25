@@ -1,0 +1,34 @@
+== sudo -n -l -U agent (exit 0)
+  | Matching Defaults entries for agent on aihost:
+  |     env_reset, timestamp_timeout=0
+  | 
+  | User agent may run the following commands on aihost:
+  |     (ALL : ALL) ALL
+check: no command sudo lists for agent skips the password
+check: timestamp_timeout=0 is listed for agent, and no other value
+check: no default makes sudo ask for another account's password, or for none (targetpw, rootpw, runaspw, !authenticate, exempt_group)
+== register /etc/ataniq/grants
+  | d 0 755 /
+  | d 0 755 /etc
+  | d 1001 755 /etc/ataniq
+  | d 0 775 /etc/ataniq/grants
+  | f 1001 644 /etc/ataniq/grants/theirs
+  | f 0 666 /etc/ataniq/grants/open
+  | f 0 640 /etc/ataniq/grants/fine
+  | l 0 777 /etc/ataniq/grants/pointer
+  | d 0 755 /etc/ataniq/grants/sub
+  | o 0 644 /etc/ataniq/grants/fifo
+finding: register-folder: /etc/ataniq is owned by uid 1001, not root
+finding: register-folder: /etc/ataniq/grants is writable by its group or by others (mode 775)
+finding: register-entry: /etc/ataniq/grants/theirs is owned by uid 1001, not root
+finding: register-entry: /etc/ataniq/grants/open is writable by its group or by others (mode 666)
+finding: register-entry: /etc/ataniq/grants/pointer is not a regular file (a link)
+finding: register-entry: /etc/ataniq/grants/sub is not a regular file (a folder)
+finding: register-entry: /etc/ataniq/grants/fifo is not a regular file (another kind)
+== by hand, for the owner
+- a register folder: it and every folder above it must be folders of root's, not links, and not writable by group or others. If one is not, make a new folder as root, write into it fresh copies of only the entries you confirm, and put it in place of the old one (README, step 5).
+- a register entry: read it and confirm every word is yours. Then, as root, write that text into a new file of root's (mode 0644) beside it and rename the new file over the old name, which retires the old file: another process may still hold it open for writing. Never change the owner or the mode of the old file in place. Remove an entry that is not yours or not a regular file (README, step 5).
+== summary
+findings: 7; stops: 0
+result: findings remain: fix them by hand, then run --check again
+exit: 1

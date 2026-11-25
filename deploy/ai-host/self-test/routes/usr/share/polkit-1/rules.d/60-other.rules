@@ -1,7 +1,0 @@
-/* Only for another user. */
-polkit.addRule(function(action, subject) {
-    if (subject.user == 'other') {
-        return polkit.Result.YES;
-    }
-    // return polkit.Result.YES;
-});

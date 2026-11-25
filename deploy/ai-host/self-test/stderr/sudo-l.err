@@ -1,0 +1,1 @@
+sudo: /etc/sudoers.d/10-tools:3:5: syntax error

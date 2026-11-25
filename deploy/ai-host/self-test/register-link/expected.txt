@@ -1,0 +1,20 @@
+== sudo -n -l -U agent (exit 0)
+  | Matching Defaults entries for agent on aihost:
+  |     env_reset, timestamp_timeout=0
+  | 
+  | User agent may run the following commands on aihost:
+  |     (ALL : ALL) ALL
+check: no command sudo lists for agent skips the password
+check: timestamp_timeout=0 is listed for agent, and no other value
+check: no default makes sudo ask for another account's password, or for none (targetpw, rootpw, runaspw, !authenticate, exempt_group)
+== register /etc/ataniq/grants
+  | d 0 755 /
+  | d 0 755 /etc
+  | l 0 777 /etc/ataniq
+finding: register-folder: /etc/ataniq is not a folder of its own (a link)
+== by hand, for the owner
+- a register folder: it and every folder above it must be folders of root's, not links, and not writable by group or others. If one is not, make a new folder as root, write into it fresh copies of only the entries you confirm, and put it in place of the old one (README, step 5).
+== summary
+findings: 1; stops: 0
+result: findings remain: fix them by hand, then run --check again
+exit: 1

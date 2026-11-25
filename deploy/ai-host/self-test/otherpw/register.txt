@@ -1,0 +1,6 @@
+d 0 755 /
+d 0 755 /etc
+d 0 755 /etc/ataniq
+d 0 755 /etc/ataniq/grants
+f 0 644 /etc/ataniq/grants/README
+f 0 644 /etc/ataniq/grants/backup-unit

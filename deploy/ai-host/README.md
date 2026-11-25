@@ -1,70 +1,28 @@
 # AP14 level 1 on an AI host
 
-`ap14-level1.sh` helps you take passwordless and cached sudo away from your
-everyday user on an AI (development) host, so that an agent session running
-as that user cannot become root by itself: afterwards `sudo -n true` fails
-for that user with "a password is required". It audits every route from that
-user to root it knows and reports each one with a remedy. It writes only two
-kinds of new file: a sudoers drop-in that turns off cached credentials, and
-the root-owned standing-grants register, `/etc/ataniq/grants` (DL-1). Every
-edit of an existing sudoers file is yours, by hand, with `visudo`, from the
-exact steps the audit prints.
+AP14 level 1 takes passwordless and cached sudo away from your everyday user
+on an AI (development) host, so that an agent session running as that user
+cannot become root by itself: sudo asks for the user's own password at every
+use. The changes are yours, made by hand from the steps below: the edits of
+sudo rules with `visudo -f`, a small sudoers drop-in that turns off cached
+credentials, and the root-owned standing-grants register `/etc/ataniq/grants`
+(DL-1).
 
-You run it in host sitting A, as root, on each AI host, after reading its
-dry run. It takes about 10 to 15 minutes per host. Agents never run it except
-with `--self-test`.
+`ap14-level1.sh` is the read-only check of the result. It changes nothing.
+It asks sudo itself what the user may do (`sudo -n -l -U NAME`), judges only
+what sudo prints, and checks the register by simple file rules. It prints
+plain steps for you, never an edit command.
 
-## What it changes, and what it never changes
-
-It **never moves, edits or removes an existing file**. `--apply` writes only
-new files, and only those the dry run listed:
-
-1. **No cached credentials.** A new file
-   `/etc/sudoers.d/zz-ap14-level1-NAME` (mode 0440, owner root), named after
-   the user so that a second account never replaces the first's, with one
-   setting, `Defaults:NAME timestamp_timeout=0`, so sudo asks for the
-   password every time. It writes it under a temporary name in the same folder
-   (a name with a dot, which sudo skips), checks that it holds the whole text,
-   sets the owner and mode, checks it alone with `visudo -cf`, and publishes
-   it with `ln`, which never replaces a file. If a file is already at that
-   name it must be exactly this one (the same bytes, owner root, mode 0440):
-   then nothing changes; anything else at that name is a stop, and the script
-   leaves it alone.
-2. **The register.** It creates `/etc/ataniq` and `/etc/ataniq/grants`
-   (mode 0755, owner root) and their README (mode 0644) when they are not
-   there yet, the same way. Your verbatim words go there; agents can read it
-   but not write it. It grants nothing until you write an entry.
-
-Then it checks the whole configuration with `visudo -c`. The whole run holds
-one lock (`/run/ap14-level1.lock`), so a second `--apply` refuses while the
-first runs, and it reads everything again under the lock before it writes.
-
-If any step fails (a write on a full disk, a `visudo` check, an interrupt) it
-removes the files this run created, newest first, and nothing else. A removal
-that fails is reported as `NOT undone: ... remove it by hand (rm -f '...')`
-and the rest goes on. A failed write never leaves half a file under a name
-sudo reads.
-
-**Passwordless rules are yours to edit.** The audit finds every `NOPASSWD`
-rule, every `Defaults !authenticate` and every `exempt_group` that applies
-to the user or one of its groups, in `/etc/sudoers` and in every file it
-includes (`#include`, `@include`, `#includedir`, `@includedir`, user and
-runas aliases, `%group`, `%#gid`, `#uid`, netgroups). For each it prints the
-exact steps, `by hand N:`, to make with `visudo -f 'FILE'`. `--apply` refuses
-while any of them is still there.
-
-It **never** changes a group, a polkit rule, doas, a setuid file, a
-permission or an access control list. Those are reported only (see
-[Findings](#findings-and-their-remedies)).
+You run it in host sitting A, as root, on each AI host. It takes about 10 to
+15 minutes per host, edits included. Agents never run `--check`; they run
+only `--self-test`.
 
 ## Before you start
 
-- **Know the everyday user's password.** After the change sudo asks for it
-  every time. When the user has a sudo rule and no usable password
-  (`passwd -S` says `L`, `LK` or `NP`), or `passwd -S` does not say, the dry
-  run lists a stop.
+- **Know the everyday user's password.** Afterwards sudo asks for it every
+  time.
 - **Keep a root shell open** for the whole sitting, in a second terminal, so
-  you can undo anything by hand.
+  you can undo an edit by hand.
 - **Install the script as root's own regular file.** Your checkout is
   writable by the everyday user, so an agent session could change the script
   before you run it, and a link in the checkout could later point anywhere.
@@ -86,11 +44,10 @@ permission or an access control list. Those are reported only (see
   `/root/ap14-new/ap14-level1.sh`, and run only that copy.
 - **Run it with `/bin/sh`.** The script sets `PATH` to the system folders
   (`/usr/sbin:/usr/bin:/sbin:/bin`) before its first external command, so no
-  program of a folder the user may write stands in for one of its tools. It
-  keeps the `PATH` it was started with only to report root's `PATH`.
-- The user's name is an argument (`--user NAME`). It is never written into
-  the script; on the host it appears only in the drop-in's name and text.
-  The name has no dot (sudo skips a drop-in whose name holds one).
+  program of a folder the user may write stands in for one of its tools.
+- The user's name is an argument (`--user NAME`), never written into the
+  script. It has no dot: the drop-in of step 4 is named after the user, and
+  sudo skips a file of `/etc/sudoers.d` whose name holds one.
 
 ## Steps
 
@@ -99,158 +56,244 @@ permission or an access control list. Those are reported only (see
 Do, as the everyday user, in the checkout:
 `sh deploy/ai-host/ap14-level1.sh --self-test`
 
-You see: `self-test: ok, 13 checks; it read only the fixtures, wrote only
-temporary copies of them, and ran nothing from them`.
+You see a `self-test: ok CASE` line for each case, then `self-test: ok, N
+checks; it read only the fixtures, in place, never ran sudo, and wrote
+nothing`.
 
-It proves: the audit reads the fixture configurations in `self-test/` as
-expected, and `--apply` against temporary copies of them writes exactly the
-new files, refuses the sole, shared and mixed grants and a name collision,
-undoes a failure at every one of its steps, and recovers on a rerun when an
-undo failed too. It runs unprivileged and refuses root; it reads only the
-fixtures (a link that leads out of them, or an include with a `..` part, is
-refused), never runs anything from them, and writes only below `TMPDIR`.
+It proves: the report of each case in `self-test/` is exactly its
+`expected.txt`, every finding and every stop included. A case is the saved
+text of a `sudo -l -U` output (`sudo-l.txt`, with its error output
+`sudo-l.err` and exit status `sudo-l.rc` when they matter) and a register
+listing (`register.txt`). The self-test runs unprivileged and refuses root;
+it reads the fixtures in place (a fixture file that is a link is refused),
+never runs sudo and writes nothing.
 
-If it does not work: a `FAIL` line names the case and shows the difference.
+If it does not work: a `FAIL` line names the case and shows what it expected
+and what it got.
 
-### 2. Dry run
+### 2. Check
 
-Do, as root: `/bin/sh /root/ap14-new/ap14-level1.sh --dry --user NAME`
+Do, as root: `/bin/sh /root/ap14-new/ap14-level1.sh --check --user NAME`
 
 You see, in this order:
 
-- `== user`: the user, its uid and groups;
-- `== sudo`: the files sudo reads, then every rule (`rule: FILE:LINE:`): the
-  users it names, whether it applies to the user (`yes`, `no`, or `maybe`
-  for a netgroup or non-Unix group), and whether it asks for a password, then
-  what `sudo -l -U NAME` adds;
-- `== by hand`: for each rule that gives the user sudo without a password,
-  `by hand N:` with `why:` and the `do:` steps for `visudo -f 'FILE'`;
-- `== plan`: `change N:` for each new file `--apply` will write, `no
-  change:` for what is already there, and `stop:` with a `do:` line for what
-  you must fix first;
-- `== routes to root`: each `finding:` with its `remedy:`, plus `note:` lines;
-- `== summary`: `changes: N; by hand: N; stops: N; findings: N`.
+- `== sudo -n -l -U NAME (exit N)`: each line sudo printed, after `  | `
+  (its error output after `  ! `), then the judgement: `finding:`, `stop:`,
+  `check:`, `note:` and `question:` lines;
+- `== register /etc/ataniq/grants`: the listing, one line per path (`KIND
+  UID MODE PATH`, KIND `d` folder, `f` regular file, `l` link, `o` anything
+  else), then its judgement;
+- `== by hand, for the owner`: one step in plain words for each kind of
+  finding;
+- `== summary`: `findings: N; stops: N` and the `result:` line, `clean`,
+  `findings remain` or `STOPPED`.
 
-It reads `/etc/sudoers` and what it includes, `getent`, `id`, `passwd -S`,
-the polkit rules, `doas.conf`, `/proc/self/mounts`, and runs `find` (setuid
-files; files root runs that the user may write), `getfacl`, `pacman -Qo` (or
-`dpkg -S`, `rpm -qf`) and `sudo -n -l -U NAME`. The setuid search can take a
-few minutes. It changes nothing.
+It runs `sudo -n -l -U NAME` once, in a clean environment (`env -i`, the
+system `PATH`, `LC_ALL=C`, no input), and reads with `stat` the folders `/`,
+`/etc`, `/etc/ataniq`, `/etc/ataniq/grants` and each entry of the register.
+It reads no sudoers file itself and writes nothing. As another user than
+root, sudo and the register may be closed to it: that is a stop, not a clean
+result.
 
-A dry run is never clean when it could not see everything. It lists a
-**stop** for: an include it cannot read (missing, unreadable, naming `%h`,
-with a `..` part, or nested more than 16 deep); a failed `sudo -l -U NAME`;
-a passwordless command `sudo -l` lists that the files do not explain; a
-password status `passwd -S` does not give; a register entry that is a link,
-not a regular file, not root's or writable by another account; a file at
-the drop-in's name that is not exactly the script's; a file name with a
-newline or a tab where it must read every name; and a passwordless rule
-that, once you delete it, would leave no rule that gives the user sudo with
-a password (`sudo would refuse NAME, not ask for a password`: first add a
-rule such as `NAME ALL=(ALL:ALL) ALL`, or change `NOPASSWD:` to `PASSWD:` in
-place, or make sure root can log in another way).
+The findings, and the step that fixes each:
 
-It proves: what `--apply` would write, the edits that are yours, and every
-route the script knows.
-
-If it does not work: a `refused:` line says why (no such user, bad
-arguments) and nothing was read.
-
-### 3. Make the edits by hand, and handle the stops
-
-For each `by hand N:`, as root, open the file with `visudo -f 'FILE'` and
-make the edit on the line it names: delete each `NOPASSWD:` tag (or change it
-to `PASSWD:`), or delete the whole rule; for `!authenticate` or
-`exempt_group`, delete that setting. When the rule names other users or
-groups the audit says so: the edit changes their sudo too. Each `stop:` has
-its `do:` line. Then run the dry run again, until it lists no edit and no
-stop.
-
-### 4. Apply
-
-Do, as root:
-`/bin/sh /root/ap14-new/ap14-level1.sh --apply --user NAME --confirm NAME`
-
-`--confirm` must repeat the user's name exactly; otherwise nothing is read
-and nothing changes.
-
-You see: the audit again (read afresh, under the lock), then `== apply` with
-each new file (`visudo -cf (the new file alone): ok`, `wrote FILE (mode ...,
-owner root)`), `visudo -c (the whole configuration): ok`, and then the checks
-of step 5.
-
-It proves: sudo now asks the user for a password every time, and no rule
-lets it skip the password, while the user keeps its sudo rule.
-
-If it does not work: a `refused:` line when the audit still lists an edit or
-a stop, or another `--apply` holds the lock: nothing was written. A failed
-step prints `a step failed: removing the files this run created`, then an
-`undone:` or `NOT undone:` line for each.
-
-### 5. Verify
-
-`--apply` ends with these checks; run them again any time, as root:
-`/bin/sh /root/ap14-new/ap14-level1.sh --verify --user NAME`
-
-You see `== checks of the result` and:
-
-- `check: sudo -l -U NAME lists a grant that asks for the password: ...`:
-  the user's intended grant is still there, and nothing without a password;
-- `check: sudo -l -U NAME: the last timestamp_timeout is 0`;
-- `check: sudo -n true run as NAME fails: a password is required`.
-
-A `finding:` instead tells apart that `sudo -n true` succeeds (passwordless
-sudo remains), that sudo refuses the user outright (not allowed: a password
-would not help, the user is locked out of sudo), and that the probe could
-not run.
-
-Then, by hand, in a new terminal, as the everyday user: `sudo -k; sudo -n
-true`. You see `sudo: a password is required`. Then `sudo true` asks for the
-password.
-
-## Findings and their remedies
-
-| Finding | What it means | Remedy (you do it) |
+| Finding | What sudo printed, or what the register holds | Step |
 |---|---|---|
-| `sudo-timeout` | a `timestamp_timeout` read after the drop-in, or set for a command or runas user (`Defaults!CMND`, `Defaults>USER`) anywhere, which may override it | remove it or set it to 0 with `visudo -f 'FILE'` |
-| `sudo-l` | `sudo -l -U NAME` shows a cached-credential time other than 0 | as above |
-| `sudo-n` | after `--apply`: `sudo -n true` as the user succeeds, sudo refuses the user outright, or the probe could not run | read `sudo -l -U NAME` and the audit |
-| `verify` | after `--apply`: `sudo -l -U NAME` failed, lists no grant that asks for the password, lists a command without one, or no `timestamp_timeout=0` | read `sudo -l -U NAME` and the audit |
-| `group` | the user is in docker, lxd, incus, incus-admin, libvirt, disk, kmem, shadow, input, or the group with gid 0 | `gpasswd -d NAME GROUP`, effective at the next login |
-| `polkit` | a rule in `/etc/polkit-1/rules.d` or `/usr/share/polkit-1/rules.d` returns `polkit.Result.YES` for the user, its groups, anyone, or users the script cannot tell | remove it, or put a rule first that returns `AUTH_ADMIN` |
-| `doas` | a `permit` rule with `nopass` or `persist` for the user or its groups | remove `nopass` and `persist` |
-| `setuid` | a setuid or setgid root file no package owns | remove it or `chmod u-s,g-s` it, unless you put it there |
-| `writable` | the user may write something root runs or reads as configuration: `/etc/sudoers*`, systemd unit folders, cron, polkit rules, PAM, the loader configuration, doas, profile scripts, `/root`, the folders of root's `PATH`, or any folder above them | `chown root:root` and `chmod go-w` |
-| `acl` | an access control list entry lets the user or its group write one of those | `setfacl -x ENTRY FILE` |
-| `root-path` | root's `PATH` holds an empty or relative entry | remove it |
+| `nopasswd` | a command with the `NOPASSWD:` tag | 3 |
+| `otherpw` | `targetpw`, `rootpw` or `runaspw`, in Matching Defaults or a command- or runas-specific default: sudo asks for another account's password, not the user's | 3 |
+| `noauth` | `!authenticate`: sudo asks no password at all | 3 |
+| `exempt` | `exempt_group=...`: its members are never asked; sudo's listing does not say whether the user is one | 3 |
+| `timeout` | a `timestamp_timeout` other than 0 (negative included), global or for a command or runas user: a cached ticket lets commands run unprompted after one password | 3 |
+| `dropin` | no `timestamp_timeout=0` under Matching Defaults: sudo's built-in default keeps a ticket for some minutes | 4 |
+| `register-missing` | `/etc/ataniq` or `/etc/ataniq/grants` is missing | 5 |
+| `register-folder` | `/`, `/etc`, `/etc/ataniq` or `/etc/ataniq/grants` is a link or not a folder, not root's, or writable by group or others | 5 |
+| `register-entry` | an entry is not a regular file, not root's, or writable by group or others | 5 |
 
-The remedies quote every path. The script never acts on these. The findings
-are your list for the sitting.
+A **stop** means that the check could not see everything: a run with a stop
+is never clean (exit 3), whatever else it says, and no `check:` line is
+printed for sudo's part. Fix what the stop says and run it again. It stops on:
 
-## Rollback
+- `sudo -n -l -U NAME failed (exit N)`: no such user, not run as root, or
+  sudo is not installed (exit 127). A user with no grant is the one
+  non-zero exit accepted (sudo versions differ), and only when sudo printed
+  that one sentence and nothing on its error output;
+- `sudo printed on its error output: ...`: for example a host name it
+  cannot resolve, or a syntax error it recovered from, after which sudo
+  judges a policy that is not the one you wrote;
+- `a line of sudo -l this check does not know: ...`: any form besides the
+  three sections of `sudo -l` (Matching Defaults, Runas and Command-specific
+  defaults, the commands the user may run) and the sentence of a user with
+  no grant; a heading for another user is such a line;
+- `lists neither a grant nor that NAME is not allowed to run sudo`, `has a
+  grant heading with no command under it`, `says both that NAME may run
+  commands and that NAME is not allowed to run sudo`;
+- `a timestamp_timeout this check does not know` (for example
+  `!timestamp_timeout`): write `timestamp_timeout=0` instead; `a
+  command-specific default this check does not know`;
+- `no sudo grant: make sure root can log in another way`, with a
+  `question:` for you (see below);
+- `the register cannot be read`, `a register entry's name holds a character
+  this check cannot print` (remove that entry by hand; `ls -b` shows its
+  name), `a register listing line this check cannot judge`, `the register
+  listing is empty`, `the register listing does not reach
+  /etc/ataniq/grants`.
 
-- A failed step removes the files that run created by itself, and names any
-  it could not remove.
-- By hand, from a root shell, remove only the files the run created, as its
-  output named them (`wrote ...`, `made ...`):
-  - the drop-in: `rm /etc/sudoers.d/zz-ap14-level1-NAME && visudo -c`;
-  - the register, only if that run created it and you have written no entry
-    yet: `rm /etc/ataniq/grants/README`, then `rmdir /etc/ataniq/grants` and,
-    if the run made it, `rmdir /etc/ataniq`.
-- Nothing else was changed, so nothing else is undone. A temporary file a
-  run left (`.ap14-level1.tmp.*`, which sudo skips) is named by the next dry
-  run; remove it by hand.
+**When the user has no sudo grant.** sudo then says `User NAME is not
+allowed to run sudo on HOST.`: no sudo route to root at all, which level 1
+accepts, provided root can still log in another way (a root password at the
+console, another administrator account). The script cannot know that, so it
+stops and asks. When there is such a way and you have written it down in
+your notes of the sitting, run the check again with `--other-root-login`:
+the case becomes a `note:` and the result can be clean. When there is none,
+give the user a grant that asks for the password first (step 3).
+
+What the check trusts: sudo's own listing, which resolves host lists,
+aliases, groups, includes and other sudoers sources (LDAP, sssd) for this
+user on this host. What that listing does not show: which file holds a rule;
+the order in which sudo applies Defaults (so every non-zero
+`timestamp_timeout` is a finding, even beside a 0); and whether the user is
+a member of an `exempt_group`.
+
+If it does not work: a `refused:` line says why (bad arguments); nothing was
+read.
+
+### 3. Make the edits by hand
+
+For each finding of sudo, as root:
+
+- Find the rule or setting in `/etc/sudoers` or a file it includes (lines
+  `@include`, `@includedir`, `#include`, `#includedir`; usually the files of
+  `/etc/sudoers.d`), and edit that file with `visudo -f FILE`.
+- **`NOPASSWD`:** remove the `NOPASSWD:` tag (or change it to `PASSWD:`),
+  and keep one password-asked grant for you. Change only the tag, in place:
+  never delete a rule because of this check, since a rule may name other
+  users or groups, hosts, runas users or exclusions, and deleting it can
+  remove your only grant or widen another's.
+- **`targetpw`, `rootpw`, `runaspw`, `!authenticate`, `exempt_group`, a
+  non-zero `timestamp_timeout`:** remove the setting, or for `exempt_group`
+  make sure the user is not a member of that group.
+- **No grant that asks for the password,** when you want one: add a rule for
+  the user in a file of your own, with `visudo -f`, for example
+  `NAME ALL=(ALL:ALL) ALL`.
+
+After each edit, `visudo -c` must say `parsed OK` for every file. Then run
+the check again.
+
+### 4. Write the drop-in by hand
+
+As root, create the drop-in with visudo (it checks the file before it saves
+it):
+
+```sh
+visudo -f /etc/sudoers.d/zz-ap14-level1-NAME
+```
+
+Its whole content is one line, with the user's name:
+
+```
+Defaults:NAME timestamp_timeout=0
+```
+
+Then check the whole configuration with `visudo -c` (every file `parsed
+OK`) and the file with `ls -l /etc/sudoers.d/zz-ap14-level1-NAME`: it must
+be `-r--r-----`, owner `root`, group `root`. If the mode is another (visudo
+gives a new file the mode root's umask allows), set it with
+`chmod 0440 /etc/sudoers.d/zz-ap14-level1-NAME`: the file is new, and only
+root has written it.
+
+The name holds no dot and no `~`, both of which make sudo skip a file of
+`/etc/sudoers.d`, and `zz-` sorts it after the other files there.
+`/etc/sudoers` must include that folder (`@includedir /etc/sudoers.d` or
+`#includedir /etc/sudoers.d`). Step 6 proves that sudo reads the drop-in:
+`timestamp_timeout=0` then appears under Matching Defaults.
+
+### 5. Create the register by hand
+
+The register holds your verbatim words, one regular file per standing grant.
+Agents can read it but not write it; it grants nothing by itself. As root,
+when `--check` says it is missing:
+
+```sh
+mkdir -m 0755 /etc/ataniq
+mkdir -m 0755 /etc/ataniq/grants
+```
+
+(`mkdir` fails when a folder is already there: then leave it, and let the
+check judge it.)
+
+Each standing grant is a fresh file of root's, mode 0644: write your words
+into a new file in root's own folder, check them, then install a copy under
+a temporary name beside the grant's name and rename it into place:
+
+```sh
+install -m 0644 -o root -g root /root/GRANT.txt /etc/ataniq/grants/.GRANT.new
+mv /etc/ataniq/grants/.GRANT.new /etc/ataniq/grants/GRANT
+```
+
+**Repairing an entry or a folder.** Never change the owner or the mode of an
+entry the check finds not root's or writable by others: another process may
+still hold it open for writing, and would keep that. Read the entry and
+confirm every word is yours; then write that text fresh, as above, and
+rename the new file over the old name, which retires the old file. Remove an
+entry that is not yours or not a regular file. A folder that is not root's
+or is writable by group or others is replaced the same way: make a new
+folder as root beside it, write into it fresh copies of only the entries you
+confirm, move the old folder into root's own folder, and rename the new one
+into its place.
+
+### 6. Check again, and test by hand
+
+Run the check of step 2 again. You see `result: clean: sudo itself shows no
+way for NAME to skip the password, and the register is root's`, and exit
+status 0.
+
+Then, in a separate terminal, in a new login as the everyday user (not a
+session that was already open), one line:
+
+```sh
+sudo -k; sudo -n true
+```
+
+You see `sudo: a password is required`. It types no password, so there is
+nothing to capture. If you then run `sudo -k; sudo true`, the prompt names
+whose password sudo asks for: `[sudo] password for NAME:`. Press Ctrl-C
+there; you need not type it.
+
+Its limit: the test shows only that sudo asks for a password before it runs
+`true` as root, and the prompt only whose password that one command asks for.
+Under `targetpw`, `rootpw` or `runaspw` it is another account's, and a
+command- or runas-specific default can differ for other commands: `--check`
+reports those (`otherpw`), and the test does not replace it.
+
+## Other routes to root (by hand)
+
+The script checks sudo and the register only. These other routes from the
+user to root are yours to read and remedy in the same sitting, as root:
+
+| Route | What to read | Remedy |
+|---|---|---|
+| groups | `id NAME`: docker, lxd, incus, incus-admin, libvirt, disk, kmem, shadow, input, or the group with gid 0 | `gpasswd -d NAME GROUP`, effective at the next login |
+| polkit | the rules in `/etc/polkit-1/rules.d` and `/usr/share/polkit-1/rules.d`: a rule that returns `polkit.Result.YES` for the user, one of its groups or anyone | remove it, or put a rule first that returns `AUTH_ADMIN` |
+| doas | `/etc/doas.conf`: a `permit` rule with `nopass` or `persist` for the user or its groups | remove `nopass` and `persist` |
+| setuid | setuid or setgid files no package owns (`find / -xdev -perm /6000 -type f`, then the package manager's owner query) | remove it, or clear the bits, unless you put it there |
+| writable | anything root runs or reads as configuration that the user may write: `/etc/sudoers*`, systemd unit folders, cron, polkit rules, PAM, the loader configuration, doas, profile scripts, `/root`, the folders of root's `PATH`, and every folder above them; access control lists on them | make it root's and not writable by group or others; remove the list entry |
+
+## Undoing it
+
+- The drop-in: as root, `rm /etc/sudoers.d/zz-ap14-level1-NAME`, then
+  `visudo -c`.
+- The edits of step 3: put back the tag or setting with `visudo -f`, from
+  your notes of the sitting.
+- The register: remove only what you created, an entry you wrote, then the
+  folders when they are empty.
 
 ## Exit status
 
-`0` clean: for `--dry`, nothing to write, no edit by hand, no stop and no
-finding; for `--apply`, written (or nothing to write) and the checks pass;
-for `--verify`, every check passes. `1` something remains: for `--dry`,
-something to write, an edit, a stop or a finding; for `--apply`, a failed
-step whose files were removed, or a failed check; for `--verify`, a failed
-check. `2` refused before anything was written: bad arguments, not root (for
-`--apply` and `--verify`), root (for `--self-test`), no such user, the lock
-is held, or an edit or a stop in the audit.
+`0` clean: no finding and no stop. `1` findings remain, for you to fix by
+hand. `2` refused before anything was read: bad arguments, root for
+`--self-test`, or an unusable `--fixtures` or `--register-tree` folder. `3`
+stopped: the check could not see everything (a failed or unknown sudo
+output, an unreadable register, an unanswered question), so it is not clean.
 
 ## What it does not cover
 
@@ -258,22 +301,23 @@ is held, or an edit or a stop in the audit.
   the same user as your terminals, so it can change that user's shell start
   files and capture the password the next time you type `sudo` there. Level 1
   removes the free routes; it does not separate you from the agents. Type the
-  password only in a session agents cannot reach (AP14 level 2, a separate
-  user, closes this).
-- Polkit `.pkla` files and the defaults in `/usr/share/polkit-1/actions`, files
-  in setuid snapshots and container layers, nested btrfs subvolumes that are
-  not mounted, and access control lists on the folders above the scanned ones.
-- The polkit reading is a careful pattern match, not a JavaScript parser:
-  anything it cannot tell is reported as `for users the script cannot tell`.
-- The sudoers reading does not evaluate host lists or command aliases: a rule
-  is read as applying on every host, and a fallback grant counts only when it
-  names `ALL` itself.
+  password only in a session agents cannot reach.
+- **Shell start files and `PATH` folders the user can write.** Those of the
+  user's own account (`~/.profile`, `~/.bashrc`, `~/.local/bin` and the like)
+  remain writable by every agent session, which can put a program in front of
+  `sudo` or of what you run after it. This is a known limit of level 1; only a
+  separate account, AP14 level 2, closes it.
+- What `sudo -l` does not print (see step 2), and the routes of "Other
+  routes to root", which the script does not read.
 
 ## For agents
 
 Agents run this script only with `--self-test` (optionally
-`--self-test --fixtures DIR --user NAME`), never with `--dry`, `--apply` or
-`--verify`, and through the Go tests of `./tests/`, which run `--self-test`
-on fixtures and temporary copies and run `--apply` and `--verify` only where
-they are refused on their arguments, never as root. The targeted check is
+`--self-test --fixtures DIR --user NAME [--other-root-login]`, the report of
+one case DIR, or `--self-test --register-tree DIR`, the register listing of
+a tree DIR that stands for `/`), never with `--check`, which runs sudo as
+root. They also run the Go tests of `./tests/`, which run `--self-test` on
+the cases beside the script, on cases and trees they write in temporary
+folders, and on a temporary copy of the script, and run `--check` only where
+it is refused on its arguments. The targeted check is
 `sh scripts/go-tool.sh test ./tests/ -run AiHost` after `make doctor`.

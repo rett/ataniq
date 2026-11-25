@@ -1,2 +1,0 @@
-agent ALL=(root) NOPASSWD: /usr/bin/apt
-Defaults:agent !requiretty
