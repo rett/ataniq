@@ -581,19 +581,27 @@ func (x *canaryExt) launchSkew(op string) *opFail {
 // It returns nil for a file of the epoch that records the expected build, and
 // otherwise the refusal of [skewRefusal].
 func (x *canaryExt) attachSkew(op string, e leadregistry.Entry) *opFail {
-	layout, err := x.cfg.Layout()
-	if err != nil {
-		// Validated at setup; a layout that cannot be worked out is refused
-		// like a record that cannot be read.
-		return x.skewRefusal(op, &buildid.SkewError{Expected: x.build.Expected, Why: buildid.WhyUnreadable, Cause: err})
-	}
-	err = x.build.BeforeAttach(layout.Holder(), e.Epoch)
+	err := x.holderBuild(e.Epoch)
 	var se *buildid.SkewError
 	if errors.As(err, &se) && se.Why == buildid.WhyNoStateFile && e.Shown.State == leadregistry.StateStarting {
 		x.logf("%s: the holder of epoch %d has no state file yet; the role is starting", op, e.Epoch)
 		return refusal(codeStaleEpoch, msgNotReady)
 	}
 	return x.skewRefusal(op, err)
+}
+
+// holderBuild checks the build the holder of the epoch recorded in holder.json
+// in its state folder against the build the daemon expects: nil for the
+// expected build, and otherwise the error of [buildid.Checker.BeforeAttach].
+// It logs nothing.
+func (x *canaryExt) holderBuild(epoch uint64) error {
+	layout, err := x.cfg.Layout()
+	if err != nil {
+		// Validated at setup; a layout that cannot be worked out is refused
+		// like a record that cannot be read.
+		return &buildid.SkewError{Expected: x.build.Expected, Why: buildid.WhyUnreadable, Cause: err}
+	}
+	return x.build.BeforeAttach(layout.Holder(), epoch)
 }
 
 // skewRefusal is nil for a nil err, and otherwise the refusal of a holder

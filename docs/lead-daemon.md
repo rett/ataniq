@@ -1273,7 +1273,11 @@ sends a message that the running holder recorded that build in its
 with `holder-version-skew`, with a message that names both builds, and a
 `holder.json` of another epoch with `stale-epoch`, naming both epochs; so is a
 role shown `starting` whose holder has written no `holder.json` yet, with a
-text that says it is still starting; nothing changes (see `internal/leadholder/buildid` for what "the same build" means, and
+text that says it is still starting; nothing changes. In scratch mode the
+ready observer checks that `holder.json` again before it shows a lead
+`ready`, and stops a lead whose holder started as another build than the
+executable checked before the start (see
+[the scratch leads guide](scratch-leads.md#ready)) (see `internal/leadholder/buildid` for what "the same build" means, and
 [the scratch leads guide](scratch-leads.md) for the receipt). A daemon whose
 own build cannot be read does not start (the config step).
 

@@ -14,6 +14,7 @@ import (
 
 	"ataniq/internal/clientapi"
 	"ataniq/internal/leadcanary/provision/provisiontest"
+	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/wire"
 	"ataniq/internal/leadregistry"
 	"ataniq/internal/leadwire"
@@ -796,4 +797,83 @@ func TestLeadReadyAbandonedServerDoesNotWaitASecondGrace(t *testing.T) {
 	if d := time.Since(t0); d >= 2*grace-grace/5 {
 		t.Fatalf("the stop took %s: the observers were waited for a second grace of %s", d, grace)
 	}
+}
+
+// otherBuildRecord is a check of the holder's build whose holders are the
+// expected build by their executable (the check before the start passes) and
+// record another build in holder.json for every epoch: a holder rebuilt
+// between the check and the start.
+func otherBuildRecord() *buildid.Checker {
+	ch := sameHolderBuild()
+	ch.Record = func(_ string, epoch uint64) (buildid.Record, error) {
+		b := otherHolderBuild
+		return buildid.Record{Epoch: epoch, Build: &b}, nil
+	}
+	return ch
+}
+
+// A holder that answers for the epoch of this daemon's start but recorded
+// another build from its running executable is never shown ready: the lead is
+// stopped, and the stop is in the evidence with the refusal.
+func TestLeadReadyStopsAHolderThatStartedAsAnotherBuild(t *testing.T) {
+	l := newLeadEnv(t)
+	l.readyBounds(10 * time.Second)
+	l.scratch.HolderBuild = otherBuildRecord()
+	l.start()
+	h := newReadyHolder(roleOf("alpha"))
+	h.epoch.Store(1)
+	sr := l.upWith("alpha", h)
+	if sr.State != "starting" || sr.Epoch != 1 {
+		t.Fatalf("the start result: %+v", sr)
+	}
+	l.waitState("alpha", "stopped")
+	if len(h.holderRequests(t, l, "alpha")) == 0 {
+		t.Fatal("the holder was never asked")
+	}
+	ev := l.evidenceOf("alpha")
+	if len(ev) == 0 || ev[len(ev)-1] != "stop" {
+		t.Fatalf("evidence %v", ev)
+	}
+	b, err := os.ReadFile(l.cfgOf("alpha").EvidencePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"detail":"holder-version-skew: the holder is another build`) {
+		t.Fatalf("evidence %s", b)
+	}
+	if !strings.Contains(l.log.String(), "is not the build checked before the start; the lead is stopped") {
+		t.Fatalf("log:\n%s", l.log)
+	}
+	want(t, l.ticket("alpha", 1, "writer"), leadwire.StatusRefused, "not-running")
+}
+
+// A lead this daemon adopted as starting, whose holder recorded another build,
+// is not shown ready and is not stopped: the daemon did not start it.
+func TestLeadReadyLeavesAnAdoptedHolderOfAnotherBuild(t *testing.T) {
+	l := newLeadEnv(t)
+	l.readyBounds(10 * time.Second)
+	l.start()
+	h := newReadyHolder(roleOf("alpha"))
+	h.epoch.Store(1)
+	h.noStatus.Store(true)
+	l.upWith("alpha", h)
+	l.stays("alpha", "starting", 100*time.Millisecond)
+	if err := l.running.stop(); err != nil {
+		t.Fatalf("the daemon did not stop clean: %v", err)
+	}
+	l.scratch.HolderBuild = otherBuildRecord()
+	h.noStatus.Store(false)
+	l.start()
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(l.log.String(), "which this daemon adopted, is not its build") {
+		if time.Now().After(deadline) {
+			t.Fatalf("log:\n%s", l.log)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	l.stays("alpha", "starting", 100*time.Millisecond)
+	if n := len(l.fake.StartedSpecs()); n != 1 {
+		t.Fatalf("%d starts", n)
+	}
+	want(t, l.ticket("alpha", 1, "writer"), leadwire.StatusRefused, "holder-version-skew")
 }

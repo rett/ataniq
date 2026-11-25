@@ -22,4 +22,6 @@
   start looks up again) is stopped and the start refused
   `holder-version-skew`: `ataniq-scratch start` reads the `holder.json` the
   holder wrote from its own running executable before it reports the holder
-  started.
+  started, and the daemon in scratch mode before it shows a lead `ready` (a
+  lead it adopted is left `starting`, not stopped; the canary's holder is
+  refused at its ticket and message).

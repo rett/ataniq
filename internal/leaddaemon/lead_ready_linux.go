@@ -4,9 +4,13 @@ package leaddaemon
 
 import (
 	"context"
+	"errors"
+	"strconv"
 	"sync"
 	"time"
 
+	"ataniq/internal/leadcanary"
+	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/wire"
 	"ataniq/internal/leadregistry"
 	"ataniq/internal/leadrole"
@@ -16,6 +20,15 @@ import (
 // a background observer per lead that asks the holder's control socket for its
 // status and, when the holder answers for the lead's own epoch, sets the shown
 // state ready. The canary has none of it.
+//
+// Before it sets ready the observer checks the build the holder recorded in
+// its holder.json, which the holder reads from its own running executable:
+// the daemon checked the holder executable by its path before the start, and
+// the unit manager looks the path up again, so a holder rebuilt in between
+// runs as another build. A lead whose holder is not the expected build is
+// never shown ready. When this daemon launched the epoch itself, it stops the
+// lead (stopSkewed); a lead it adopted is left starting, and its ticket and
+// message are refused holder-version-skew as before.
 //
 // What ready means here is the holder's word and no more: the holder is up and
 // the agent was started. The agent's login is not observed, so ready is not a
@@ -254,10 +267,62 @@ func (l *leadMode) readyStep(ctx context.Context, lr *leadRole, epoch uint64) (d
 	if leadReadyHook != nil {
 		leadReadyHook("answered")
 	}
+	// The holder that answered is checked by the build it recorded for the
+	// epoch, before it counts as started.
+	e, ok := ext.runningEntry()
+	if !ok || e.Epoch != epoch || e.Shown.State != leadregistry.StateStarting {
+		return true, ""
+	}
+	if err := ext.holderBuild(epoch); err != nil {
+		var se *buildid.SkewError
+		if !errors.Is(err, buildid.ErrSkew) || errors.As(err, &se) && se.Why == buildid.WhyNoStateFile {
+			// No state file of the epoch yet: nothing is known of its build.
+			return false, "the holder's state file is not the epoch's yet"
+		}
+		f := ext.skewRefusal("scratch ready "+strconv.Quote(lr.key), err)
+		if l.stopSkewed(ctx, lr, epoch, f) {
+			return true, ""
+		}
+		return false, "the operation lock was held"
+	}
 	if l.promote(lr, epoch) {
 		return true, ""
 	}
 	return false, "the operation lock was held"
+}
+
+// stopSkewed acts on a holder of the epoch that answered and is not the
+// expected build (f is the refusal of the check): it is never shown ready.
+// When the epoch is the one this daemon's own lead.start launched last, the
+// lead is stopped through the lifecycle, as lead.stop stops it, and the stop
+// is recorded in the evidence with the refusal as its detail; a lead this
+// daemon adopted is left as it is shown, starting. It takes the role's
+// operation lock as a try-lock, and reports done: false only when the lock
+// was held, which the caller tries again. A stop that fails leaves the epoch
+// to the settle timer, as a failed lead.stop does.
+func (l *leadMode) stopSkewed(ctx context.Context, lr *leadRole, epoch uint64, f *opFail) (done bool) {
+	if !lr.tryLock() {
+		return false
+	}
+	defer lr.unlock()
+	if !l.startingIn(lr, epoch) {
+		return true
+	}
+	if lr.launched != epoch {
+		l.d.logf("scratch ready %q: the holder of epoch %d, which this daemon adopted, is not its build; the lead stays starting: %s", lr.key, epoch, SafeText(f.msg))
+		return true
+	}
+	l.d.logf("scratch ready %q: the holder that started for epoch %d is not the build checked before the start; the lead is stopped: %s", lr.key, epoch, SafeText(f.msg))
+	e, err := l.ctl.Stop(ctx, lr.role)
+	if err != nil {
+		l.armSettle(lr)
+		l.registryDown(err)
+		l.d.logf("scratch ready %q: the stop of the holder of another build failed: %s", lr.key, SafeText(err.Error()))
+		return true
+	}
+	l.cancelSettle(lr)
+	lr.in.ext.record(leadcanary.Entry{Event: leadcanary.EventStop, Epoch: e.Epoch, Detail: f.msg})
+	return true
 }
 
 // startingIn reports whether the lead is shown starting in the epoch, with its

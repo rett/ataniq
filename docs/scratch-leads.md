@@ -349,6 +349,20 @@ on the holder's word, and in no other way:
   and the same role** as the registry shows. A refusal (`wrong-epoch` included),
   no answer, an answer with no status and a status of another epoch or role are
   ignored: the lead stays `starting`, and nothing else changes.
+- **Which build answered.** Before it sets `ready`, the observer reads the
+  build the holder recorded in its `holder.json` for the epoch, which the
+  holder reads from its own running executable. `lead.start` checked the holder
+  executable by its path, and the unit manager looks the path up again, so a
+  holder rebuilt in between runs as another build. A holder that is not the
+  daemon's build is never shown `ready`. When this daemon's own `lead.start`
+  launched the epoch, the observer stops the lead as `lead.stop` does (under the
+  role's operation lock, taken as a try-lock), logs why and writes a `stop`
+  line in the lead's evidence whose detail is the `holder-version-skew`
+  refusal; the next `lead.start` is then refused `holder-version-skew` before
+  anything changes while the executable is still the other build. A lead the
+  daemon adopted at its start is left `starting` and is not stopped, and its
+  ticket and message are refused `holder-version-skew`. A `holder.json` that is
+  not yet the epoch's is asked again, as a holder that does not answer is.
 - **What it sets.** The shown state `ready` for that epoch, with the reason code
   `holder-ready`, the evidence kind `ataniq-observation` and the detail "the
   holder is up and the agent was started; the agent's login is not observed".
@@ -376,7 +390,8 @@ on the holder's word, and in no other way:
   the daemon starts.
 - **It does not change** what counts against `max_running` (a `starting` lead
   and a `ready` one both count), the receipts, the command table or the
-  evidence file.
+  evidence file, but for the `stop` line of a holder that started as another
+  build (above).
 - **At shutdown** the daemon ends the observers and waits for them before it
   closes the registry, so a daemon stopped while a holder does not answer still
   exits 0 and promptly. When the server itself did not stop within the grace the
@@ -385,7 +400,9 @@ on the holder's word, and in no other way:
   and logged) leaves the lead as it is shown.
 
 `ready` is for scratch leads only. The canary has no observer and its lead stays
-`starting` (see [the canary slice](canary-slice.md)).
+`starting` (see [the canary slice](canary-slice.md)); a canary holder that
+started as another build is refused at its ticket and its message, and the
+owner stops it.
 
 `lead.list` shows the state and the reason together: a promoted lead's row says
 `"state":"ready"` and `"state_reason":"holder-ready"`, both from the registry's
