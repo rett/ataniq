@@ -412,7 +412,10 @@ on the holder's word, and in no other way:
   detail: the list never shows `ready` a holder whose ticket and message this
   daemon refuses `holder-version-skew`. The unit is left running and its
   holder is asked nothing; `lead.stop` and a `lead.start` with the matching
-  holder are the way out. A file that is missing or cannot be read confirms
+  holder are the way out. A `degraded` state that cannot be written to the
+  registry ends the daemon's start, at the reconcile step (exit 16) and before
+  the socket is made, so no status or list shows that lead `ready`; the next
+  start checks it again. A file that is missing or cannot be read confirms
   nothing: the lead stays `ready`, the daemon logs it, and its ticket says why
   it is refused.
 - **It does not change** what counts against `max_running` (a `starting` lead,

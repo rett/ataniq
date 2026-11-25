@@ -4,6 +4,7 @@ package leaddaemon
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"sync"
 	"time"
@@ -88,6 +89,11 @@ const (
 // lead's epoch ("answered"), before the state is looked at and set. Only a test
 // sets it, to make a stop or a start happen at that point.
 var leadReadyHook func(stage string)
+
+// showSkewedHook, when set, is called by showSkewed before the registry is
+// written, and an error it returns is returned in place of the write's, with
+// nothing written. Only a test sets it, to make the append fail.
+var showSkewedHook func() error
 
 // readyObservers is the observers of one daemon: at most one per lead. The
 // mutex guards the fields and is never held across a call that waits.
@@ -387,6 +393,11 @@ func (l *leadMode) showSkewed(lr *leadRole, epoch uint64, f *opFail) error {
 	if len(detail) > leadregistry.MaxReasonDetailBytes {
 		detail = detail[:leadregistry.MaxReasonDetailBytes]
 	}
+	if showSkewedHook != nil {
+		if err := showSkewedHook(); err != nil {
+			return err
+		}
+	}
 	_, err := l.reg.SetState(lr.role, leadregistry.StateChange{
 		Epoch: epoch, State: leadregistry.StateDegraded, Evidence: leadregistry.EvidenceObservation,
 		Reason: leadregistry.Reason{Code: codeHolderVersionSkew, Detail: detail},
@@ -399,10 +410,12 @@ func (l *leadMode) showSkewed(lr *leadRole, epoch uint64, f *opFail) error {
 // command): an earlier daemon set ready for its own build. A file of the epoch
 // that confirms another build than this daemon's (buildid.Confirmed) makes the
 // lead shown degraded (showSkewed): its unit is not stopped and nothing is
-// asked of its holder. Any other answer of the check leaves the
-// lead as it is shown. It runs before the server is started, so no command of
-// the role runs beside it; the role's lock is taken all the same.
-func (l *leadMode) revalidateAdopted() {
+// asked of its holder. Any other answer of the check leaves the lead as it is
+// shown. A degraded state that cannot be recorded is returned, and the daemon
+// does not start: it would otherwise serve the earlier daemon's ready for a
+// holder whose ticket it refuses. It runs before the socket is made, so no
+// command of the role runs beside it; the role's lock is taken all the same.
+func (l *leadMode) revalidateAdopted() error {
 	for _, role := range l.cm.router.order {
 		lr := l.roles[role]
 		if lr.in.holderCommand() == nil {
@@ -423,17 +436,17 @@ func (l *leadMode) revalidateAdopted() {
 		}
 		f := lr.in.ext.skewRefusal(op, err)
 		if !lr.tryLock() {
-			continue
+			return fmt.Errorf("scratch mode: the lead %q of epoch %d is another build than this daemon's, and its lock is held, so it cannot be shown degraded", lr.key, e.Epoch)
 		}
 		serr := l.showSkewed(lr, e.Epoch, f)
 		lr.unlock()
 		if serr != nil {
 			l.registryDown(serr)
-			l.d.logf("%s: the state degraded cannot be set for epoch %d: %s", op, e.Epoch, SafeText(serr.Error()))
-			continue
+			return fmt.Errorf("scratch mode: the lead %q of epoch %d is another build than this daemon's, and its state degraded cannot be recorded: %w; the daemon does not serve a state it could not record", lr.key, e.Epoch, serr)
 		}
 		l.d.logf("%s: the holder of epoch %d, which this daemon adopted shown ready, is not its build; the lead is shown degraded and its unit is left running: stop the lead and start it again", op, e.Epoch)
 	}
+	return nil
 }
 
 // startingIn reports whether the lead is shown starting in the epoch, with its

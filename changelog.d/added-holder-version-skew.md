@@ -35,7 +35,9 @@
   adopted it, and a file that is missing or cannot be read changes nothing
   and is read again. A lead an earlier daemon showed `ready` is checked again
   before the new daemon serves: one whose `holder.json` records another build
-  than the new daemon's is shown `degraded` the same way, never `ready`. The
+  than the new daemon's is shown `degraded` the same way, never `ready`, and
+  a `degraded` state that cannot be written ends the daemon's start at the
+  reconcile step (exit 16), before anything is served. The
   daemon never stops a holder for its build: the unit is left running, its
   ticket and message are refused, and the owner stops the lead and starts it
   again; the next `lead.start` is refused `holder-version-skew` while the

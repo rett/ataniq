@@ -353,8 +353,10 @@ func (l *leadMode) closeTable() error {
 }
 
 // extension builds the extension of each lead's instance over the controller
-// and the registry, and returns the lead.* extension.
-func (l *leadMode) extension(ctl *leadlifecycle.Controller, reg *leadregistry.Registry) clientapi.Extension {
+// and the registry, and returns the lead.* extension. It fails when the check
+// of an adopted ready lead found another build and could not record it
+// (revalidateAdopted); the chat is then not bound.
+func (l *leadMode) extension(ctl *leadlifecycle.Controller, reg *leadregistry.Registry) (clientapi.Extension, error) {
 	l.ctl, l.reg = ctl, reg
 	for _, role := range l.cm.router.order {
 		in := l.cm.router.byRole[role]
@@ -362,7 +364,9 @@ func (l *leadMode) extension(ctl *leadlifecycle.Controller, reg *leadregistry.Re
 	}
 	// A lead an earlier daemon showed ready is checked for this daemon's
 	// build before anything is served (see lead_ready_linux.go).
-	l.revalidateAdopted()
+	if err := l.revalidateAdopted(); err != nil {
+		return nil, err
+	}
 	// The chat reads the registry's state of each lead, and nothing else of
 	// it; the seat's port gets the chat once it can answer.
 	if l.chat != nil {
@@ -370,7 +374,7 @@ func (l *leadMode) extension(ctl *leadlifecycle.Controller, reg *leadregistry.Re
 		l.chat.holdStopped = l.holdStopped
 		l.port.bind(l.chat)
 	}
-	return &leadExt{m: l}
+	return &leadExt{m: l}, nil
 }
 
 // holdStopped takes the role's operation lock, as a define, a start and a

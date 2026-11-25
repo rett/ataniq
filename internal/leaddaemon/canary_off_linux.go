@@ -29,8 +29,8 @@ func (*canaryMode) openEvidence() error              { return nil }
 func (*canaryMode) closeEvidence() error             { return nil }
 func (*canaryMode) configure(*leadlifecycle.Options) {}
 func (*canaryMode) announce() error                  { return nil }
-func (*canaryMode) extensions(*leadlifecycle.Controller, *leadregistry.Registry) []clientapi.Extension {
-	return nil
+func (*canaryMode) extensions(*leadlifecycle.Controller, *leadregistry.Registry) ([]clientapi.Extension, error) {
+	return nil, nil
 }
 
 func (*canaryMode) startObservers(context.Context)   {}

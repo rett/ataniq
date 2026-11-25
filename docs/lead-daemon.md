@@ -185,7 +185,11 @@ fails, with one line on standard error:
    the registry is (see [Reconcile](#reconcile-and-what-starts-by-itself)).
    Reconcile does not run again on a timer; in scratch mode (a build with the
    `ataniq_canary` tag) a timer settles a launch that is still pending at its
-   deadline (see [the late-start window](#the-late-start-window)).
+   deadline (see [the late-start window](#the-late-start-window)). In scratch
+   mode this step then checks the build of every lead the daemon adopted
+   shown `ready`, and a lead of another build whose `degraded` state cannot
+   be written to the registry fails the step (exit 16): the daemon does not
+   serve a `ready` it knows to be wrong.
 8. **stale socket**: with both locks held, remove a socket file an earlier
    daemon left. It removes a socket owned by the caller and refuses anything
    else at that name.
@@ -211,7 +215,7 @@ completed. It writes no log file.
 | 13 | The daemon lock could not be taken for another reason. |
 | 14 | Registry: cannot be opened, corrupt, or locked by another writer. |
 | 15 | Manager: the boot identity cannot be read, or the manager or controller cannot be built. |
-| 16 | Reconcile: failed in the registry. |
+| 16 | Reconcile: failed in the registry, or (scratch mode) the `degraded` state of an adopted `ready` lead of another build could not be written. |
 | 17 | Socket: another daemon serves the runtime folder (its lock is held; refused before the registry is opened), or the socket path is too long, the folder is not usable, or the stale socket or the bind failed. |
 | 18 | The server stopped by itself. |
 | 19 | The server did not end within the shutdown grace (5 s). The registry is left open and both locks held, and all end with the process. |

@@ -1180,6 +1180,45 @@ func TestLeadReadyAdoptedReadyLeadOfAnotherBuildIsShownSkewed(t *testing.T) {
 	want(t, l.stopLead("alpha", 1), leadwire.StatusDone, "")
 }
 
+// The reviewer's case of a failed write at adoption: an adopted ready lead
+// whose holder.json confirms another build, while the registry's append of
+// its degraded state fails. The daemon does not start (the reconcile step,
+// before the socket is made), so no status or list ever shows the earlier
+// daemon's ready for it, and nothing is stopped or signalled. The next start,
+// with the registry writable, shows it degraded.
+func TestLeadReadyAdoptedSkewThatCannotBeRecordedStopsTheStart(t *testing.T) {
+	l := newLeadEnv(t)
+	l.readyBounds(10 * time.Second)
+	l.start()
+	h := newReadyHolder(roleOf("alpha"))
+	h.epoch.Store(1)
+	l.upWith("alpha", h)
+	l.waitState("alpha", "ready")
+	if err := l.running.stop(); err != nil {
+		t.Fatalf("the daemon did not stop clean: %v", err)
+	}
+	l.scratch.HolderBuild = otherBuildRecord()
+	var asked atomic.Int32
+	showSkewedHook = func() error {
+		asked.Add(1)
+		return errors.New("the journal's append failed (injected)")
+	}
+	t.Cleanup(func() { showSkewedHook = nil })
+	signals := len(l.fake.CallsOf(leadunit.MethodSignal))
+	se := mustFail(t, l.runToEnd(l.daemonConfig()), StepReconcile, ExitReconcile)
+	if asked.Load() != 1 || !strings.Contains(se.Error(), "its state degraded cannot be recorded: the journal's append failed (injected)") {
+		t.Fatalf("asked %d: %v", asked.Load(), se)
+	}
+	l.noSocketMade()
+	if n := len(l.fake.CallsOf(leadunit.MethodSignal)); n != signals {
+		t.Fatalf("%d signals were sent", n-signals)
+	}
+	showSkewedHook = nil
+	l.start()
+	l.skewShown("alpha", 1)
+	l.untouched("alpha", signals, 1)
+}
+
 // An adopted ready lead whose holder.json is missing confirms no other build:
 // it stays ready, and the daemon logs that its build cannot be confirmed.
 func TestLeadReadyAdoptedReadyLeadWithoutARecordStaysReady(t *testing.T) {
