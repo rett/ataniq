@@ -44,6 +44,19 @@ func TestDecodeTable(t *testing.T) {
 	}
 }
 
+func TestDecodeTableFirstInvalidBuild(t *testing.T) {
+	const want = `build "a": invalid hook row`
+	for _, keys := range [][2]string{{"a", "b"}, {"b", "a"}} {
+		data := []byte(fmt.Sprintf(`{"schema":"ataniq.pack-declaration/1","builds":{%q:[{"async":false}],%q:[{"async":false}]}}`, keys[0], keys[1]))
+		for range 100 {
+			tables, err := DecodeTable(data)
+			if tables != nil || err == nil || err.Error() != want {
+				t.Fatalf("builds %v: got %v, %v; want nil table and %q", keys, tables, err, want)
+			}
+		}
+	}
+}
+
 func TestBadTables(t *testing.T) {
 	for _, edit := range [][2]string{
 		{`/1"`, `/2"`}, {`"2":[]`, `"1":[]`}, {`"2":[]`, `"2":null`}, {`"builds"`, `"unknown"`},

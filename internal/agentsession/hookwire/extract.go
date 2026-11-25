@@ -18,7 +18,8 @@ import (
 // Extract reads at most MaxInputBytes+1 bytes. The helper supplies a reader
 // with its input deadline already set. A timeout or excess byte produces just
 // the row and size observation, even if the bytes so far look like valid JSON.
-// Other read errors and malformed complete inputs return no request.
+// Other read errors, malformed complete inputs and requests exceeding the
+// encoded payload limit return no request.
 // Kept fields accept strings, booleans and numbers. Digests cover the selected
 // JSON token's exact bytes, including quotes, escapes and internal whitespace.
 func Extract(row pack.HookRow, in io.Reader) (*Request, error) {
@@ -71,6 +72,9 @@ func Extract(row pack.HookRow, in io.Reader) (*Request, error) {
 			sum := sha256.Sum256(raw)
 			r.Digests[field.Name] = hex.EncodeToString(sum[:])
 		}
+	}
+	if _, err := EncodeRequest(*r); err != nil {
+		return nil, err
 	}
 	return r, nil
 }
