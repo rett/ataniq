@@ -19,6 +19,9 @@ func TestManifest(t *testing.T) {
 		Builds: []pack.Build{{
 			Version: "2.1.325", Transports: []pack.Transport{pack.Terminal},
 			Source: "internal/inject/screen/testdata/claude-2.1.325",
+		}, {
+			Version: "2.1.332", Transports: []pack.Transport{pack.Terminal},
+			Source: "packs/claude/launchpolicy/2.1.332.help.txt",
 		}},
 	}
 	if got := p.Name(); got != want.Name {

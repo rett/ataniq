@@ -15,6 +15,12 @@
       "transports": ["terminal"],
       "verified_on": "",
       "source": "internal/inject/screen/testdata/claude-2.1.325"
+    },
+    {
+      "version": "2.1.332",
+      "transports": ["terminal"],
+      "verified_on": "",
+      "source": "packs/claude/launchpolicy/2.1.332.help.txt"
     }
   ]
 }
