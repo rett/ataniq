@@ -115,6 +115,7 @@ var reasonWords = map[string]string{
 	"launch-uncertain":       "the start's outcome is not known; read the list",
 	"intent-pending":         unsettledWords,
 	"stop-unproven":          "the stop is not proven; read the list",
+	"holder-version-skew":    "the lead's holder is another build; stop the lead, start it with the current one",
 
 	// Ticket and message.
 	"not-running":        "the lead is not running",

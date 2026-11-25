@@ -558,3 +558,21 @@ func TestUnsettledWordsNameTheWindowAndTheFallback(t *testing.T) {
 		t.Errorf("the tail is %d bytes", len(maxRunningUnknownTail))
 	}
 }
+
+// A holder of another build is refused before a start and before a ticket; the
+// words say what the owner does: stop the lead and start it with the current
+// holder.
+func TestTheVersionSkewWordsSayWhatTheOwnerDoes(t *testing.T) {
+	w := reasonWords["holder-version-skew"]
+	for _, part := range []string{"another build", "stop the lead", "start it"} {
+		if !strings.Contains(w, part) {
+			t.Errorf("holder-version-skew: %q lacks %q", w, part)
+		}
+	}
+	for _, op := range []Op{OpStart, OpTicket} {
+		line := receiptLine(Receipt{Op: op, Status: Refused, Code: "holder-version-skew"}, heldUnknown)
+		if !strings.HasSuffix(line, w) {
+			t.Errorf("%v: %q", op, line)
+		}
+	}
+}
