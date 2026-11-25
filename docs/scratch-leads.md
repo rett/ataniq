@@ -467,7 +467,8 @@ records no build (a holder older than build identities) is refused as such. Its
 message, unlike the other codes' fixed texts, names what was found and both
 builds, as read from the binary or the record: a version, the first 12
 characters of the revision and `modified`, in a restricted character set, and
-both module paths when they differ (cut in the middle when the 256 bytes of
+both module paths when they differ (each cut, keeping its start and the first
+character at which the two differ, when the 256 bytes of
 the message would not hold them). Not
 checked are `lead.stop` and the `status` questions of the daemon's ready
 observer, which only read the holder's state: stop a skewed lead and start it
