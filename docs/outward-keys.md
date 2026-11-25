@@ -23,7 +23,9 @@ manual](../deploy/authority-host/DEPLOY.md#the-deploy-key). This page adds git.
 The placeholders: `AI-HOST` is the development host and `git@GIT-HOST` the git
 host's ssh login, each named as the laptop's `known_hosts` names it; `OWNER/REPO`
 is the repository on the git host; `PUSH-KEY` and `SIGNING-KEY` are key files on
-the laptop.
+the laptop; `/KNOWN-HOSTS-FILE` is a known-hosts file you keep on the
+development host with the git host's key, checked against the fingerprint the
+git host publishes.
 
 ## Git: fetch and push
 
@@ -47,15 +49,21 @@ git remote -v
   ssh-add -c -t 30m -h AI-HOST -h 'AI-HOST>git@GIT-HOST' PUSH-KEY
   ```
 
-  To keep ssh from trying a key file of the development host, push with the
-  options of the deploy driver, in the repository's own configuration:
+  To keep ssh from using anything of the development host but the forwarded
+  agent, push with the options of the deploy driver, in the repository's own
+  configuration (one line):
 
   ```
-  git config core.sshCommand 'ssh -o IdentityFile=none -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ForwardAgent=no -o ControlPath=none'
+  git config core.sshCommand 'ssh -F /dev/null -o BatchMode=yes -o IdentityFile=none -o IdentitiesOnly=no -o IdentityAgent=SSH_AUTH_SOCK -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o GSSAPIAuthentication=no -o HostbasedAuthentication=no -o PKCS11Provider=none -o ProxyCommand=none -o ProxyJump=none -o ControlMaster=no -o ControlPath=none -o ForwardAgent=no -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o UserKnownHostsFile=/KNOWN-HOSTS-FILE'
   ```
 
-  `git push` then fails without the forwarded agent, and asks on the laptop
-  (or for a touch) with it.
+  No ssh configuration file is read (`-F /dev/null`), so no `IdentityFile`,
+  `IdentityAgent` or `ProxyJump` of yours applies; only the agent of
+  `SSH_AUTH_SOCK` signs, only with a public key, never asking on the
+  development host's terminal (`BatchMode=yes`), over a new connection each
+  time, to the host key of your known-hosts file alone. `git push` then fails
+  without the forwarded agent, and asks on the laptop (or for a touch) with
+  it.
 
 ## Signing commits and tags
 

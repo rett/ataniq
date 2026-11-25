@@ -37,36 +37,59 @@
 #                        runs a file of the incoming folder.
 #   --self-test          compute and print every command, and the ssh options,
 #                        without running ah-release, ssh-add, rsync or ssh,
-#                        and without AUTHORITY_HOST_SSH or an agent. It starts
-#                        nothing and contacts nothing.
+#                        and without AUTHORITY_HOST_SSH, a known-hosts file or
+#                        an agent. It starts nothing and contacts nothing.
 #
-# The host is named only by the environment variable AUTHORITY_HOST_SSH
-# (USER@HOST or an ssh alias), read at run time; it is never written to a file
-# and never printed: the output says `the authority host`. Without the
-# variable the script refuses (except for --self-test).
+# The connection reads no ssh configuration of this host (-F /dev/null), so
+# everything it needs comes from the owner's environment, read at run time and
+# never from the repository:
+#   AUTHORITY_HOST_SSH          USER@HOST of the authority host (a host name
+#                               or an address; an ssh alias does not work)
+#   AUTHORITY_HOST_KNOWN_HOSTS  the absolute path of a known-hosts file the
+#                               owner keeps, holding the authority host's key
+#   AUTHORITY_HOST_PORT         the ssh port, when it is not 22
+# The host is never written to a file and never printed: the output says `the
+# authority host`. Without the first two the script refuses (except for
+# --self-test).
 #
 # The key is the agent's, never a key file. Every ssh, and the ssh of every
-# rsync, runs with these options (SSH_OPTS below):
+# rsync, runs with these options (SSH_OPTS below), then
+# -o UserKnownHostsFile=FILE and, with a port, -o Port=N:
+#   -F /dev/null                        no ssh configuration file at all: no
+#                                       IdentityFile, IdentityAgent, ProxyJump,
+#                                       Match or alias of the user's or the
+#                                       system's applies
 #   -o BatchMode=yes                    never ask for a password or passphrase
 #   -o IdentityFile=none                no default key file (~/.ssh/id_*)
+#   -o IdentitiesOnly=no                offer the agent's keys
+#   -o IdentityAgent=SSH_AUTH_SOCK      only the agent of SSH_AUTH_SOCK, the
+#                                       one checked below
+#   -o PreferredAuthentications=publickey
 #   -o PasswordAuthentication=no        no password
 #   -o KbdInteractiveAuthentication=no  no keyboard-interactive login
-#   -o ForwardAgent=no                  the agent goes no further than here
-#   -o ControlPath=none                 no shared connection: every use of
-#                                       the key is a new login, and so a new
+#   -o GSSAPIAuthentication=no          no Kerberos
+#   -o HostbasedAuthentication=no       no host key of this host
+#   -o PKCS11Provider=none              no token library
+#   -o ProxyCommand=none                a direct connection
+#   -o ProxyJump=none
+#   -o ControlMaster=no                 no shared connection: every use of
+#   -o ControlPath=none                 the key is a new login, and so a new
 #                                       confirmation on the laptop
+#   -o ForwardAgent=no                  the agent goes no further than here
+#   -o StrictHostKeyChecking=yes        only the host key of the known-hosts
+#   -o GlobalKnownHostsFile=/dev/null   file the owner names
 # so the only key it can log in with is one the agent of SSH_AUTH_SOCK holds:
 # the owner's, forwarded from the laptop for this session and loaded there
 # with `ssh-add -c` (a confirmation for each use) or held on a FIDO2 key (a
-# touch for each use). Except for --self-test the script refuses, before it
-# runs anything else, when SSH_AUTH_SOCK is unset or empty, when the agent
-# cannot be reached, or when it holds no key (`ssh-add -l`). It cannot tell
-# a confirmed key from one that is not: --dry says what to look for. An
-# IdentityFile line of your own ssh config is still read; see DEPLOY.md,
-# "The deploy key".
+# touch for each use), and only to the host the owner's known-hosts file
+# names. Except for --self-test the script refuses, before it runs anything
+# else, when SSH_AUTH_SOCK is unset or empty, when the agent cannot be
+# reached, or when it holds no key (`ssh-add -l`). It cannot tell a confirmed
+# key from one that is not: --dry says what to look for; see DEPLOY.md, "The
+# deploy key".
 #
 # POSIX sh only. Tools: ssh-add, rsync and ssh (not in --self-test), grep,
-# sed, cd, pwd.
+# sed, cd, pwd. OpenSSH 8.9 or newer (see DEPLOY.md).
 #
 # Exit status: 0 done; 1 a step failed (nothing later was run); 2 refused
 # before anything was run (bad arguments, environment, agent, release or
@@ -78,10 +101,10 @@ LC_ALL=C
 export LC_ALL
 
 DP_NAME=deploy.sh
-# The ssh options of every connection (see the header). Each is one word
-# without a glob character, so the unquoted expansion below splits it into
-# exactly these words.
-SSH_OPTS='-o BatchMode=yes -o IdentityFile=none -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ForwardAgent=no -o ControlPath=none'
+# The ssh options of every connection (see the header); the known-hosts file
+# and the port are added below. Each is one word without a glob character or a
+# blank, so the unquoted expansion below splits it into exactly these words.
+SSH_BASE='-F /dev/null -o BatchMode=yes -o IdentityFile=none -o IdentitiesOnly=no -o IdentityAgent=SSH_AUTH_SOCK -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o GSSAPIAuthentication=no -o HostbasedAuthentication=no -o PKCS11Provider=none -o ProxyCommand=none -o ProxyJump=none -o ControlMaster=no -o ControlPath=none -o ForwardAgent=no -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null'
 say() { printf '%s\n' "$*"; }
 die() {
   printf '%s: %s\n' "$DP_NAME" "$*" >&2
@@ -129,13 +152,28 @@ valid_id() {
   printf '%s\n' "$1" | grep -Eq '^[0-9]{4,}-[0-9a-f]{7,40}$'
 }
 
-# valid_host TEXT: USER@HOST or an alias; no option, no space, no quote.
+# valid_host TEXT: USER@HOST, a host name or an address; no option, no
+# space, no quote.
 valid_host() {
   case $1 in
     '' | *'
 '*) return 1 ;;
   esac
-  printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._@-]*$'
+  printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9.-]*$'
+}
+
+# valid_file TEXT: an absolute path of safe characters (one word for ssh),
+# with no empty, . or .. part.
+valid_file() {
+  case $1 in
+    '' | *'
+'*) return 1 ;;
+  esac
+  printf '%s\n' "$1" | grep -Eq '^/[A-Za-z0-9._/-]*[A-Za-z0-9_-]$' || return 1
+  case $1 in
+    *//* | */./* | */../*) return 1 ;;
+  esac
+  return 0
 }
 
 # valid_base TEXT: an absolute path, or ~/PATH, of safe characters, with no
@@ -196,7 +234,26 @@ else
     die "AUTHORITY_HOST_SSH is not set: set it to USER@HOST (or an ssh alias) of the authority host"
   HOST=$AUTHORITY_HOST_SSH
 fi
-valid_host "$HOST" || die "AUTHORITY_HOST_SSH must be USER@HOST or an ssh alias (letters, digits, . _ @ -)"
+valid_host "$HOST" || die "AUTHORITY_HOST_SSH must be USER@HOST (letters, digits, . _ -): the connection reads no ssh configuration, so an alias does not work"
+
+# --- the known-hosts file and the port ------------------------------------------
+if [ "$MODE" = self-test ]; then
+  KNOWN_HOSTS=${AUTHORITY_HOST_KNOWN_HOSTS-/KNOWN-HOSTS-FILE}
+else
+  [ -n "${AUTHORITY_HOST_KNOWN_HOSTS-}" ] ||
+    die "AUTHORITY_HOST_KNOWN_HOSTS is not set: set it to the absolute path of a known-hosts file you keep with the authority host's key (see DEPLOY.md, \"The deploy key\")"
+  KNOWN_HOSTS=$AUTHORITY_HOST_KNOWN_HOSTS
+fi
+valid_file "$KNOWN_HOSTS" || die "AUTHORITY_HOST_KNOWN_HOSTS must be an absolute path of letters, digits, . _ / -"
+if [ "$MODE" != self-test ]; then
+  [ -f "$KNOWN_HOSTS" ] && [ ! -L "$KNOWN_HOSTS" ] || die "AUTHORITY_HOST_KNOWN_HOSTS must name a regular file (not a link): $KNOWN_HOSTS"
+fi
+SSH_OPTS="$SSH_BASE -o UserKnownHostsFile=$KNOWN_HOSTS"
+if [ -n "${AUTHORITY_HOST_PORT-}" ]; then
+  printf '%s\n' "$AUTHORITY_HOST_PORT" | grep -Eq '^[1-9][0-9]{0,4}$' && [ "$AUTHORITY_HOST_PORT" -le 65535 ] ||
+    die "AUTHORITY_HOST_PORT must be a port number (1 to 65535)"
+  SSH_OPTS="$SSH_OPTS -o Port=$AUTHORITY_HOST_PORT"
+fi
 
 # --- the release --------------------------------------------------------------
 [ -n "$RELEASE" ] || die "--release DIR/ID is required"
