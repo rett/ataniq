@@ -937,7 +937,7 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 		t.Fatalf("the daemon's check was run with %q, want %q", got, want)
 	}
 	stub(10, 0)
-	if out, code := k.run(t, nil, status...); code != 10 || !strings.Contains(out, "ended with exit status 10: the daemon would not start") {
+	if out, code := k.run(t, nil, status...); code != 10 || !strings.Contains(out, "ended with exit status 10: the sitting failed preflight; the check's last line says which start would fail") {
 		t.Fatalf("--status with a refusal: exit %d:\n%s", code, out)
 	}
 	stub(0, 0)

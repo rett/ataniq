@@ -440,7 +440,10 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    lead's holder. It then lists what the daemon will read (the settings
    file, the gate's key, certificate and pins, read only; the key list; the
    journal and records) and that `owner/scratch.json` is not read. It must end
-   `check: no refusal`. The daemon makes these checks at its start too and
+   `check: no refusal`; any refusal ends `check: N refusal(s): the sitting
+   failed preflight` and names the start that would fail (the daemon's, or,
+   when a holder's socket path is the one refusal, the later start of that
+   lead's holder), and `--status` says the sitting failed preflight. The daemon makes these checks at its start too and
    refuses (exit 10) with the same reasons, before any lock, with one
    exception: the socket paths of the leads' holders are checked only here,
    before the sitting, since the daemon's start does not look at them (a

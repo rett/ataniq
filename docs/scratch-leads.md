@@ -1310,8 +1310,10 @@ lead's holder. The last of these is one the daemon's start does not make: a
 holder meets the limit of a socket address only when it starts, so the check
 is the place to find a runtime root too long for a holder. Then it lists
 what the daemon would read and open, says that `owner/scratch.json` is not
-read, and ends `check: no refusal` (exit 0) or `check: N refusal(s)` (exit
-10). It binds, locks, makes and starts nothing; the locks and the gate's port,
+read, and ends `check: no refusal` (exit 0) or `check: N refusal(s): the
+sitting failed preflight` (exit 10), which then names the start that would
+fail: the daemon's, or, when a holder's socket path is the one refusal, the
+later start of that lead's holder (the daemon would start). It binds, locks, makes and starts nothing; the locks and the gate's port,
 which it does not take, are the start's own refusals (exit 12, 17 and 18).
 
 `--check --keys-prefix` and `--check --keys-since LEN:SHA256` check the key

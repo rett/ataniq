@@ -1064,7 +1064,7 @@ if [ "$MODE" = status ]; then
   if [ "$RC" -eq 0 ]; then
     say "status: the daemon's check found no refusal"
   else
-    say "status: the daemon's check ended with exit status $RC: the daemon would not start; the lines above say why"
+    say "status: the daemon's check ended with exit status $RC: the sitting failed preflight; the check's last line says which start would fail, and the lines above say why"
   fi
   if [ -n "$COMPARE" ]; then
     compare_record

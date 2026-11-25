@@ -634,7 +634,10 @@ func (a *app) ownerSettingsCheck(o *ownerFlags, cfg *leaddaemon.Config, p settin
 	} else {
 		fmt.Fprintf(w, "note  the seat gate: no --seat-gate, so the daemon serves no gate\n")
 	}
-	line("the socket paths", socketPaths(p, leads), fmt.Sprintf("the daemon's socket and every lead's holder sockets fit in a Unix socket address (%d bytes)", maxUnixSocketPath))
+	sockErr := socketPaths(p, leads)
+	line("the socket paths", sockErr, fmt.Sprintf("the daemon's socket and every lead's holder sockets fit in a Unix socket address (%d bytes)", maxUnixSocketPath))
+	var holder holderSocketError
+	holderOnly := fails == 1 && errors.As(sockErr, &holder)
 	fmt.Fprintf(w, "read  %s/%s: the owner channel's settings, read only\n", leaddaemon.SafeText(p.dir), settingsName)
 	fmt.Fprintf(w, "read  %s: the gate's key, certificate and seat pins, read only, never written\n", leaddaemon.SafeText(filepath.Join(owner, leaddaemon.SeatGateDirName)))
 	fmt.Fprintf(w, "read  %s and %s: the paired phones' keys, read; a pairing, a revocation or a raised sign counter appends to them\n",
@@ -646,8 +649,14 @@ func (a *app) ownerSettingsCheck(o *ownerFlags, cfg *leaddaemon.Config, p settin
 		fmt.Fprintf(w, "open  %s: the drop folder of the owner channel's requests\n", leaddaemon.SafeText(sc.Drop))
 	}
 	fmt.Fprintf(w, "note  at start the daemon takes the state folder's lock (exit 12 while another daemon, the trial's, holds it), its runtime folder's (17) and the gate's port (18); --check takes none of them\n")
-	if fails > 0 {
-		fmt.Fprintf(w, "check: %d refusal(s): the daemon would not start (exit %d); nothing was bound, locked, made or started\n", fails, leaddaemon.ExitConfig)
+	switch {
+	case holderOnly:
+		// The daemon's start does not look at the holders' sockets: it
+		// would start, and the lead's holder would fail at its own start.
+		fmt.Fprintf(w, "check: %d refusal(s): the sitting failed preflight (exit %d): the daemon would start, but the start of the lead's holder would fail (its socket path does not fit); nothing was bound, locked, made or started\n", fails, leaddaemon.ExitConfig)
+		return leaddaemon.ExitConfig
+	case fails > 0:
+		fmt.Fprintf(w, "check: %d refusal(s): the sitting failed preflight (exit %d): the daemon would not start; nothing was bound, locked, made or started\n", fails, leaddaemon.ExitConfig)
 		return leaddaemon.ExitConfig
 	}
 	fmt.Fprintf(w, "check: no refusal: the daemon would read these and start; nothing was bound, locked, made or started\n")
@@ -665,6 +674,14 @@ func countRule(guards []settingsGuard, rule string) int {
 	return n
 }
 
+// holderSocketError is the refusal of a holder's socket path that does not
+// fit: the daemon's start does not check it, the holder's start fails on it.
+type holderSocketError struct{ path string }
+
+func (e holderSocketError) Error() string {
+	return fmt.Sprintf("the holder socket %s is %d bytes, over the %d a Unix socket address holds: choose a shorter runtime root", e.path, len(e.path), maxUnixSocketPath)
+}
+
 // socketPaths refuses a daemon socket or a holder socket whose path does not
 // fit in a Unix socket address.
 func socketPaths(p settingsPlace, leads []leadcanary.Config) error {
@@ -677,8 +694,8 @@ func socketPaths(p settingsPlace, leads []leadcanary.Config) error {
 			return err
 		}
 		for _, s := range []string{"attach.sock", "control.sock"} {
-			if n := len(filepath.Join(dir, s)); n > maxUnixSocketPath {
-				return fmt.Errorf("the holder socket %s is %d bytes, over the %d a Unix socket address holds: choose a shorter runtime root", filepath.Join(dir, s), n, maxUnixSocketPath)
+			if path := filepath.Join(dir, s); len(path) > maxUnixSocketPath {
+				return holderSocketError{path}
 			}
 		}
 	}

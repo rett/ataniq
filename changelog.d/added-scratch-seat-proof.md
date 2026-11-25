@@ -37,7 +37,10 @@
   its locks (also the root marker, the gate's key and pins and the daemon's
   socket path) and one the start does not make, the socket paths of the
   leads' holders, pass or FAIL with the reason, and what it would read,
-  then exits 0 or 10, binding, locking, making and starting nothing. `qualification/scratch-seat/prepare.sh`
+  then exits 0 or 10 (a refusal says the sitting failed preflight and names
+  the start that would fail: the daemon's, or for a holder's socket path
+  alone the later start of that lead's holder), binding, locking, making and
+  starting nothing. `qualification/scratch-seat/prepare.sh`
   writes the scratch config and the settings folder (modes 0600 and 0700)
   and the files they name in a folder of the proof's own, with leads fresh
   for each sitting (`standin-N`, `live-N`): `--dry` prints from the values
