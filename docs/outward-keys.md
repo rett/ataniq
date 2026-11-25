@@ -11,14 +11,22 @@ signs commits, tags and releases. The owner's rule for them:
   (`-t`) and, for a login key, the hosts it may reach (`-h`). With a FIDO2 key
   the confirmation is the key's touch.
 - The agent is forwarded to the development host only for a deploy, push or
-  release session, never for an everyday one.
+  release session, never for an everyday one, on a connection of its own
+  (`ControlMaster=no`, `ControlPath=none`), and torn down when the step is
+  done: `ssh-add -D` on the outward agent, then close the forwarded login.
+- A confirmation is accepted only right after the owner started the step
+  that causes it; any other prompt is refused and treated as an incident
+  (see [which confirmations to
+  accept](../deploy/authority-host/DEPLOY.md#the-deploy-key), step 3).
 - No private key for the authority host, the git remote or signing lives on the
   development host. Nothing in this repository sets any of it up: these are the
   owner's steps.
 
-The deploy key's procedure, with the forwarding, the authority host's
-`authorized_keys` line and how to prove it, is in [the deploy
-manual](../deploy/authority-host/DEPLOY.md#the-deploy-key). This page adds git.
+The deploy key's procedure, with the forwarding, the versions it needs, the
+confirmations to accept, the authority host's `authorized_keys` line and how
+to prove it, is in [the deploy
+manual](../deploy/authority-host/DEPLOY.md#the-deploy-key). This page adds
+git, and the cutover from keys kept anywhere else.
 
 The placeholders: `AI-HOST` is the development host and `git@GIT-HOST` the git
 host's ssh login, each named as the laptop's `known_hosts` names it; `OWNER/REPO`
@@ -94,6 +102,46 @@ uses the agent's key when it is given the public part.
 
 With a FIDO2 key the literal is the `sk-ssh-ed25519@openssh.com` public key and
 each signature is a touch.
+
+## The cutover: from old keys to the laptop's
+
+Loading the laptop's keys does not make an older copy useless: a push key, a
+signing key or a deploy key that lived on the development host (or anywhere
+else) still works wherever it is trusted, until that trust is withdrawn. Make
+the cutover once, for all three keys, before the first session that uses the
+laptop's:
+
+1. **List what is trusted now.** On the git host, its list of login keys (and
+   deploy keys) for the account and the repository, and its list of signing
+   keys; on the authority host, from your root session,
+   `ssh-keygen -lf /home/DEPLOYUSER/.ssh/authorized_keys`; in the
+   repository, the allowed-signers file that verifies signatures
+   (`gpg.ssh.allowedSignersFile`), if there is one.
+2. **Check the fingerprints of all three keys.** On the laptop,
+   `ssh-keygen -lf PUSH-KEY`, `ssh-keygen -lf SIGNING-KEY` and
+   `ssh-keygen -lf DEPLOY-KEY` (or the `.pub` files). Each list of step 1 must
+   hold the laptop's fingerprint where it belongs (the push key as a login
+   key, the signing key as a signing key only, the deploy key in the
+   deploying user's `authorized_keys` only) and no other outward key.
+3. **Withdraw the old trust for new operations.** Remove every other key from
+   those lists: the old push key from the git host's login and deploy keys,
+   the old deploy key's line from `authorized_keys`, the old signing key from
+   the git host's signing keys. In the allowed-signers file keep an old
+   signing key only with `valid-before="DATE"` (the cutover date), so that
+   the signatures it made before still verify and none it makes after does.
+   Then delete the old private keys where they lived: on the development host
+   no file of `~/.ssh` (or elsewhere) holds a private key for the git host,
+   the authority host or signing.
+4. **Check what remains usable once the laptop's keys are loaded.** In a
+   forwarded session, `ssh-add -l` lists only the laptop's keys, each with
+   its laptop fingerprint. Without the agent (`env -u SSH_AUTH_SOCK`), a push
+   fails with `Permission denied (publickey)`, and so does the negative check
+   of the deploy manual; an old key, tried by name
+   (`ssh -o IdentitiesOnly=yes -o IdentityAgent=none -i OLD-KEY git@GIT-HOST`
+   from wherever a copy may remain), is refused by the git host and by the
+   authority host; and a commit signed with the old signing key after the
+   cutover does not verify. What remains usable is the laptop's keys, through
+   the forwarded agent, within their `-h` limits, one confirmation at a time.
 
 ## Branch and tag protection
 

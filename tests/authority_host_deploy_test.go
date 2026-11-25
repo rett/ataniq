@@ -972,15 +972,27 @@ func testAuthorityHostDeployKey(t *testing.T, data string, section func(from, to
 		"ssh-keygen -t ed25519 -f DEPLOY-KEY",
 		"ssh-add -c -t 30m -h AI-HOST -h 'AI-HOST>USER@AUTHORITY-HOST' DEPLOY-KEY",
 		"Forward it for the deploy session only",
-		"ssh -A AI-HOST",
-		"ForwardAgent ~/.ssh/outward-agent.sock",
+		"ssh -o ControlMaster=no -o ControlPath=none -o ForwardAgent=~/.ssh/outward-agent.sock AI-HOST",
+		"ssh -o ControlMaster=no -o ControlPath=none -A AI-HOST",
+		"ForwardAgent ~/.ssh/outward-agent.sock ControlMaster no ControlPath none",
+		"a login that reuses an existing master connection gets that master's forwarded agent",
+		"needs OpenSSH 8.9 or newer at both ends of every hop, client and server",
+		"the development host's sshd (which receives the forwarded agent) and its ssh",
+		"the authority host's sshd (which proves to the agent which host it is)",
+		"accept a confirmation only right after you started the step that causes it",
+		"Refuse any other prompt, and any prompt beyond that count, and treat it as an incident",
+		"tear the forwarding down at once instead of waiting for -t",
+		"SSH_AUTH_SOCK=~/.ssh/outward-agent.sock ssh-add -D",
+		"and close the forwarded login (exit)",
+		"A FIDO2 key follows its own minimum: OpenSSH 8.2 or newer on the laptop",
+		"with -h, every hop still needs OpenSSH 8.9 or newer, client and server",
 		`restrict,from="192.0.2.10" ssh-ed25519 AAAA...PUBLIC-KEY deploy-key`,
 		"There is no forced command (command=)",
 		"sudo -l -U DEPLOYUSER lists the one ah-switch form and nothing else",
 		"refuse the confirmation on the laptop (or let it time out): it ends rsync -n failed and nothing is copied",
 		"If no confirmation popped, the key is not loaded with -c",
 		"deploy.sh --dry refuses (SSH_AUTH_SOCK is not set)",
-		`env -u SSH_AUTH_SOCK ssh -o BatchMode=yes -o IdentityAgent=none "$AUTHORITY_HOST_SSH" true`,
+		`env -u SSH_AUTH_SOCK ssh -o BatchMode=yes -o IdentityAgent=none -o ControlMaster=no -o ControlPath=none -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$AUTHORITY_HOST_KNOWN_HOSTS" "$AUTHORITY_HOST_SSH" true`,
 		"Permission denied (publickey)",
 		"ssh-keygen -lf /home/DEPLOYUSER/.ssh/authorized_keys",
 		"only the confirmation becomes a touch",
@@ -1020,6 +1032,17 @@ func testAuthorityHostDeployKey(t *testing.T, data string, section func(from, to
 		}
 	}
 	ahPlaceholdersOnly(t, "DEPLOY.md, The deploy key", key)
+	for _, line := range strings.Split(data, "\n") {
+		line = strings.TrimSpace(line)
+		if (strings.HasPrefix(line, "ssh ") || strings.HasPrefix(line, "env -u SSH_AUTH_SOCK ssh ")) &&
+			(strings.HasSuffix(line, " AI-HOST") || strings.Contains(line, "$AUTHORITY_HOST_SSH\" true")) &&
+			!strings.Contains(line, "-o ControlMaster=no -o ControlPath=none") {
+			t.Errorf("DEPLOY.md makes a login that may reuse a shared connection: %s", line)
+		}
+	}
+	if strings.Contains(ahFlat(data), "The authority host needs OpenSSH 8.2 or newer.") {
+		t.Error("DEPLOY.md still gives 8.2 as the authority host's minimum with -h")
+	}
 	// The procedure's every use of ssh in the manual carries the agent-only
 	// options, and the driver prints the same.
 	for _, line := range strings.Split(data, "\n") {
@@ -1201,6 +1224,15 @@ func TestAuthorityHostDeployOutwardKeys(t *testing.T) {
 		"ssh-add -c -t 30m SIGNING-KEY",
 		"refuses it for any other signature",
 		"Branch and tag protection on the git host is the owner's setting",
+		"on a connection of its own (ControlMaster=no, ControlPath=none), and torn down when the step is done: ssh-add -D on the outward agent, then close the forwarded login",
+		"A confirmation is accepted only right after the owner started the step that causes it; any other prompt is refused and treated as an incident",
+		"## The cutover: from old keys to the laptop's",
+		"Check the fingerprints of all three keys.",
+		"ssh-keygen -lf PUSH-KEY, ssh-keygen -lf SIGNING-KEY and ssh-keygen -lf DEPLOY-KEY",
+		"Withdraw the old trust for new operations.",
+		`keep an old signing key only with valid-before="DATE"`,
+		"Check what remains usable once the laptop's keys are loaded.",
+		"What remains usable is the laptop's keys, through the forwarded agent, within their -h limits, one confirmation at a time.",
 	} {
 		if !strings.Contains(flat, want) {
 			t.Errorf("docs/outward-keys.md does not say %q", want)
