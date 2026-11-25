@@ -54,6 +54,10 @@ start    Start a holder for a scratch agent that runs ARGV. ARGV[0] must be an
 ticket   Mint an attach ticket, register it with the holder, and write it to
          the file named in the output (mode 0600). The ticket is never printed.
          The ticket is for the writer unless --viewer is given.
+status   Print the holder's status.
+release-writer
+         Remove the current writer.
+stop     Ask the holder to stop; stop its unit if it is still active after 4 s.
 
 start and ticket first check that the holder is the build of this command:
 the same module version, VCS revision and modified flag, read from the holder
@@ -62,10 +66,6 @@ holder.json before ticket. A holder of another build, one that records no
 build (an older holder) and one whose build cannot be read are refused with
 "refused: holder-version-skew: ...", which names both builds, and nothing is
 started or attached. Build both from one checkout.
-status   Print the holder's status.
-release-writer
-         Remove the current writer.
-stop     Ask the holder to stop; stop its unit if it is still active after 4 s.
 
 Exit status: 0 done, 1 failed or refused, 2 wrong usage.
 `
