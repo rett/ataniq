@@ -5,6 +5,7 @@ package leaddaemon
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -167,6 +168,12 @@ func TestLeadStartAndTicketRefuseASkewedHolder(t *testing.T) {
 	if n := len(l.holders["alpha"].requests(wire.OpTicket)); n != 0 {
 		t.Fatalf("the holder was asked %d times", n)
 	}
+	// A message is checked as a ticket is, and the refusal spends nothing.
+	in := l.inject("alpha", 1, "msg-one", "body one")
+	want(t, in, leadwire.StatusRefused, "holder-version-skew")
+	if !strings.Contains(in.Message, buildid.WhyNoRecord) {
+		t.Fatalf("message %q", in.Message)
+	}
 
 	// A state file of the epoch before, of the same build: the holder of the
 	// epoch has not written its own, and the ticket is refused stale-epoch.
@@ -179,7 +186,64 @@ func TestLeadStartAndTicketRefuseASkewedHolder(t *testing.T) {
 	if !strings.Contains(tk.Message, "of epoch 0, not of epoch 1") {
 		t.Fatalf("message %q", tk.Message)
 	}
-	if n := len(l.holders["alpha"].requests(wire.OpTicket)); n != 0 {
+	in = l.inject("alpha", 1, "msg-one", "body one")
+	want(t, in, leadwire.StatusRefused, "stale-epoch")
+	if !strings.Contains(in.Message, "of epoch 0, not of epoch 1") {
+		t.Fatalf("message %q", in.Message)
+	}
+	h := l.holders["alpha"]
+	if n := len(h.requests(wire.OpTicket)) + len(h.requests(wire.OpInject)); n != 0 {
 		t.Fatalf("the holder was asked %d times", n)
+	}
+	if row := l.row("alpha"); row.MessageSpent {
+		t.Fatal("a refused message spent the epoch")
+	}
+
+	// The holder of the epoch records the same build: the message goes.
+	other.Record = sameHolderBuild().Record
+	want(t, l.inject("alpha", 1, "msg-one", "body one"), leadwire.StatusDone, "")
+	if n := len(h.requests(wire.OpInject)); n != 1 {
+		t.Fatalf("%d inject frames", n)
+	}
+}
+
+// TestCanaryInjectChecksTheRunningHolder: the canary's message is checked
+// as its ticket is, through the real reader of holder.json: a holder of
+// another build is refused by name before any frame is written, with an
+// inject-refused line of the code, and the epoch's message is not spent; the
+// same build of the epoch then takes it.
+func TestCanaryInjectChecksTheRunningHolder(t *testing.T) {
+	c := newCanaryEnv(t)
+	c.build = sameHolderBuild()
+	c.build.Record = nil // buildid.ReadRecord
+	started := c.up(submitted)
+	layout, err := c.cfg.Layout()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(id buildid.Identity) {
+		t.Helper()
+		content := `{"version":1,"role":"throwaway-one/lead","epoch":` + strconv.FormatUint(started.Epoch, 10) +
+			`,"build":{"module":"` + id.Module + `","version":"` + id.Version + `","revision":"` + id.Revision + `"}}`
+		if err := os.WriteFile(filepath.Join(layout.Holder(), buildid.RecordFileName), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record(otherHolderBuild)
+	_, err = c.inject("msg-one", "body text\n")
+	ce := wantCode(t, err, CodeRefused)
+	if !strings.HasPrefix(ce.Message, "holder-version-skew: "+buildid.WhyDiffer) {
+		t.Fatalf("refusal %q", ce.Message)
+	}
+	if l := c.lastEvidence(); l["event"] != "inject-refused" || l["code"] != "holder-version-skew" || l["message_id"] != "msg-one" {
+		t.Fatalf("line %v", l)
+	}
+	if n := len(c.holder.requests(wire.OpInject)); n != 0 {
+		t.Fatalf("%d inject frames reached the holder", n)
+	}
+	record(testHolderBuild)
+	got, err := c.inject("msg-one", "body text\n")
+	if err != nil || got.Epoch != started.Epoch || got.Result.Outcome != wire.InjectOutcomeSubmitted {
+		t.Fatalf("%+v %v", got, err)
 	}
 }

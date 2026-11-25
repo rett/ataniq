@@ -686,7 +686,9 @@ func (x *canaryExt) ticketFor(ctx context.Context, attach wire.Role, want uint64
 //
 // A refusal before the request frame is written leaves the message unspent: a
 // message that does not pass the admission, a role that is not running, a
-// second message, the holder's socket that cannot be dialled. Once the frame
+// holder that did not record the daemon's build for the epoch
+// (holder-version-skew, or stale-epoch for a state file of another epoch; see
+// attachSkew), a second message, the holder's socket that cannot be dialled. Once the frame
 // is written the message is spent for the epoch whatever comes back (the
 // canary's rule; the exception of scratch mode is below), and
 // whatever becomes of the daemon: the inject-sent line of the evidence, which
@@ -730,7 +732,8 @@ func (x *canaryExt) inject(ctx context.Context, p CanaryInjectParams) (any, *cli
 // [canaryExt.ticketFor] is for a ticket. The check of the epoch comes after the
 // one of whether the role is running and before the one of whether the epoch's
 // message is spent, so that a message that names an epoch that is not the
-// role's is never counted against the role's. The frame the holder gets
+// role's is never counted against the role's; the check of the holder's build
+// follows it, also before the spent message is looked at. The frame the holder gets
 // carries the epoch that was checked.
 func (x *canaryExt) injectFor(ctx context.Context, p CanaryInjectParams, want uint64) (CanaryInjectResult, *opFail) {
 	e, running := x.runningEntry()
@@ -756,6 +759,12 @@ func (x *canaryExt) injectFor(ctx context.Context, p CanaryInjectParams, want ui
 	if want != 0 && want != epoch {
 		x.refuse(p.MessageID, epoch, codeStaleEpoch)
 		return CanaryInjectResult{}, refusal(codeStaleEpoch, msgStaleEpoch)
+	}
+	// The running holder recorded the daemon's own build for the epoch, as
+	// for a ticket, or no frame is written and the message is not spent.
+	if f := x.attachSkew("inject", epoch); f != nil {
+		x.refuse(p.MessageID, epoch, f.code)
+		return CanaryInjectResult{}, f
 	}
 	x.mu.Lock()
 	switch {
