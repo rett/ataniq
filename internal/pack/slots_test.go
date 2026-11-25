@@ -1,6 +1,7 @@
 package pack_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -48,6 +49,36 @@ func TestSlotPlacement(t *testing.T) {
 				t.Errorf("%q: %v", l.Argv, err)
 			}
 		})
+	}
+}
+
+func TestLaunchExtraEnv(t *testing.T) {
+	env := make(map[string]string)
+	for i := range 64 {
+		env[fmt.Sprintf("SAMPLE_%d", i)] = strings.Repeat("x", 256)
+	}
+	check := func(wantValid bool) {
+		t.Helper()
+		l := pack.Launch{Argv: []string{"run"}, Env: env}
+		if err := validateSandbox(pack.Sandbox{Launch: &l}); (err == nil) != wantValid {
+			t.Errorf("env with %d names, want valid=%v: %v", len(env), wantValid, err)
+		}
+	}
+	check(true)
+	env["ONE_MORE"] = "x"
+	check(false)
+	env = map[string]string{"SAMPLE": strings.Repeat("x", 257)}
+	check(false)
+	env = map[string]string{"PATH": "example"}
+	check(false)
+	env = map[string]string{"SAMPLE_TOKEN": "example"}
+	check(false)
+
+	d := pack.Declaration{Manifest: packtest.Alpha.Manifest(), Sandbox: map[string]pack.Sandbox{
+		"1.0": {Launch: &pack.Launch{Argv: []string{"run"}, Env: map[string]string{"SAMPLE": "on"}}},
+	}}
+	if err := d.Validate(pack.BindLayout{}); err == nil {
+		t.Error("accepted extra environment without a profile check")
 	}
 }
 

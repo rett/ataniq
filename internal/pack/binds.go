@@ -31,6 +31,9 @@ type Bind struct {
 type BindLayout struct {
 	Config, Tree string
 	CoreRows     []string
+	// CheckExtraEnv applies the consumer's profile rules to the complete
+	// launch.env map. It is required for a nonempty environment.
+	CheckExtraEnv func(map[string]string) error
 }
 
 func cleanInside(p string) bool {

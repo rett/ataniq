@@ -62,10 +62,7 @@ type Launch struct {
 	ExcludedForms   []string          `json:"excluded_forms,omitempty"` // documented forms the ceiling excludes
 }
 
-var (
-	slotCeiling = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,63}$`)
-	envName     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
-)
+var slotCeiling = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,63}$`)
 
 // CheckSlotValue checks one supplied value against the declaration. Consumers
 // still need the independent launch policy and the authenticated request.
@@ -219,10 +216,11 @@ func (l Launch) validate(layout BindLayout, destinations map[string]Bind) error 
 			}
 		}
 	}
-	for name, value := range l.Env {
-		if !envName.MatchString(name) || strings.ContainsFunc(value, unicode.IsControl) {
-			return fmt.Errorf("invalid fixed environment entry %q", name)
+	if len(l.Env) != 0 {
+		if layout.CheckExtraEnv == nil {
+			return errors.New("launch.env needs a profile environment check")
 		}
+		return layout.CheckExtraEnv(l.Env)
 	}
 	return nil
 }

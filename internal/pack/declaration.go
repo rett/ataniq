@@ -120,8 +120,8 @@ func readDocument(data []byte, path string, dst any) error {
 }
 
 // DecodeDeclaration accepts only the three declaration paths. The layout is
-// supplied by core for checking bind destinations and can be empty for packs
-// that declare no binds. No path in files is opened on the host.
+// supplied by core for checking bind destinations and extra environment
+// variables. No path in files is opened on the host.
 func DecodeDeclaration(files map[string][]byte, layout BindLayout) (*Declaration, error) {
 	if err := checkFiles(files); err != nil {
 		return nil, err

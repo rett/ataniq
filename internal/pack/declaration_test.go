@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"ataniq/internal/leadsandbox/profile"
 	"ataniq/internal/pack"
 	"ataniq/internal/pack/packtest"
 )
@@ -27,8 +28,31 @@ const hookRows = `[{"id":"row","event":"Ready","fields":[{"name":"value","pointe
 func sampleLayout() pack.BindLayout {
 	return pack.BindLayout{
 		Config: "/config", Tree: "/tree",
-		CoreRows: []string{"/etc/hosts", "/config", "/tree", "/config/skills", "/config/instructions"},
+		CheckExtraEnv: checkProfileEnv,
+		CoreRows:      []string{"/etc/hosts", "/config", "/tree", "/config/skills", "/config/instructions"},
 	}
+}
+
+// Use a synthetic profile so the same validator judges every extra variable.
+func checkProfileEnv(env map[string]string) error {
+	in := profile.Inputs{
+		StateRoot: "/state", Role: "sample", Project: "example",
+		Runtime: profile.Runtimes()[0], RuntimeVersion: "1", Identity: profile.IdentityRoot,
+		AgentInstall: "/owned/agent", ProbeBinary: "/owned/probe", SpecDir: "/owned/spec",
+		ManagedSettings: "/owned/settings", ManagedSettingsSHA256: strings.Repeat("a", 64),
+		LeadSkills: "/owned/skills", InstructionFile: "/owned/instructions",
+		GitIdentityDir: "/owned/identity", QargiInstall: "/owned/qargi", QargiRecordsInside: "/records",
+		AssignmentDir: "/owned/assignment", ProjectionDir: "/owned/projection", ResolvConf: "/owned/resolv",
+		NeverMounted: []string{"/private"}, Term: "xterm",
+	}
+	if in.ManagedInside() == "" {
+		in.ManagedSettingsInside = "/etc/example/settings"
+	}
+	in.GitMeta = in.Layout().GitMeta()
+	for name, value := range env {
+		in.ExtraEnv = append(in.ExtraEnv, profile.EnvVar{Name: name, Value: value})
+	}
+	return in.Validate()
 }
 
 func TestReadDeclaration(t *testing.T) {
