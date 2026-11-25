@@ -1,16 +1,18 @@
 # The body of ROOT/netcheck.sh, which prepare.sh --write writes after six
 # lines of its own (the first line, a note, then SELF, PASTA, BWRAP, GATE_HOST
 # and GATE_PORT, the real values). It is never run by prepare or by an agent:
-# the owner runs it by hand, with the phone trial running (so that something
-# listens on the gate's address), before either lead starts, and again once
-# the drop rule is in place, before the live lead.
+# the owner runs it by hand while a daemon serves the gate (so that something
+# listens on the gate's address): at step e, before either lead starts, the
+# phone trial's; at step 7, once the drop rule is in place and before the live
+# lead, the proof's daemon, with the trial stopped.
 #
 # It is modelled on the canary run kit's netcheck (qualification/canary/run/
 # netcheck.sh.in). It probes one TCP connection to the gate's numeric address
 # and port three times and classifies each probe as connected, refused, or
 # filtered/timed out, or as a probe that did not run (an error):
-#   1. from this host, outside any sandbox: it must connect (the trial's gate
-#      answers); without a listener the next probes prove nothing;
+#   1. from this host, outside any sandbox: it must connect (the gate of the
+#      daemon that serves it answers); without a listener the next probes
+#      prove nothing;
 #   2. from the lead's network, in the shape of the sandbox profile (pasta,
 #      then bubblewrap with the read-only root, no capabilities, UID 0),
 #      started from this shell: it must be refused or time out;
@@ -155,9 +157,9 @@ info() { printf 'INFO     %s\n' "$*"; }
 # host_line CLASS: this host must connect.
 host_line() {
   case $1 in
-    connected) pass "this host: connected to $GATE_HOST:$GATE_PORT (the trial's gate listens)" ;;
-    refused) finding "this host: refused at $GATE_HOST:$GATE_PORT: nothing listens; run this while the trial runs, or the next probes prove nothing" ;;
-    filtered) finding "this host: no answer from $GATE_HOST:$GATE_PORT (filtered or timed out); run this while the trial runs, or the next probes prove nothing" ;;
+    connected) pass "this host: connected to $GATE_HOST:$GATE_PORT (a daemon's gate listens)" ;;
+    refused) finding "this host: refused at $GATE_HOST:$GATE_PORT: nothing listens; run this while a daemon serves the gate (the trial at step e, the proof's daemon at step 7), or the next probes prove nothing" ;;
+    filtered) finding "this host: no answer from $GATE_HOST:$GATE_PORT (filtered or timed out); run this while a daemon serves the gate (the trial at step e, the proof's daemon at step 7), or the next probes prove nothing" ;;
     *) finding "this host: the probe did not run (no curl, a curl without telnet://, or another failure), so nothing was shown" ;;
   esac
 }

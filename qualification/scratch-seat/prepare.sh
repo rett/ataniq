@@ -879,7 +879,7 @@ proof_git -C "$ROOT/upstream" commit -q -m 'Initial throwaway commit'
 # is the template netcheck.sh.in beside this file.
 NETCHECK=$ROOT/netcheck.sh
 {
-  printf '%s\n' '#!/bin/sh' '# Written by prepare.sh --write. Run it by hand, with the trial running, before the sitting (docs/scratch-seat-proof.md).' \
+  printf '%s\n' '#!/bin/sh' '# Written by prepare.sh --write. Run it by hand while a daemon serves the gate: the trial at step e, the proof'"'"'s daemon at step 7 (docs/scratch-seat-proof.md).' \
     "SELF='$NETCHECK'" "PASTA='$PASTA_USE'" "BWRAP='$BWRAP'" "GATE_HOST='${GATE%:*}'" "GATE_PORT='${GATE##*:}'"
   cat -- "$_d/netcheck.sh.in"
 } >"$NETCHECK"

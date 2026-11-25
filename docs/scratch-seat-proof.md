@@ -515,7 +515,9 @@ it, the sitting has no live lead: go on with step 11.
    { sh "$ROOT/netcheck.sh"; echo "netcheck: exit status $?"; } 2>&1 | tee -a "$ROOT/evidence/netcheck.txt"
    ```
 
-   It must end `netcheck: exit status 0` as at step e. Write in
+   It must end `netcheck: exit status 0` as at step e. The trial is stopped
+   now and the proof's daemon serves the gate, so the probe from this host
+   connects to the proof's gate. Write in
    `$ROOT/evidence/notes.txt` the rule's check and what you accept of what
    stays open. A `FINDING`, or a rule whose check fails: no live lead; go on
    with step 11.

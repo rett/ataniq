@@ -240,7 +240,7 @@ func TestScratchSeatNetcheckClassifiesEachProbe(t *testing.T) {
 		{"connected", "refused", "connected", 1, []string{"FINDING  the lead's network, in a user unit: connected"}},
 		{"connected", "error", "refused", 1, []string{"FINDING  the lead's network, from this shell: the probe did not run"}},
 		{"connected", "refused", "error", 1, []string{"FINDING  the lead's network, in a user unit: the probe did not run"}},
-		{"refused", "refused", "refused", 1, []string{"FINDING  this host: refused at 192.0.2.1:9: nothing listens"}},
+		{"refused", "refused", "refused", 1, []string{"FINDING  this host: refused at 192.0.2.1:9: nothing listens; run this while a daemon serves the gate (the trial at step e, the proof's daemon at step 7)"}},
 		{"filtered", "filtered", "filtered", 1, []string{"FINDING  this host: no answer from 192.0.2.1:9 (filtered or timed out)"}},
 		{"error", "error", "error", 3, []string{"FINDING  this host: the probe did not run", "netcheck: 3 finding(s)"}},
 	} {

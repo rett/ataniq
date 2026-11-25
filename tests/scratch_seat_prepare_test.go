@@ -783,10 +783,17 @@ func TestScratchSeatPrepareWriteTouchesOnlyTheRoot(t *testing.T) {
 	if out, err := exec.Command("/bin/sh", "-n", filepath.Join(r, "netcheck.sh")).CombinedOutput(); err != nil {
 		t.Errorf("netcheck.sh does not parse: %v\n%s", err, out)
 	}
-	for _, want := range []string{"GATE_HOST='192.0.2.10'", "GATE_PORT='7443'", "BWRAP='" + filepath.Join(k.tools, "bwrap") + "'", "it guards nothing"} {
+	for _, want := range []string{"GATE_HOST='192.0.2.10'", "GATE_PORT='7443'", "BWRAP='" + filepath.Join(k.tools, "bwrap") + "'", "it guards nothing",
+		"# Written by prepare.sh --write. Run it by hand while a daemon serves the gate: the trial at step e, the proof's daemon at step 7"} {
 		if !strings.Contains(nc, want) {
 			t.Errorf("netcheck.sh lacks %q", want)
 		}
+	}
+	// Its header and its template say when it runs as step 7 does: with the
+	// trial stopped and the proof's daemon serving the gate, not only while
+	// the trial runs (review finding 6).
+	if strings.Contains(nc, "with the trial running") || strings.Contains(nc, "with the phone trial running") || strings.Contains(nc, "while the trial runs") {
+		t.Error("netcheck.sh says it runs only while the trial runs, which step 7 contradicts")
 	}
 	// The repository has one commit on develop, by the fixed author.
 	cmd := exec.Command("/usr/bin/git", "-C", filepath.Join(r, "upstream"), "log", "--format=%an <%ae>", "refs/heads/develop")
