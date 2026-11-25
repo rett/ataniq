@@ -19,11 +19,12 @@ import (
 // authority and retains no ownership after return. Errors return a zero Info,
 // including cancellation and SQL or ownership cleanup failures.
 func Recognize(ctx context.Context, path string, options Options) (Info, error) {
-	return recognizeWithDriver(ctx, path, options, &sqlite.Driver{})
+	return recognizeWithDriver(ctx, path, options, &sqlite.Driver{}, acquire)
 }
 
-// The driver argument is a per-call test seam, never a global registration.
-func recognizeWithDriver(ctx context.Context, path string, options Options, d driver.Driver) (info Info, err error) {
+// The driver and own, which acquires the ownership (acquire in Recognize),
+// are per-call test seams, never global registrations.
+func recognizeWithDriver(ctx context.Context, path string, options Options, d driver.Driver, own func(path string, create bool) (*ownership, error)) (info Info, err error) {
 	o, err := options.normalized()
 	if err != nil {
 		return Info{}, err
@@ -33,7 +34,7 @@ func recognizeWithDriver(ctx context.Context, path string, options Options, d dr
 	if err = ctx.Err(); err != nil {
 		return Info{}, err
 	}
-	owner, err := acquire(path, false)
+	owner, err := own(path, false)
 	if err != nil {
 		return Info{}, err
 	}
