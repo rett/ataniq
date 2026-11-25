@@ -4,7 +4,9 @@
   place, keep one password-asked grant, never delete a rule), the drop-in
   `/etc/sudoers.d/zz-ap14-level1-NAME` (`Defaults:NAME timestamp_timeout=0`,
   checked with `visudo -c`) and the root-owned standing-grants register
-  `/etc/ataniq/grants`, one fresh root-owned file per grant.
+  `/etc/ataniq/grants`, one fresh root-owned file per grant; a register
+  folder found not root's or writable by others is set right in place, never
+  moved or replaced.
   `deploy/ai-host/ap14-level1.sh --check --user NAME` is the read-only check
   of the result, run by the owner as root from a copy installed as root's own
   file: it runs `sudo -n -l -U NAME` once and judges only what sudo prints

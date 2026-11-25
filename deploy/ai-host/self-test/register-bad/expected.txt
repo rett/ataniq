@@ -26,7 +26,7 @@ finding: register-entry: /etc/ataniq/grants/pointer is not a regular file (a lin
 finding: register-entry: /etc/ataniq/grants/sub is not a regular file (a folder)
 finding: register-entry: /etc/ataniq/grants/fifo is not a regular file (another kind)
 == by hand, for the owner
-- a register folder: it and every folder above it must be folders of root's, not links, and not writable by group or others. If one is not, make a new folder as root, write into it fresh copies of only the entries you confirm, and put it in place of the old one (README, step 5).
+- a register folder: it and every folder above it must be folders of root's, not links, and not writable by group or others. Never move or replace a folder, / and /etc above all: write access to a folder is checked at each operation, so setting it right in place is enough. As root, give the folder the owner and group root and take write access away from group and others, in place. Only when /etc/ataniq or /etc/ataniq/grants is a link or not a folder, remove that link or file and create the folder as root, mode 0755. Then read every entry again (README, step 5).
 - a register entry: read it and confirm every word is yours. Then, as root, write that text into a new file of root's (mode 0644) beside it and rename the new file over the old name, which retires the old file: another process may still hold it open for writing. Never change the owner or the mode of the old file in place. Remove an entry that is not yours or not a regular file (README, step 5).
 == summary
 findings: 7; stops: 0

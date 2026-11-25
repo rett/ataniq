@@ -252,16 +252,33 @@ install -m 0644 -o root -g root /root/GRANT.txt /etc/ataniq/grants/.GRANT.new
 mv /etc/ataniq/grants/.GRANT.new /etc/ataniq/grants/GRANT
 ```
 
-**Repairing an entry or a folder.** Never change the owner or the mode of an
-entry the check finds not root's or writable by others: another process may
-still hold it open for writing, and would keep that. Read the entry and
-confirm every word is yours; then write that text fresh, as above, and
-rename the new file over the old name, which retires the old file. Remove an
-entry that is not yours or not a regular file. A folder that is not root's
-or is writable by group or others is replaced the same way: make a new
-folder as root beside it, write into it fresh copies of only the entries you
-confirm, move the old folder into root's own folder, and rename the new one
-into its place.
+**Repairing an entry.** Never change the owner or the mode of an entry the
+check finds not root's or writable by others: another process may still
+hold it open for writing, and would keep that. Read the entry and confirm
+every word is yours; then write that text fresh, as above, and rename the
+new file over the old name, which retires the old file. Remove an entry
+that is not yours or not a regular file.
+
+**Repairing a folder.** Never move or replace a folder: `/` and `/etc` hold
+the whole system, and no folder needs it, because write access to a folder
+is checked at each operation, so once the folder is root's and not writable
+by group or others nothing else can write into it. (The rule of a fresh file
+renamed into place is for entries, regular files, which can have an open
+writer.) For `/` and `/etc`, as root, set the owner and the mode in place,
+when the listing shows the folder (`d`), and change nothing else:
+
+```sh
+chown root:root /etc
+chmod go-w /etc
+```
+
+`/etc/ataniq` and `/etc/ataniq/grants` are set the same way, in place, when
+they are folders. Only when one of them is a link or not a folder: remove
+that link or file with `rm` (on a link it removes the link, not what it
+points to), create the folder with `mkdir -m 0755` as above, and write fresh
+each entry you confirm. After a folder was writable by group or others,
+read every entry of the register again: anyone could rename, remove or add
+one meanwhile.
 
 ### 6. Check again, and test by hand
 

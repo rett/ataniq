@@ -80,11 +80,64 @@ func TestAiHostAP14AgentRule(t *testing.T) {
 			t.Errorf("the README does not say %q", want)
 		}
 	}
-	for _, bad := range []string{"--apply", "--dry", "--verify", "--confirm", "MOVED", "backup-", "cp -R", "chown root:root", "/run/ap14-level1.lock", "ln "} {
+	for _, bad := range []string{"--apply", "--dry", "--verify", "--confirm", "MOVED", "backup-", "cp -R", "/run/ap14-level1.lock", "ln "} {
 		if strings.Contains(string(readme), bad) {
 			t.Errorf("the README still says %q", bad)
 		}
 	}
+}
+
+// A register folder is repaired in place, never moved or replaced: / and
+// /etc hold the whole system, and write access to a folder is checked at
+// each operation. Only a link or a non-folder in place of /etc/ataniq or
+// /etc/ataniq/grants is removed and created again. The one chown and chmod
+// of the README are in that paragraph, on a folder; an entry is still
+// written fresh and renamed into place.
+func TestAiHostAP14RegisterFolderInPlace(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(root(t), ap14Dir, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readme := string(data)
+	step5 := ap14ReadmeSection(t, readme, "### 5. Create the register by hand", "### 6. Check again, and test by hand")
+	_, folder, ok := strings.Cut(step5, "Repairing a folder.")
+	if !ok {
+		t.Fatalf("step 5 has no paragraph on repairing a folder:\n%s", step5)
+	}
+	for _, want := range []string{
+		"Never move or replace a folder",
+		"write access to a folder is checked at each operation",
+		"The rule of a fresh file renamed into place is for entries, regular files, which can have an open writer.",
+		"For / and /etc, as root, set the owner and the mode in place",
+		"chown root:root /etc chmod go-w /etc",
+		"/etc/ataniq and /etc/ataniq/grants are set the same way, in place, when they are folders.",
+		"Only when one of them is a link or not a folder: remove that link or file",
+		"read every entry of the register again",
+	} {
+		if !strings.Contains(folder, want) {
+			t.Errorf("the folder repair does not say %q", want)
+		}
+	}
+	flat := ahFlat(readme)
+	if strings.Count(flat, "chown ") != 1 || strings.Count(flat, "chmod go-w") != 1 || !strings.Contains(folder, "chown root:root") {
+		t.Error("the README changes an owner or a mode outside the folder repair")
+	}
+	for _, bad := range []string{"replaced the same way", "make a new folder as root beside it", "move the old folder", "rename the new one into its place"} {
+		if strings.Contains(flat, bad) {
+			t.Errorf("the README still says %q of a folder", bad)
+		}
+	}
+	// The owner's step the check prints says the same.
+	ap14Unprivileged(t)
+	out, code := ap14Report(t, ap14Case(t, map[string]string{"register.txt": "d 0 755 /\nd 0 775 /etc\nd 0 755 /etc/ataniq\nd 0 755 /etc/ataniq/grants\n"}))
+	if code != 1 {
+		t.Errorf("exit %d, want 1\n%s", code, out)
+	}
+	ap14Has(t, out, "finding: register-folder: /etc is writable by its group or by others (mode 775)\n",
+		"Never move or replace a folder, / and /etc above all", "write access to a folder is checked at each operation",
+		"take write access away from group and others, in place",
+		"Only when /etc/ataniq or /etc/ataniq/grants is a link or not a folder, remove that link or file and create the folder as root, mode 0755.")
+	ap14Lacks(t, out, "put it in place of the old one", "make a new folder")
 }
 
 // ap14ReadmeSection returns the README's text from the heading start to the

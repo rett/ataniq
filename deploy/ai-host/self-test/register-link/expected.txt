@@ -13,7 +13,7 @@ check: no default makes sudo ask for another account's password, or for none (ta
   | l 0 777 /etc/ataniq
 finding: register-folder: /etc/ataniq is not a folder of its own (a link)
 == by hand, for the owner
-- a register folder: it and every folder above it must be folders of root's, not links, and not writable by group or others. If one is not, make a new folder as root, write into it fresh copies of only the entries you confirm, and put it in place of the old one (README, step 5).
+- a register folder: it and every folder above it must be folders of root's, not links, and not writable by group or others. Never move or replace a folder, / and /etc above all: write access to a folder is checked at each operation, so setting it right in place is enough. As root, give the folder the owner and group root and take write access away from group and others, in place. Only when /etc/ataniq or /etc/ataniq/grants is a link or not a folder, remove that link or file and create the folder as root, mode 0755. Then read every entry again (README, step 5).
 == summary
 findings: 1; stops: 0
 result: findings remain: fix them by hand, then run --check again
