@@ -12,7 +12,7 @@
 // bytes or screen text, no []byte, no free map[string]any and no interface.
 // Every string is capped, and a code-like string (reason, state, digest,
 // counter name, message identity, sender, outcome, guard reading, command
-// identity) is also restricted to a small character set. The injection record
+// identity, build identity) is also restricted to a small character set. The injection record
 // of design 1.7 has its own typed fields: MessageID, Sender, Outcome, Guard
 // (a short list of codes) and Digest; CommandID names the control command that
 // caused an event.
@@ -128,6 +128,7 @@ const (
 	MaxReason      = 64
 	MaxState       = 64
 	MaxDigest      = 128
+	MaxBuild       = 256
 	MaxCounters    = 64
 	MaxCounterName = 64
 	// The injection record (design 1.7) and the command identity. They are
@@ -230,6 +231,9 @@ type Fields struct {
 	StreamEnded *bool `json:"stream_ended,omitempty"`
 	TUIExited   *bool `json:"tui_exited,omitempty"`
 	TreeGone    *bool `json:"tree_gone,omitempty"`
+	// Build is the holder's build identity, a code (see the holder's
+	// buildid.Identity.Token), set on the start event.
+	Build string `json:"build,omitempty"`
 }
 
 // Event is one line of the log.
@@ -527,6 +531,7 @@ func (l *Log) bound(f Fields) Fields {
 	f.Reason = l.code(f.Reason, MaxReason)
 	f.State = l.code(f.State, MaxState)
 	f.Digest = l.code(f.Digest, MaxDigest)
+	f.Build = l.code(f.Build, MaxBuild)
 	f.MessageID = l.code(f.MessageID, MaxMessageID)
 	f.Sender = l.code(f.Sender, MaxSender)
 	f.Outcome = l.code(f.Outcome, MaxOutcome)

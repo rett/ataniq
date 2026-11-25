@@ -1227,6 +1227,7 @@ var reviewedFields = []frozenField{
 	{"StreamEnded", "*bool", `json:"stream_ended,omitempty"`},
 	{"TUIExited", "*bool", `json:"tui_exited,omitempty"`},
 	{"TreeGone", "*bool", `json:"tree_gone,omitempty"`},
+	{"Build", "string", `json:"build,omitempty"`},
 }
 
 // diffFields returns every difference between the exported fields of typ and
