@@ -706,7 +706,8 @@ func testAuthorityHostDeploy(t *testing.T) {
 
 	// What the ssh client itself makes of the options: its -G prints the
 	// effective configuration and connects to nothing. A hostile ~/.ssh/config
-	// of the development host changes none of it.
+	// of the development host, which a control run that selects it shows to
+	// take effect, changes none of it.
 	t.Run("the client's own view with a hostile config", func(t *testing.T) {
 		client, err := exec.LookPath("ssh")
 		if err != nil {
@@ -730,20 +731,39 @@ func testAuthorityHostDeploy(t *testing.T) {
 		hostile := "Host *\n  IdentityFile ~/.ssh/evil-key\n  IdentityAgent /run/evil-agent.sock\n  ProxyJump evil@jump.invalid\n" +
 			"  ControlMaster auto\n  ControlPath ~/.ssh/evil-%r@%h\n  ForwardAgent yes\n  User evil\n  Port 2222\n  PasswordAuthentication yes\n" +
 			"  StrictHostKeyChecking no\n  UserKnownHostsFile ~/.ssh/evil_known_hosts\n  PKCS11Provider /usr/lib/evil.so\n"
-		if err := os.WriteFile(filepath.Join(home, ".ssh", "config"), []byte(hostile), 0o600); err != nil {
+		hostileFile := filepath.Join(home, ".ssh", "config")
+		if err := os.WriteFile(hostileFile, []byte(hostile), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		cmd := exec.Command(client, append(words, "-G", ahTestHost)...)
-		cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin", "SSH_AUTH_SOCK=" + filepath.Join(workDir, "agent.sock")}
-		data, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("-G: %v\n%s", err, data)
+		clientEnv := []string{"HOME=" + home, "PATH=/usr/bin:/bin", "SSH_AUTH_SOCK=" + filepath.Join(workDir, "agent.sock")}
+		view := func(args ...string) (map[string][]string, string) {
+			t.Helper()
+			cmd := exec.Command(client, append(args, "-G", ahTestHost)...)
+			cmd.Env = clientEnv
+			data, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("-G: %v\n%s", err, data)
+			}
+			got := map[string][]string{}
+			for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+				k, v, _ := strings.Cut(line, " ")
+				got[k] = append(got[k], v)
+			}
+			return got, string(data)
 		}
-		got := map[string][]string{}
-		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-			k, v, _ := strings.Cut(line, " ")
-			got[k] = append(got[k], v)
+		// The positive control: a configuration-only run that selects the
+		// hostile file explicitly shows its distinctive values, so the file
+		// is one the client reads and their absence below is the driver's
+		// doing. (OpenSSH finds ~/.ssh/config from the account database, not
+		// from HOME, so only -F proves the file would take effect.)
+		ctl, ctlData := view("-F", hostileFile)
+		for k, v := range map[string]string{"port": "2222", "proxyjump": "evil@jump.invalid", "forwardagent": "yes", "passwordauthentication": "yes", "stricthostkeychecking": "false"} {
+			if !slices.Equal(ctl[k], []string{v}) {
+				t.Errorf("the control: -G -F with the hostile file says %s %q, want %q:\n%s", k, ctl[k], v, ctlData)
+			}
 		}
+		// The driver's isolated option vector, with the same file in place.
+		got, data := view(words...)
 		for k, v := range map[string]string{
 			"user": "tester", "port": "22", "batchmode": "yes", "identityfile": "none", "identitiesonly": "no",
 			"identityagent": "SSH_AUTH_SOCK", "preferredauthentications": "publickey", "passwordauthentication": "no",
@@ -762,7 +782,7 @@ func testAuthorityHostDeploy(t *testing.T) {
 				}
 			}
 		}
-		if strings.Contains(string(data), "evil") || strings.Contains(string(data), "2222") {
+		if strings.Contains(data, "evil") || strings.Contains(data, "2222") {
 			t.Errorf("the hostile config reached the connection:\n%s", data)
 		}
 	})
