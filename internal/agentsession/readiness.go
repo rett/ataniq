@@ -102,3 +102,38 @@ func independentDeny(i Independent, v I4) DenyReason {
 		return ""
 	}
 }
+
+func deny(i Independent, v I4, h HookView) DenyResult {
+	why := independentDeny(i, v)
+	if why == "" {
+		why = h.lowering()
+	}
+	return DenyResult{why == "", why}
+}
+
+func DenyInForce(i Independent, h HookView) DenyResult {
+	v, err := independentReading(i)
+	if err != nil || ValidateHooks(h) != nil {
+		return DenyResult{Reason: "invalid-input"}
+	}
+	return deny(i, v, h)
+}
+
+func Readiness(i Independent, h HookView) (Result, error) {
+	v, inputErr := independentReading(i)
+	hookErr := ValidateHooks(h)
+	result := Result{Deny: DenyResult{Reason: "invalid-input"}}
+	if hookErr == nil {
+		result.Obs = Obs{h.bound, h.foreign}
+	}
+	if inputErr != nil {
+		result.Delivery.Reasons = []DeliveryReason{"invalid-input"}
+		return result, inputErr
+	}
+	result.Delivery = delivery(i, v)
+	if hookErr != nil {
+		return result, hookErr
+	}
+	result.Deny = deny(i, v, h)
+	return result, nil
+}
