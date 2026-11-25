@@ -611,13 +611,27 @@ func TestInputQueuedWhenAConnectionIsGivenUpIsCounted(t *testing.T) {
 	leakCheck(t)
 	e := newEnv(t, setup{mode: leadattach.ModeWriter, pipe: true, tickets: 1})
 	hc := e.attach(wire.RoleWriter)
-	hc.pause()
+	sent := hc.writes.Load() // the Hello, and nothing else yet
 
-	// The holder reads the first frame and then stops: the second waits in
-	// the sender's blocked write, and the rest in the queue, where the three
-	// keys share a frame.
+	// The first paste is acknowledged: the holder has read it and holds
+	// every read after it. The hold is armed before the paste is sent, so it
+	// does not depend on where the holder's reader happens to be.
+	parked := hc.holdAfter(wire.TypePaste)
 	e.sink.Paste("first")
+	select {
+	case <-parked:
+	case <-time.After(wait):
+		t.Fatal("the holder did not read the first paste")
+	}
+	if f := hc.next(); f.typ != wire.TypePaste || string(f.payload) != "first" {
+		t.Fatalf("the holder read a %s frame %q, want the first paste", wire.TypeName(f.typ), f.payload)
+	}
+
+	// The second paste is held in the sender's write: the pipe takes nothing
+	// the holder does not read. Only once the write has begun is anything
+	// queued behind it, where the three keys share a frame.
 	e.sink.Paste("second")
+	hc.untilWrites(sent + 2)
 	e.sink.Key(keyA)
 	e.sink.Key(keyA)
 	e.sink.Key(keyA)
@@ -628,10 +642,32 @@ func TestInputQueuedWhenAConnectionIsGivenUpIsCounted(t *testing.T) {
 
 	// A check mismatch gives the connection up. Whatever was queued would
 	// reach a different screen, so it is not sent, and it is counted by what
-	// the user typed: one second paste, three keys, one last paste.
+	// the user typed: one second paste, three keys, one last paste. The
+	// first, which the holder read, is not among them.
 	hc.corrupt("A", "B")
 	hc.check()
-	e.until("the count", func(st terminalconsole.LiveStatus) bool { return counter(st, "client-input-dropped") == 5 })
+	e.until("the count", func(st terminalconsole.LiveStatus) bool { return counter(st, "client-input-dropped") >= 5 })
+	if n := counter(e.c.Status(), "client-input-dropped"); n != 5 {
+		t.Fatalf("%d inputs counted as dropped, want exactly 5", n)
+	}
 	hc.resume()
-	hc.closed()
+	for _, typ := range hc.closed() {
+		if typ == wire.TypePaste || typ == wire.TypeInput {
+			t.Errorf("a %s frame reached the holder after the connection was given up", wire.TypeName(typ))
+		}
+	}
+
+	// None of the five reaches the next connection: the first input it sees
+	// is one typed after the attach.
+	hc2 := e.h.accept()
+	hc2.welcome(wire.RoleWriter)
+	hc2.snapshot()
+	e.untilConn(terminalconsole.LiveAttached)
+	e.sink.Key(keyA)
+	if got := hc2.input(1); got != "a" {
+		t.Errorf("the next connection first received %q, want the one key typed after it", got)
+	}
+	if n := counter(e.c.Status(), "client-input-dropped"); n != 5 {
+		t.Errorf("%d inputs counted as dropped at the end, want 5", n)
+	}
 }

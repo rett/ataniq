@@ -95,7 +95,7 @@ func TestInspectCommitTextIsRaw(t *testing.T) {
 	s.put("src/d.go", "package main\n")
 	s.commit("tip\n")
 	s.finish()
-	s.w("push", "--quiet", s.bare, decoy+":refs/keep/decoy")
+	s.pushInto(s.bare, decoy+":refs/keep/decoy")
 	s.b("update-ref", "refs/replace/"+replaced, decoy)
 
 	r := s.inspect()

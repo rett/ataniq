@@ -86,6 +86,14 @@ type Scratch struct {
 	// ChatScanEvery is how often the scanner of a lead whose chat is on reads
 	// its reply folder; default [DefaultChatScanEvery].
 	ChatScanEvery time.Duration
+
+	// chatNow is the clock of the leads' chat stores; nil means time.Now.
+	// Only a test in this package sets it, to run the settle rule ahead of
+	// the kernel's change times without waiting them out. It is unexported
+	// on purpose: no flag, config key or environment variable reaches it,
+	// because the settle rule is a security property (a lead cannot set its
+	// reply's change time, and the daemon's clock is the daemon's alone).
+	chatNow func() time.Time
 }
 
 // leadActHook is called by a command, after it holds the role's operation lock
@@ -243,7 +251,7 @@ func (d *daemon) scratchSetup() (*canaryMode, error) {
 	if lm.provisionT <= 0 {
 		lm.provisionT = DefaultProvisionTimeout
 	}
-	lm.chat, lm.port = newChatDesk(d.logf, s.ChatScanEvery), s.Chat
+	lm.chat, lm.port = newChatDesk(d.logf, s.ChatScanEvery, s.chatNow), s.Chat
 	for i, cfg := range leads {
 		pre, err := leadcanary.NewPreflightFor(leadrole.ReservedScratch, cfg.Role)
 		if err != nil {
