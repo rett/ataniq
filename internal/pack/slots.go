@@ -230,6 +230,11 @@ func (l Launch) validate(layout BindLayout, destinations map[string]Bind) error 
 		if layout.CheckExtraEnv == nil {
 			return errors.New("launch.env needs a profile environment check")
 		}
+		for name, value := range l.Env {
+			if strings.ContainsFunc(value, unicode.IsControl) {
+				return fmt.Errorf("invalid fixed environment entry %q", name)
+			}
+		}
 		return layout.CheckExtraEnv(l.Env)
 	}
 	return nil
