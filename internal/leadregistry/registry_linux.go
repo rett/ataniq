@@ -617,8 +617,8 @@ func (r *Registry) BeginLaunchWith(role leadrole.Role, opts LaunchOptions) (Inte
 	}
 	// A rule of writing only: a launch a newer build journaled for such a
 	// profile replays, but this build does not launch what it cannot read.
-	if e.foreignProfile || !e.Requested.Pack.IsZero() {
-		return Intent{}, ErrLaunchProfile
+	if err := e.ProfileLaunchable(); err != nil {
+		return Intent{}, err
 	}
 	var parentEpoch uint64
 	var identity string

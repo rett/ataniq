@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"ataniq/internal/leadcanary/provision"
 	"ataniq/internal/leadregistry"
 	"ataniq/internal/leadrole"
 	"ataniq/internal/leadwire"
@@ -96,8 +97,12 @@ func appendPackDefine(t *testing.T, stateDir string, role leadrole.Role) {
 // TestLeadStartOfAProfileThisBuildDoesNotLaunch: a lead whose define record
 // names a pack, as a later build may write it, replays, and its start is
 // refused with the code profile-not-launchable, not the generic
-// launch-refused, with the way out in the message; nothing changes. Defining
-// the lead again lifts it, and the lead then starts.
+// launch-refused, with the way out in the message; nothing changes: the
+// reviewer's case, a stopped lead whose instruction file is still the empty
+// file of an earlier build, keeps that file empty (a start that prepared the
+// chat first would write the instruction text into it), and the registry's
+// journal is byte for byte as it was (no desired state set and put back).
+// Defining the lead again lifts it, and the lead then starts.
 func TestLeadStartOfAProfileThisBuildDoesNotLaunch(t *testing.T) {
 	l := newLeadEnv(t)
 	l.start()
@@ -106,7 +111,19 @@ func TestLeadStartOfAProfileThisBuildDoesNotLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	appendPackDefine(t, l.state, l.cfgOf("alpha").Role)
+	paths, err := provision.PathsOf(l.cfgOf("alpha"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.InstructionFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	l.start()
+	journal := filepath.Join(l.state, RegistryDirName, leadregistry.FileName)
+	before, err := os.ReadFile(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	r := l.startLead("alpha")
 	want(t, r, leadwire.StatusRefused, codeProfileNotLaunchable)
@@ -115,6 +132,16 @@ func TestLeadStartOfAProfileThisBuildDoesNotLaunch(t *testing.T) {
 	}
 	if row := l.row("alpha"); row.Epoch != 0 || row.State != "stopped" {
 		t.Fatalf("row %+v", row)
+	}
+	if b, err := os.ReadFile(paths.InstructionFile); err != nil || len(b) != 0 {
+		t.Fatalf("the refused start changed the instruction file: %d bytes, %v", len(b), err)
+	}
+	after, err := os.ReadFile(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("the refused start wrote to the journal:\n%s", after[min(len(before), len(after)):])
 	}
 
 	want(t, l.define("alpha"), leadwire.StatusDone, "")

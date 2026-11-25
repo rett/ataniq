@@ -927,7 +927,10 @@ JSON object per line. The first line is a header that names the format
   member this build does not know is not launched (`ErrLaunchProfile`, which a
   start in scratch mode answers with the code `profile-not-launchable`, and
   the canary's start with its text, both saying to define the role again)
-  until it is defined again. So is a role whose define record repeats a
+  until it is defined again. The refusal changes nothing: the start checks
+  the stored profile before it writes a scratch lead's instruction text and
+  before it sets the desired state, and the registry checks it again when it
+  journals the launch. So is a role whose define record repeats a
   member anywhere in its payload, the requested member itself included,
   compared exactly and as encoding/json folds names (`requested` and
   `Requested` are one member to it): no build writes one, and the typed

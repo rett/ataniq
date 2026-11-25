@@ -631,6 +631,16 @@ func (m *leadMode) start(ctx context.Context, lr *leadRole) outcome {
 		if f := lr.in.ext.launchSkew("scratch start " + strconv.Quote(lr.key)); f != nil {
 			return fromFail(f)
 		}
+		// A stored profile this build does not launch is refused here, under
+		// the role's lock, before the instruction text is written and before
+		// the lifecycle sets the desired state: the refusal changes nothing.
+		// The lifecycle and the registry's BeginLaunchWith check it again.
+		if e, err := m.reg.Get(lr.role); err == nil {
+			if err := e.ProfileLaunchable(); err != nil {
+				m.d.logf("scratch start %q: %s", lr.key, SafeText(err.Error()))
+				return refusedOut(codeProfileNotLaunchable, msgProfileNotLaunchable)
+			}
+		}
 		// The reply folder and the instruction text, before the unit starts:
 		// a lead that is proven stopped starts with the text.
 		if out, failed := m.ensureChat(lr); failed {
