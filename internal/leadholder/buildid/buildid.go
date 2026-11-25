@@ -311,8 +311,9 @@ const MaxErrorBytes = 256
 // [MaxErrorBytes] bytes of printable ASCII without < > &. [Identity.Short]
 // leaves the module path out, so when the two module paths differ both are
 // named as well, before the builds: whole when they fit, and otherwise each cut
-// in its middle to an equal share of what the bound leaves (the builds are left
-// out when that share would be under [minModuleShare] bytes with them). Two
+// to an equal share of what the bound leaves (the builds are left out when
+// that share would be under [minModuleShare] bytes with them), so that the
+// first byte at which the two paths differ stays in both ([clipPair]). Two
 // builds that differ only in their module would otherwise read the same.
 func (e *SkewError) Error() string {
 	holder := "unknown"
@@ -325,7 +326,8 @@ func (e *SkewError) Error() string {
 		return head + builds
 	}
 	modules := func(share int) string {
-		return "; holder module " + clipMiddle(e.Holder.Module, share) + ", expected module " + clipMiddle(e.Expected.Module, share)
+		h, x := clipPair(e.Holder.Module, e.Expected.Module, share)
+		return "; holder module " + h + ", expected module " + x
 	}
 	const fixed = len("; holder module , expected module ")
 	room := MaxErrorBytes - len(head) - len(builds) - fixed
@@ -354,6 +356,40 @@ func clipMiddle(s string, n int) string {
 	}
 	keep := n - 3
 	return s[:keep-keep/2] + "..." + s[len(s)-keep/2:]
+}
+
+// clipPair cuts each of two module paths that differ to at most n bytes so
+// that the cut texts still differ: each is cut by [clipAround] around the
+// first byte at which the two differ.
+func clipPair(a, b string, n int) (string, string) {
+	d := 0
+	for d < len(a) && d < len(b) && a[d] == b[d] {
+		d++
+	}
+	return clipAround(a, d, n), clipAround(b, d, n)
+}
+
+// clipAround cuts s to at most n bytes as [clipMiddle] does when byte d of s
+// is in the start or the end that it keeps, or is past the end of s. When the
+// middle that clipMiddle would replace holds byte d, s is cut instead to its
+// start, "...", the bytes from a few before d on, and "..." when those do not
+// reach the end of s. Two paths with one start that differ first at d, each
+// cut so, have their differing bytes at one place in the two texts. s is
+// ASCII ([Identity.Validate]).
+func clipAround(s string, d, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	keep := n - 3
+	if n < 9 || d < keep-keep/2 || d >= len(s)-keep/2 {
+		return clipMiddle(s, n)
+	}
+	head := (n - 6) / 3
+	from := max(head+1, d-(n-6)/6)
+	if head+3+len(s)-from <= n {
+		return s[:head] + "..." + s[from:]
+	}
+	return s[:head] + "..." + s[from:from+n-6-head] + "..."
 }
 
 // Is makes errors.Is(err, ErrSkew) true.

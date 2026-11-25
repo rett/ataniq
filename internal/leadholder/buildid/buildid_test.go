@@ -438,9 +438,64 @@ func TestModuleMismatchIsNamed(t *testing.T) {
 	if msg := Check(lv, &lvOther).Error(); len(msg) > MaxErrorBytes || !strings.Contains(msg, "holder module example.com/x, expected module ataniq") {
 		t.Errorf("%d bytes: %q", len(msg), msg)
 	}
+	// The reviewer's case: two valid 241-byte paths that differ only in their
+	// middle, with the longest builds, which leave the modules their least
+	// share. Cut in the middle, both read the same.
+	mid := Identity{Module: strings.Repeat("m", 120) + "a" + strings.Repeat("m", 120), Version: strings.Repeat("v", MaxVersion),
+		Revision: strings.Repeat("a", MaxRevision), Modified: true}
+	midOther := mid
+	midOther.Module = strings.Repeat("m", 120) + "b" + strings.Repeat("m", 120)
+	got, want := modulesOf(t, (&SkewError{Expected: mid, Holder: &midOther, Why: WhyDiffer}).Error())
+	if got == want || !strings.Contains(got, "b") || !strings.Contains(want, "a") {
+		t.Errorf("the middle mismatch reads %q and %q", got, want)
+	}
 	for n, want := range map[int]string{3: "abc", 9: "abc...xyz", 100: "abcdefghijklmnopqrstuvwxyz"} {
 		if got := clipMiddle("abcdefghijklmnopqrstuvwxyz", n); got != want || len(got) > n && n >= 5 {
 			t.Errorf("clipMiddle %d: %q, want %q", n, got, want)
 		}
+	}
+}
+
+// modulesOf returns the two module texts of a refusal that names them.
+func modulesOf(t *testing.T, msg string) (holder, expected string) {
+	t.Helper()
+	if len(msg) > MaxErrorBytes || strings.ContainsAny(msg, "<>&") {
+		t.Fatalf("%d bytes: %q", len(msg), msg)
+	}
+	i := strings.Index(msg, "holder module ")
+	j := strings.Index(msg, ", expected module ")
+	if i < 0 || j < i {
+		t.Fatalf("%q", msg)
+	}
+	holder, expected = msg[i+len("holder module "):j], msg[j+len(", expected module "):]
+	if k := strings.Index(expected, "; holder build "); k >= 0 {
+		expected = expected[:k]
+	}
+	return holder, expected
+}
+
+// TestModuleCutKeepsTheDifference: two module paths that differ first at one
+// byte, at any place, of equal or of different lengths, are never cut to one
+// text, whatever share of the bound they get, and each cut text is within its
+// share.
+func TestModuleCutKeepsTheDifference(t *testing.T) {
+	for _, n := range []int{9, 16, minModuleShare, 40, 87, 120} {
+		for _, size := range []int{n + 1, 100, 241, MaxModule} {
+			for d := 0; d < size; d++ {
+				a := strings.Repeat("m", size)
+				b := a[:d] + "x" + a[d+1:]
+				for _, pair := range [][2]string{{a, b}, {a, b + "z"}, {a[:d] + "y", b}} {
+					x, y := clipPair(pair[0], pair[1], n)
+					if x == y || len(x) > n || len(y) > n {
+						t.Fatalf("share %d, size %d, differing at %d: %q and %q", n, size, d, x, y)
+					}
+				}
+			}
+		}
+	}
+	// The cut around the difference: the start, the bytes from a few before
+	// the difference on, and the marks of what was left out.
+	if got := clipAround(strings.Repeat("m", 50)+"x"+strings.Repeat("m", 50), 50, 32); got != "mmmmmmmm...mmmmx"+strings.Repeat("m", 13)+"..." {
+		t.Errorf("%q", got)
 	}
 }
