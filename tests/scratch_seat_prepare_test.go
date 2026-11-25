@@ -431,7 +431,7 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root string, live bool) {
 	prep := " --state " + state + " --root " + root
 	for _, want := range []string{
 		"A for the daemon, B for the console, C for the desk",
-		"OWNER ONLY (starts pasta, bubblewrap and curl): sh " + root + "/netcheck.sh",
+		"OWNER ONLY (starts pasta, bubblewrap, curl and a throwaway user unit): { sh " + root + "/netcheck.sh; echo \"netcheck: exit status $?\"; } 2>&1 | tee -a " + root + "/evidence/netcheck.txt",
 		"--record-trial" + prep + " --unit \"$TRIAL_UNIT\"",
 		"--status" + prep,
 		"OWNER ONLY: systemctl --user stop -- \"$TRIAL_UNIT\"",

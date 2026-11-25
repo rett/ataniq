@@ -410,8 +410,8 @@ EOF
   fi
   cat <<EOF
   d. Check that your firewall admits TCP to $_g from the authority host only.
-  e. OWNER ONLY (starts pasta, bubblewrap and curl): sh $ROOT/netcheck.sh | tee -a $EVIDENCE/netcheck.txt
-     It must say PASS for the gate; write in $EVIDENCE/notes.txt whether you accept the open network it lists.
+  e. OWNER ONLY (starts pasta, bubblewrap, curl and a throwaway user unit): { sh $ROOT/netcheck.sh; echo "netcheck: exit status \$?"; } 2>&1 | tee -a $EVIDENCE/netcheck.txt
+     It must say connected from this host and refused or filtered from the lead's network, and end "netcheck: exit status 0".
   f. $DAEMON seat-gate pins --state-dir $S
      sh $PREP --record-trial $_vals --unit "\$TRIAL_UNIT"   (reads the unit and its command line; writes $KINDREC, $BEFORE and, for a transient unit, its restart script)
      journalctl --user --unit "\$TRIAL_UNIT" -I | grep 'key fingerprint' | tail -n 1

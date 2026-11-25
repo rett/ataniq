@@ -277,23 +277,32 @@ with your values.
 - **d. The firewall is your rule.** The gate's port admits TCP from the
    authority host only, as [the firewall](seat-gate.md#the-firewall) says.
 - **e. OWNER ONLY: the lead's network, with the trial running** (it starts
-   pasta, bubblewrap and curl, as the canary kit's `netcheck.sh` does; it
-   uses no credential and starts no agent):
+   pasta, bubblewrap, curl and a throwaway user unit, as the canary kit's
+   `netcheck.sh` does; it uses no credential and starts no agent):
 
    ```sh
-   sh "$ROOT/netcheck.sh" | tee -a "$ROOT/evidence/netcheck.txt"
+   { sh "$ROOT/netcheck.sh"; echo "netcheck: exit status $?"; } 2>&1 | tee -a "$ROOT/evidence/netcheck.txt"
    ```
 
-   It connects to the gate's address from this host (the trial's gate must
-   answer, or the next line proves nothing) and from the lead's network in
-   the shape of the sandbox, where no connection may be made: `PASS ... does
-   not reach the gate's port`. A `FINDING` there ends the sitting before it
-   starts. It then lists this host's listeners on non-loopback addresses and
-   says what stays open: the sandbox's network is open (pasta gives it this
-   host's outbound access, to your LAN and the Internet), `provider_host` is
-   a DNS check and not a rule, and the guard hook guards nothing. Before a
-   live login, write in `$ROOT/evidence/notes.txt` that you accept this open
-   network (and the listeners it named), or stop after the stand-in.
+   The last line is the script's own exit status, the number of findings
+   (the braces keep it: a pipe into `tee` alone would give `tee`'s). It
+   probes one TCP connection to the gate's address three times and names
+   each probe's class: connected, refused, or filtered or timed out, or a
+   probe that did not run. From this host it must be connected (the trial's
+   gate answers, or the next lines prove nothing); from the lead's network,
+   in the shape of the sandbox, both from this shell and in a throwaway user
+   unit with the lead unit's fixed properties (where a lead's holder starts
+   pasta), it must be refused or filtered: `PASS ... refused (no connection
+   to the gate's port was made)`. A probe that did not run (no curl, a curl
+   without `telnet://`, a sandbox or unit that did not start) is a
+   `FINDING`, never a pass, and so is a connection. Any `FINDING` there ends
+   the sitting before it starts. The probe is curl with no configuration
+   file and no proxy, to the numeric address, and it sends no byte. The
+   script then lists this host's listeners on non-loopback addresses and
+   says what stays open until the drop rule is in place: the sandbox's
+   network is open (pasta gives it this host's outbound access, to your LAN
+   and the Internet), `provider_host` is a DNS check and not a rule, and the
+   guard hook guards nothing.
 
    The connect test runs in the network shape of a scratch lead's sandbox:
    pasta with the plan's own arguments (`sandboxnet.PastaArgs()`: no port
@@ -302,14 +311,16 @@ with your values.
    (`--unshare-all --share-net --unshare-user`, UID and GID 0, no
    capabilities, no seccomp filter, as scratch provisioning names none);
    `TestScratchSeatNetcheckMatchesTheLeadsNetwork` fails when either drifts,
-   or when the lead's unit gains a network property. What differs does not
-   decide whether the gate answers: the binds (the host's `/usr` and a few
-   `/etc` files here, the profile's table in the sandbox) and the program
-   inside (`sh` and `curl` here, the probe and the agent there); the
-   `resolv.conf` (the host's here, one the holder derives there), since the
-   gate is an address and no name is looked up; and where pasta starts (your
-   shell here, the holder in the lead's user unit there, which sets no
-   network property), both in this host's network as your user.
+   when the lead's unit gains a network property, or when the throwaway
+   unit's properties are no longer the lead unit's fixed ones, and
+   `TestScratchSeatNetcheckClassifiesEachProbe` holds the classes on inert
+   fixtures. What differs does not decide whether the gate answers: the binds
+   (the host's `/usr` and a few `/etc` files here, the profile's table in the
+   sandbox) and the program inside (`sh` and `curl` here, the probe and the
+   agent there); the `resolv.conf` (the host's here, one the holder derives
+   there), since the gate is an address and no name is looked up. The
+   throwaway unit's name is systemd-run's, not a lead unit's: a rule that
+   matches lead units by name is not seen by this probe.
 - **f. Read and record, nothing more,** while the trial runs: the pins the
    gate will use, the trial's unit as it is, and the trial's fingerprint line
    of its current run:

@@ -36,7 +36,14 @@
   first, runs git in a cleared environment, writes the owner's network check
   `netcheck.sh` (its connect test in the network shape of a scratch lead's
   sandbox: the plan's pasta arguments and the profile's bubblewrap flag set
-  for the lead's identity, which a test holds), never writes in the trial's
+  for the lead's identity, which a test holds; it probes the gate's numeric
+  address with curl, no configuration file and no proxy, from this host,
+  from the lead's network in this shell and in a throwaway user unit with
+  the lead unit's fixed properties, classifies each probe as connected,
+  refused, or filtered or timed out, passes the lead's network only on a
+  refusal or timeout the probe itself reports, takes a probe that did not
+  run for a finding, and the runbook records its exit status), never
+  writes in the trial's
   state folder, never deletes and starts nothing. It takes an IPv4 gate only and one `NAME.service` as the
   trial's unit, which the printed commands name as `"$TRIAL_UNIT"`. A test
   in `cmd/ataniqd` takes a trial-shaped state folder to the scratch daemon
