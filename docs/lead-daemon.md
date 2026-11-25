@@ -912,17 +912,30 @@ JSON object per line. The first line is a header that names the format
   `ErrInsecure`. Damage other than an unfinished last line fails with
   `ErrCorrupt` and names the line; nothing is repaired, and the daemon exits 14.
 - **Records of other builds.** Replay ignores a member of a line or of a
-  payload that this build does not know, so a journal a newer build wrote
-  still opens, and a member a build adds is written only when it is set, so a
-  record that does not use it is the bytes an older build wrote. The identity
+  payload that this build does not know, and a member a build adds is written
+  only when it is set, so a record that does not use it is the bytes an older
+  build wrote. The tolerance is of members, not of values: a value this build
+  does not know in a member it knows (a provider, a manager, a desired or
+  shown state, an evidence kind, an outcome), a text over its bound, a
+  required member left empty and a member of another JSON type are damage, as
+  are an unknown record kind and another format version, and the journal does
+  not open (`ErrCorrupt`, exit 14). So a journal a newer build wrote opens
+  only when that build added members and nothing else. The identity
   of a requested profile is its stored bytes: a launch intent carries the
   digest of the profile as its define record stores it, so recorded launch
   digests stay valid whatever members later builds add. A role whose stored
   profile has a member this build does not know is not launched
   (`ErrLaunchProfile`, which the start answers as a refusal of the registry)
-  until it is defined again. `internal/leadregistry/testdata/v1-base` holds a
-  journal an older build wrote, and the tests read it back byte for byte. An
-  unknown record kind and another format version are still damage.
+  until it is defined again. Only the requested profile is checked for a
+  member this build does not know: in every other record kind such a member is
+  dropped, and the record replays as the record this build knows. A later
+  build therefore adds to an existing record kind only a member that an older
+  build may ignore (a note, evidence, provenance); a member that restricts
+  what a reader may do (a hold, a fence, a guard) needs a new record kind or a
+  new format version, which an older build refuses as damage (see
+  `internal/leadregistry/doc.go`). `internal/leadregistry/testdata/v1-base`
+  holds a journal an older build wrote, and the tests read it back byte for
+  byte.
 - **A reserved pack reference.** The requested profile has a member `pack`
   (a pack's name and the SHA-256 of its manifest) for the provider packs. No
   build sets it yet: `Define` refuses a profile that names a pack, a role whose
