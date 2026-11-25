@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -264,6 +265,154 @@ func TestNewerBuildValueIsDamage(t *testing.T) {
 		}
 		if err := openErr(t, appendRecord(t, base, c.kind, alpha, c.bad)); !errors.Is(err, ErrCorrupt) {
 			t.Errorf("%s: an unknown value: %v, want ErrCorrupt", name, err)
+		}
+	}
+}
+
+// repeatedDefine appends to a fresh journal a define record for alpha whose
+// payload is the raw JSON object given, chained as a writer would chain it,
+// and opens the result.
+func repeatedDefine(t *testing.T, alpha leadrole.Role, payload string) *Registry {
+	t.Helper()
+	dir := regDir(t)
+	openReg(t, dir).Close()
+	data, err := os.ReadFile(filepath.Join(dir, FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid([]byte(payload)) {
+		t.Fatalf("not JSON: %s", payload)
+	}
+	data = appendRecord(t, data, kindDefine, alpha, json.RawMessage(payload))
+	return openReg(t, writeJournal(t, data))
+}
+
+// TestRepeatedRequestedIsNotLaunched is the reviewer's case: a define record
+// whose requested member is there twice, the first time with a member this
+// build does not know and the second time as this build writes it. The typed
+// decoding merges the two and the raw one keeps the second, so without the
+// check of repeated members the profile looked like this build's own and was
+// launched. It replays, and is not launched; the same holds when the first
+// occurrence is a case alias that encoding/json matches to the member.
+func TestRepeatedRequestedIsNotLaunched(t *testing.T) {
+	alpha := lead(t, "alpha")
+	p := goodProfile()
+	canonical, err := marshalCompact(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer, err := json.Marshal(newerRequested{
+		Provider: p.Provider, Version: p.Version, Model: p.Model, Effort: p.Effort,
+		PermissionMode: p.PermissionMode, AccessMode: p.AccessMode,
+		Future: futureMember{Name: "a-restriction", Digest: hex.EncodeToString(make([]byte, 32))},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, first := range map[string]string{
+		"exact":      `"requested"`,
+		"case alias": `"Requested"`,
+		"escaped":    `"re\u0071uested"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := repeatedDefine(t, alpha, `{"manager":"ataniq",`+first+`:`+string(newer)+`,"requested":`+string(canonical)+`}`)
+			e, err := r.Get(alpha)
+			if err != nil || e.Requested != p {
+				t.Fatalf("%+v %v", e, err)
+			}
+			if !e.foreignProfile {
+				t.Fatal("a profile whose requested member is repeated is taken as this build's")
+			}
+			if _, err := r.BeginLaunch(alpha); !errors.Is(err, ErrLaunchProfile) {
+				t.Fatalf("BeginLaunch = %v, want ErrLaunchProfile", err)
+			}
+			// A define again with this build's profile lifts it.
+			okf(t)(r.Define(alpha, ManagerAtaniq, p))
+			if _, err := r.BeginLaunch(alpha); err != nil {
+				t.Fatalf("BeginLaunch after the define: %v", err)
+			}
+		})
+	}
+}
+
+// TestNestedRepeatedMemberIsNotLaunched: a member repeated deeper in the
+// requested profile (in the pack reference, or a member of this build's
+// profile given twice with the same value, exactly or as a case alias) is not
+// launched either, and the record replays.
+func TestNestedRepeatedMemberIsNotLaunched(t *testing.T) {
+	alpha := lead(t, "alpha")
+	const head = `{"manager":"ataniq","requested":{"provider":"claude","version":"2.1.0","model":"model-a","effort":"high","permission_mode":"default","access_mode":"workspace"`
+	for name, payload := range map[string]string{
+		"a member twice":         head + `,"model":"model-a"}}`,
+		"a member and its alias": head + `,"MODEL":"model-a"}}`,
+		"in a nested object":     head + `,"future":{"a":[{"b":1,"b":2}]}}}`,
+		"in a nested alias":      head + `,"future":{"name":1,"Name":1}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := repeatedDefine(t, alpha, payload)
+			e, err := r.Get(alpha)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !e.foreignProfile {
+				t.Fatal("a profile with a repeated member is taken as this build's")
+			}
+			if _, err := r.BeginLaunch(alpha); !errors.Is(err, ErrLaunchProfile) {
+				t.Fatalf("BeginLaunch = %v, want ErrLaunchProfile", err)
+			}
+		})
+	}
+}
+
+// TestRepeatsMember: the names are compared as decoded and folded as
+// encoding/json folds them; names in different objects, and equal strings that
+// are values and not names, are no repeat.
+func TestRepeatsMember(t *testing.T) {
+	for doc, want := range map[string]bool{
+		`{}`:  false,
+		`[]`:  false,
+		`"x"`: false,
+		`{"a":1,"b":{"a":1},"c":[{"a":1},{"a":2}]}`: false,
+		`{"a":"a","b":["a","a"]}`:                   false,
+		`{"a":{},"b":[],"c":[[],{}]}`:               false,
+		`{"a":1,"a":2}`:                             true,
+		`{"a":1,"A":2}`:                             true,
+		`{"\u0061":1,"a":2}`:                        true,
+		`{"x":[1,{"k":1,"K":2}]}`:                   true,
+		`{"x":{"y":{"z":{"q":1,"q":1}}}}`:           true,
+		`{"x":[[{"ok":1}],{"s":1,"ſ":2}]}`:          true, // long s folds to S
+		`{"k":1,"K":2}`:                             true, // the Kelvin sign folds to K
+		`{"a-b":1,"a_b":2}`:                         false,
+	} {
+		got, err := repeatsMember([]byte(doc))
+		if err != nil || got != want {
+			t.Errorf("%s: %v %v, want %v", doc, got, err, want)
+		}
+	}
+}
+
+// TestFoldNameIsEncodingJSONs: two names fold to one exactly when
+// encoding/json decodes the one into a field named by the other.
+func TestFoldNameIsEncodingJSONs(t *testing.T) {
+	names := []string{"requested", "Requested", "REQUESTED", "requeSted", "k", "K", "K", "s", "S", "ſ",
+		"é", "É", "ẞ", "ß", "ss", "a_b", "a-b", "ab", "σ", "Σ", "ς", "ı", "I", "i", "İ"}
+	for _, field := range names {
+		typ := reflect.StructOf([]reflect.StructField{{
+			Name: "F", Type: reflect.TypeOf(0), Tag: reflect.StructTag(`json:"` + field + `"`),
+		}})
+		for _, member := range names {
+			doc, err := json.Marshal(map[string]int{member: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			v := reflect.New(typ)
+			if err := json.Unmarshal(doc, v.Interface()); err != nil {
+				t.Fatal(err)
+			}
+			matched := v.Elem().Field(0).Int() == 1
+			if folded := foldName(member) == foldName(field); folded != matched {
+				t.Errorf("member %q, field %q: encoding/json matches %v, foldName says %v", member, field, matched, folded)
+			}
 		}
 	}
 }

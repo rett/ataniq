@@ -927,7 +927,13 @@ JSON object per line. The first line is a header that names the format
   member this build does not know is not launched (`ErrLaunchProfile`, which a
   start in scratch mode answers with the code `profile-not-launchable`, and
   the canary's start with its text, both saying to define the role again)
-  until it is defined again. Only the requested profile is checked for a
+  until it is defined again. So is a role whose define record repeats a
+  member anywhere in its payload, the requested member itself included,
+  compared exactly and as encoding/json folds names (`requested` and
+  `Requested` are one member to it): no build writes one, and the typed
+  decoding would merge the occurrences while the stored bytes keep the last,
+  so the profile that was checked would not be the one launched. The record
+  replays, and is not damage. Only the requested profile is checked for a
   member this build does not know: in every other record kind such a member is
   dropped, and the record replays as the record this build knows. A later
   build therefore adds to an existing record kind only a member that an older

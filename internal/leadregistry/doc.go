@@ -106,7 +106,11 @@
 // a newer build whose profile has a member this build lacks still replays.
 // What this build cannot read whole it does not act on: BeginLaunch refuses a
 // role whose stored profile is not what this build would write for it, with
-// ErrLaunchProfile, until the role is defined again. testdata/v1-base holds a
+// ErrLaunchProfile, until the role is defined again. A define record that
+// repeats a member anywhere in its payload, exactly or as a name encoding/json
+// folds to the same field, is such a profile too: no build writes one, and the
+// typed decoding merges the occurrences while the stored bytes keep the last,
+// so it replays and is not launched (see repeatsMember). testdata/v1-base holds a
 // journal an older build wrote, with the digests it recorded; the tests read
 // it back byte for byte.
 //

@@ -79,7 +79,8 @@ var (
 	// of this build lifts it. A record that holds such a profile, and a
 	// launch that a newer build journaled for it, still replay.
 	// It also refuses a profile that names a pack (Requested.Pack), which this
-	// build does not launch.
+	// build does not launch, and one whose define record repeats a member
+	// (exactly or as a case alias), which no build writes.
 	ErrLaunchProfile error = refusal("the requested profile has members this build does not know or does not launch; define the role again")
 	// ErrIntentMismatch means the intent id is not the role's current intent.
 	ErrIntentMismatch = errors.New("leadregistry: not the current launch intent")
