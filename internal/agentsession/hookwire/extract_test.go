@@ -122,15 +122,38 @@ func TestExtractFailures(t *testing.T) {
 	}
 }
 
+func repeatedSelections(path string) []pack.HookField {
+	fields := make([]pack.HookField, MaxFields)
+	for i := range fields {
+		fields[i] = selection(string(rune('a'+i)), path)
+	}
+	return fields
+}
+
+func quotedFieldInput() string {
+	return `{"value":"` + strings.Repeat(`\"`, 256) + `"}`
+}
+
+func TestExtractExceedsFrameLimit(t *testing.T) {
+	row := endRow()
+	row.Fields = repeatedSelections("/value")
+	row.Digests = nil
+	r, err := Extract(row, strings.NewReader(quotedFieldInput()))
+	if r != nil || err == nil || err.Error() != "hook frame exceeds limit" {
+		t.Fatalf("got request present=%t, err=%v; want nil request and frame size error", r != nil, err)
+	}
+}
+
 func FuzzExtract(f *testing.F) {
 	f.Add(`{"a":[{"x":1,"y":2},false]}`, "/a/1")
 	f.Add(`{"a/b":{"~":"β"}}`, "/a~1b/~0")
 	f.Add(`{"a":1,"a":2}`, "")
 	f.Add(`[null]`, "/18446744073709551616")
 	f.Add(`"\udfff"`, "/~3")
+	f.Add(quotedFieldInput(), "/value")
 	f.Fuzz(func(t *testing.T, input, path string) {
 		row := endRow()
-		row.Fields = []pack.HookField{selection("field", path)}
+		row.Fields = repeatedSelections(path)
 		row.Digests = []pack.HookField{selection("digest", path)}
 		r, err := Extract(row, strings.NewReader(input))
 		if err != nil {
