@@ -329,6 +329,7 @@ func TestScratchSeatNetcheckClassifiesEachProbe(t *testing.T) {
 		{"the gate's address the sandbox's own", "192.0.2.15", "local 192.0.2.15 dev lo table local src 192.0.2.15 uid 0 \n    cache <local> \n", 0, "net route=none addr=none note=local"},
 		{"a unicast route whose source is the gate", gate, gate + " dev eth0 src " + gate + " uid 0 \n", 0, "net route=none addr=none note=local"},
 		{"an unreachable route (the lookup fails)", gate, "RTNETLINK answers: Network is unreachable\n", 2, "net route=none addr=none note=lookup"},
+		{"a lookup that fails after a well-formed line", gate, gate + " via 192.0.2.1 dev eth0 src 192.0.2.15 uid 0 \n", 2, "net route=none addr=none note=lookup"},
 		{"a blackhole route the lookup names", gate, "blackhole " + gate + " dev lo uid 0 \n", 0, "net route=none addr=none note=reject"},
 		{"a broadcast route", "192.0.2.255", "broadcast 192.0.2.255 dev eth0 table local src 192.0.2.15 uid 0 \n", 0, "net route=none addr=none note=type"},
 		{"a unicast route on lo", gate, gate + " dev lo src 192.0.2.15 uid 0 \n", 0, "net route=none addr=none note=lo"},
