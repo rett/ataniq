@@ -8,7 +8,7 @@
 #   prepare.sh --dry      VALUES [--claude FILE --model NAME] [--bin DIR] [--daemon FILE]
 #                                [--pasta FILE] [--bwrap FILE]
 #   prepare.sh --write    the same
-#   prepare.sh --status   --state DIR --root DIR --gate IP:PORT [--daemon FILE] [--compare]
+#   prepare.sh --status   --state DIR --root DIR --gate IP:PORT [--daemon FILE] [--record | --compare]
 #   prepare.sh --self-test [gate IP:PORT | config STATE ROOT SITTING [MODEL]
 #                          | settings ROOT | commands STATE ROOT IP:PORT SITTING [live]]
 #
@@ -70,20 +70,29 @@
 # ROOT/scratch.json --owner-channel --seat-gate IP:PORT --owner-settings
 # ROOT/owner-settings --check", which reads the trial's state folder and binds,
 # locks, makes and starts nothing, and passes its lines and its exit status
-# through. With --compare (step 13) it then compares the trial's files with
-# the record of step g, which must be there: ROOT/evidence/trial-before.sha256
+# through. With --record (step g), once the check found no refusal, it takes
+# the baseline of step g: the digests of the trial's six files, then the
+# key list's prefix from the daemon's "ataniqd run --scratch
+# ROOT/scratch.json --owner-channel --check --keys-prefix"; only when the
+# prefix's digest is the digest of keys.log just taken are both written, in
+# a new folder that is then given its name, ROOT/evidence/step-g, so that
+# the baseline appears whole or not at all; on disagreement nothing is
+# written and the step is run again, and a baseline that is there is never
+# replaced. With --compare (step 13) it then compares the trial's files with
+# the baseline of step g, which must be there: step-g/trial-before.sha256
 # must be six lines naming each of the six files once, the names compared as
 # text, before any file it lists is opened, and the trial's gate key,
 # certificate, pins and settings must be the same bytes: sha256sum -c checks
 # their four lines, and any exit status of it but 0 is CHANGED. The key list
-# and its head are judged by the daemon, not here: prepare passes the prefix the owner recorded at step g
-# (ROOT/evidence/keys-before.prefix, the output of the daemon's --check
-# --keys-prefix: the list's length and SHA-256) to "ataniqd run --scratch
+# and its head are judged by the daemon, not here: prepare passes the prefix
+# of the baseline (step-g/keys-before.prefix, the list's length and SHA-256,
+# whose digest must be the baseline's of keys.log) to "ataniqd run --scratch
 # ROOT/scratch.json --owner-channel --check --keys-since PREFIX" and prints
-# what it says. The daemon checks the list and its head with the journal's own
-# checks, read only, and names each record appended since step g; counter records alone (a
-# phone login) pass, and anything else, damage included, is CHANGED. A record
-# of step g that is incomplete or missing is CHANGED too. It writes nothing.
+# what it says. The daemon checks the list and its head with the journal's
+# own checks, read only, and names each record appended since step g;
+# counter records alone (a phone login) pass, and anything else, damage
+# included, is CHANGED. A baseline of step g that is incomplete, missing or
+# not one record is CHANGED too. --status writes nothing but the baseline.
 set -eu
 umask 077
 
@@ -120,11 +129,12 @@ die() {
 usage() {
   printf '%s\n' 'usage: prepare.sh --dry|--write --state DIR --root DIR --gate IP:PORT --sitting N' \
     '                  [--claude FILE --model NAME] [--bin DIR] [--daemon FILE] [--pasta FILE] [--bwrap FILE]' \
-    '       prepare.sh --status --state DIR --root DIR --gate IP:PORT [--daemon FILE] [--compare]' \
+    '       prepare.sh --status --state DIR --root DIR --gate IP:PORT [--daemon FILE] [--record | --compare]' \
     '       --dry          print what --write makes and your steps, from the values alone; read and write nothing' \
     '       --write        check, make ROOT and write the proof'"'"'s files in it (nothing else)' \
     '       --status       run the daemon'"'"'s check (yours; it writes nothing)' \
-    '       --compare      with --status: also compare the trial'"'"'s files with the record of step g, and have the daemon judge the key list' \
+    '       --record       with --status (step g): then record the trial'"'"'s digests and the key list'"'"'s prefix as one baseline in ROOT/evidence/step-g' \
+    '       --compare      with --status (step 13): then compare the trial'"'"'s files with the baseline of step g, and have the daemon judge the key list' \
     '       --state DIR    the phone trial'"'"'s state folder (or OWNER_STATE_DIR)' \
     '       --root DIR     a new folder for the proof (or ROOT), which prepare makes; its parent exists; outside /tmp and the checkout' \
     '       --gate IP:PORT the seat gate'"'"'s IPv4 address and port (or SEAT_GATE)' \
@@ -264,10 +274,13 @@ set_paths() {
   RUNTIME=$ROOT/runtime
   OC=$ROOT/owner-channel
   EVIDENCE=$ROOT/evidence
-  BEFORE=$EVIDENCE/trial-before.sha256
-  # The prefix of the trial's key list at step g, its length and SHA-256, as
-  # the daemon's --check --keys-prefix prints it.
-  KEYS_BEFORE=$EVIDENCE/keys-before.prefix
+  # The baseline of step g, one folder that --status --record publishes
+  # whole: the digests of the trial's six files, and the prefix of its key
+  # list, its length and SHA-256, as the daemon's --check --keys-prefix
+  # prints it, whose digest is the record's of keys.log.
+  BASELINE=$EVIDENCE/step-g
+  BEFORE=$BASELINE/trial-before.sha256
+  KEYS_BEFORE=$BASELINE/keys-before.prefix
   OWNER=$S/owner
 }
 
@@ -404,11 +417,9 @@ EOF
   e. OWNER ONLY (starts pasta, bubblewrap, curl and a throwaway user unit): { sh $ROOT/netcheck.sh; echo "netcheck: exit status \$?"; } 2>&1 | tee -a $EVIDENCE/netcheck.txt
      It must say connected from this host and refused or filtered from the lead's network, and end "netcheck: exit status 0".
   f. $BIN/ataniq-canary scratch-init --config $CONFIG   (the root marker; it writes nothing in owner/)
-  g. sh $PREP --status $_vals   (the daemon's check: it must end "check: no refusal")
+  g. sh $PREP --status $_vals --record   (the daemon's check, which must end "check: no refusal", then the baseline: it must end "status: recorded")
      $DAEMON seat-gate pins --state-dir $S
      journalctl --user --unit "\$TRIAL_UNIT" -I | grep 'key fingerprint' | tail -n 1
-     (cd $OWNER && sha256sum -- $TRIAL_FILES) >$BEFORE
-     OWNER ONLY (the daemon's read-only check of the key list and its head; it writes only this file): $DAEMON run --scratch $CONFIG --owner-channel --check --keys-prefix >$KEYS_BEFORE
 Switch from the trial to the proof:
   1. OWNER ONLY: systemctl --user stop -- "\$TRIAL_UNIT"
      then: systemctl --user show -p ActiveState -- "\$TRIAL_UNIT"   (inactive; nothing is masked)
@@ -523,10 +534,10 @@ self_check() {
       *) _fail 'the steps do not check, stop the trial, run the daemon on the settings folder, compare and start the trial, in order' ;;
     esac
     case $_o in *'scratch-init '*'--status '*) ;; *) _fail 'the steps do not make the root marker before the daemon'"'"'s check' ;; esac
-    case $_o in *'sha256sum -- '*' --check --keys-prefix >/srv/sample/proof/evidence/keys-before.prefix'*'systemctl --user stop'*'--compare'*'key list since g'*'systemctl --user start'*) ;;
-      *) _fail 'the steps do not record the key list'"'"'s prefix at g, before the trial stops, and have the daemon judge it at 13' ;;
+    case $_o in *'--status '*' --record '*'systemctl --user stop'*'--compare'*'key list since g'*'systemctl --user start'*) ;;
+      *) _fail 'the steps do not record the baseline at g, before the trial stops, and have the daemon judge the key list at 13' ;;
     esac
-    case $_o in *'cp -- '*'keys.log'* | *'sha256sum -c'*) _fail 'a step copies the key list or confirms the record by hand' ;; esac
+    case $_o in *'cp -- '*'keys.log'* | *'sha256sum'* | *'--keys-prefix'*) _fail 'a step copies the key list, takes a digest by hand or records the prefix apart from the baseline' ;; esac
     case $_o in *'TRIAL_UNIT'*) ;; *) _fail 'the steps do not name the unit' ;; esac
     case $_o in *'KEY'*) _fail 'the steps name a lead KEY' ;; esac
     case $_o in *'swap'* | *'mask --'* | *'unmask'* | *'record-trial'* | *'trial-restart'*) _fail 'the steps still swap, mask or record the trial' ;; esac
@@ -622,6 +633,7 @@ ROOT=${ROOT:-}
 GATE=${SEAT_GATE:-}
 SIT=${SITTING:-}
 COMPARE=
+RECORD=
 CLAUDE_SRC=${CLAUDE_FILE:-}
 MODEL=${CLAUDE_MODEL:-}
 BIN=$REPO/build/canary
@@ -646,13 +658,16 @@ while [ "$#" -gt 0 ]; do
     --pasta) [ "$#" -ge 2 ] || usage; PASTA=$2; shift 2 ;;
     --bwrap) [ "$#" -ge 2 ] || usage; BWRAP=$2; shift 2 ;;
     --compare) COMPARE=1; shift ;;
+    --record) RECORD=1; shift ;;
     *) usage ;;
   esac
 done
 # No default action: the mode is always said.
 [ -n "$MODE" ] || usage
 # --compare belongs to --status.
-if [ -n "$COMPARE" ] && [ "$MODE" != status ]; then usage; fi
+if [ -n "$COMPARE$RECORD" ] && [ "$MODE" != status ]; then usage; fi
+# --record (step g) and --compare (step 13) exclude each other.
+if [ -n "$COMPARE" ] && [ -n "$RECORD" ]; then usage; fi
 
 # The values, checked as text before anything is read.
 [ -n "$S" ] || die 'no state folder: give --state DIR or OWNER_STATE_DIR, the phone trial'"'"'s state folder'
@@ -866,6 +881,106 @@ record_complete() {
   manifest_ok "$_text"
 }
 
+# prefix_form TEXT prints TEXT when it is a prefix of the daemon's form,
+# LEN:SHA256 (a decimal length without a leading zero, a colon and 64
+# lower-case hexadecimal digits), and nothing otherwise.
+prefix_form() {
+  # shellcheck disable=SC2254  # HEX64 is a pattern on purpose
+  case $1 in
+    0* | *[!0-9a-f:]* | *:*:*) return 0 ;;
+    [1-9]*:$HEX64) ;;
+    *) return 0 ;;
+  esac
+  case ${1%%:*} in *[!0-9]*) return 0 ;; esac
+  printf '%s' "$1"
+}
+
+# keys_digest TEXT prints the digest that TEXT, the lines of a record that
+# manifest_ok passed, gives keys.log.
+keys_digest() {
+  _rest=$1$_nl
+  while [ -n "$_rest" ]; do
+    _l=${_rest%%"$_nl"*}
+    _rest=${_rest#*"$_nl"}
+    case $_l in *'  keys.log') printf '%s' "${_l%'  keys.log'}" ;; esac
+  done
+}
+
+# not_recorded WHY says why the baseline was not recorded and fails the run.
+not_recorded() {
+  say "status: NOT RECORDED: $*"
+  status_failed
+}
+
+# record_baseline is --status --record (step g), once the daemon's check
+# found no refusal: the digests of the trial's six files and the daemon's
+# prefix of the key list, taken one after the other while the trial runs,
+# must agree, the prefix's digest being the record's of keys.log; only then
+# are both written, into a new folder of their own that is then given its
+# name, so that the baseline appears whole or not at all. On disagreement
+# (a record was appended between the two, by a phone login, say) nothing is
+# written and the step is run again. A baseline that is there is kept and
+# never replaced.
+record_baseline() {
+  if [ "$RC" -ne 0 ]; then
+    say "status: NOT RECORDED: the sitting failed preflight; nothing was written: fix what the check refused, then run this step again"
+    return 0
+  fi
+  if [ -e "$BASELINE" ] || [ -L "$BASELINE" ]; then
+    not_recorded "a baseline of step g is there already ($BASELINE): it is kept as it is and never replaced; compare with it at step 13, or prepare a new root for a new one"
+    return 0
+  fi
+  if [ -L "$EVIDENCE" ] || [ ! -d "$EVIDENCE" ]; then
+    not_recorded "there is no evidence folder $EVIDENCE (a link is refused); nothing was written"
+    return 0
+  fi
+  _src=0
+  # shellcheck disable=SC2086  # the six names are split on purpose
+  _sums=$(cd -- "$OWNER" && sha256sum -- $TRIAL_FILES) || _src=$?
+  if [ "$_src" -ne 0 ]; then
+    not_recorded "sha256sum of the trial's files ended with exit status $_src; nothing was written"
+    return 0
+  fi
+  if ! _why=$(manifest_ok "$_sums"); then
+    not_recorded "the digests of the trial's files are not a record of the six files ($_why); nothing was written"
+    return 0
+  fi
+  say "status: the daemon's check of the key list: $DAEMON run --scratch $CONFIG --owner-channel --check --keys-prefix"
+  _krc=0
+  _kp=$("$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-prefix) || _krc=$?
+  if [ "$_krc" -ne 0 ]; then
+    not_recorded "the daemon's check of the key list ended with exit status $_krc (the line above says why); nothing was written: run this step again, and if it fails again, stop"
+    return 0
+  fi
+  _p=$(prefix_form "$_kp")
+  if [ -z "$_p" ]; then
+    not_recorded "the daemon's check of the key list printed no prefix of the form LEN:SHA256; nothing was written"
+    return 0
+  fi
+  if [ "${_p#*:}" != "$(keys_digest "$_sums")" ]; then
+    not_recorded "the key list changed between its digest and the daemon's check (a record was appended meanwhile: a phone login, say), so the two are not one baseline; nothing was written: run this step again"
+    return 0
+  fi
+  _tmp=$EVIDENCE/.step-g.$$
+  if ! mkdir -m 0700 -- "$_tmp" 2>/dev/null; then
+    not_recorded "the folder $_tmp cannot be made new; nothing was written"
+    return 0
+  fi
+  if ! (set -C && printf '%s\n' "$_sums" >"$_tmp/trial-before.sha256" && printf '%s\n' "$_p" >"$_tmp/keys-before.prefix"); then
+    not_recorded "the baseline cannot be written in $_tmp, which is left half made and is not the baseline: run this step again"
+    return 0
+  fi
+  if [ -e "$BASELINE" ] || [ -L "$BASELINE" ]; then
+    not_recorded "a baseline $BASELINE appeared meanwhile; the one written in $_tmp is not the baseline"
+    return 0
+  fi
+  mv -T -- "$_tmp" "$BASELINE" || {
+    not_recorded "the baseline written in $_tmp cannot be given its name $BASELINE: run this step again"
+    return 0
+  }
+  say "status: recorded: the digests of the trial's six files and the key list's prefix $_p, one baseline in $BASELINE"
+}
+
 # compare_record is --status --compare: the trial's files against the record
 # of step g, which must be there and complete, and the key list judged by the
 # daemon against the prefix of step g.
@@ -905,14 +1020,14 @@ compare_record() {
   if [ -f "$KEYS_BEFORE" ] && [ ! -L "$KEYS_BEFORE" ] && [ "$(wc -l <"$KEYS_BEFORE")" -eq 1 ]; then
     _prefix=$(cat -- "$KEYS_BEFORE")
   fi
-  case $_prefix in
-    '' | 0* | *[!0-9a-f:]* | *:*:* | :* | *:) _prefix= ;;
-    *:????????????????????????????????????????????????????????????????) ;;
-    *) _prefix= ;;
-  esac
-  case ${_prefix%%:*} in '' | *[!0-9]*) _prefix= ;; esac
+  _prefix=$(prefix_form "$_prefix")
   if [ -z "$_prefix" ]; then
     say "status: CHANGED: there is no prefix of the key list of step g in $KEYS_BEFORE (one line, LEN:SHA256, as --keys-prefix prints it), so the key list is not confirmed"
+    status_failed
+    return 0
+  fi
+  if [ "${_prefix#*:}" != "$(keys_digest "$(cat -- "$BEFORE")")" ]; then
+    say "status: CHANGED: the prefix in $KEYS_BEFORE is not of the list whose digest $BEFORE holds: the two are not one baseline of step g, so the key list is not confirmed"
     status_failed
     return 0
   fi
@@ -930,8 +1045,8 @@ compare_record() {
 }
 
 # --status: the daemon's own check on the files --write made, then, with
-# --compare, the trial's files against the record of step g. It writes
-# nothing.
+# --record, the baseline of step g, or, with --compare, the trial's files
+# against it. It writes nothing but the baseline, in ROOT/evidence.
 if [ "$MODE" = status ]; then
   check_state
   [ -f "$CONFIG" ] && [ ! -L "$CONFIG" ] || die "no scratch config $CONFIG: run --write first"
@@ -950,10 +1065,12 @@ if [ "$MODE" = status ]; then
   fi
   if [ -n "$COMPARE" ]; then
     compare_record
-  elif [ -L "$BEFORE" ] || [ ! -f "$BEFORE" ]; then
-    say "status: no $BEFORE yet: record the trial's digests and the key list's prefix at step g, before the trial is stopped"
+  elif [ -n "$RECORD" ]; then
+    record_baseline
+  elif [ -L "$BASELINE" ] || [ ! -d "$BASELINE" ]; then
+    say "status: no baseline $BASELINE yet: record it at step g (--status --record), before the trial is stopped"
   else
-    say "status: the record of step g is there; compare the trial's files with it at step 13 (--status --compare)"
+    say "status: the baseline of step g is there; compare the trial's files with it at step 13 (--status --compare)"
   fi
   exit "$RC"
 fi

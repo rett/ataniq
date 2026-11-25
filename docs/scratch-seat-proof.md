@@ -163,8 +163,10 @@ appends a counter record to the key journal (`keys.log`, `keys.head`); a
 passkey of the platform's keeps its counter at 0 and appends nothing. A
 digest alone cannot tell that record from a pairing, a revocation or damage,
 so the key list is the daemon's to judge: at step g its `--check
---keys-prefix` records the list's prefix (its length and SHA-256) once the
-journal's own checks, read only, pass the list and its head, and at step 13 its
+--keys-prefix` gives the list's prefix (its length and SHA-256) once the
+journal's own checks, read only, pass the list and its head, which
+`--status --record` writes with the digests only when its digest is theirs
+of `keys.log`, and at step 13 its
 `--check --keys-since` checks the list and its head with the same checks,
 checks that the prefix is the list's beginning and names the type of each
 record appended after it. The test takes both while the trial runs and after
@@ -204,7 +206,9 @@ every row of their bind tables, as the holder builds them
 `--self-test` read and write nothing, `--write` writes in the root only and
 refuses what it can judge, `--status` refuses a `--state` that is not the
 config's `state_root` by identity and runs the daemon's check with exactly
-the flags of step 2 and `--check`, and `--status --compare` refuses a record
+the flags of step 2 and `--check`, `--status --record` writes the baseline of
+step g only when the daemon's prefix and the digests agree (a record
+appended between them writes nothing), and `--status --compare` refuses a record
 of step g that does not name each of the six files once, by its name as
 text, before it opens one, takes `sha256sum -c`'s exit status for the other
 four files' digests and passes the prefix of step g to the daemon's key check,
@@ -395,15 +399,13 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    file` when run again). It writes nothing in `owner/`, and the trial daemon
    serves as before with the marker there. It refuses a state folder that is a
    default one or carries the canary's marker.
-- **g. The daemon's check, and the record of the trial's files (C)**, while
-   the trial runs, nothing more:
+- **g. The daemon's check, and the baseline of the trial's files (C)**,
+   while the trial runs, nothing more:
 
    ```sh
-   sh "$P" --status
+   sh "$P" --status --record
    $D seat-gate pins --state-dir "$S"
    journalctl --user --unit "$TRIAL_UNIT" -I | grep 'key fingerprint' | tail -n 1
-   (cd "$S/owner" && sha256sum -- gate/key.pem gate/cert.pem gate/seat-pins keys.log keys.head scratch.json) >"$ROOT/evidence/trial-before.sha256"
-   $D run --scratch "$CONFIG" --owner-channel --check --keys-prefix >"$ROOT/evidence/keys-before.prefix"
    ```
 
    `--status` first checks that `$S` is the `state_root` of `$CONFIG`, the
@@ -439,20 +441,29 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    holder meets that limit only when it starts, during the sitting). The
    locks and the gate's port, which the check does not take, are left to the
    start.
-   The pins line, the trial's fingerprint line of its current run, the
-   digests of the trial's gate key, certificate, pins, key list and settings,
-   and the key list's prefix are the record that step 13 compares with. The
-   last line is **OWNER ONLY**: the daemon's read-only check of the key list
-   and its head, which has the journal's own checks judge the trial's
+   With `--record`, once the check found no refusal, `--status` takes the
+   baseline that step 13 compares with: the SHA-256 digests of the trial's
+   gate key, certificate, pins, key list, its head and settings, then the
+   key list's prefix from the daemon's read-only check of the key list and
+   its head, `$D run --scratch "$CONFIG" --owner-channel --check
+   --keys-prefix`. That check has the journal's own checks judge the trial's
    `owner/keys.log` and `keys.head` read only, on the files themselves
    (`ownerjournal.VerifyKeys`: the folder and both files opened without
-   following a link and held to the ownership, mode and link-count checks of
-   the journal's opener, the records under its replay, and a head that counts
-   them exactly; it creates, repairs, locks and writes nothing), and prints one line, `LEN:SHA256`, the list's
-   length and SHA-256 (a digest, not the keys). When the list or its head
-   does not hold it prints the reason, nothing goes into the file, and step
-   13 will say CHANGED: run it again, and if it fails again, stop. Nothing of
-   the trial is changed by any of it.
+   following a link and held to the ownership, mode and link-count checks
+   of the journal's opener, the records under its replay, and a head that
+   counts them exactly; it creates, repairs, locks and writes nothing), and
+   prints one line, `LEN:SHA256`, the list's length and SHA-256 (a digest,
+   not the keys). The two are one record only when the prefix's digest is
+   the digest of `keys.log` taken just before: then both files are written
+   into a new folder of their own, which is then given its name,
+   `$ROOT/evidence/step-g`, so the baseline appears whole or not at all, and
+   the last line is `status: recorded: ...`. When they disagree (a record
+   was appended between them, by a phone login, say), when the key check
+   refuses (it prints why), or when the daemon's check refused, nothing is
+   written and the line says `status: NOT RECORDED: ...`: run the step
+   again, and if it fails again, stop. A baseline that is there is kept and
+   never replaced. The pins line and the trial's fingerprint line of its
+   current run go with it. Nothing of the trial is changed by any of it.
 
 ## The sitting
 
@@ -689,8 +700,9 @@ it, the sitting has no live lead: go on with step 11.
     sh "$P" --status --compare
     ```
 
-    After the daemon's check, `--compare` takes the record of step g, which
-    must be there: before any file it lists is opened, `trial-before.sha256`
+    After the daemon's check, `--compare` takes the baseline of step g,
+    `$ROOT/evidence/step-g`, which must be there: before any file it lists
+    is opened, `trial-before.sha256`
     must be six whole lines, each a digest, two spaces and a name, whose
     names are `gate/key.pem`, `gate/cert.pem`, `gate/seat-pins`, `keys.log`,
     `keys.head` and `scratch.json`, each once, compared as text (no
@@ -702,7 +714,9 @@ it, the sitting has no live lead: go on with step 11.
     decides: any status but 0 (a file changed, missing or unreadable) is
     `CHANGED`. The key list and its head are not judged by their digests,
     which a phone login changes: `--status` passes the prefix of step g
-    (`keys-before.prefix`) to the daemon's `--check --keys-since` and prints
+    (`keys-before.prefix`, whose digest must be the baseline's of `keys.log`,
+    or the two are not one record and it is `CHANGED`) to the daemon's
+    `--check --keys-since` and prints
     its lines. The daemon checks the list and its head with the journal's
     own checks, read only, checks that the prefix of step g is the list's beginning and
     names the type of each record appended since: `keys  since step g (N
@@ -770,11 +784,12 @@ these, are the sitting's evidence:
 
 - `$ROOT/evidence/netcheck.txt`: the network checks of steps e and 7, each
   ending with its exit status.
-- `$ROOT/evidence/trial-before.sha256`: the SHA-256 digests of the trial's gate
-  key, certificate, pins, key list and settings at step g (digests only; a
-  digest of the gate's key does not give the key).
-- `$ROOT/evidence/keys-before.prefix`: the key list's length and SHA-256 at
-  step g, as the daemon's `--check --keys-prefix` printed it.
+- `$ROOT/evidence/step-g/`, the baseline of step g, written whole by
+  `--status --record`: `trial-before.sha256`, the SHA-256 digests of the
+  trial's gate key, certificate, pins, key list, its head and settings
+  (digests only; a digest of the gate's key does not give the key), and
+  `keys-before.prefix`, the key list's length and SHA-256 as the daemon's
+  `--check --keys-prefix` printed it, of the same list.
 - `$ROOT/evidence/daemon.log`: the daemon's output, each run ending with its
   exit status line. Its chat lines hold counts and fixed words, never a
   reply's text; its provisioning lines name folders of the state folder.
