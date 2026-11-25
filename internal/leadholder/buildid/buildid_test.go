@@ -43,9 +43,17 @@ func newRecord(id Identity) string {
 		`","version":"` + id.Version + `","revision":"` + id.Revision + `","go":"go1.27.2","tags":"ataniq_canary"}}` + "\n"
 }
 
-// TestMixedPairs is the mixed-pair test: an old holder against a new launcher,
-// a new holder against an old record, a new holder against an old launcher,
-// and the same build, at launch and at attach. Each case is answered by name.
+// TestMixedPairs is the mixed-pair test of the check: an old holder against a
+// new launcher, a new holder against an old record, a launcher of this check
+// that expects the old build against a new holder, and the same build, at
+// launch and at attach. Each case is answered by name.
+//
+// It does not cover a launcher built before this package: such a launcher
+// makes no check and never reads holder.json. What it relies on is that the
+// control frames of version 1 are the bytes they were (in the wire package,
+// TestControlFrameV1IsWrittenWithoutTheMember) and that the member "build"
+// is added to holder.json, which no older reader refuses (see the package
+// documentation).
 func TestMixedPairs(t *testing.T) {
 	oldB, newB := build(revOld, false), build(revNew, false)
 	exe := func(id Identity) func(string) (Identity, error) {
@@ -60,7 +68,7 @@ func TestMixedPairs(t *testing.T) {
 	}{
 		{"old holder against a new daemon", newB, exe(oldB), newRecord(oldB), WhyDiffer},
 		{"new holder against an old record", newB, exe(newB), oldRecord, WhyNoRecord},
-		{"new holder against an old daemon", oldB, exe(newB), newRecord(newB), WhyDiffer},
+		{"a checker expecting the old build against a new holder", oldB, exe(newB), newRecord(newB), WhyDiffer},
 		{"same build", newB, exe(newB), newRecord(newB), ""},
 	} {
 		ch := &Checker{Expected: c.expected, Executable: c.launch}

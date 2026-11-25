@@ -55,7 +55,9 @@ type stateFile struct {
 	// Build is the build identity of this holder, read from the executable
 	// that runs (/proc/<pid>/exe) when it started. A launcher compares it with
 	// the build it expects before it attaches (buildid); a holder of a build
-	// before this member writes none.
+	// before this member writes none. A launcher of a build before this member
+	// does not read holder.json at all, and the canary run kit's reader prints
+	// any member, so no older reader refuses a file that has it.
 	Build buildid.Identity `json:"build"`
 	// Scratch is true for a scratch agent, the only kind a build without the
 	// ataniq_canary tag hosts.

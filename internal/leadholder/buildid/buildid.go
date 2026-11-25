@@ -45,6 +45,21 @@
 // identity, which is every holder built before this package, is named as such
 // and is never a match. An identity that cannot be read (no file, no Go build
 // information, a malformed record) is refused with the same reason, saying so.
+//
+// # Launchers older than this package
+//
+// A launcher built before build identities (the daemon and ataniq-scratch of
+// release 0.0.13 and before) makes no check: it never reads holder.json, and
+// it talks to a holder only over the control socket, whose version-1 frames
+// are the same bytes as before (internal/leadholder/wire). So it starts and
+// attaches to a holder of this build as it did to any holder, and the member
+// "build" of holder.json is not read by it at all. The one older reader of
+// holder.json is the canary run kit's "ataniq-canary fields", which prints
+// every member of any JSON object, nested ones included, as path=value lines;
+// it does not refuse a member it does not know, and the run script looks up
+// only the members it names. No older reader of the file refuses the new
+// member. The tests of this package cover a launcher of this package that
+// expects another build, not a launcher without it.
 package buildid
 
 import (
