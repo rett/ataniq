@@ -49,6 +49,13 @@ func newSettingsWorld(t *testing.T) *settingsWorld {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return newSettingsWorldIn(t, dir)
+}
+
+// newSettingsWorldIn is newSettingsWorld in the folder dir, which exists and
+// is at its physical path.
+func newSettingsWorldIn(t *testing.T, dir string) *settingsWorld {
+	t.Helper()
 	w := &settingsWorld{dir: dir, state: filepath.Join(dir, "trial-state"), root: filepath.Join(dir, "proof")}
 	w.owner = filepath.Join(w.state, hostadapter.OwnerDirName)
 	w.config = filepath.Join(w.root, "scratch.json")
@@ -600,5 +607,35 @@ func TestOwnerSettingsCatchesASecondNameOfAFolder(t *testing.T) {
 		if err != nil {
 			t.Errorf("the proof's folder by another name fails %s: %v", r, err)
 		}
+	}
+}
+
+// A runtime root so long that a holder's socket would not fit in a Unix
+// socket address is a refusal of --check, made before the trial is stopped;
+// the daemon itself would only meet it when a holder starts (review finding
+// 8). The daemon's own socket still fits here.
+func TestOwnerSettingsCheckFailsASocketPathThatDoesNotFit(t *testing.T) {
+	useSuite(t, cmdSuite{})
+	noListen(t)
+	dir, err := filepath.EvalSymlinks(shortDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ROOT is DIR/F/proof, 80 bytes: its daemon socket (ROOT/runtime/
+	// daemon.sock) fits, a holder's (ROOT/runtime/leads/
+	// scratch-standin-1-lead/control.sock) does not.
+	fill := 80 - len(dir) - len("/") - len("/proof")
+	if fill < 1 {
+		t.Skipf("the temporary folder %s is too long for this test", dir)
+	}
+	base := filepath.Join(dir, strings.Repeat("d", fill))
+	if err := os.Mkdir(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	w := newSettingsWorldIn(t, base)
+	code, out, msg := w.run(t, w.runArgs(w.settings, "--check")...)
+	if code != leaddaemon.ExitConfig || msg != "" || !strings.Contains(out, "FAIL  the socket paths: the holder socket "+w.runtime+"/leads/scratch-standin-1-lead/") ||
+		!strings.Contains(out, "over the 107 a Unix socket address holds") || !strings.Contains(out, "check: 1 refusal(s)") {
+		t.Fatalf("--check with a long runtime root: exit %d:\n%s%s", code, out, msg)
 	}
 }
