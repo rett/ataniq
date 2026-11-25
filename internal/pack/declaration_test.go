@@ -224,8 +224,15 @@ func TestDeclarationDigest(t *testing.T) {
 	if _, err := pack.DeclarationDigest(files); err == nil {
 		t.Error("accepted policy file in digest")
 	}
-	delete(files, pack.ManifestPath)
-	if _, err := pack.DecodeDeclaration(files, sampleLayout()); err == nil {
-		t.Error("decoded without root")
+}
+
+func TestMissingManifest(t *testing.T) {
+	files := map[string][]byte{pack.HooksPath: buildDocument(hookRows)}
+	want := "missing " + pack.ManifestPath
+	if _, err := pack.DecodeDeclaration(files, sampleLayout()); err == nil || err.Error() != want {
+		t.Errorf("DecodeDeclaration error = %v, want %q", err, want)
+	}
+	if _, err := pack.DeclarationDigest(files); err == nil || err.Error() != want {
+		t.Errorf("DeclarationDigest error = %v, want %q", err, want)
 	}
 }
