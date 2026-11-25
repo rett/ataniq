@@ -808,6 +808,10 @@ func (l *leadEnv) fillQuarantine(key string) {
 	}
 }
 
+// chatWatchdog bounds the chat tests' waits for something that must happen:
+// a passing run never waits it out, so it fails a test and proves nothing.
+const chatWatchdog = 30 * time.Second
+
 // workerOf is the lead's scanner and its generation, under the lead's lock.
 func workerOf(d *chatDesk, key string) (bool, int64) {
 	cl := d.byKey[key]
