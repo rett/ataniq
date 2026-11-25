@@ -348,7 +348,8 @@ func (l *leadEnv) chatSetFrom(key, chat string) (leadwire.ChatLead, error) {
 // the lead's setMu, so it is this request's. While the two overlap the seat
 // still sees the lead read, the turn-off has not returned, and nothing is
 // signalled. The test records every signal of the desk (what the seat's
-// cursor covers may have changed) with the lead's head at that moment: once
+// cursor covers may have changed) from the paused scan's admission on (it
+// starts recording there), with the lead's head at that moment: once
 // the scan is let go, the scan's ingest signals and then the turn-off's
 // publication does, and each shows the head with the scan's reply in it.
 func TestChatScanAdmittedBeforeATurnOffEndsBeforeTheOffIsSeen(t *testing.T) {
@@ -389,8 +390,15 @@ func TestChatScanAdmittedBeforeATurnOffEndsBeforeTheOffIsSeen(t *testing.T) {
 					t.Error("the turn-off in flight did not end after the scan was let go")
 				}
 			})
+			// recording is set by the armed scan itself, at its admission
+			// and under alpha's change lock: every scan before it has
+			// signalled and let go of that lock, so no signal of theirs is
+			// recorded, however late it runs, and every signal from here on
+			// is this scan's or one after it.
+			var recording atomic.Bool
 			d.atScan = func(cl *chatLead) {
 				if cl.key == "alpha" && armed.CompareAndSwap(true, false) {
+					recording.Store(true)
 					close(reached)
 					<-release
 				}
@@ -408,7 +416,6 @@ func TestChatScanAdmittedBeforeATurnOffEndsBeforeTheOffIsSeen(t *testing.T) {
 			cl.mu.Lock()
 			store := cl.store
 			cl.mu.Unlock()
-			var recording atomic.Bool
 			var sigMu sync.Mutex
 			var signals []int64
 			if prev := d.changed.Load(); prev != nil {
@@ -443,7 +450,6 @@ func TestChatScanAdmittedBeforeATurnOffEndsBeforeTheOffIsSeen(t *testing.T) {
 			waitFor(t, 15*time.Second, "the first reply is taken", func() bool { return l.chatRow("alpha").Entries == 2 })
 
 			if paused {
-				recording.Store(true)
 				armed.Store(true)
 				select {
 				case <-reached:
