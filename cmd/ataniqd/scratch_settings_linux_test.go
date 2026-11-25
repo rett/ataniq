@@ -423,7 +423,7 @@ func TestOwnerSettingsRefusesTheTrialsTheLeadsAndTheGatesFolders(t *testing.T) {
 					t.Errorf("--check did not go on to %q:\n%s", rest, out)
 				}
 			}
-			if !strings.Contains(out, "refusal(s): the daemon would not start (exit 10)") {
+			if !strings.Contains(out, "refusal(s): the sitting failed preflight (exit 10): the daemon would not start;") {
 				t.Errorf("--check's last line:\n%s", out)
 			}
 			code, _, msg = w.run(t, w.runArgs(dir)...)
@@ -706,7 +706,9 @@ func TestOwnerSettingsCheckFailsASocketPathThatDoesNotFit(t *testing.T) {
 	w := newSettingsWorldIn(t, base)
 	code, out, msg := w.run(t, w.runArgs(w.settings, "--check")...)
 	if code != leaddaemon.ExitConfig || msg != "" || !strings.Contains(out, "FAIL  the socket paths: the holder socket "+w.runtime+"/leads/scratch-standin-1-lead/") ||
-		!strings.Contains(out, "over the 107 a Unix socket address holds") || !strings.Contains(out, "check: 1 refusal(s)") {
+		!strings.Contains(out, "over the 107 a Unix socket address holds") ||
+		!strings.Contains(out, "check: 1 refusal(s): the sitting failed preflight (exit 10): the daemon would start, but the start of the lead's holder would fail") ||
+		strings.Contains(out, "the daemon would not start") {
 		t.Fatalf("--check with a long runtime root: exit %d:\n%s%s", code, out, msg)
 	}
 }

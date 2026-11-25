@@ -37,7 +37,10 @@
   its locks (also the root marker, the gate's key and pins and the daemon's
   socket path) and one the start does not make, the socket paths of the
   leads' holders, pass or FAIL with the reason, and what it would read,
-  then exits 0 or 10, binding, locking, making and starting nothing. `qualification/scratch-seat/prepare.sh`
+  then exits 0 or 10 (a refusal says the sitting failed preflight and names
+  the start that would fail: the daemon's, or for a holder's socket path
+  alone the later start of that lead's holder), binding, locking, making and
+  starting nothing. `qualification/scratch-seat/prepare.sh`
   writes the scratch config and the settings folder (modes 0600 and 0700)
   and the files they name in a folder of the proof's own, with leads fresh
   for each sitting (`standin-N`, `live-N`): `--dry` prints from the values
@@ -46,18 +49,28 @@
   and lies not in the state folder, its `owner/`, the checkout or a
   temporary folder, by path and by identity, and a root that is not there
   yet), makes the root and every folder below it with `mkdir` of a new name
-  and writes only into folders it has just made (a root holding only
-  prepare's own mark of an earlier run is taken again), runs git in a
+  and writes only into folders it has just made (a root that is there is
+  refused, an earlier run's included), runs git in a
   cleared environment, never writes in the trial's state folder, never
   deletes and starts nothing, and `--status`
-  runs the daemon's `--check`; with `--compare` it then refuses a record of
-  the digests taken before the sitting that does not list each of the six
-  files once, compares the trial's gate key, certificate, pins and settings
-  with it, and has the daemon judge the key list. For that the daemon of
+  refuses a `--state` that is not the config's `state_root` (the same device
+  and inode) and runs the daemon's `--check` (the printed steps that run
+  `--status` carry the selected `--daemon`); with `--record` (before the
+  sitting) it then takes the baseline, the digests of the trial's six files
+  and the daemon's prefix of the key list, and writes both, whole, into
+  `evidence/step-g` only when the prefix's digest is the digests' of the
+  key list (a record appended between them writes nothing, and the step is
+  taken again); with `--compare` it then refuses a record of
+  the digests taken before the sitting that does not name each of the six
+  files once (the names compared as text, before any listed file is
+  opened), compares the trial's gate key, certificate, pins and settings
+  with it (any exit status of `sha256sum -c` but 0 is CHANGED), and has the daemon judge the key list. For that the daemon of
   both tags takes `run --scratch CONFIG --owner-channel --check
   --keys-prefix`, which checks the key list and its head with the journal's
-  own reader on a private copy (nothing of the state root is written) and
-  prints the list's length and SHA-256, and `--check --keys-since
+  own checks read only, on the files themselves (the ownership, mode and
+  link-count checks of the journal's opener and its replay, with an exact
+  head; nothing is created, repaired or written, anywhere), and prints the
+  list's length and SHA-256, and `--check --keys-since
   LEN:SHA256`, which checks them again, checks that the prefix is the
   list's beginning and names the type of each record appended since:
   counter records alone (a phone login) hold, and any other record, a
@@ -70,11 +83,14 @@
   file and no proxy, from this host, from the lead's network in this shell
   and in a throwaway user unit with the lead unit's fixed properties,
   classifies each probe as connected, refused, or filtered or timed out,
-  passes the lead's network only on a refusal or timeout the probe itself
-  reports after the sandbox showed an IPv4 address and a default route
-  that is up, through a gateway and not a reject or blackhole route
-  (without them the probe did not run), takes a probe that did not run for
-  a finding, and the runbook
+  passes the lead's network only on a timeout the probe itself reports
+  after the sandbox showed the route it takes to the gate's address (the
+  kernel's choice: the longest mask, then the lowest metric; not a reject,
+  unreachable or blackhole route, not on lo, and not to an address of the
+  sandbox's own) and a source address on that route's interface (without
+  them the probe did not run), takes curl's "could not connect" (status 7,
+  no time to connect), a probe that did not run and a wrapper that ended
+  with a status other than 0 for findings, and the runbook
   records its exit status). The runbook's last steps compare the trial's
   files byte for byte with the record and start the trial again. A test in
   `cmd/ataniqd` takes a trial-shaped state folder to the scratch daemon and

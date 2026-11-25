@@ -78,6 +78,15 @@ var (
 	ErrKeyExists = errors.New("ownerjournal: the credential is on the list already")
 	// ErrKeyUnknown says that no credential on the list has this display id.
 	ErrKeyUnknown = errors.New("ownerjournal: no credential has this id")
+	// ErrHeadBehind says, from [VerifyKeys], that the list is ahead of its
+	// head by records that chain from it: what a crash between an append and
+	// the head's write leaves, and what an append between the two reads of
+	// the check shows. [OpenKeys] makes such a head right; VerifyKeys writes
+	// nothing and refuses it, since it is not the head of the list.
+	ErrHeadBehind = errors.New("ownerjournal: the head of the list does not count the whole list")
+	// ErrNoKeys says, from [VerifyKeys], that there is no file of the list,
+	// where [OpenKeys] would make a new, empty one.
+	ErrNoKeys = errors.New("ownerjournal: there is no list of keys")
 )
 
 const (
@@ -378,6 +387,16 @@ func (k *KeyFile) lockExisting(f *os.File) error {
 	if info, err = f.Stat(); err != nil {
 		return err
 	}
+	return keysFileProblem(info)
+}
+
+// keysFileProblem is the check of a list's file that was there: a plain file
+// of the user with mode 0600 and one name, not empty. It is the check
+// [OpenKeys] makes once it holds the lock, and the one [VerifyKeys] makes.
+func keysFileProblem(info os.FileInfo) error {
+	if !info.Mode().IsRegular() || !private(info) || info.Mode().Perm() != 0o600 {
+		return fmt.Errorf("%w: the file must be a plain file of the user with mode 0600", ErrNotPrivate)
+	}
 	if info.Sys().(*syscall.Stat_t).Nlink != 1 {
 		return fmt.Errorf("%w: the file has a second name", ErrNotPrivate)
 	}
@@ -555,25 +574,35 @@ func parseKeys(data []byte) (keyList, [][sha256.Size]byte, error) {
 // readKeys reads the whole file from the descriptor that was locked, and
 // returns what it holds with the stat it was read under.
 func (k *KeyFile) readKeys() (keyList, [][sha256.Size]byte, fileStamp, error) {
-	info, err := k.file.Stat()
+	data, stamp, err := k.readData()
 	if err != nil {
 		return keyList{}, nil, fileStamp{}, err
-	}
-	if info.Size() > maxKeysFileBytes {
-		return keyList{}, nil, fileStamp{}, keysDamaged("the file is larger than %d bytes", maxKeysFileBytes)
-	}
-	data, err := io.ReadAll(io.NewSectionReader(k.file, 0, info.Size()))
-	if err != nil {
-		return keyList{}, nil, fileStamp{}, err
-	}
-	if int64(len(data)) != info.Size() {
-		return keyList{}, nil, fileStamp{}, keysDamaged("the file changed while it was read")
 	}
 	list, digests, err := parseKeys(data)
 	if err != nil {
 		return keyList{}, nil, fileStamp{}, err
 	}
-	return list, digests, stampOf(info), nil
+	return list, digests, stamp, nil
+}
+
+// readData reads the whole file from the descriptor that was opened, and
+// returns its bytes with the stat they were read under.
+func (k *KeyFile) readData() ([]byte, fileStamp, error) {
+	info, err := k.file.Stat()
+	if err != nil {
+		return nil, fileStamp{}, err
+	}
+	if info.Size() > maxKeysFileBytes {
+		return nil, fileStamp{}, keysDamaged("the file is larger than %d bytes", maxKeysFileBytes)
+	}
+	data, err := io.ReadAll(io.NewSectionReader(k.file, 0, info.Size()))
+	if err != nil {
+		return nil, fileStamp{}, err
+	}
+	if int64(len(data)) != info.Size() {
+		return nil, fileStamp{}, keysDamaged("the file changed while it was read")
+	}
+	return data, stampOf(info), nil
 }
 
 // replay reads the whole file, checks each record against the digest chain and
@@ -1024,6 +1053,20 @@ func (k *KeyFile) checkHeadAtOpen() error {
 		}
 		return k.writeHead(0, k.prev)
 	}
+	err = headAgainst(h, digests)
+	if errors.Is(err, ErrHeadBehind) {
+		return k.writeHead(n, k.prev)
+	}
+	return err
+}
+
+// headAgainst compares the head h with a list whose chain has the digests
+// given (the first the header's, then one per record): nil when the head
+// counts every record and holds the last digest, an error that is
+// [ErrHeadBehind] when the list is ahead of it by records that chain from it
+// (at most one write's worth), and damage otherwise.
+func headAgainst(h head, digests [][sha256.Size]byte) error {
+	n := len(digests) - 1
 	switch {
 	case n < h.count:
 		return keysDamaged("suffix lost: the list has %d records and its head says %d", n, h.count)
@@ -1034,7 +1077,7 @@ func (k *KeyFile) checkHeadAtOpen() error {
 	case n-h.count > MaxKeys:
 		return keysDamaged("the list is %d records ahead of its head", n-h.count)
 	}
-	return k.writeHead(n, k.prev)
+	return fmt.Errorf("%w: the list has %d records and its head counts %d", ErrHeadBehind, n, h.count)
 }
 
 // encodeKeyRecord writes a record as a line: its digest, a space, the record and a line

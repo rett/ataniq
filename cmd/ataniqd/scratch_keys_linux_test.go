@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -20,11 +21,12 @@ import (
 
 // Tests of run --check --keys-prefix and --keys-since (scratch_keys_linux.go):
 // the key list of the state folder and its head, judged by the journal's own
-// reader on a private copy, and the records appended since a recorded prefix.
+// checks read only (ownerjournal.VerifyKeys), and the records appended since
+// a recorded prefix.
 
 // keysRun runs the key check with the world's config and returns the exit
 // code, the output and the error output. TMPDIR is a folder of the test's,
-// so that the private copy is seen to be removed.
+// so that a temporary file would be seen.
 func keysRun(t *testing.T, w *settingsWorld, more ...string) (int, string, string) {
 	t.Helper()
 	return w.run(t, append([]string{"run", "--scratch", w.config, "--owner-channel", "--check"}, more...)...)
@@ -79,28 +81,60 @@ func keysWorld(t *testing.T) (*settingsWorld, string) {
 	return w, tmp
 }
 
-// noCopyLeft fails the test when the private copy was left in TMPDIR.
-func noCopyLeft(t *testing.T, tmp string) {
+// nothingInTmp fails the test when the key check wrote in TMPDIR: it
+// makes no copy and no temporary file.
+func nothingInTmp(t *testing.T, tmp string) {
 	t.Helper()
 	if names, err := os.ReadDir(tmp); err != nil || len(names) != 0 {
-		t.Errorf("the key check left %v in TMPDIR (%v)", names, err)
+		t.Errorf("the key check wrote %v in TMPDIR (%v)", names, err)
 	}
 }
 
+// ownerFolder is every name of the trial's owner/ folder with its inode, mode,
+// times and bytes, and the folder's own, so that any write is seen.
+func ownerFolder(t *testing.T, w *settingsWorld) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	names, err := os.ReadDir(w.owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range append([]string{"."}, func() []string {
+		var s []string
+		for _, e := range names {
+			s = append(s, e.Name())
+		}
+		return s
+	}()...) {
+		p := filepath.Join(w.owner, n)
+		var st syscall.Stat_t
+		if err := syscall.Lstat(p, &st); err != nil {
+			t.Fatal(err)
+		}
+		v := fmt.Sprint(st.Mode, " ", st.Ino, " ", st.Nlink, " ", st.Mtim.Nano(), " ", st.Ctim.Nano())
+		if st.Mode&syscall.S_IFMT == syscall.S_IFREG {
+			v += " " + string(fileBytes(t, p))
+		}
+		out[n] = v
+	}
+	return out
+}
+
 // --keys-prefix prints the list's length and SHA-256 once the journal's
-// reader passes the list and its head, and writes nothing: the trial's files
-// are the same bytes and the private copy is gone. --keys-since that prefix
+// checks pass the list and its head, and writes nothing: the trial's owner/
+// folder is as it was, to the inode and the time, and TMPDIR is empty. --keys-since that prefix
 // then holds with no record appended. The flags need --check, exclude each
 // other and take a prefix of the form only.
 func TestKeysCheckPrintsThePrefixAndHoldsOnTheSameList(t *testing.T) {
 	useSuite(t, cmdSuite{})
 	w, tmp := keysWorld(t)
+	folder := ownerFolder(t, w)
 	code, out, msg := keysRun(t, w, "--keys-prefix")
 	if code != 0 || msg != "" || out != keysPrefixOf(t, w)+"\n" {
 		t.Fatalf("--keys-prefix: exit %d: %q %q, want %q", code, out, msg, keysPrefixOf(t, w))
 	}
 	w.sameTrial(t, "after --keys-prefix")
-	noCopyLeft(t, tmp)
+	nothingInTmp(t, tmp)
 	prefix := strings.TrimSpace(out)
 	code, out, _ = keysRun(t, w, "--keys-since", prefix)
 	if code != 0 || !strings.Contains(out, "keys  "+keysPathOf(w.state)+": 1 record(s), each well formed, in sequence, on the digest chain and within the rules of the list, and its head keys.head counts them") ||
@@ -108,7 +142,10 @@ func TestKeysCheckPrintsThePrefixAndHoldsOnTheSameList(t *testing.T) {
 		t.Fatalf("--keys-since on the same list: exit %d:\n%s", code, out)
 	}
 	w.sameTrial(t, "after --keys-since")
-	noCopyLeft(t, tmp)
+	nothingInTmp(t, tmp)
+	if after := ownerFolder(t, w); fmt.Sprint(after) != fmt.Sprint(folder) {
+		t.Errorf("the key check changed the owner/ folder:\n%v\n%v", folder, after)
+	}
 
 	for _, c := range []struct {
 		args []string
@@ -202,20 +239,24 @@ func TestKeysCheckNamesWhatTheJournalAppended(t *testing.T) {
 					t.Errorf("the check does not say %q:\n%s", want, out)
 				}
 			}
-			noCopyLeft(t, tmp)
+			nothingInTmp(t, tmp)
 		})
 	}
 }
 
-// What the journal's reader refuses, or what is not the list of step g, is
-// CHANGED, never a catch-up (review finding 3): a counter-shaped record whose
-// digest follows the chain but that holds a key the form does not name, is
-// numbered out of sequence, or raises no counter of a credential on the list; an unchanged list with a head that is
-// not of the form; a head that lags the list by a valid counter record (the
-// daemon would make it right, but it is not the list's head); no head; an
-// old byte of the list changed; a prefix of the right length whose digest is
-// another; and a prefix longer than the list. --keys-prefix refuses the same
-// damage and prints no prefix.
+// What the journal's checks refuse, or what is not the list of step g, is
+// CHANGED, never a catch-up: a counter-shaped record whose digest follows the
+// chain but that holds a key the form does not name, is numbered out of
+// sequence, or raises no counter of a credential on the list; an unchanged
+// list with a head that is not of the form; a head that lags the list by a
+// valid counter record (the daemon would make it right, but it is not the
+// list's head); no head; an old byte of the list changed; a prefix of the
+// right length whose digest is another; a prefix longer than the list; and a
+// prefix whose digest matches the list's bytes up to one byte inside a record
+// (the prefix must end at a whole record). And what the daemon's opener
+// refuses before it reads a byte, on the trial's own files: the list or its
+// head of mode 0640, the list with a second name, and the list's name a final
+// symbolic link to it. --keys-prefix refuses the same and prints no prefix.
 func TestKeysCheckCallsDamageChanged(t *testing.T) {
 	useSuite(t, cmdSuite{})
 	id := ownerjournal.KeyDisplayID([]byte(strings.Repeat("c", 16)))
@@ -229,24 +270,24 @@ func TestKeysCheckCallsDamageChanged(t *testing.T) {
 			p := keysPrefixOf(t, w)
 			appendChained(t, w, `{"at":"2026-11-24T09:00:00Z","counter":5,"id":"`+id+`","note":"x","seq":2,"type":"counter"}`)
 			return p
-		}, "the journal's reader refuses the key list or its head"},
+		}, "the journal's checks refuse the key list or its head"},
 		{"a counter record numbered out of sequence", func(t *testing.T, w *settingsWorld) string {
 			p := keysPrefixOf(t, w)
 			appendChained(t, w, `{"at":"2026-11-24T09:00:00Z","counter":5,"id":"`+id+`","seq":3,"type":"counter"}`)
 			return p
-		}, "the journal's reader refuses the key list or its head"},
+		}, "the journal's checks refuse the key list or its head"},
 		{"a counter record that raises no counter on the list", func(t *testing.T, w *settingsWorld) string {
 			p := keysPrefixOf(t, w)
 			appendChained(t, w, `{"at":"2026-11-24T09:00:00Z","counter":5,"id":"00000000000000aa","seq":2,"type":"counter"}`)
 			return p
-		}, "the journal's reader refuses the key list or its head"},
+		}, "the journal's checks refuse the key list or its head"},
 		{"an unchanged list with a garbage head", func(t *testing.T, w *settingsWorld) string {
 			p := keysPrefixOf(t, w)
 			if err := os.WriteFile(head(w), []byte("not a head\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			return p
-		}, "the journal's reader refuses the key list or its head"},
+		}, "the journal's checks refuse the key list or its head"},
 		{"a head that lags the list", func(t *testing.T, w *settingsWorld) string {
 			p := keysPrefixOf(t, w)
 			old := fileBytes(t, head(w))
@@ -262,7 +303,7 @@ func TestKeysCheckCallsDamageChanged(t *testing.T) {
 				t.Fatal(err)
 			}
 			return p
-		}, "there is no head"},
+		}, "the head of the list (keys.head) is missing"},
 		{"an old byte changed", func(t *testing.T, w *settingsWorld) string {
 			p := keysPrefixOf(t, w)
 			b := fileBytes(t, keysPathOf(w.state))
@@ -271,7 +312,7 @@ func TestKeysCheckCallsDamageChanged(t *testing.T) {
 				t.Fatal(err)
 			}
 			return p
-		}, "the journal's reader refuses the key list or its head"},
+		}, "the journal's checks refuse the key list or its head"},
 		{"another list of the same length", func(t *testing.T, w *settingsWorld) string {
 			p := keysPrefixOf(t, w)
 			n, _, _ := strings.Cut(p, ":")
@@ -283,6 +324,42 @@ func TestKeysCheckCallsDamageChanged(t *testing.T) {
 			v, _ := strconv.Atoi(n)
 			return strconv.Itoa(v+1) + ":" + sum
 		}, "shorter than the"},
+		{"a matching digest one byte inside a record", func(t *testing.T, w *settingsWorld) string {
+			n := len(fileBytes(t, keysPathOf(w.state)))
+			appendChained(t, w, `{"at":"2026-11-24T09:00:00Z","counter":5,"id":"`+id+`","seq":2,"type":"counter"}`)
+			b := fileBytes(t, keysPathOf(w.state))
+			sum := sha256.Sum256(b[:n+1])
+			return strconv.Itoa(n+1) + ":" + hex.EncodeToString(sum[:])
+		}, "are not the list of step g"},
+		{"a list of mode 0640", func(t *testing.T, w *settingsWorld) string {
+			if err := os.Chmod(keysPathOf(w.state), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			return keysPrefixOf(t, w)
+		}, "not private"},
+		{"a head of mode 0640", func(t *testing.T, w *settingsWorld) string {
+			if err := os.Chmod(head(w), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			return keysPrefixOf(t, w)
+		}, "not private"},
+		{"a list with a second name", func(t *testing.T, w *settingsWorld) string {
+			if err := os.Link(keysPathOf(w.state), filepath.Join(w.owner, "keys.again")); err != nil {
+				t.Fatal(err)
+			}
+			return keysPrefixOf(t, w)
+		}, "second name"},
+		{"a list that is a final symbolic link", func(t *testing.T, w *settingsWorld) string {
+			p := keysPrefixOf(t, w)
+			real := filepath.Join(w.owner, "keys.real")
+			if err := os.Rename(keysPathOf(w.state), real); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(real, keysPathOf(w.state)); err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}, "symbolic link"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			w, tmp := keysWorld(t)
@@ -293,6 +370,7 @@ func TestKeysCheckCallsDamageChanged(t *testing.T) {
 					before[n] = b
 				}
 			}
+			folder := ownerFolder(t, w)
 			code, out, _ := keysRun(t, w, "--keys-since", prefix)
 			if code != leaddaemon.ExitFailure || !strings.Contains(out, "keys: CHANGED: ") || !strings.Contains(out, c.want) || strings.Contains(out, "keys: holds") {
 				t.Errorf("exit %d, want 1, CHANGED and %q:\n%s", code, c.want, out)
@@ -302,7 +380,10 @@ func TestKeysCheckCallsDamageChanged(t *testing.T) {
 					t.Errorf("the check changed owner/%s", n)
 				}
 			}
-			noCopyLeft(t, tmp)
+			if after := ownerFolder(t, w); fmt.Sprint(after) != fmt.Sprint(folder) {
+				t.Errorf("the check changed the owner/ folder:\n%v\n%v", folder, after)
+			}
+			nothingInTmp(t, tmp)
 			if strings.Contains(c.want, "list of step g") || strings.Contains(c.want, "shorter") {
 				return
 			}

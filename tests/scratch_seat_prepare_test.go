@@ -179,10 +179,12 @@ func sameScratchSeatFiles(a, b map[string]string) bool {
 // script sets -eu, and names neither build tag nor the make target that
 // builds the daemon of both tags: it only names the binary,
 // build/scratch-seat/ataniqd. It never deletes, moves or links a file and
-// never starts anything itself: no line of it runs rm, mv, ln, unlink,
+// never starts anything itself: no line of it runs rm, ln, unlink,
 // systemctl, systemd-run, bwrap, pasta, claude or the console (they are only
-// printed for the owner); git runs only through proof_git; and the daemon
-// runs on one line, its --check, which binds, locks and starts nothing.
+// printed for the owner), and mv only to give the baseline of step g, a
+// folder it has just made and filled, its name; git runs only through
+// proof_git; and the daemon runs only its read-only checks: --check, and
+// --check --keys-prefix and --keys-since, which bind, lock and start nothing.
 func TestScratchSeatPrepareIsPlainShell(t *testing.T) {
 	canaryPlainShell(t, scratchSeatPrepare, true)
 	canaryPlainShell(t, "qualification/scratch-seat/netcheck.sh.in", false)
@@ -201,13 +203,16 @@ func TestScratchSeatPrepareIsPlainShell(t *testing.T) {
 	}
 	// A command line of the script (not a line of a here-document, which is
 	// printed) that runs one of these programs, each in exactly the forms
-	// allowed, once each: the daemon's check, and its read-only check of the
-	// key list since step g (--status --compare).
+	// allowed, once each: the daemon's check, its read-only check of the key
+	// list for the baseline of step g (--status --record) and since step g
+	// (--status --compare), and the rename that publishes the baseline.
 	inDoc := false
 	allowed := map[string][]string{
 		`"$DAEMON"`: {`"$DAEMON" run --scratch "$CONFIG" --owner-channel --seat-gate "$GATE" --owner-settings "$SETTINGS_DIR" --check || RC=$?`,
+			`_kp=$("$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-prefix) || _krc=$?`,
 			`"$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-since "$_prefix" || _krc=$?`},
 		"/usr/bin/git": {`/usr/bin/git -c core.hooksPath=/dev/null -c commit.gpgSign=false -c tag.gpgSign=false -c core.fsmonitor=false \`},
+		"mv":           {`mv -T -- "$_tmp" "$BASELINE" || {`},
 	}
 	seen := map[string]int{}
 	for i, line := range strings.Split(text, "\n") {
@@ -231,9 +236,9 @@ func TestScratchSeatPrepareIsPlainShell(t *testing.T) {
 			}
 			word := fields[0]
 			switch word {
-			case "rm", "rmdir", "mv", "ln", "unlink", "git", "systemctl", "journalctl", "systemd-run", "bwrap", "\"$BWRAP\"", "\"$PASTA_USE\"", "\"$CLAUDE_SRC\"":
+			case "rm", "rmdir", "ln", "unlink", "git", "systemctl", "journalctl", "systemd-run", "bwrap", "\"$BWRAP\"", "\"$PASTA_USE\"", "\"$CLAUDE_SRC\"":
 				t.Errorf("line %d runs %s: %q", i+1, word, trimmed)
-			case "\"$DAEMON\"", "/usr/bin/git":
+			case "\"$DAEMON\"", "/usr/bin/git", "mv":
 				seen[word]++
 				if !slices.ContainsFunc(allowed[word], func(a string) bool { return strings.Contains(trimmed, a) }) {
 					t.Errorf("line %d runs %s other than as allowed: %q", i+1, word, trimmed)
@@ -359,7 +364,7 @@ func TestScratchSeatPrepareSelfTest(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("--self-test commands: exit %d:\n%s", code, out)
 		}
-		scratchSeatCommandsHold(t, out, "/srv/sample/trial", "/srv/sample/proof", live)
+		scratchSeatCommandsHold(t, out, "/srv/sample/trial", "/srv/sample/proof", filepath.Join(root(t), "build", "scratch-seat", "ataniqd"), live)
 	}
 	if after := scratchSeatFiles(t, k.dir); !sameScratchSeatFiles(before, after) {
 		t.Error("a self-test changed the folder")
@@ -377,7 +382,7 @@ func TestScratchSeatPrepareSelfTest(t *testing.T) {
 // again by the owner's own command; the daemon's exit status is printed; the
 // live lead waits for the drop rule; the commands of the leads name only the
 // leads configured, by their keys.
-func scratchSeatCommandsHold(t *testing.T, out, state, root string, live bool) {
+func scratchSeatCommandsHold(t *testing.T, out, state, root, daemon string, live bool) {
 	t.Helper()
 	i := strings.Index(out, "Your steps, in order")
 	if i < 0 {
@@ -392,16 +397,15 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root string, live bool) {
 			t.Errorf("the steps lack %d:\n%s", n, out)
 		}
 	}
-	prep := " --state " + state + " --root " + root + " --gate 192.0.2.10:7443"
+	// Steps g and 13 run prepare with the daemon given (review finding 8),
+	// so that the check and the comparison run the daemon the sitting runs.
+	prep := " --state " + state + " --root " + root + " --gate 192.0.2.10:7443 --daemon " + daemon
 	for _, want := range []string{
 		"A for the daemon, B for the console, C for the desk",
 		"Nothing of the trial is renamed, moved or masked: the proof's daemon reads its settings from " + root + "/owner-settings.",
 		"OWNER ONLY (starts pasta, bubblewrap, curl and a throwaway user unit): { sh " + root + "/netcheck.sh; echo \"netcheck: exit status $?\"; } 2>&1 | tee -a " + root + "/evidence/netcheck.txt",
 		"scratch-init --config " + root + "/scratch.json",
-		"--status" + prep + "   (the daemon's check: it must end \"check: no refusal\")",
-		"(cd " + state + "/owner && sha256sum -- gate/key.pem gate/cert.pem gate/seat-pins keys.log keys.head scratch.json) >" + root + "/evidence/trial-before.sha256",
-		"OWNER ONLY (the daemon's read-only check of the key list and its head; it writes only this file): ",
-		" run --scratch " + root + "/scratch.json --owner-channel --check --keys-prefix >" + root + "/evidence/keys-before.prefix",
+		"--status" + prep + " --record   (the daemon's check, which must end \"check: no refusal\", then the baseline: it must end \"status: recorded\")",
 		"--status" + prep + " --compare   (the daemon's check; the trial's files against the record of g, which lists all six; the daemon's check of the key list since g)",
 		"OWNER ONLY: systemctl --user stop -- \"$TRIAL_UNIT\"",
 		"(inactive; nothing is masked)",
@@ -449,18 +453,18 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root string, live bool) {
 	if live && !strings.Contains(out, "chat set live-3 off") || !live && !strings.Contains(out, "chat set standin-3 off") {
 		t.Errorf("the off step, live %v:\n%s", live, out)
 	}
-	order := []string{"scratch-init", "--status", "sha256sum --", "--keys-prefix >", "systemctl --user stop", "--owner-settings " + root + "/owner-settings |",
+	order := []string{"scratch-init", "--status", " --record ", "systemctl --user stop", "--owner-settings " + root + "/owner-settings |",
 		"d on standin-3", "--compare", "key list since g", "start the trial again"}
 	if live {
-		order = append(order[:7], append([]string{"The drop rule", "d on live-3"}, order[7:]...)...)
+		order = append(order[:6], append([]string{"The drop rule", "d on live-3"}, order[6:]...)...)
 	}
 	for i := 1; i < len(order); i++ {
 		if strings.Index(out, order[i-1]) > strings.Index(out, order[i]) {
 			t.Errorf("%q comes after %q:\n%s", order[i-1], order[i], out)
 		}
 	}
-	if strings.Contains(out, "sha256sum -c") || strings.Contains(out, "keys-before.log") {
-		t.Errorf("a step confirms the record by hand or copies the key list:\n%s", out)
+	if strings.Contains(out, "sha256sum") || strings.Contains(out, "keys-before.log") || strings.Contains(out, "--keys-prefix") {
+		t.Errorf("a step takes a digest by hand, records the prefix apart from the baseline or copies the key list:\n%s", out)
 	}
 	for _, line := range strings.Split(out, "\n") {
 		if strings.Contains(line, " rm ") || strings.Contains(line, "rm -") || strings.Contains(line, " mv ") || strings.Contains(line, "unlink") ||
@@ -506,7 +510,7 @@ func TestScratchSeatPrepareDryWritesNothing(t *testing.T) {
 		if live != strings.Contains(out, "lead live-3: live claude 2.1.325, argv [\"/ataniq/agent/claude\", \"--model\", \"sample-model\"]") {
 			t.Errorf("the dry run's live lead, live %v:\n%s", live, out)
 		}
-		scratchSeatCommandsHold(t, out, k.state, r, live)
+		scratchSeatCommandsHold(t, out, k.state, r, filepath.Join(k.bin, "ataniqd"), live)
 	}
 	// From the values alone: a state folder, a root's parent and binaries
 	// that are not there at all.
@@ -603,9 +607,8 @@ func TestScratchSeatPrepareRefusesValues(t *testing.T) {
 // folder that is a link or has no owner/ folder, one with anything of this
 // sitting's leads, a missing tool, and a root whose parent is missing or
 // reached through a link, that is linked into the state folder, or that is
-// already there without prepare's own mark (empty, holding something, or
-// closed to reading): prepare writes only into a folder it has just made
-// (review finding 2). What only the daemon judges (the gate's material, the
+// already there (empty, holding something, closed to reading, or an earlier
+// run's): prepare writes only into a folder it has just made. What only the daemon judges (the gate's material, the
 // settings) is left to the daemon's check, which --status runs.
 func TestScratchSeatPrepareWriteRefuses(t *testing.T) {
 	if os.Geteuid() == 0 {
@@ -623,20 +626,9 @@ func TestScratchSeatPrepareWriteRefuses(t *testing.T) {
 	if err := os.Symlink(k.state, filepath.Join(k.dir, "into-state")); err != nil {
 		t.Fatal(err)
 	}
-	// An empty folder that is already there, and one whose mark names
-	// another folder's identity (a mark copied from it).
+	// An empty folder that is already there.
 	empty := filepath.Join(k.dir, "empty")
-	forged := filepath.Join(k.dir, "forged")
-	for _, d := range []string{empty, forged} {
-		if err := os.Mkdir(d, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var est syscall.Stat_t
-	if err := syscall.Stat(empty, &est); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(forged, ".prepare-made"), []byte(fmt.Sprintf("prepare.sh made this folder (%d:%d)\n", est.Dev, est.Ino)), 0o600); err != nil {
+	if err := os.Mkdir(empty, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	locked := filepath.Join(k.dir, "locked")
@@ -704,10 +696,9 @@ func TestScratchSeatPrepareWriteRefuses(t *testing.T) {
 		{"a parent through a link", set(base, "--root", filepath.Join(k.dir, "linked", "proof")), nil, nil, "physical path"},
 		{"a root linked into the state folder", set(base, "--root", filepath.Join(k.dir, "into-state", "proof")), nil, nil, "physical path"},
 		{"a root in TMPDIR", base, nil, []string{"TMPDIR=" + k.dir}, "physically in or around"},
-		{"a root that cannot be read", set(base, "--root", locked), nil, nil, "is already there and holds no mark of prepare's"},
-		{"a root that holds something", set(base, "--root", full), nil, nil, "is already there and holds no mark of prepare's"},
-		{"an empty root that is already there", set(base, "--root", empty), nil, nil, "is already there and holds no mark of prepare's"},
-		{"a root with a mark copied from another folder", set(base, "--root", forged), nil, nil, "is already there and holds no mark of prepare's"},
+		{"a root that cannot be read", set(base, "--root", locked), nil, nil, "is already there: prepare makes the root new"},
+		{"a root that holds something", set(base, "--root", full), nil, nil, "is already there: prepare makes the root new"},
+		{"an empty root that is already there", set(base, "--root", empty), nil, nil, "is already there: prepare makes the root new"},
 		{"a HOME through a link", base, nil, []string{"HOME=" + filepath.Join(k.dir, "linked", "home")}, "physical path"},
 		{"a HOME that is not there", base, nil, []string{"HOME=" + filepath.Join(k.dir, "no-home")}, "HOME is not a folder"},
 	}
@@ -777,7 +768,7 @@ func TestScratchSeatPrepareWriteTouchesOnlyTheRoot(t *testing.T) {
 	if !strings.Contains(out, "nothing was started, and nothing in "+k.state+" was changed") {
 		t.Errorf("--write does not say what it did not do:\n%s", out)
 	}
-	scratchSeatCommandsHold(t, out, k.state, r, true)
+	scratchSeatCommandsHold(t, out, k.state, r, filepath.Join(k.bin, "ataniqd"), true)
 	if after := scratchSeatFiles(t, k.state); !sameScratchSeatFiles(beforeState, after) {
 		t.Fatal("--write changed the trial's state folder")
 	}
@@ -805,18 +796,13 @@ func TestScratchSeatPrepareWriteTouchesOnlyTheRoot(t *testing.T) {
 			t.Errorf("--write made %s, which is the daemon's or the owner's to make, or is never made", rel)
 		}
 	}
-	if names, err := os.ReadDir(filepath.Join(r, "owner-settings")); err != nil || len(names) != 2 || names[0].Name() != ".prepare-made" || names[1].Name() != "scratch.json" {
-		t.Errorf("the settings folder holds more than prepare's mark and the settings: %v %v", names, err)
+	if names, err := os.ReadDir(filepath.Join(r, "owner-settings")); err != nil || len(names) != 1 || names[0].Name() != "scratch.json" {
+		t.Errorf("the settings folder holds more than the settings: %v %v", names, err)
 	}
-	// The root and the settings folder were made new and carry prepare's
-	// mark, which names each folder's own device and inode.
+	// No mark is left: an earlier run's root is refused like any other.
 	for _, d := range []string{r, filepath.Join(r, "owner-settings")} {
-		var st syscall.Stat_t
-		if err := syscall.Stat(d, &st); err != nil {
-			t.Fatal(err)
-		}
-		if got, want := string(mustRead(t, filepath.Join(d, ".prepare-made"))), fmt.Sprintf("prepare.sh made this folder (%d:%d)\n", st.Dev, st.Ino); got != want {
-			t.Errorf("the mark of %s is %q, want %q", d, got, want)
+		if _, err := os.Lstat(filepath.Join(d, ".prepare-made")); err == nil {
+			t.Errorf("%s holds a mark of prepare's", d)
 		}
 	}
 	for _, rel := range []string{"scratch.json", "owner-settings/scratch.json"} {
@@ -851,41 +837,43 @@ func TestScratchSeatPrepareWriteTouchesOnlyTheRoot(t *testing.T) {
 	if b, err := cmd.Output(); err != nil || strings.TrimSpace(string(b)) != "Sample Author <author@example.invalid>" {
 		t.Errorf("the throwaway repository: %q %v", b, err)
 	}
-	// A second --write into the same root is refused: it is prepare's, and
-	// holds more than its mark now.
-	if out, code := k.run(t, nil, k.args("--write", r, false)...); code != 1 || !strings.Contains(out, "is an earlier run's and holds more than prepare's mark") {
+	// A second --write into the same root is refused: it is there.
+	if out, code := k.run(t, nil, k.args("--write", r, false)...); code != 1 || !strings.Contains(out, "the root "+r+" is already there: prepare makes the root new") {
 		t.Errorf("a second --write: exit %d:\n%s", code, out)
 	}
 }
 
-// A root that holds only prepare's own mark, of a run that stopped right
-// after making it, is taken again (review finding 2's exception): --write
-// goes on in it and makes everything else new. The mark must name the root
-// itself: one moved to another name with its folder still names it, since
-// the identity goes with the folder.
-func TestScratchSeatPrepareWriteTakesAnEarlierRunsMarkedRoot(t *testing.T) {
+// A root that an earlier run made and left holding only prepare's old mark
+// (.prepare-made, naming the root's own device and inode) is refused like
+// any root that is there, at mode 0700 and at 0770 alike (review finding
+// 7): a shell cannot hold the folder open while it checks its owner and mode
+// and then writes beneath it, so prepare writes into no folder it did not
+// make in this run, and nothing is written in it.
+func TestScratchSeatPrepareWriteRefusesAnEarlierRunsRoot(t *testing.T) {
 	k := newScratchSeatKit(t)
-	r := filepath.Join(k.dir, "proof")
-	if err := os.Mkdir(r, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	var st syscall.Stat_t
-	if err := syscall.Stat(r, &st); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(r, ".prepare-made"), []byte(fmt.Sprintf("prepare.sh made this folder (%d:%d)\n", st.Dev, st.Ino)), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	moved := filepath.Join(k.dir, "proof-again")
-	if err := os.Rename(r, moved); err != nil {
-		t.Fatal(err)
-	}
-	out, code := k.run(t, nil, k.args("--write", moved, false)...)
-	if code != 0 || !strings.Contains(out, "making "+moved) {
-		t.Fatalf("--write into a root of prepare's own mark: exit %d:\n%s", code, out)
-	}
-	if _, err := os.Stat(filepath.Join(moved, "owner-settings", "scratch.json")); err != nil {
-		t.Errorf("the settings were not written: %v", err)
+	for _, mode := range []os.FileMode{0o700, 0o770} {
+		r := filepath.Join(k.dir, fmt.Sprintf("proof-%o", mode))
+		if err := os.Mkdir(r, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		var st syscall.Stat_t
+		if err := syscall.Stat(r, &st); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(r, ".prepare-made"), []byte(fmt.Sprintf("prepare.sh made this folder (%d:%d)\n", st.Dev, st.Ino)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(r, mode); err != nil {
+			t.Fatal(err)
+		}
+		before := scratchSeatFiles(t, r)
+		out, code := k.run(t, nil, k.args("--write", r, false)...)
+		if code != 1 || !strings.Contains(out, "the root "+r+" is already there: prepare makes the root new") || strings.Contains(out, "making ") {
+			t.Errorf("--write into an earlier run's root of mode %o: exit %d:\n%s", mode, code, out)
+		}
+		if !sameScratchSeatFiles(before, scratchSeatFiles(t, r)) {
+			t.Errorf("--write wrote in an earlier run's root of mode %o", mode)
+		}
 	}
 	k.noCalls(t)
 }
@@ -910,11 +898,20 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 	args := filepath.Join(k.dir, "daemon-args")
 	keysArgs := filepath.Join(k.dir, "daemon-keys-args")
 	daemon := filepath.Join(k.dir, "check-daemon")
-	// stub answers the daemon's check with code, and its key check with
-	// keysCode and a line of its own.
+	keys := filepath.Join(k.state, "owner", "keys.log")
+	appendFirst := filepath.Join(k.dir, "append-before-prefix")
+	// stub answers the daemon's check with code, and its key checks with
+	// keysCode: --keys-since with a line of its own, --keys-prefix with the
+	// prefix of the key list as it is then (after appending a line to it,
+	// as a phone login would between the digests and the prefix, when the
+	// file appendFirst is there).
 	stub := func(code, keysCode int) {
 		body := "#!/bin/sh\ncase \" $* \" in *' --keys-since '*) for a; do printf '%s\\n' \"$a\"; done >'" + keysArgs + "'\n" +
-			"  echo 'keys: from the stub'; exit " + strconv.Itoa(keysCode) + " ;;\nesac\n" +
+			"  echo 'keys: from the stub'; exit " + strconv.Itoa(keysCode) + " ;;\n" +
+			"*' --keys-prefix '*) for a; do printf '%s\\n' \"$a\"; done >'" + keysArgs + "'\n" +
+			"  if [ -e '" + appendFirst + "' ]; then echo appended >>'" + keys + "'; fi\n" +
+			"  [ " + strconv.Itoa(keysCode) + " -eq 0 ] || { echo 'keys: refused by the stub' >&2; exit " + strconv.Itoa(keysCode) + "; }\n" +
+			"  printf '%s:%s\\n' \"$(wc -c <'" + keys + "' | tr -d ' ')\" \"$(sha256sum <'" + keys + "' | cut -c1-64)\"; exit 0 ;;\nesac\n" +
 			"for a; do printf '%s\\n' \"$a\"; done >'" + args + "'\necho 'check: from the stub'\nexit " + strconv.Itoa(code) + "\n"
 		if err := os.WriteFile(daemon, []byte(body), 0o700); err != nil {
 			t.Fatal(err)
@@ -922,14 +919,17 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 	}
 	status := []string{"--status", "--state", k.state, "--root", r, "--gate", "192.0.2.10:7443", "--daemon", daemon}
 	compare := append(slices.Clone(status), "--compare")
+	record := append(slices.Clone(status), "--record")
 	beforeState, beforeRoot := scratchSeatFiles(t, k.state), scratchSeatFiles(t, r)
-	before := filepath.Join(r, "evidence", "trial-before.sha256")
-	prefixFile := filepath.Join(r, "evidence", "keys-before.prefix")
+	evidence := filepath.Join(r, "evidence")
+	baseline := filepath.Join(evidence, "step-g")
+	before := filepath.Join(baseline, "trial-before.sha256")
+	prefixFile := filepath.Join(baseline, "keys-before.prefix")
 
 	stub(0, 0)
 	out, code := k.run(t, nil, status...)
 	if code != 0 || !strings.Contains(out, "check: from the stub\n") || !strings.Contains(out, "status: the daemon's check found no refusal") ||
-		!strings.Contains(out, "status: no "+before+" yet") {
+		!strings.Contains(out, "status: no baseline "+baseline+" yet") {
 		t.Fatalf("--status: exit %d:\n%s", code, out)
 	}
 	want := []string{"run", "--scratch", r + "/scratch.json", "--owner-channel", "--seat-gate", "192.0.2.10:7443", "--owner-settings", r + "/owner-settings", "--check"}
@@ -937,7 +937,7 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 		t.Fatalf("the daemon's check was run with %q, want %q", got, want)
 	}
 	stub(10, 0)
-	if out, code := k.run(t, nil, status...); code != 10 || !strings.Contains(out, "ended with exit status 10: the daemon would not start") {
+	if out, code := k.run(t, nil, status...); code != 10 || !strings.Contains(out, "ended with exit status 10: the sitting failed preflight; the check's last line says which start would fail") {
 		t.Fatalf("--status with a refusal: exit %d:\n%s", code, out)
 	}
 	stub(0, 0)
@@ -945,13 +945,84 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 	if out, code := k.run(t, nil, compare...); code != 1 || !strings.Contains(out, "status: CHANGED: there is no record "+before+" of step g") {
 		t.Fatalf("--status --compare without the record: exit %d:\n%s", code, out)
 	}
-	// --compare belongs to --status.
-	if out, code := k.run(t, nil, append(k.args("--dry", r, false), "--compare")...); code != 2 || !strings.Contains(out, "usage") {
-		t.Errorf("--dry --compare: exit %d:\n%s", code, out)
+	// --compare and --record belong to --status, and exclude each other.
+	for _, more := range [][]string{{"--compare"}, {"--record"}} {
+		if out, code := k.run(t, nil, append(k.args("--dry", r, false), more...)...); code != 2 || !strings.Contains(out, "usage") {
+			t.Errorf("--dry %v: exit %d:\n%s", more, code, out)
+		}
+	}
+	if out, code := k.run(t, nil, append(slices.Clone(record), "--compare")...); code != 2 || !strings.Contains(out, "usage") {
+		t.Errorf("--record --compare: exit %d:\n%s", code, out)
 	}
 
-	// The record the owner makes at step g: the digests of the six files and
-	// the prefix the daemon printed.
+	// --record (step g) records the baseline only when the daemon's check
+	// found no refusal, the digests were taken, the daemon's check of the
+	// key list printed its prefix, and the prefix's digest is the digests'
+	// of keys.log (review finding 3): a record appended between the two,
+	// a refusal of the key check, and a refusal of the check write nothing
+	// at all in the evidence folder and say to run the step again.
+	evidenceBefore := scratchSeatFiles(t, evidence)
+	for _, c := range []struct {
+		name           string
+		code, keysCode int
+		appendFirst    bool
+		exit           int
+		want           string
+	}{
+		{"a refusal of the check", 10, 0, false, 10, "status: NOT RECORDED: the sitting failed preflight; nothing was written"},
+		{"a refusal of the key check", 0, 1, false, 1, "status: NOT RECORDED: the daemon's check of the key list ended with exit status 1"},
+		{"a record appended between the two", 0, 0, true, 1, "status: NOT RECORDED: the key list changed between its digest and the daemon's check"},
+	} {
+		stub(c.code, c.keysCode)
+		oldKeys := mustRead(t, keys)
+		if c.appendFirst {
+			if err := os.WriteFile(appendFirst, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		out, code := k.run(t, nil, record...)
+		os.Remove(appendFirst)
+		if err := os.WriteFile(keys, oldKeys, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if code != c.exit || !strings.Contains(out, c.want) || strings.Contains(out, "status: recorded") {
+			t.Errorf("--record with %s: exit %d, want %d and %q:\n%s", c.name, code, c.exit, c.want, out)
+		}
+		if !sameScratchSeatFiles(evidenceBefore, scratchSeatFiles(t, evidence)) {
+			t.Fatalf("--record with %s wrote in the evidence folder", c.name)
+		}
+	}
+	stub(0, 0)
+	out, code = k.run(t, nil, record...)
+	if code != 0 || !strings.Contains(out, "status: recorded: the digests of the trial's six files and the key list's prefix ") {
+		t.Fatalf("--record: exit %d:\n%s", code, out)
+	}
+	if got := strings.Split(strings.TrimSpace(string(mustRead(t, keysArgs))), "\n"); !slices.Equal(got, []string{"run", "--scratch", r + "/scratch.json", "--owner-channel", "--check", "--keys-prefix"}) {
+		t.Fatalf("the daemon's key check of step g was run with %q", got)
+	}
+	names, err := os.ReadDir(evidence)
+	if err != nil || len(names) != 1 || names[0].Name() != "step-g" {
+		t.Fatalf("the evidence folder after --record: %v %v", names, err)
+	}
+	wantSums := exec.Command("/bin/sh", "-c", "cd \"$1\" && sha256sum -- gate/key.pem gate/cert.pem gate/seat-pins keys.log keys.head scratch.json", "sh", filepath.Join(k.state, "owner"))
+	sums, err := wantSums.Output()
+	if err != nil || string(mustRead(t, before)) != string(sums) {
+		t.Fatalf("the digests of the baseline are not the trial's: %v\n%s", err, mustRead(t, before))
+	}
+	prefix := strings.TrimSpace(string(mustRead(t, prefixFile)))
+	if n, sum, _ := strings.Cut(prefix, ":"); n != strconv.Itoa(len(mustRead(t, keys))) || !strings.Contains(string(sums), sum+"  keys.log\n") {
+		t.Fatalf("the prefix of the baseline %q is not the key list's", prefix)
+	}
+	// A baseline that is there is kept: --record again refuses and changes
+	// nothing.
+	recorded := scratchSeatFiles(t, evidence)
+	if out, code := k.run(t, nil, record...); code != 1 || !strings.Contains(out, "status: NOT RECORDED: a baseline of step g is there already ("+baseline+")") ||
+		!sameScratchSeatFiles(recorded, scratchSeatFiles(t, evidence)) {
+		t.Fatalf("--record over a baseline: exit %d:\n%s", code, out)
+	}
+
+	// digests writes a record of the names given in place of the baseline's,
+	// for the cases of a record that is not whole.
 	digests := func(names string) {
 		t.Helper()
 		record := exec.Command("/bin/sh", "-c", "cd \"$1\" && sha256sum -- "+names+" >\"$2\"",
@@ -961,13 +1032,8 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 		}
 	}
 	const all = "gate/key.pem gate/cert.pem gate/seat-pins keys.log keys.head scratch.json"
-	digests(all)
-	if out, code := k.run(t, nil, status...); code != 0 || !strings.Contains(out, "status: the record of step g is there; compare the trial's files with it at step 13 (--status --compare)") {
-		t.Fatalf("--status with the record: exit %d:\n%s", code, out)
-	}
-	prefix := "12:" + strings.Repeat("0123456789abcdef", 4)
-	if err := os.WriteFile(prefixFile, []byte(prefix+"\n"), 0o600); err != nil {
-		t.Fatal(err)
+	if out, code := k.run(t, nil, status...); code != 0 || !strings.Contains(out, "status: the baseline of step g is there; compare the trial's files with it at step 13 (--status --compare)") {
+		t.Fatalf("--status with the baseline: exit %d:\n%s", code, out)
 	}
 	out, code = k.run(t, nil, compare...)
 	if code != 0 || !strings.Contains(out, "status:   gate/key.pem: OK") || !strings.Contains(out, "keys: from the stub\n") ||
@@ -981,12 +1047,11 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 	// The key list is the daemon's to judge: whatever the digests say of
 	// keys.log and keys.head, its verdict decides, and prepare says CHANGED
 	// when it does not hold.
-	keys := filepath.Join(k.state, "owner", "keys.log")
 	oldKeys := mustRead(t, keys)
 	if err := os.WriteFile(keys, append(slices.Clone(oldKeys), []byte("appended\n")...), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if out, code := k.run(t, nil, compare...); code != 0 || !strings.Contains(out, "status:   keys.log: FAILED") || strings.Contains(out, "CHANGED") ||
+	if out, code := k.run(t, nil, compare...); code != 0 || strings.Contains(out, "keys.log: ") || strings.Contains(out, "CHANGED") ||
 		!strings.Contains(out, "and the daemon's check of the key list since step g holds") {
 		t.Fatalf("--status --compare with a key list the daemon passes: exit %d:\n%s", code, out)
 	}
@@ -1007,7 +1072,8 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, code = k.run(t, nil, compare...)
-	if code != 1 || !strings.Contains(out, "status:   gate/seat-pins: FAILED") || !strings.Contains(out, "status: CHANGED: a file of the trial other than the key list is not the bytes recorded") {
+	if code != 1 || !strings.Contains(out, "status:   gate/seat-pins: FAILED") ||
+		!strings.Contains(out, "status: CHANGED: sha256sum -c ended with exit status 1: a file of the trial other than the key list is not the bytes recorded") {
 		t.Fatalf("--status --compare with a changed pin file: exit %d:\n%s", code, out)
 	}
 	stub(10, 0)
@@ -1018,15 +1084,38 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 	if err := os.WriteFile(pins, old, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// A record that does not list the six files once confirms nothing, even
-	// when every line it holds is OK (review finding 4): a record of the
-	// gate's key alone, one with a file twice, and one with a line more.
+	// A file of the trial that cannot be read is CHANGED: sha256sum -c's
+	// exit status decides, whatever lines it printed.
+	if err := os.Chmod(pins, 0); err != nil {
+		t.Fatal(err)
+	}
+	out, code = k.run(t, nil, compare...)
+	os.Chmod(pins, 0o600)
+	if code != 1 || !strings.Contains(out, "status: CHANGED: sha256sum -c ended with exit status 1") || strings.Contains(out, "key list since step g holds") {
+		t.Fatalf("--status --compare with a pin file that cannot be read: exit %d:\n%s", code, out)
+	}
+	// A record that does not list the six files once, by name, confirms
+	// nothing, even when every line it holds is OK (review findings 4 of two
+	// rounds): a record of the gate's key alone, one with a file twice, one
+	// with a line more, six lines with one name twice, and six lines whose
+	// key names differ from the real ones by a character a pattern would
+	// take (keys-log for keys.log). No listed file is opened for it.
 	for _, c := range []struct{ name, names, extra, want string }{
-		{"the gate's key alone", "gate/key.pem", "", "missing or repeated: gate/cert.pem gate/seat-pins keys.log keys.head scratch.json"},
-		{"a file twice", all + " keys.log", "", "missing or repeated: keys.log"},
-		{"a line more", all, "not a line of sha256sum\n", "holds 7 line(s)"},
+		{"the gate's key alone", "gate/key.pem", "", "holds 1 whole line(s)"},
+		{"a file twice", all + " keys.log", "", "holds 7 whole line(s)"},
+		{"a line more", all, "not a line of sha256sum\n", "holds 7 whole line(s)"},
+		{"six lines with a name twice", "gate/key.pem gate/cert.pem gate/seat-pins keys.log keys.log scratch.json", "", "lists keys.log twice"},
+		{"names a pattern would take", "gate/key.pem gate/cert.pem gate/seat-pins keys-log keys-head scratch.json", "", "its line 4 names a file that is not one of the six"},
 	} {
+		for _, n := range []string{"keys-log", "keys-head"} {
+			if err := os.WriteFile(filepath.Join(k.state, "owner", n), []byte("a stand-in\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
 		digests(c.names)
+		for _, n := range []string{"keys-log", "keys-head"} {
+			os.Remove(filepath.Join(k.state, "owner", n))
+		}
 		if c.extra != "" {
 			f, err := os.OpenFile(before, os.O_APPEND|os.O_WRONLY, 0)
 			if err != nil {
@@ -1062,17 +1151,77 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 			t.Errorf("the prefix %q: the daemon's key check ran", bad)
 		}
 	}
+	// A prefix of the form whose digest is not the record's of keys.log is
+	// not one baseline with it: CHANGED, and the key check is not run.
+	if err := os.WriteFile(prefixFile, []byte(prefix[:strings.Index(prefix, ":")+1]+strings.Repeat("0123456789abcdef", 4)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(keysArgs)
+	if out, code := k.run(t, nil, compare...); code != 1 || !strings.Contains(out, "status: CHANGED: the prefix in "+prefixFile+" is not of the list whose digest "+before+" holds") {
+		t.Errorf("a prefix of another list: exit %d:\n%s", code, out)
+	}
+	if _, err := os.Lstat(keysArgs); err == nil {
+		t.Error("a prefix of another list: the daemon's key check ran")
+	}
 	os.Remove(prefixFile)
 	if out, code := k.run(t, nil, compare...); code != 1 || !strings.Contains(out, "there is no prefix of the key list of step g") {
 		t.Errorf("no prefix: exit %d:\n%s", code, out)
 	}
 	os.Remove(args)
 	os.Remove(keysArgs)
-	os.Remove(before)
+	os.RemoveAll(baseline)
 	if !sameScratchSeatFiles(beforeState, scratchSeatFiles(t, k.state)) || !sameScratchSeatFiles(beforeRoot, scratchSeatFiles(t, r)) {
 		t.Error("--status changed the state folder or the root")
 	}
 	k.noCalls(t)
+
+	// The state folder --status reads is the config's state_root, by
+	// identity, before anything is compared or run (review finding 5): a
+	// --state of another trial, a config edited to name another folder, and
+	// a config with a second state_root (in another case, which a JSON
+	// reader may take) or another form of the line are refused, and the
+	// daemon is not run.
+	other := filepath.Join(k.dir, "other-trial")
+	if err := os.MkdirAll(filepath.Join(other, "owner"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(r, "scratch.json")
+	cfg := mustRead(t, config)
+	for _, c := range []struct {
+		name  string
+		state string
+		cfg   string
+		want  string
+	}{
+		{"a --state of another trial", other, string(cfg), "is not the folder --state names, " + other},
+		{"a config of another state folder", k.state, strings.Replace(string(cfg), `"state_root": "`+k.state+`"`, `"state_root": "`+other+`"`, 1), "the scratch config's state folder " + other + " is not the folder --state names"},
+		{"a second state_root", k.state, strings.Replace(string(cfg), "{\n", "{\n  \"State_Root\": \""+other+"\",\n", 1), "names a state_root 2 times"},
+		{"another form of the line", k.state, strings.Replace(string(cfg), `"state_root": "`, `"state_root":"`, 1), "is not the line --write writes"},
+	} {
+		if err := os.WriteFile(config, []byte(c.cfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		os.Remove(args)
+		os.Remove(keysArgs)
+		st := slices.Clone(compare)
+		st[2] = c.state
+		out, code := k.run(t, nil, st...)
+		if code != 1 || !strings.Contains(out, c.want) || strings.Contains(out, "status: the daemon's check") {
+			t.Errorf("%s: exit %d, want 1 and %q:\n%s", c.name, code, c.want, out)
+		}
+		for _, f := range []string{args, keysArgs} {
+			if _, err := os.Lstat(f); err == nil {
+				t.Errorf("%s: the daemon ran", c.name)
+			}
+		}
+	}
+	if err := os.WriteFile(config, cfg, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := k.run(t, nil, status...); code != 0 || !strings.Contains(out, "status: the state folder "+k.state+" is the state_root of "+config+" (the same device and inode)") {
+		t.Errorf("--status on the config's own state folder: exit %d:\n%s", code, out)
+	}
+	os.Remove(args)
 
 	// Without the config, or without the daemon, nothing is run.
 	if out, code := k.run(t, nil, "--status", "--state", k.state, "--root", filepath.Join(k.dir, "other"), "--gate", "192.0.2.10:7443", "--daemon", daemon); code != 1 ||
@@ -1156,8 +1305,10 @@ func TestScratchSeatProofRunbookShellIsSafe(t *testing.T) {
 		"unset CLAUDE_FILE CLAUDE_MODEL",
 		"{ sh \"$ROOT/netcheck.sh\"; echo \"netcheck: exit status $?\"; } 2>&1 | tee -a \"$ROOT/evidence/netcheck.txt\"",
 		"sh \"$P\" --status --compare",
-		"$D run --scratch \"$CONFIG\" --owner-channel --check --keys-prefix >\"$ROOT/evidence/keys-before.prefix\"",
-		"must list each of `gate/key.pem`, `gate/cert.pem`, `gate/seat-pins`, `keys.log`, `keys.head` and `scratch.json` once and nothing else",
+		"sh \"$P\" --status --record",
+		"The two are one record only when the prefix's digest is the digest of `keys.log` taken just before",
+		"whose names are `gate/key.pem`, `gate/cert.pem`, `gate/seat-pins`, `keys.log`, `keys.head` and `scratch.json`, each once, compared as text",
+		"and its exit status decides: any status but 0 (a file changed, missing or unreadable) is `CHANGED`",
 		"byte-identical to step g",
 		"open the seat's web app (the same seat, on the authority host)",
 		"`submitted`: the fence put it in. claude will ask to approve the write of its reply. `w` attaches as the writer",
@@ -1215,7 +1366,7 @@ func TestScratchSeatPrepareAgentRule(t *testing.T) {
 	checks := []string{"`sh scripts/go-tool.sh test ./tests/ -run ScratchSeat`",
 		"`sh scripts/go-tool.sh test -tags ataniq_ownerchannel,ataniq_canary -run 'ScratchSeat|OwnerSettings|KeysCheck|ScratchLeadReach' ./cmd/ataniqd/ ./internal/leaddaemon/`",
 		"`sh scripts/go-tool.sh test -tags ataniq_canary -run BindTable ./internal/leadholder/sandboxstart/`",
-		"`sh scripts/go-tool.sh test -tags ataniq_ownerchannel -run TheScratchSettings ./internal/approval/hostadapter/`"}
+		"`sh scripts/go-tool.sh test -tags ataniq_ownerchannel -run 'TheScratchSettings|VerifyKeys' ./internal/approval/hostadapter/ ./internal/approval/ownerjournal/`"}
 	for _, want := range checks {
 		if !strings.Contains(agents, want) {
 			t.Errorf("AGENTS.md does not name the targeted check %s", want)
@@ -1243,7 +1394,8 @@ func TestScratchSeatPrepareAgentRule(t *testing.T) {
 	}
 	for _, file := range []string{"tests/scratch_seat_prepare_test.go", "tests/scratch_seat_netcheck_test.go",
 		"cmd/ataniqd/scratch_settings_linux_test.go", "cmd/ataniqd/scratch_keys_linux_test.go", "cmd/ataniqd/scratch_seat_proof_linux_test.go",
-		"internal/leaddaemon/lead_reach_linux_test.go", "internal/leadholder/sandboxstart/bindtable_test.go"} {
+		"internal/leaddaemon/lead_reach_linux_test.go", "internal/leadholder/sandboxstart/bindtable_test.go",
+		"internal/approval/ownerjournal/keys_verify_linux_test.go"} {
 		dir := filepath.Dir(file)
 		re, ok := filterOf[dir]
 		if !ok {

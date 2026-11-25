@@ -195,11 +195,15 @@ func (s *Store) hit(point string) error {
 	return s.fault(point)
 }
 
+// euid is the user the files must belong to: the process's effective user.
+// A test puts another number in it to stand in for files of another owner.
+var euid = os.Geteuid
+
 // private reports whether info is the user's own and closed to the group
 // and to others.
 func private(info os.FileInfo) bool {
 	st, ok := info.Sys().(*syscall.Stat_t)
-	return ok && st.Uid == uint32(os.Geteuid()) && info.Mode().Perm()&0o077 == 0
+	return ok && st.Uid == uint32(euid()) && info.Mode().Perm()&0o077 == 0
 }
 
 // privateFile reports whether info is a plain file of the user with mode

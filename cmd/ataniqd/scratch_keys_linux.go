@@ -9,13 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"golang.org/x/sys/unix"
 
 	"ataniq/internal/approval/hostadapter"
 	"ataniq/internal/approval/ownerjournal"
@@ -27,35 +23,32 @@ import (
 // folder (owner/keys.log) and its head (owner/keys.head) that the attended
 // proof takes before the sitting (step g) and after it (step 13).
 //
-// The list and its head are judged by the journal's own reader,
-// ownerjournal.OpenKeys, the code the daemon opens them with: the header, each
-// record read by the strict reader of package record (no unknown, repeated or
-// null key, nothing after the object), the records' numbers in sequence, the
-// digest chain, the rules of the list (a counter rises, a revocation names a
-// credential on the list ...), and the head's count and digest. OpenKeys
-// takes a lock and makes the head right when it lags the list, so it is never
-// run on the state folder's files: their bytes are read, without following a
-// link, and the reader runs on a private copy in a temporary folder of its
-// own, which is removed afterwards. Nothing of the state folder is written. A
-// head the reader had to make right is not the head of the list: it is
-// refused here, so only a head that matches the list passes.
+// The list and its head are judged by ownerjournal.VerifyKeys, the journal's
+// own checks read only, on the files themselves: the owner/ folder opened once
+// without following its last part, the list and the head opened by that
+// folder's descriptor without following a link, and the ownership, mode and
+// link-count checks the journal's opener makes, on the descriptors held (the
+// folder the user's own with mode 0700, the files the user's with mode 0600
+// and one name); then the list's bytes, read from the descriptor checked,
+// under the opener's replay (the header, each record by the strict reader of
+// package record, the numbers in sequence, the digest chain, the rules of the
+// list), and a head that counts every record and holds the last digest.
+// Nothing is created, repaired, locked or written, in the state folder or
+// anywhere else: where the daemon's opener would make a list or a head, or
+// make a lagging head right, the check refuses, so a list the daemon would
+// refuse or change at its next open never holds here.
 //
 // --keys-prefix prints the list's prefix, its length in bytes and the SHA-256
-// of those bytes ("LEN:SHA256"), once the list and its head pass. The owner
+// of those bytes ("LEN:SHA256"), once the list and its head pass. prepare.sh
 // records it at step g. --keys-since PREFIX then checks, at step 13, that the
 // list and its head pass, that the recorded prefix is the list's first LEN
 // bytes, ending at a whole record, and names the type of each record appended
-// after it, read from the records the reader has checked. Counter records
-// alone (a phone login with a passkey whose sign counter rises) pass; any
-// other record (added: a pairing; revoked: a revocation; rejected: a refused
-// pairing), a changed or missing old byte, and any damage of the list or its
-// head is CHANGED.
-
-// maxKeysBytes bounds the list read: the journal's own bound is 4 MiB.
-const maxKeysBytes = 4 << 20
-
-// maxKeysHeadBytes bounds the head read: the journal's own bound is 256 bytes.
-const maxKeysHeadBytes = 256
+// after it, read from the records the check passed. Counter records alone (a
+// phone login with a passkey whose sign counter rises) pass; any other record
+// (added: a pairing; revoked: a revocation; rejected: a refused pairing), a
+// changed or missing old byte, and any refusal of the list or its head is
+// CHANGED. It is a guard for the owner's trial against his own mistakes, not
+// against someone who can write the folder: the digests are not a signature.
 
 // keysPrefix is a recorded prefix of the key list: its length in bytes and
 // the SHA-256 of those bytes.
@@ -94,93 +87,25 @@ func parseKeysPrefix(s string) (keysPrefix, error) {
 	return p, nil
 }
 
-// trialKeys is the key list of the state folder as the journal's reader
+// trialKeys is the key list of the state folder as the journal's checks
 // passed it: its bytes and its number of records.
 type trialKeys struct {
 	data    []byte
 	records int
 }
 
-// readPlain reads a regular file of at most max bytes without following a
-// link. It reports false when there is no file.
-func readPlain(path string, max int64) ([]byte, bool, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
-	switch {
-	case errors.Is(err, unix.ENOENT):
-		return nil, false, nil
-	case errors.Is(err, unix.ELOOP):
-		return nil, true, fmt.Errorf("%s is a link", path)
-	case err != nil:
-		return nil, true, fmt.Errorf("%s cannot be opened: %v", path, err)
-	}
-	f := os.NewFile(uintptr(fd), path)
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return nil, true, err
-	}
-	if !st.Mode().IsRegular() {
-		return nil, true, fmt.Errorf("%s is not a regular file", path)
-	}
-	b, err := io.ReadAll(io.LimitReader(f, max+1))
-	if err != nil {
-		return nil, true, fmt.Errorf("%s cannot be read: %v", path, err)
-	}
-	if int64(len(b)) > max {
-		return nil, true, fmt.Errorf("%s is larger than %d bytes", path, max)
-	}
-	return b, true, nil
-}
-
-// readTrialKeys reads owner/keys.log and owner/keys.head of the state folder
-// and has the journal's own reader judge them, on a private copy. It writes
-// nothing in the state folder.
+// readTrialKeys has the journal's read-only checks judge owner/keys.log and
+// owner/keys.head of the state folder. It writes nothing.
 func readTrialKeys(stateDir string) (trialKeys, error) {
-	owner := filepath.Join(stateDir, hostadapter.OwnerDirName)
-	logPath := filepath.Join(owner, ownerjournal.KeysFileName)
-	headPath := filepath.Join(owner, ownerjournal.KeysHeadFileName)
-	data, ok, err := readPlain(logPath, maxKeysBytes)
-	if err != nil {
-		return trialKeys{}, err
+	logPath := filepath.Join(stateDir, hostadapter.OwnerDirName, ownerjournal.KeysFileName)
+	snap, err := ownerjournal.VerifyKeys(logPath)
+	switch {
+	case errors.Is(err, ownerjournal.ErrHeadBehind):
+		return trialKeys{}, fmt.Errorf("the head %s does not count the whole list (the daemon would make it right at its next open, or a record was appended while the check read): it is not the head of the list; check again (%v)", ownerjournal.KeysHeadFileName, err)
+	case err != nil:
+		return trialKeys{}, fmt.Errorf("the journal's checks refuse the key list or its head: %v", err)
 	}
-	if !ok {
-		return trialKeys{}, fmt.Errorf("there is no key list %s", logPath)
-	}
-	head, ok, err := readPlain(headPath, maxKeysHeadBytes)
-	if err != nil {
-		return trialKeys{}, err
-	}
-	if !ok {
-		return trialKeys{}, fmt.Errorf("there is no head %s of the key list", headPath)
-	}
-	tmp, err := os.MkdirTemp("", "ataniqd-keys-check-")
-	if err != nil {
-		return trialKeys{}, fmt.Errorf("a private folder for the copy of the key list cannot be made: %v", err)
-	}
-	defer os.RemoveAll(tmp)
-	if err := os.Chmod(tmp, 0o700); err != nil {
-		return trialKeys{}, err
-	}
-	cLog := filepath.Join(tmp, ownerjournal.KeysFileName)
-	cHead := filepath.Join(tmp, ownerjournal.KeysHeadFileName)
-	if err := os.WriteFile(cLog, data, 0o600); err != nil {
-		return trialKeys{}, err
-	}
-	if err := os.WriteFile(cHead, head, 0o600); err != nil {
-		return trialKeys{}, err
-	}
-	k, err := ownerjournal.OpenKeys(cLog)
-	if err != nil {
-		return trialKeys{}, fmt.Errorf("the journal's reader refuses the key list or its head: %v", err)
-	}
-	if err := k.Close(); err != nil {
-		return trialKeys{}, err
-	}
-	after, err := os.ReadFile(cHead)
-	if err != nil || !bytes.Equal(after, head) {
-		return trialKeys{}, fmt.Errorf("the head %s does not count the whole list (the daemon would make it right at its next open): it is not the head of the list", headPath)
-	}
-	return trialKeys{data: data, records: bytes.Count(data, []byte{'\n'}) - 1}, nil
+	return trialKeys{data: snap.Data, records: snap.Records}, nil
 }
 
 // prefixOf is the list's prefix of its whole length.
@@ -243,7 +168,7 @@ func (a *app) keysCheck(s settingsFlags, stateDir string) int {
 	if err != nil {
 		return changed("%v", err)
 	}
-	fmt.Fprintf(w, "keys  %s: %d record(s), each well formed, in sequence, on the digest chain and within the rules of the list, and its head %s counts them and holds the last digest (the journal's own reader, on a private copy)\n",
+	fmt.Fprintf(w, "keys  %s: %d record(s), each well formed, in sequence, on the digest chain and within the rules of the list, and its head %s counts them and holds the last digest (the journal's own checks, read only)\n",
 		leaddaemon.SafeText(filepath.Join(owner, ownerjournal.KeysFileName)), k.records, ownerjournal.KeysHeadFileName)
 	kinds, err := k.appendedSince(p)
 	if err != nil {
