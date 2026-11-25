@@ -3,6 +3,7 @@ package hookwire
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -35,7 +36,8 @@ func DecodeTable(data []byte) (map[string]Table, error) {
 		return nil, errors.New("missing hook builds or wrong schema")
 	}
 	builds := make(map[string]Table, len(doc.Builds))
-	for version, rows := range doc.Builds {
+	for _, version := range slices.Sorted(maps.Keys(doc.Builds)) {
+		rows := doc.Builds[version]
 		if strings.TrimSpace(version) == "" {
 			return nil, errors.New("missing hook build version")
 		}
