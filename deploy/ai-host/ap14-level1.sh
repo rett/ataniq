@@ -164,7 +164,7 @@ fi
 #       OPTION, OPTION, ...
 #
 #   Runas and Command-specific defaults for NAME:
-#       Defaults!COMMAND OPTION, OPTION
+#       Defaults!COMMAND, COMMAND OPTION, OPTION
 #       Defaults>RUNAS OPTION
 #
 #   User NAME may run the following commands on HOST:
@@ -180,25 +180,60 @@ judge_sudo() {
     function stop(msg) { print "stop: " clean(msg); nstop++ }
     function finding(kind, msg) { print "finding: " kind ": " clean(msg); nfind++; kinds[kind] = 1 }
     function starts(s, p) { return substr(s, 1, length(p)) == p }
-    function lastword(s,   n, w) { n = split(s, w, /[ \t]+/); return n ? w[n] : "" }
     function numeric(v) { return v ~ /^-?[0-9]*\.?[0-9]*$/ && v ~ /[0-9]/ }
     function zero(v) { return v ~ /^0+\.?0*$/ || v ~ /^0*\.0+$/ }
-    # option TOKEN WHERE GLOBAL judges one Defaults option.
-    function option(t, where, global,   v) {
+    # option WORD REST WHERE GLOBAL judges one word of a Defaults token as an
+    # option; REST is the token from that word on, which a finding names and
+    # whose value a timestamp_timeout is judged by.
+    function option(t, rest, where, global,   v) {
       if (t == "targetpw") { finding("otherpw", "sudo asks for the target user\047s password (usually root\047s), not " name "\047s: " where " has targetpw"); pw++ }
       else if (t == "rootpw") { finding("otherpw", "sudo asks for root\047s password, not " name "\047s: " where " has rootpw"); pw++ }
       else if (t == "runaspw") { finding("otherpw", "sudo asks for the password of the runas_default user, not " name "\047s: " where " has runaspw"); pw++ }
       else if (t == "!authenticate") { finding("noauth", "sudo asks no password at all: " where " has !authenticate"); pw++ }
-      else if (t ~ /^exempt_group[+-]?=/) { finding("exempt", "members of that group are never asked for a password, and sudo -l does not say whether " name " is one: " where " has " t); pw++ }
+      else if (t ~ /^exempt_group[+-]?=/) { finding("exempt", "members of that group are never asked for a password, and sudo -l does not say whether " name " is one: " where " has " rest); pw++ }
       else if (t ~ /^timestamp_timeout[+-]?=/) {
-        v = t
+        v = rest
         sub(/^[^=]*=/, "", v)
         gsub(/"/, "", v)
-        if (!numeric(v)) { stop("a timestamp_timeout this check does not know: " where " has " t); odd++ }
-        else if (!zero(v)) { finding("timeout", "a cached ticket lets commands run unprompted after one password: " where " has " t); nonzero++ }
+        if (!numeric(v)) { stop("a timestamp_timeout this check does not know: " where " has " rest); odd++ }
+        else if (!zero(v)) { finding("timeout", "a cached ticket lets commands run unprompted after one password: " where " has " rest); nonzero++ }
         else if (global) zeroes++
       }
-      else if (t ~ /timestamp_timeout/) { stop("a timestamp_timeout this check does not know: " where " has " t); odd++ }
+      else if (t ~ /timestamp_timeout/) { stop("a timestamp_timeout this check does not know: " where " has " rest); odd++ }
+    }
+    # judge TOKEN WHERE GLOBAL judges every word of a Defaults token, a
+    # leading and a trailing quote taken off: a quoted value may hold blanks
+    # (exempt_group="a b"), so the option is not always the last word. A word
+    # of a value that reads as an option gives at most a false finding, never
+    # a false clean.
+    function judge(s, where, global,   n, w, i, j, t, rest) {
+      n = split(s, w, /[ \t]+/)
+      for (i = 1; i <= n; i++) {
+        t = w[i]
+        sub(/^"/, "", t)
+        sub(/"$/, "", t)
+        if (t == "") continue
+        rest = t
+        for (j = i + 1; j <= n; j++) rest = rest " " w[j]
+        option(t, rest, where, global)
+      }
+    }
+    # binding LINE is the binding of a command-specific Defaults line
+    # (Defaults!CMND, CMND ... or Defaults>RUNAS, RUNAS ...), all its members:
+    # sudo separates the members by ", " and the first option by a blank, so
+    # the binding runs to the first comma-separated token with a blank in
+    # it, without the option of that token (its last word, or a last quoted
+    # value with the word it ends). It is empty when no token has a blank.
+    function binding(u,   n, tk, i, b, t) {
+      n = split(u, tk, ",")
+      b = ""
+      for (i = 1; i <= n; i++) {
+        t = trim(tk[i])
+        if (t !~ /[ \t]/) { b = b t ", "; continue }
+        if (!sub(/[ \t]+[^ \t"]*"[^"]*"$/, "", t)) sub(/[ \t]+[^ \t]+$/, "", t)
+        return b t
+      }
+      return ""
     }
     BEGIN {
       name = ENVIRON["J_NAME"]; err = ENVIRON["J_ERR"]; rc = ENVIRON["J_RC"]; route = ENVIRON["J_ROUTE"]
@@ -207,7 +242,7 @@ judge_sudo() {
       pr_head = "User " name " may run the following commands on "
       no_head1 = "User " name " is not allowed to run sudo on "
       no_head2 = "User " name " may not run sudo on "
-      sec = ""; ne = 0; md = ""; cs = ""
+      sec = ""; ne = 0; md = ""; nu = 0
     }
     /^[ \t]*$/ { sec = ""; next }
     starts($0, md_head) && /:$/ { sec = "md"; next }
@@ -215,7 +250,17 @@ judge_sudo() {
     starts($0, pr_head) && /:$/ { sec = "pr"; prheads++; next }
     (starts($0, no_head1) || starts($0, no_head2)) && /\.$/ { nogrant++; sec = ""; next }
     sec == "md" && /^    [^ ]/ { s = trim($0); sub(/,$/, "", s); md = md "," s; next }
-    sec == "cs" && /^    [^ ]/ { s = trim($0); sub(/,$/, "", s); cs = cs "," s; next }
+    # Each Defaults line of the command-specific section is one unit, its
+    # wrapped lines joined to it, so that a binding of several commands
+    # stays whole; a line before any Defaults line is a unit of its own,
+    # which the judgement stops on.
+    sec == "cs" && /^    [^ ]/ {
+      s = trim($0)
+      if (starts(s, "Defaults")) unit[++nu] = s
+      else if (nu && !orphan[nu]) unit[nu] = unit[nu] " " s
+      else { unit[++nu] = s; orphan[nu] = 1 }
+      next
+    }
     sec == "pr" && /^    \(/ { entry[++ne] = trim($0); next }
     sec == "pr" && /^        [^ ]/ && ne { entry[ne] = entry[ne] " " trim($0); next }
     { stop("a line of sudo -l this check does not know: " $0) }
@@ -241,15 +286,12 @@ judge_sudo() {
         for (i = 1; i <= ne; i++) if (entry[i] ~ /[ ,]NOPASSWD:/) { finding("nopasswd", "sudo runs this for " name " without a password: " entry[i]); np++ }
         if (!np) checks = checks "check: no command sudo lists for " name " skips the password\n"
         n = split(md, op, ",")
-        for (i = 1; i <= n; i++) { t = lastword(trim(op[i])); if (t != "") option(t, "Matching Defaults", 1) }
-        n = split(cs, op, ",")
-        bind = ""
-        for (i = 1; i <= n; i++) {
-          s = trim(op[i])
-          if (s == "") continue
-          if (starts(s, "Defaults")) { bind = s; sub(/[ \t]+[^ \t]+$/, "", bind) }
-          else if (bind == "") { stop("a command-specific default this check does not know: " s); continue }
-          option(lastword(s), bind, 0)
+        for (i = 1; i <= n; i++) judge(trim(op[i]), "Matching Defaults", 1)
+        for (u = 1; u <= nu; u++) {
+          bind = orphan[u] ? "" : binding(unit[u])
+          if (bind == "") { stop("a command-specific default this check does not know: " unit[u]); continue }
+          n = split(unit[u], op, ",")
+          for (i = 1; i <= n; i++) judge(trim(op[i]), bind, 0)
         }
         if (!zeroes) finding("dropin", "sudo -l lists no timestamp_timeout=0 for " name ": sudo\047s built-in default keeps a ticket for some minutes, so commands run unprompted after one password")
         else if (!nonzero && !odd) checks = checks "check: timestamp_timeout=0 is listed for " name ", and no other value\n"
@@ -396,7 +438,7 @@ steps() {
     timeout) say "- a non-zero timestamp_timeout: after one password a cached ticket lets any process of $NAME run sudo unprompted, an agent session included. As root, edit the file that sets it with visudo -f and remove the setting (README, step 3); the drop-in of step 4 sets 0." ;;
     dropin) say "- no timestamp_timeout=0: write the drop-in /etc/sudoers.d/zz-ap14-level1-$NAME by hand and check the whole configuration with visudo -c (README, step 4)." ;;
     register-missing) say "- no register: create $REGISTER by hand, root's folders of mode 0755 (README, step 5)." ;;
-    register-folder) say "- a register folder: it and every folder above it must be folders of root's, not links, and not writable by group or others. If one is not, make a new folder as root, write into it fresh copies of only the entries you confirm, and put it in place of the old one (README, step 5)." ;;
+    register-folder) say "- a register folder: it and every folder above it must be folders of root's, not links, and not writable by group or others. Never move or replace a folder, / and /etc above all: write access to a folder is checked at each operation, so setting it right in place is enough. As root, give the folder the owner and group root and take write access away from group and others, in place. Only when $REGISTER_PARENT or $REGISTER is a link or not a folder, remove that link or file and create the folder as root, mode 0755. Then read every entry again (README, step 5)." ;;
     register-entry) say "- a register entry: read it and confirm every word is yours. Then, as root, write that text into a new file of root's (mode 0644) beside it and rename the new file over the old name, which retires the old file: another process may still hold it open for writing. Never change the owner or the mode of the old file in place. Remove an entry that is not yours or not a regular file (README, step 5)." ;;
   esac
 }

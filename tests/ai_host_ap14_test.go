@@ -127,7 +127,7 @@ func TestAiHostAP14SelfTest(t *testing.T) {
 		return
 	}
 	cases := ap14Cases(t)
-	if len(cases) < 20 {
+	if len(cases) < 27 {
 		t.Fatalf("only %d cases", len(cases))
 	}
 	check := func(where, out string, code int) {
@@ -228,11 +228,27 @@ func TestAiHostAP14SudoFindings(t *testing.T) {
 		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0\n\nRunas and Command-specific defaults for agent:\n    Defaults>root runaspw\n\n" + grant,
 			[]string{"finding: otherpw: sudo asks for the password of the runas_default user, not agent's: Defaults>root has runaspw\n"}, "remove the setting"},
 		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0\n\nRunas and Command-specific defaults for agent:\n    Defaults!/usr/bin/a, /usr/bin/b env_reset, targetpw\n\n" + grant,
-			[]string{"finding: otherpw: sudo asks for the target user's password (usually root's), not agent's: Defaults!/usr/bin/a has targetpw\n"}, "remove the setting"},
+			[]string{"finding: otherpw: sudo asks for the target user's password (usually root's), not agent's: Defaults!/usr/bin/a, /usr/bin/b has targetpw\n"}, "remove the setting"},
+		// A binding of several commands, wrapped, is named whole.
+		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0\n\nRunas and Command-specific defaults for agent:\n    Defaults!/usr/bin/a,\n    /usr/bin/b timestamp_timeout=15\n\n" + grant,
+			[]string{"finding: timeout: a cached ticket lets commands run unprompted after one password: Defaults!/usr/bin/a, /usr/bin/b has timestamp_timeout=15\n"}, "remove the setting"},
 		{"Matching Defaults entries for agent on aihost:\n    !authenticate, timestamp_timeout=0\n\n" + grant,
 			[]string{"finding: noauth: sudo asks no password at all: Matching Defaults has !authenticate\n"}, "!authenticate: sudo asks no password at all"},
 		{"Matching Defaults entries for agent on aihost:\n    exempt_group=wheel, timestamp_timeout=0\n\n" + grant,
 			[]string{"finding: exempt: members of that group are never asked for a password, and sudo -l does not say whether agent is one: Matching Defaults has exempt_group=wheel\n"},
+			"make sure agent is not a member of that group"},
+		// A quoted value with a blank: every word is judged, not the last.
+		{"Matching Defaults entries for agent on aihost:\n    exempt_group=\"wheel admins\", timestamp_timeout=0\n\n" + grant,
+			[]string{"finding: exempt: members of that group are never asked for a password, and sudo -l does not say whether agent is one: Matching Defaults has exempt_group=\"wheel admins\"\n"},
+			"make sure agent is not a member of that group"},
+		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0\n\nRunas and Command-specific defaults for agent:\n    Defaults>root exempt_group=\"a b\"\n\n" + grant,
+			[]string{"finding: exempt: members of that group are never asked for a password, and sudo -l does not say whether agent is one: Defaults>root has exempt_group=\"a b\"\n"},
+			"make sure agent is not a member of that group"},
+		// A word is judged without its quotes, wherever it stands.
+		{"Matching Defaults entries for agent on aihost:\n    \"targetpw\", timestamp_timeout=0\n\n" + grant,
+			[]string{"finding: otherpw: sudo asks for the target user's password (usually root's), not agent's: Matching Defaults has targetpw\n"}, "remove the setting"},
+		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0\n\nRunas and Command-specific defaults for agent:\n    Defaults>root \"exempt_group=a b\"\n\n" + grant,
+			[]string{"finding: exempt: members of that group are never asked for a password, and sudo -l does not say whether agent is one: Defaults>root has exempt_group=a b\"\n"},
 			"make sure agent is not a member of that group"},
 		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0, timestamp_timeout=15\n\n" + grant,
 			[]string{"finding: timeout: a cached ticket lets commands run unprompted after one password: Matching Defaults has timestamp_timeout=15\n"},
@@ -276,6 +292,11 @@ func TestAiHostAP14Clean(t *testing.T) {
 			"Runas and Command-specific defaults for agent:\n    Defaults!/usr/bin/a timestamp_timeout=0, !targetpw\n\n" +
 			"User agent may run the following commands on aihost:\n    (ALL : ALL) ALL\n    (root) PASSWD: /usr/bin/b\n", "", nil,
 			[]string{"check: timestamp_timeout=0 is listed for agent, and no other value\n"}},
+		// Quoted values with blanks whose words are no option stay clean.
+		{"Matching Defaults entries for agent on aihost:\n    env_reset, env_keep+=\"LANG LC_ALL TZ\", timestamp_timeout=0\n\n" +
+			"Runas and Command-specific defaults for agent:\n    Defaults!/usr/bin/sudoedit env_keep+=\"EDITOR VISUAL\", !env_reset\n    Defaults>backup env_keep=\"HOME TERM\"\n\n" +
+			"User agent may run the following commands on aihost:\n    (ALL : ALL) ALL\n", "", nil,
+			[]string{"check: no default makes sudo ask for another account's password, or for none (targetpw, rootpw, runaspw, !authenticate, exempt_group)\n"}},
 		{"User agent is not allowed to run sudo on aihost.\n", "1\n", []string{"--other-root-login"}, []string{
 			"note: no sudo grant: make sure root can log in another way\n",
 			"note: you answered that it can (--other-root-login), so agent has no sudo route to root\n",
@@ -323,6 +344,8 @@ func TestAiHostAP14SudoStops(t *testing.T) {
 			"stop: a timestamp_timeout this check does not know: Defaults!/usr/bin/a has timestamp_timeout=soon\n"},
 		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0\n\nRunas and Command-specific defaults for agent:\n    targetpw\n\nUser agent may run the following commands on aihost:\n    (ALL) ALL\n", "", "",
 			"stop: a command-specific default this check does not know: targetpw\n"},
+		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0\n\nRunas and Command-specific defaults for agent:\n    Defaults!/usr/bin/a, /usr/bin/b\n\nUser agent may run the following commands on aihost:\n    (ALL) ALL\n", "", "",
+			"stop: a command-specific default this check does not know: Defaults!/usr/bin/a, /usr/bin/b\n"},
 		{"User agent is not allowed to run sudo on aihost.\n", "", "1\n", "stop: no sudo grant: make sure root can log in another way\n"},
 	} {
 		files := map[string]string{"sudo-l.txt": c.sudo}

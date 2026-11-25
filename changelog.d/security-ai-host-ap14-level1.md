@@ -4,13 +4,16 @@
   place, keep one password-asked grant, never delete a rule), the drop-in
   `/etc/sudoers.d/zz-ap14-level1-NAME` (`Defaults:NAME timestamp_timeout=0`,
   checked with `visudo -c`) and the root-owned standing-grants register
-  `/etc/ataniq/grants`, one fresh root-owned file per grant.
+  `/etc/ataniq/grants`, one fresh root-owned file per grant; a register
+  folder found not root's or writable by others is set right in place, never
+  moved or replaced.
   `deploy/ai-host/ap14-level1.sh --check --user NAME` is the read-only check
   of the result, run by the owner as root from a copy installed as root's own
   file: it runs `sudo -n -l -U NAME` once and judges only what sudo prints
   (a `NOPASSWD` command; `targetpw`, `rootpw`, `runaspw`, `!authenticate` or
-  `exempt_group`, global or command-specific; a non-zero `timestamp_timeout`;
-  no `timestamp_timeout=0`), checks the register and every folder above it by
+  `exempt_group`, global or command-specific, judged in every word of a
+  setting so that a quoted value with blanks is read; a non-zero
+  `timestamp_timeout`; no `timestamp_timeout=0`), checks the register and every folder above it by
   stat rules, and prints plain steps for the owner, never an edit command. It
   changes nothing. It stops, never clean (exit 3), on a failed or unknown
   sudo output, anything on sudo's error output, an unreadable register, and a

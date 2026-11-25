@@ -21,6 +21,12 @@ only `--self-test`.
 
 - **Know the everyday user's password.** Afterwards sudo asks for it every
   time.
+- **Make sure that password is usable.** In the root shell, `passwd -S NAME`
+  must show `P` in its second field. `L`, `LK` or `NP` there mean the user
+  has no usable password: set one first with `passwd NAME`, or do not remove
+  `NOPASSWD` until root can log in another way. Keep the root shell open
+  until sudo has been used once with that password, in a session agents
+  cannot reach.
 - **Keep a root shell open** for the whole sitting, in a second terminal, so
   you can undo an edit by hand.
 - **Install the script as root's own regular file.** Your checkout is
@@ -147,6 +153,15 @@ your notes of the sitting, run the check again with `--other-root-login`:
 the case becomes a `note:` and the result can be clean. When there is none,
 give the user a grant that asks for the password first (step 3).
 
+Every word of each default is judged, without its quotes, so a
+quoted value with blanks (`exempt_group="wheel admins"`, or
+`Defaults>root exempt_group="a b"`) is a finding like an unquoted one. A word
+of another setting's value that reads as an option (for example `targetpw`
+inside an `env_keep` list) is then a finding too: check it, and leave it if
+it is only a value. A finding of a command- or runas-specific default names
+its whole binding, every command or runas user of it
+(`Defaults!/usr/bin/a, /usr/bin/b has timestamp_timeout=15`).
+
 What the check trusts: sudo's own listing, which resolves host lists,
 aliases, groups, includes and other sudoers sources (LDAP, sssd) for this
 user on this host. What that listing does not show: which file holds a rule;
@@ -158,6 +173,13 @@ If it does not work: a `refused:` line says why (bad arguments); nothing was
 read.
 
 ### 3. Make the edits by hand
+
+Before you remove a `NOPASSWD:` tag, read the user's password state in the
+root shell: `passwd -S NAME` must show `P` in its second field. `L`, `LK` or
+`NP` there mean the user has no usable password: set one first with
+`passwd NAME`, or do not remove `NOPASSWD` until root can log in another
+way. Keep the root shell open until sudo has been used once with that
+password, in a session agents cannot reach.
 
 For each finding of sudo, as root:
 
@@ -230,16 +252,33 @@ install -m 0644 -o root -g root /root/GRANT.txt /etc/ataniq/grants/.GRANT.new
 mv /etc/ataniq/grants/.GRANT.new /etc/ataniq/grants/GRANT
 ```
 
-**Repairing an entry or a folder.** Never change the owner or the mode of an
-entry the check finds not root's or writable by others: another process may
-still hold it open for writing, and would keep that. Read the entry and
-confirm every word is yours; then write that text fresh, as above, and
-rename the new file over the old name, which retires the old file. Remove an
-entry that is not yours or not a regular file. A folder that is not root's
-or is writable by group or others is replaced the same way: make a new
-folder as root beside it, write into it fresh copies of only the entries you
-confirm, move the old folder into root's own folder, and rename the new one
-into its place.
+**Repairing an entry.** Never change the owner or the mode of an entry the
+check finds not root's or writable by others: another process may still
+hold it open for writing, and would keep that. Read the entry and confirm
+every word is yours; then write that text fresh, as above, and rename the
+new file over the old name, which retires the old file. Remove an entry
+that is not yours or not a regular file.
+
+**Repairing a folder.** Never move or replace a folder: `/` and `/etc` hold
+the whole system, and no folder needs it, because write access to a folder
+is checked at each operation, so once the folder is root's and not writable
+by group or others nothing else can write into it. (The rule of a fresh file
+renamed into place is for entries, regular files, which can have an open
+writer.) For `/` and `/etc`, as root, set the owner and the mode in place,
+when the listing shows the folder (`d`), and change nothing else:
+
+```sh
+chown root:root /etc
+chmod go-w /etc
+```
+
+`/etc/ataniq` and `/etc/ataniq/grants` are set the same way, in place, when
+they are folders. Only when one of them is a link or not a folder: remove
+that link or file with `rm` (on a link it removes the link, not what it
+points to), create the folder with `mkdir -m 0755` as above, and write fresh
+each entry you confirm. After a folder was writable by group or others,
+read every entry of the register again: anyone could rename, remove or add
+one meanwhile.
 
 ### 6. Check again, and test by hand
 
