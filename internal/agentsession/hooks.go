@@ -57,7 +57,8 @@ func sessionReason(s string, form IDForm) InputReason {
 					return "inconsistent"
 				}
 			default:
-				if !strings.ContainsRune("0123456789abcdefABCDEF", rune(s[i])) {
+				// The canonical lowercase spelling makes byte equality UUID equality.
+				if !strings.ContainsRune("0123456789abcdef", rune(s[i])) {
 					return "inconsistent"
 				}
 			}

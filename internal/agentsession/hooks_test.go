@@ -191,6 +191,38 @@ func TestTR34TR35HookTransitions(t *testing.T) {
 		requireError(t, err, "HookView", "inconsistent")
 	}
 }
+func TestUUIDSpelling(t *testing.T) {
+	const id = "00112233-4455-4677-8899-aabbccddeeff"
+	upper := strings.ToUpper(id)
+	h, err := NewHookView(1, "uuid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := Bind(h, HookReport{"session-start", upper, 0})
+	requireError(t, err, "HookView.Reports[0].Session", "inconsistent")
+	if !reflect.DeepEqual(next, h) {
+		t.Fatal(next)
+	}
+	h = bind(t, h, "session-start", id, 0)
+	checkView(t, bind(t, h, "drift", id, 0), Obs{id, 0}, "pack-mode-drift")
+
+	b, err := json.Marshal(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"Bound", "Session"} {
+		raw := bytes.Replace(b, []byte(`"`+field+`":"`+id+`"`), []byte(`"`+field+`":"`+upper+`"`), 1)
+		_, err := DecodeHookView(raw)
+		path := "HookView.Bound"
+		if field == "Session" {
+			path = "HookView.Reports[0].Session"
+		}
+		requireError(t, err, path, "inconsistent")
+	}
+	printable := bind(t, newView(t, 1), "session-start", upper, 0)
+	checkView(t, bind(t, printable, "drift", id, 0), Obs{upper, 1}, "")
+}
+
 func TestDecodeRejectsImpossibleHistory(t *testing.T) {
 	for _, h := range []HookView{
 		{form: "printable", reports: []classifiedReport{{HookReport{"session-start", "s", 0}, "foreign"}}, foreign: 1},
