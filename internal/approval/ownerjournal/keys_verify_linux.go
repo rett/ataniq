@@ -36,6 +36,12 @@ type KeysSnapshot struct {
 // caller that records digests of the two takes them from this one snapshot
 // and opens neither file itself.
 //
+// A pass is a snapshot of the files' identity, metadata, content and head
+// agreement at the moment of the check, not a promise that OpenKeys will
+// open the list: VerifyKeys opens read only and takes no lock, so a file
+// OpenKeys cannot open for writing (read-only storage) or whose lock another
+// process holds ([ErrLocked]) passes here and is refused only at startup.
+//
 // It creates, repairs, locks and writes nothing. Where OpenKeys would make
 // something, VerifyKeys refuses: no file ([ErrNoKeys], where OpenKeys makes a
 // new, empty list), no head (OpenKeys makes one for an empty list), and a

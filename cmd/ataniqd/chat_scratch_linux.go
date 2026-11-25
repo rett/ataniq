@@ -126,7 +126,11 @@ with the seat gate together:
                     reason on standard error when the list or its head does
                     not hold (a mode or owner the daemon would refuse, a
                     missing list or head, and a head that lags the list,
-                    which a start would make right, do not).
+                    which a start would make right, do not). A pass is a
+                    snapshot of the files' identity, metadata, content
+                    and the head's agreement with the list; whether the
+                    list can be opened for writing and locked is checked
+                    only when the daemon starts.
   --keys-since LEN:SHA256
                     with --check: check the key list and its head as
                     --keys-prefix does, check that the prefix is the list's

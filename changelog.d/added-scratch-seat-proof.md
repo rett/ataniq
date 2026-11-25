@@ -77,7 +77,10 @@
   --keys-prefix`, which checks the key list and its head with the journal's
   own checks read only, on the files themselves (the ownership, mode and
   link-count checks of the journal's opener and its replay, with an exact
-  head; nothing is created, repaired or written, anywhere), and prints the
+  head; nothing is created, repaired or written, anywhere; a pass is a
+  snapshot of the files' identity, metadata, content and head agreement,
+  and whether the list can be opened for writing and locked is checked
+  only at the daemon's start), and prints the
   list's length and SHA-256 and the SHA-256 of its head, from the bytes it
   checked, and `--check --keys-since
   LEN:SHA256`, which checks them again, checks that the prefix is the

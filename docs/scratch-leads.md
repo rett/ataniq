@@ -1324,11 +1324,17 @@ files opened without following a link and held to the ownership, mode and
 link-count checks of the journal's opener, the records well formed, in
 sequence, on the digest chain and within the list's rules, and the head's
 count and digest exactly the list's. Nothing is created, repaired, locked or
-written, in the state root or anywhere else: a list or head the daemon's
-opener would refuse, a missing list or head (the opener would make one) and
-a head that lags the list (a start would make it right) do not pass. It is a
-guard for the owner's trial against his own mistakes: whoever can write the
-folder can write a list and a head that hold.
+written, in the state root or anywhere else: a missing list or head (the
+opener would make one) and a head that lags the list (a start would make it
+right) do not pass. A pass is a snapshot of the files' identity, their
+ownership, mode and link count, their content and the head's agreement with
+the list, at the moment of the check; it does not say that the daemon's
+start will open the list. The check opens the files read only and takes no
+lock, so whether the list can be opened for writing (a read-only file
+system, say) and whether its lock is free (another daemon holds it) are
+checked only when the daemon starts. It is a guard for the owner's trial
+against his own mistakes: whoever can write the folder can write a list and
+a head that hold.
 With `--check`, `--expect-state DIR` binds the check to the trial its
 caller means: before any file of the state root is read, the daemon refuses
 (exit 10) unless DIR is, by device and inode, the state root the scratch

@@ -35,8 +35,11 @@ import (
 // list), and a head that counts every record and holds the last digest.
 // Nothing is created, repaired, locked or written, in the state folder or
 // anywhere else: where the daemon's opener would make a list or a head, or
-// make a lagging head right, the check refuses, so a list the daemon would
-// refuse or change at its next open never holds here.
+// make a lagging head right, the check refuses. A pass is a snapshot of the
+// files' identity, metadata, content and the head's agreement with the
+// list; it opens read only and takes no lock, so whether the list can be
+// opened for writing and whether its lock is free are the daemon's start's
+// to find, not this check's.
 //
 // --keys-prefix prints the list's prefix, its length in bytes and the SHA-256
 // of those bytes ("LEN:SHA256"), a space and the SHA-256 of the head's bytes,
