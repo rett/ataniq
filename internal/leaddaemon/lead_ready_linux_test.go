@@ -693,6 +693,47 @@ func TestLeadReadyObserversAreJoinedAndNoneStartsAfter(t *testing.T) {
 	}
 }
 
+// The reviewer's case of the startup scan: the scan read the lead starting in
+// epoch 1, and before it registered that epoch's observer the lead was
+// stopped and started again in epoch 2, whose observer runs. The scan's late
+// registration of epoch 1 is refused in the same step that would replace the
+// observer: the observer of epoch 2 is neither cancelled nor replaced. An
+// observer of the same or a later epoch still replaces one.
+func TestLeadReadyStaleObserverDoesNotReplaceALaterEpochs(t *testing.T) {
+	m, lr, epoch := barePromote(t)
+	m.readyWithin, m.readyBackoff = time.Minute, 10*time.Millisecond
+	newFakeHolder(t, lr.in.ext.holderDir, silent)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.startObservers(ctx)
+	defer m.joinObservers(5 * time.Second)
+	current := func() *readyObserver {
+		m.ready.mu.Lock()
+		defer m.ready.mu.Unlock()
+		return m.ready.byRole[lr.role]
+	}
+	// The observer of a later epoch, as a start of epoch 2 made it; it stands
+	// in the role's place with a context of its own.
+	laterCtx, laterCancel := context.WithCancel(ctx)
+	defer laterCancel()
+	later := &readyObserver{gen: 1000, epoch: epoch + 1, cancel: laterCancel}
+	m.ready.mu.Lock()
+	m.ready.byRole[lr.role] = later
+	m.ready.mu.Unlock()
+	m.observeReady(lr, epoch)
+	if current() != later || laterCtx.Err() != nil {
+		t.Fatal("the stale registration replaced or cancelled the observer of the later epoch")
+	}
+	if !strings.Contains(m.d.log.(*syncBuffer).String(), "the lead has one of epoch 2") {
+		t.Fatalf("log:\n%s", m.d.log.(*syncBuffer).String())
+	}
+	// An observer of the later epoch itself replaces it.
+	m.observeReady(lr, epoch+1)
+	if cur := current(); cur == later || cur == nil || cur.epoch != epoch+1 || laterCtx.Err() == nil {
+		t.Fatal("the registration of the same epoch did not replace the observer")
+	}
+}
+
 // A stop that is refused because it names another epoch leaves the epoch that
 // runs, and so its observer: the lead is shown ready once the holder answers
 // for the epoch, though the stop came while it was still starting.

@@ -104,6 +104,7 @@ type readyObservers struct {
 // readyObserver is the observer of one lead's epoch.
 type readyObserver struct {
 	gen    uint64
+	epoch  uint64
 	cancel context.CancelFunc
 }
 
@@ -174,8 +175,13 @@ func (l *leadMode) joinObservers(grace time.Duration) bool {
 }
 
 // observeReady starts the observer of the lead's epoch, in place of any that
-// the lead has, and returns at once. It does nothing before the observers are
-// let run or after they are joined.
+// the lead has for the same or an earlier epoch, and returns at once. It does
+// nothing before the observers are let run or after they are joined, and
+// nothing when the lead has an observer of a later epoch: the check and the
+// replacement are one step under the observers' mutex, so a registration that
+// was decided on an older read of the registry (the scan of startObservers,
+// which runs beside the first commands) never cancels the observer of an
+// epoch started since.
 func (l *leadMode) observeReady(lr *leadRole, epoch uint64) {
 	o := &l.ready
 	o.mu.Lock()
@@ -184,10 +190,15 @@ func (l *leadMode) observeReady(lr *leadRole, epoch uint64) {
 		return
 	}
 	if prev := o.byRole[lr.role]; prev != nil {
+		if prev.epoch > epoch {
+			o.mu.Unlock()
+			l.d.logf("scratch ready %q: the observer of epoch %d is not started: the lead has one of epoch %d", lr.key, epoch, prev.epoch)
+			return
+		}
 		prev.cancel()
 	}
 	o.gen++
-	me := &readyObserver{gen: o.gen}
+	me := &readyObserver{gen: o.gen, epoch: epoch}
 	var ctx context.Context
 	ctx, me.cancel = context.WithCancel(o.ctx)
 	o.byRole[lr.role] = me
