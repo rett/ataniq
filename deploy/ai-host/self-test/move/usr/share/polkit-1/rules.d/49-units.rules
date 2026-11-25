@@ -1,0 +1,4 @@
+// Hidden by the file of the same name in /etc.
+polkit.addRule(function(action, subject) {
+    return polkit.Result.YES;
+});

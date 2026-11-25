@@ -1,0 +1,6 @@
+root:x:0:
+input:x:97:
+docker:x:970:other,agent
+wheel:x:998:agent
+agent:x:1001:
+other:x:1002:

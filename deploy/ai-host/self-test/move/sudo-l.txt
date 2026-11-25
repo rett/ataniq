@@ -1,0 +1,6 @@
+Matching Defaults entries for agent on host:
+    env_reset, timestamp_timeout=15
+
+User agent may run the following commands on host:
+    (ALL : ALL) ALL
+    (ALL) NOPASSWD: ALL
