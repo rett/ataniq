@@ -111,6 +111,11 @@ start changes nothing. `start` reads the build from the holder binary before it 
 again, once the holder has answered, from the `holder.json` the holder wrote
 from its own running executable: the binary may have been replaced between
 the first check and the start, which looks the path up again. A holder that
+does not answer within the wait is checked the same way when its
+`holder.json` of the epoch is there: a file that records another build (or
+none) refuses the start as below, with "(it did not answer within ...)" in
+the reason, and a file that is missing or cannot be read leaves the start to
+fail as a holder that did not answer. A holder that
 started as another build is stopped (with `--direct` it is ended and the
 epoch is given back; in unit mode its unit is stopped with `systemctl --user
 stop` and the epoch is kept), `start` prints the refusal and why, and it
@@ -449,8 +454,12 @@ sequence number, a kind and a name. The names are `start`, `exit`, `attach`,
 `check-mismatch`, `resync` and `key-held`. A line carries codes and identities
 only: the role and epoch, the client's name, process ID and command line, sizes,
 a reason code, counters, the command ID of a control command, the three facts,
-and on the `start` event the holder's build identity as one token
-(`module:version:rev=REVISION`, with `:modified` for a modified checkout). It
+and on the `start` event the holder's build identity as one token, the member
+`build`: `module:version:rev=REVISION` (`rev=none` for a build without a VCS
+revision), with `:modified` for a modified checkout, in the characters
+`A-Z a-z 0-9 . _ : / + = -` (any other becomes `_`). The token is at most 463
+bytes (a module path of 256, a version of 128 and a revision of 64), and the
+log keeps it whole, so the revision at its end is never cut. It
 holds no keystrokes and no output text; the logging API has no field
 that could take them. Its sequence number starts at 1 in each holder process, so
 a restart shows as the number going back to 1. An event is one write and

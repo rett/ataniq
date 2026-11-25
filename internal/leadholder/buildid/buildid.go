@@ -101,6 +101,12 @@ const (
 	MaxTags      = 256
 )
 
+// MaxToken is the length of the longest [Identity.Token] of a valid identity
+// (463 bytes): the longest module path and version, the longest revision and
+// ":modified". A field that carries a token holds this many bytes, so that
+// the revision at its end is never cut.
+const MaxToken = MaxModule + len(":") + MaxVersion + len(":rev=") + MaxRevision + len(":modified")
+
 // ErrSkew is matched by every refusal of [Checker.BeforeLaunch], and by every
 // refusal of [Checker.BeforeAttach] but that of a state file of another epoch
 // ([ErrOtherEpoch]).
@@ -311,8 +317,9 @@ const MaxErrorBytes = 256
 // [MaxErrorBytes] bytes of printable ASCII without < > &. [Identity.Short]
 // leaves the module path out, so when the two module paths differ both are
 // named as well, before the builds: whole when they fit, and otherwise each cut
-// in its middle to an equal share of what the bound leaves (the builds are left
-// out when that share would be under [minModuleShare] bytes with them). Two
+// to an equal share of what the bound leaves (the builds are left out when
+// that share would be under [minModuleShare] bytes with them), so that the
+// first byte at which the two paths differ stays in both ([clipPair]). Two
 // builds that differ only in their module would otherwise read the same.
 func (e *SkewError) Error() string {
 	holder := "unknown"
@@ -325,7 +332,8 @@ func (e *SkewError) Error() string {
 		return head + builds
 	}
 	modules := func(share int) string {
-		return "; holder module " + clipMiddle(e.Holder.Module, share) + ", expected module " + clipMiddle(e.Expected.Module, share)
+		h, x := clipPair(e.Holder.Module, e.Expected.Module, share)
+		return "; holder module " + h + ", expected module " + x
 	}
 	const fixed = len("; holder module , expected module ")
 	room := MaxErrorBytes - len(head) - len(builds) - fixed
@@ -356,8 +364,63 @@ func clipMiddle(s string, n int) string {
 	return s[:keep-keep/2] + "..." + s[len(s)-keep/2:]
 }
 
+// clipPair cuts each of two module paths that differ to at most n bytes so
+// that the cut texts still differ: each is cut by [clipAround] around the
+// first byte at which the two differ.
+func clipPair(a, b string, n int) (string, string) {
+	d := 0
+	for d < len(a) && d < len(b) && a[d] == b[d] {
+		d++
+	}
+	return clipAround(a, d, n), clipAround(b, d, n)
+}
+
+// clipAround cuts s to at most n bytes as [clipMiddle] does when byte d of s
+// is in the start or the end that it keeps, or is past the end of s. When the
+// middle that clipMiddle would replace holds byte d, s is cut instead to its
+// start, "...", the bytes from a few before d on, and "..." when those do not
+// reach the end of s. Two paths with one start that differ first at d, each
+// cut so, have their differing bytes at one place in the two texts. s is
+// ASCII ([Identity.Validate]).
+func clipAround(s string, d, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	keep := n - 3
+	if n < 9 || d < keep-keep/2 || d >= len(s)-keep/2 {
+		return clipMiddle(s, n)
+	}
+	head := (n - 6) / 3
+	from := max(head+1, d-(n-6)/6)
+	if head+3+len(s)-from <= n {
+		return s[:head] + "..." + s[from:]
+	}
+	return s[:head] + "..." + s[from:from+n-6-head] + "..."
+}
+
 // Is makes errors.Is(err, ErrSkew) true.
 func (e *SkewError) Is(target error) bool { return target == ErrSkew }
+
+// Confirmed reports whether err, of [Checker.BeforeAttach], says what the
+// state file of the epoch records and that it is not the expected build: the
+// file was read, is of the epoch, and records another build ([WhyDiffer]), no
+// build ([WhyNoRecord]), or any build while the expected one is unstamped
+// ([WhyUnstamped]). A file that is missing ([WhyNoStateFile]) or cannot be
+// read ([WhyUnreadable]), or is of another epoch ([ErrOtherEpoch]), confirms
+// nothing of the holder of the epoch, and neither does nil. A launcher that
+// acts on a holder without its answer (one that has not answered its status)
+// acts only on a confirmed mismatch.
+func Confirmed(err error) bool {
+	var se *SkewError
+	if !errors.As(err, &se) {
+		return false
+	}
+	switch se.Why {
+	case WhyDiffer, WhyNoRecord, WhyUnstamped:
+		return true
+	}
+	return false
+}
 
 // Check compares a holder's identity with the expected one. holder is nil
 // for a holder that records none. It returns nil for the expected build and a
@@ -394,10 +457,11 @@ type Record struct {
 
 // ReadRecord reads the state file of the holder whose state folder is dir. The
 // file must be a regular file (not a link), of at most [MaxRecordBytes] bytes,
-// holding a JSON object. Only "epoch" and "build" are read; every other member
-// is left alone. A build member that is present must be a valid identity; when
-// it is not, the error matches [ErrRecordBuild] and the Record still carries
-// the epoch.
+// holding a JSON object (a top-level null, an array or any other value is not
+// one, and is not a file of epoch 0). Only "epoch" and "build" are read; every
+// other member is left alone. A build member that is present must be a valid
+// identity; when it is not, the error matches [ErrRecordBuild] and the Record
+// still carries the epoch.
 func ReadRecord(dir string) (Record, error) {
 	f, err := os.OpenFile(filepath.Join(dir, RecordFileName), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
 	if err != nil {
@@ -422,7 +486,10 @@ func ReadRecord(dir string) (Record, error) {
 		Epoch uint64          `json:"epoch"`
 		Build json.RawMessage `json:"build"`
 	}
-	if err := json.Unmarshal(data, &raw); err != nil {
+	// A top-level null decodes into the struct without an error and would
+	// read as epoch 0: the file must be an object, its first byte after JSON
+	// white space an opening brace.
+	if t := bytes.TrimLeft(data, " \t\r\n"); len(t) == 0 || t[0] != '{' || json.Unmarshal(data, &raw) != nil {
 		return Record{}, errors.New("the state file is not a JSON object of a holder")
 	}
 	rec := Record{Epoch: raw.Epoch}

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadholder/buildid"
@@ -144,6 +145,11 @@ func TestLeadStartAndTicketRefuseASkewedHolder(t *testing.T) {
 	other := sameHolderBuild()
 	other.Executable = func(string) (buildid.Identity, error) { return otherHolderBuild, nil }
 	l.scratch.HolderBuild = other
+	// The ready observer of the start below gives up at once (the holder
+	// gives no status), before the record is changed: one that still ran
+	// would read the record of no build and stop the lead this daemon
+	// launched (see lead_ready_linux.go), which this test is not about.
+	l.readyBounds(50 * time.Millisecond)
 	l.start()
 	want(t, l.define("alpha"), leadwire.StatusDone, "")
 	l.holder("alpha", submitted)
@@ -158,9 +164,10 @@ func TestLeadStartAndTicketRefuseASkewedHolder(t *testing.T) {
 
 	// The same build starts; then the running holder records no build.
 	other.Executable = func(string) (buildid.Identity, error) { return testHolderBuild, nil }
-	other.Record = func(string, uint64) (buildid.Record, error) { return buildid.Record{Epoch: 1}, nil }
 	s := l.startLead("alpha")
 	want(t, s, leadwire.StatusDone, "")
+	l.waitLog("the lead stays starting")
+	other.Record = func(string, uint64) (buildid.Record, error) { return buildid.Record{Epoch: 1}, nil }
 	tk := l.ticket("alpha", 1, "writer")
 	want(t, tk, leadwire.StatusRefused, "holder-version-skew")
 	if !strings.Contains(tk.Message, buildid.WhyNoRecord) {

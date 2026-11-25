@@ -927,9 +927,13 @@ JSON object per line. The first line is a header that names the format
   member this build does not know is not launched (`ErrLaunchProfile`, which a
   start in scratch mode answers with the code `profile-not-launchable`, and
   the canary's start with its text, both saying to define the role again)
-  until it is defined again. So is a role whose define record repeats a
-  member anywhere in its payload, the requested member itself included,
-  compared exactly and as encoding/json folds names (`requested` and
+  until it is defined again. The refusal changes nothing: the start checks
+  the stored profile before it writes a scratch lead's instruction text and
+  before it sets the desired state, and the registry checks it again when it
+  journals the launch. So is a role whose define record repeats a
+  member anywhere in the record, the requested member itself and the
+  envelope's `payload` member included (of two payload members only the last
+  would be read), compared exactly and as encoding/json folds names (`requested` and
   `Requested` are one member to it): no build writes one, and the typed
   decoding would merge the occurrences while the stored bytes keep the last,
   so the profile that was checked would not be the one launched. The record
@@ -1276,7 +1280,9 @@ role shown `starting` whose holder has written no `holder.json` yet, with a
 text that says it is still starting; nothing changes. In scratch mode the
 ready observer checks that `holder.json` again before it shows a lead
 `ready`, and stops a lead whose holder started as another build than the
-executable checked before the start (see
+executable checked before the start; before it serves, the daemon reads it
+again for every lead it adopted shown `ready`, and shows one whose holder is
+another build `degraded` (`holder-version-skew`), its unit left running (see
 [the scratch leads guide](scratch-leads.md#ready)) (see `internal/leadholder/buildid` for what "the same build" means, and
 [the scratch leads guide](scratch-leads.md) for the receipt). A daemon whose
 own build cannot be read does not start (the config step).

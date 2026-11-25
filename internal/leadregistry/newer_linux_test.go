@@ -364,6 +364,129 @@ func TestNestedRepeatedMemberIsNotLaunched(t *testing.T) {
 	}
 }
 
+// TestRepeatBesideACanonicalProfileIsNotLaunched is the reviewer's isolated
+// case: the requested profile is exactly as this build writes it, so its own
+// comparison finds nothing foreign, and the only thing wrong with the record
+// is a member repeated in metadata beside it, nested or not, exactly or as a
+// case alias. Only the check of repeated members keeps it from launch; with
+// that check off the profile is taken as this build's.
+func TestRepeatBesideACanonicalProfileIsNotLaunched(t *testing.T) {
+	alpha := lead(t, "alpha")
+	p := goodProfile()
+	canonical, err := marshalCompact(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := `{"manager":"ataniq","requested":` + string(canonical)
+	for name, payload := range map[string]string{
+		"in nested metadata":       head + `,"meta":{"source":{"a":1,"a":1}}}`,
+		"an alias in nested array": head + `,"meta":[{"note":"x","Note":"x"}]}`,
+		"a metadata member twice":  head + `,"meta":1,"meta":1}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := repeatedDefine(t, alpha, payload)
+			e, err := r.Get(alpha)
+			if err != nil || e.Requested != p {
+				t.Fatalf("%+v %v", e, err)
+			}
+			if !e.foreignProfile {
+				t.Fatal("a canonical profile beside a repeated member is taken as this build's")
+			}
+			if _, err := r.BeginLaunch(alpha); !errors.Is(err, ErrLaunchProfile) {
+				t.Fatalf("BeginLaunch = %v, want ErrLaunchProfile", err)
+			}
+		})
+	}
+	// The same record without the repeat is this build's profile, beside
+	// metadata it does not know: it launches.
+	r := repeatedDefine(t, alpha, head+`,"meta":{"source":{"a":1}}}`)
+	if _, err := r.BeginLaunch(alpha); err != nil {
+		t.Fatalf("BeginLaunch without the repeat: %v", err)
+	}
+}
+
+// rawDefine appends to a fresh journal a define record for alpha whose
+// envelope after its role is the raw JSON members given (a payload member
+// among them), chained as a writer would chain it, and opens the result.
+func rawDefine(t *testing.T, alpha leadrole.Role, members string) *Registry {
+	t.Helper()
+	dir := regDir(t)
+	openReg(t, dir).Close()
+	data, err := os.ReadFile(filepath.Join(dir, FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := journalLines(data)
+	_, prev, err := decodeLine(genesis, 0, bytes.TrimSuffix(lines[0], []byte("\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	role, err := json.Marshal(alpha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := []byte(`{"seq":1,"time":"` + (&fakeClock{}).Now().UTC().Format(timeLayout) + `","kind":"define","role":` + string(role) + `,` + members + `}`)
+	if !json.Valid(content) {
+		t.Fatalf("not JSON: %s", content)
+	}
+	sum := chain(prev, content)
+	line := append(append([]byte(nil), content[:len(content)-1]...), `,"hash":"`+hex.EncodeToString(sum[:])+`"}`+"\n"...)
+	return openReg(t, writeJournal(t, append(data, line...)))
+}
+
+// TestRepeatedPayloadIsNotLaunched is the reviewer's case of the envelope: a
+// correctly chained define line with two payload members (or a payload and
+// its case alias). The envelope's decoding keeps the last, which is this
+// build's own profile, so a check of that payload alone finds nothing, though
+// the earlier one carried a member this build does not know or metadata. The
+// line replays, the role shows the last payload, and it is not launched
+// until it is defined again.
+func TestRepeatedPayloadIsNotLaunched(t *testing.T) {
+	alpha := lead(t, "alpha")
+	p := goodProfile()
+	canonical, err := marshalCompact(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer, err := json.Marshal(newerRequested{
+		Provider: p.Provider, Version: p.Version, Model: p.Model, Effort: p.Effort,
+		PermissionMode: p.PermissionMode, AccessMode: p.AccessMode,
+		Future: futureMember{Name: "a-restriction", Digest: hex.EncodeToString(make([]byte, 32))},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := `{"manager":"ataniq","requested":` + string(canonical) + `}`
+	for name, first := range map[string]string{
+		"an unknown profile member": `"payload":{"manager":"ataniq","requested":` + string(newer) + `}`,
+		"harmless metadata":         `"payload":{"manager":"ataniq","requested":` + string(canonical) + `,"note":"x"}`,
+		"a case alias":              `"Payload":{"manager":"ataniq","requested":` + string(newer) + `}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := rawDefine(t, alpha, first+`,"payload":`+last)
+			e, err := r.Get(alpha)
+			if err != nil || e.Requested != p {
+				t.Fatalf("%+v %v", e, err)
+			}
+			if !e.foreignProfile {
+				t.Fatal("an ambiguous envelope is taken as this build's profile")
+			}
+			if _, err := r.BeginLaunch(alpha); !errors.Is(err, ErrLaunchProfile) {
+				t.Fatalf("BeginLaunch = %v, want ErrLaunchProfile", err)
+			}
+			okf(t)(r.Define(alpha, ManagerAtaniq, p))
+			if _, err := r.BeginLaunch(alpha); err != nil {
+				t.Fatalf("BeginLaunch after the define: %v", err)
+			}
+		})
+	}
+	// One payload member, as a writer makes it: launched.
+	r := rawDefine(t, alpha, `"payload":`+last)
+	if _, err := r.BeginLaunch(alpha); err != nil {
+		t.Fatalf("BeginLaunch of one payload: %v", err)
+	}
+}
+
 // TestRepeatsMember: the names are compared as decoded and folded as
 // encoding/json folds them; names in different objects, and equal strings that
 // are values and not names, are no repeat.

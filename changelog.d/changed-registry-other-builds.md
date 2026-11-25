@@ -8,8 +8,9 @@
   as are an unknown record kind and another format version: the journal does
   not open and the daemon exits 14. A role whose stored profile has a member
   this build does not know, or names a pack, or whose define record repeats
-  a member (exactly or as a case alias encoding/json matches to the same
-  field, which no build writes), replays but is not launched
+  a member anywhere, its envelope's `payload` included (exactly or as a case
+  alias encoding/json matches to the same field, which no build writes),
+  replays but is not launched
   (`ErrLaunchProfile`) until it is defined again: in scratch mode its start is
   refused with the code `profile-not-launchable`, and the console's leads view
   says to define the lead again. A fixture journal written by an earlier build

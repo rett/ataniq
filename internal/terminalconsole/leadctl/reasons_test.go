@@ -132,6 +132,25 @@ func TestEveryReasonCodeHasWords(t *testing.T) {
 	}
 }
 
+// TestEveryObserverStateReasonHasWords: every reason code the daemon's ready
+// observer gives a state it sets (the code constants of lead_ready_linux.go)
+// has state words, so the line under the cursor says what the state means.
+func TestEveryObserverStateReasonHasWords(t *testing.T) {
+	codes := constStrings(t, "../../leaddaemon/lead_ready_linux.go", "code")
+	if len(codes) < 2 {
+		t.Fatalf("read %v: the observer's source was not read", codes)
+	}
+	for _, c := range codes {
+		found := false
+		for k := range stateWords {
+			found = found || k[1] == c
+		}
+		if !found {
+			t.Errorf("the observer sets a state with the reason %q and the view has no words for it", c)
+		}
+	}
+}
+
 // TestNoWordsForACodeNothingSends holds that every code of the table is one
 // that is sent: by the daemon, by leadwire's error answers or by the
 // console's adapter (not-listed, conflict and invalid-request, which it makes

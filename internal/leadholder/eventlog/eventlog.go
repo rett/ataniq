@@ -128,7 +128,10 @@ const (
 	MaxReason      = 64
 	MaxState       = 64
 	MaxDigest      = 128
-	MaxBuild       = 256
+	// MaxBuild is the longest build token, buildid.MaxToken: the token is
+	// kept whole, the revision at its end included, which a shorter cap
+	// would cut.
+	MaxBuild       = 463
 	MaxCounters    = 64
 	MaxCounterName = 64
 	// The injection record (design 1.7) and the command identity. They are

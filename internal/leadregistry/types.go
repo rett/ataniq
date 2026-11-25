@@ -693,6 +693,20 @@ type Entry struct {
 	foreignProfile bool
 }
 
+// ProfileLaunchable reports whether this build launches the role's stored
+// profile: nil, or ErrLaunchProfile for a profile that is not what this build
+// writes for it (a member it does not know, a repeated member) or that names a
+// pack. It is the profile rule of BeginLaunch alone, which checks it again
+// with every other rule; a caller checks it before it changes anything else
+// for a start, so that a start that BeginLaunch would refuse for its profile
+// changes nothing.
+func (e Entry) ProfileLaunchable() error {
+	if e.foreignProfile || !e.Requested.Pack.IsZero() {
+		return ErrLaunchProfile
+	}
+	return nil
+}
+
 // pending reports whether the current launch intent has no outcome yet.
 func (e Entry) pending() bool {
 	return e.Intent != nil && e.Intent.Outcome == OutcomePending

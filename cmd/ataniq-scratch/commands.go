@@ -168,6 +168,31 @@ func (a *app) startedSkew(l layout, epoch uint64) error {
 	return ch.BeforeAttach(l.state, epoch)
 }
 
+// stopStartedSkew ends a holder that started as another build than the one
+// checked before the start, and refuses the start: a direct child is
+// terminated and its epoch given back once it is seen to end; a unit is
+// stopped with systemctl, and its epoch is kept. note is added to the refusal
+// (it says when the holder did not answer).
+func (a *app) stopStartedSkew(cfg startConfig, l layout, hold *epochHold, proc child, exited <-chan exitResult, note string) int {
+	msg := msgStartedSkew + note
+	if cfg.direct {
+		ended, killed := a.terminate(proc, exited)
+		if !ended {
+			return a.fail("%s, and it was told to end but was not seen to end, so it may still be running (epoch %d is kept)", msg, hold.N)
+		}
+		hold.Undo()
+		return a.fail("%s; it was ended%s", msg, killNote(killed))
+	}
+	code, err := a.launch.Run(systemctlStopArgv(l.name), io.Discard, a.errout)
+	switch {
+	case err != nil:
+		return a.fail("%s, and systemctl could not be run (%v), so its unit %s may still be running (epoch %d is kept)", msg, err, unitName(l.name), hold.N)
+	case code != 0:
+		return a.fail("%s, and systemctl --user stop %s failed with status %d, so it may still be running (epoch %d is kept)", msg, unitName(l.name), code, hold.N)
+	}
+	return a.fail("%s; its unit %s was stopped (epoch %d is kept)", msg, unitName(l.name), hold.N)
+}
+
 func (a *app) cmdStart(cfg startConfig) int {
 	l, err := a.layoutFor(cfg.name)
 	if err != nil {
@@ -262,6 +287,15 @@ func (a *app) cmdStart(cfg startConfig) int {
 		}
 		return a.fail("the holder answered with a refusal (%s: %s); another holder may be running for this name%s", res.resp.Code, res.resp.Text, note)
 	case readyTimeout:
+		// A holder that did not answer may still have written its holder.json
+		// for the epoch, from its own running executable: one whose file
+		// confirms another build is stopped and refused as below, as one that
+		// answered would be. A file that is missing or unreadable confirms
+		// nothing, and the start fails as a holder that did not answer.
+		if err := a.startedSkew(l, hold.N); buildid.Confirmed(err) {
+			fmt.Fprintf(a.errout, "refused: %v\n", err)
+			return a.stopStartedSkew(cfg, l, hold, proc, exited, fmt.Sprintf(" (it did not answer within %s)", a.lim.startWait))
+		}
 		if cfg.direct {
 			ended, killed := a.terminate(proc, exited)
 			if !ended {
@@ -279,22 +313,7 @@ func (a *app) cmdStart(cfg startConfig) int {
 	// expected build of the epoch is stopped, and the start is refused.
 	if err := a.startedSkew(l, hold.N); err != nil {
 		fmt.Fprintf(a.errout, "refused: %v\n", err)
-		if cfg.direct {
-			ended, killed := a.terminate(proc, exited)
-			if !ended {
-				return a.fail("%s, and it was told to end but was not seen to end, so it may still be running (epoch %d is kept)", msgStartedSkew, hold.N)
-			}
-			hold.Undo()
-			return a.fail("%s; it was ended%s", msgStartedSkew, killNote(killed))
-		}
-		code, err := a.launch.Run(systemctlStopArgv(l.name), io.Discard, a.errout)
-		switch {
-		case err != nil:
-			return a.fail("%s, and systemctl could not be run (%v), so its unit %s may still be running (epoch %d is kept)", msgStartedSkew, err, unitName(l.name), hold.N)
-		case code != 0:
-			return a.fail("%s, and systemctl --user stop %s failed with status %d, so it may still be running (epoch %d is kept)", msgStartedSkew, unitName(l.name), code, hold.N)
-		}
-		return a.fail("%s; its unit %s was stopped (epoch %d is kept)", msgStartedSkew, unitName(l.name), hold.N)
+		return a.stopStartedSkew(cfg, l, hold, proc, exited, "")
 	}
 	hold.Release()
 

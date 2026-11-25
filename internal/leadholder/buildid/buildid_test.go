@@ -278,6 +278,32 @@ func TestReadRecord(t *testing.T) {
 			t.Errorf("%s: accepted", name)
 		}
 	}
+	// A file that is not an object is not a holder's, whatever it holds.
+	for name, content := range map[string]string{
+		"a top-level null":  "null",
+		"a null with space": " \n null \n",
+		"a number":          "3",
+		"a string":          `"x"`,
+		"an empty file":     "",
+	} {
+		if rec, err := ReadRecord(writeRecord(t, content)); err == nil || errors.Is(err, ErrRecordBuild) || rec.Epoch != 0 {
+			t.Errorf("%s: %+v %v", name, rec, err)
+		}
+	}
+	// A top-level null holds no holder object: an attach of epoch 3 is
+	// refused as a state file that cannot be read, not as one of epoch 0,
+	// which would say that the holder has not written its file yet. An
+	// object with space before it is read.
+	for _, content := range []string{"null", "  null\n"} {
+		var se *SkewError
+		err := (&Checker{Expected: b}).BeforeAttach(writeRecord(t, content), 3)
+		if !errors.As(err, &se) || se.Why != WhyUnreadable || errors.Is(err, ErrOtherEpoch) {
+			t.Errorf("%q: %v", content, err)
+		}
+	}
+	if rec, err := ReadRecord(writeRecord(t, " \t\r\n"+newRecord(b))); err != nil || rec.Epoch != 3 || rec.Build == nil {
+		t.Errorf("an object after white space: %+v %v", rec, err)
+	}
 	// A link in the place of the file is refused, and so is a folder.
 	dir := t.TempDir()
 	target := writeRecord(t, newRecord(b))
@@ -301,6 +327,44 @@ func TestReadRecord(t *testing.T) {
 	}
 	if err := (&Checker{Expected: b}).BeforeAttach(writeRecord(t, "garbage"), 3); !errors.As(err, &se) || se.Why != WhyUnreadable {
 		t.Errorf("a bad state file: %v", err)
+	}
+}
+
+// TestConfirmedMismatch: only a state file of the epoch that was read and
+// records another build, or none, or any while the expected build is
+// unstamped, confirms a mismatch; a missing, unreadable or stale file, and the
+// expected build, confirm nothing.
+func TestConfirmedMismatch(t *testing.T) {
+	b := build(revNew, false)
+	ch := &Checker{Expected: b}
+	unstamped := &Checker{Expected: Identity{Module: "ataniq", Version: "(devel)"}}
+	other := newRecord(build(revOld, false))
+	for name, c := range map[string]struct {
+		ch      *Checker
+		content string // "" is no file
+		epoch   uint64
+		want    bool
+	}{
+		"another build":            {ch, other, 3, true},
+		"an older holder":          {ch, oldRecord, 3, true},
+		"an unstamped expectation": {unstamped, newRecord(b), 3, true},
+		"the expected build":       {ch, newRecord(b), 3, false},
+		"no state file":            {ch, "", 3, false},
+		"a file that is not JSON":  {ch, "garbage", 3, false},
+		"a malformed build":        {ch, `{"epoch":3,"build":"x"}`, 3, false},
+		"a top-level null":         {ch, "null", 3, false},
+		"another epoch":            {ch, other, 4, false},
+	} {
+		dir := t.TempDir()
+		if c.content != "" {
+			dir = writeRecord(t, c.content)
+		}
+		if got := Confirmed(c.ch.BeforeAttach(dir, c.epoch)); got != c.want {
+			t.Errorf("%s: Confirmed %v, want %v", name, got, c.want)
+		}
+	}
+	if Confirmed(nil) || Confirmed(errors.New(Reason)) {
+		t.Error("an error that is not a refusal of the check confirms a mismatch")
 	}
 }
 
@@ -438,9 +502,64 @@ func TestModuleMismatchIsNamed(t *testing.T) {
 	if msg := Check(lv, &lvOther).Error(); len(msg) > MaxErrorBytes || !strings.Contains(msg, "holder module example.com/x, expected module ataniq") {
 		t.Errorf("%d bytes: %q", len(msg), msg)
 	}
+	// The reviewer's case: two valid 241-byte paths that differ only in their
+	// middle, with the longest builds, which leave the modules their least
+	// share. Cut in the middle, both read the same.
+	mid := Identity{Module: strings.Repeat("m", 120) + "a" + strings.Repeat("m", 120), Version: strings.Repeat("v", MaxVersion),
+		Revision: strings.Repeat("a", MaxRevision), Modified: true}
+	midOther := mid
+	midOther.Module = strings.Repeat("m", 120) + "b" + strings.Repeat("m", 120)
+	got, want := modulesOf(t, (&SkewError{Expected: mid, Holder: &midOther, Why: WhyDiffer}).Error())
+	if got == want || !strings.Contains(got, "b") || !strings.Contains(want, "a") {
+		t.Errorf("the middle mismatch reads %q and %q", got, want)
+	}
 	for n, want := range map[int]string{3: "abc", 9: "abc...xyz", 100: "abcdefghijklmnopqrstuvwxyz"} {
 		if got := clipMiddle("abcdefghijklmnopqrstuvwxyz", n); got != want || len(got) > n && n >= 5 {
 			t.Errorf("clipMiddle %d: %q, want %q", n, got, want)
 		}
+	}
+}
+
+// modulesOf returns the two module texts of a refusal that names them.
+func modulesOf(t *testing.T, msg string) (holder, expected string) {
+	t.Helper()
+	if len(msg) > MaxErrorBytes || strings.ContainsAny(msg, "<>&") {
+		t.Fatalf("%d bytes: %q", len(msg), msg)
+	}
+	i := strings.Index(msg, "holder module ")
+	j := strings.Index(msg, ", expected module ")
+	if i < 0 || j < i {
+		t.Fatalf("%q", msg)
+	}
+	holder, expected = msg[i+len("holder module "):j], msg[j+len(", expected module "):]
+	if k := strings.Index(expected, "; holder build "); k >= 0 {
+		expected = expected[:k]
+	}
+	return holder, expected
+}
+
+// TestModuleCutKeepsTheDifference: two module paths that differ first at one
+// byte, at any place, of equal or of different lengths, are never cut to one
+// text, whatever share of the bound they get, and each cut text is within its
+// share.
+func TestModuleCutKeepsTheDifference(t *testing.T) {
+	for _, n := range []int{9, 16, minModuleShare, 40, 87, 120} {
+		for _, size := range []int{n + 1, 100, 241, MaxModule} {
+			for d := 0; d < size; d++ {
+				a := strings.Repeat("m", size)
+				b := a[:d] + "x" + a[d+1:]
+				for _, pair := range [][2]string{{a, b}, {a, b + "z"}, {a[:d] + "y", b}} {
+					x, y := clipPair(pair[0], pair[1], n)
+					if x == y || len(x) > n || len(y) > n {
+						t.Fatalf("share %d, size %d, differing at %d: %q and %q", n, size, d, x, y)
+					}
+				}
+			}
+		}
+	}
+	// The cut around the difference: the start, the bytes from a few before
+	// the difference on, and the marks of what was left out.
+	if got := clipAround(strings.Repeat("m", 50)+"x"+strings.Repeat("m", 50), 50, 32); got != "mmmmmmmm...mmmmx"+strings.Repeat("m", 13)+"..." {
+		t.Errorf("%q", got)
 	}
 }

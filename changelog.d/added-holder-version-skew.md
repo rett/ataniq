@@ -19,9 +19,23 @@
   receipt of `lead.start`, `lead.ticket` and `lead.inject` is
   `holder-version-skew`. A holder that starts as another build than the one
   checked before the start (its executable replaced in between, which the
-  start looks up again) is stopped and the start refused
-  `holder-version-skew`: `ataniq-scratch start` reads the `holder.json` the
-  holder wrote from its own running executable before it reports the holder
-  started, and the daemon in scratch mode before it shows a lead `ready` (a
-  lead it adopted is left `starting`, not stopped; the canary's holder is
-  refused at its ticket and message).
+  start looks up again) records that build in the `holder.json` it writes
+  from its own running executable. `ataniq-scratch start` reads that file
+  before it reports the holder started, also when the holder did not answer
+  its status in time, and stops a holder of another build and refuses the
+  start `holder-version-skew`. In the daemon's scratch mode the start is not
+  refused: `lead.start` has already returned a `done` receipt with the state
+  `starting` when the ready observer reads the file, after the holder answers
+  its status or, when it does not, after each question. A lead whose file
+  records another build is never shown `ready`; when this daemon launched it,
+  the daemon then stops it on its own, with a deadline of its own, and writes
+  the stop in the lead's evidence; a stop that is not proven leaves the lead
+  `unknown` (`stop-unproven`) or `degraded` with the reason
+  `skew-stop-unproven`, for the owner's `lead.stop`, and the next `lead.start`
+  is refused `holder-version-skew` while the executable is the other build. A
+  lead the daemon adopted is left `starting`, not stopped; the canary's holder
+  is refused at its ticket and message. A lead an earlier daemon showed
+  `ready` is checked again before the new daemon serves: one whose
+  `holder.json` records another build than the new daemon's is shown
+  `degraded` with the reason `holder-version-skew`, never `ready`, and its
+  unit is left running for the owner to stop.

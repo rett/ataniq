@@ -424,7 +424,13 @@ Below the table the view draws one line about the row under the cursor when its
 state needs words. For state `ready` with the reason `holder-ready` it reads
 "KEY: ready (holder-ready): the holder is up and the agent started; its login is
 not observed", which says what the daemon observed and no more: the agent's login
-is not looked at. The line gives way to the message editor, the stop question and
+is not looked at. A lead whose running holder is another build than the
+daemon's is `degraded`: with the reason `holder-version-skew` (a lead an
+earlier daemon showed `ready`) the line reads "the running holder is not the
+daemon's build: stop the lead, then start it again", and with the reason
+`skew-stop-unproven` (a holder that started as another build and whose stop by
+the daemon is not proven) "the holder is another build and its stop is not
+proven; stop the lead". The line gives way to the message editor, the stop question and
 a note, and a state or reason the console has no words for adds no line. A lead
 that is `unknown` with the reason `launch-unsettled` or `launch-reply-lost` (a
 start whose launch the daemon cannot yet say anything about, as after the daemon
