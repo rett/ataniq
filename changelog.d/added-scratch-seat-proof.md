@@ -10,7 +10,8 @@
   masked or swapped: the daemon of both tags takes `run --scratch CONFIG
   --owner-channel --owner-settings DIR`, reads the owner channel's settings
   from `DIR/scratch.json` and never from `owner/scratch.json` of the state
-  root, and the owner stops the trial and starts it again with his own
+  root (the folder sits beside the state and runtime roots, not inside
+  them), and the owner stops the trial and starts it again with his own
   commands while the state folder's lock keeps the two daemons apart. The
   daemon refuses to start (exit 10), naming every rule that fails, a folder
   that is not private or that is, lies in or holds the trial's settings
@@ -18,11 +19,12 @@
   reaches (each lead's folder, mirror, mailbox, published and holder
   runtime folders, the agent install, the probe, the host paths every
   sandbox binds), the gate's folder, the key list or the journal, decided on
-  the resolved path, on the folders' identities and on their places in their
-  filesystems from the mount table (so a bind mount of a guarded folder or of
-  a folder within one given as the folder, and a mount that shows the folder
-  within a guarded one, are caught; a mount made later is not), and a
-  settings file that
+  the resolved path and on the folders' identities (so a bind mount of a
+  guarded folder itself given as the folder is caught; the checks guard
+  against mistakes, not attackers, and a mount layout the owner or root
+  makes, such as a bind of a folder within a guarded one, nested mounts, a
+  mount made later or another namespace, is outside them; a lead cannot
+  make a mount on the host), and a settings file that
   is a link, not private, has a second name, is the key list, the journal,
   a gate file or the trial's settings, or holds a trial's settings, or
   settings whose drop folder, mirror, work folder or sandbox template the

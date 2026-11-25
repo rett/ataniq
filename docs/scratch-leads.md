@@ -1240,7 +1240,9 @@ read again: it never allows a read, which the desk checks on every one.
 owner channel reads its settings from `DIR/scratch.json` and not from
 `owner/scratch.json` of the state root, which is not read at all, so a phone
 trial's state folder keeps its own settings while the scratch daemon serves its
-gate identity, its pins and its paired phones:
+gate identity, its pins and its paired phones. `DIR` sits beside the state
+root and the runtime root, not inside either (the runbook puts it at
+`ROOT/owner-settings`, beside `ROOT/runtime`, with the state root elsewhere):
 
 ```sh
 build/scratch-seat/ataniqd run --scratch CONFIG --owner-channel --seat-gate IP:PORT --owner-settings DIR
@@ -1258,8 +1260,8 @@ the daemon's user, or when it is, lies in or holds:
 
 - `owner/` of the state root, the trial's own settings folder ("not the
   trial's settings folder");
-- the state root or the runtime root ("outside the state and runtime
-  folders");
+- the state root or the runtime root ("beside the state and runtime
+  folders, not inside them");
 - a path a lead's sandbox reaches: each lead's folder (home, provider config,
   tree and the copies its sandbox binds), mirror, mailbox, published folder and
   holder runtime folder, whether or not the lead is defined, the agent install
@@ -1274,19 +1276,15 @@ the daemon's user, or when it is, lies in or holds:
   the settings file does, so neither is kept with the other (the template is
   kept out of the first three for the same reason).
 
-Each rule is decided three ways. By the resolved paths. By the identities
-(device and inode) of the open folder and of each folder above it, which
-catch a bind mount of a guarded folder itself given as `DIR`. And by the
-places of the folder and of each guard within their filesystems, read from
-the daemon's mount table (`/proc/self/mountinfo`: a mount's device, the folder
-of the filesystem it shows and where it shows it), which catch a bind mount
-of a folder within a guard given as `DIR` (`..` from the root of such a mount
-leads above its mount point, so no identity above it is the guard's) and a
-mount that shows `DIR`, or a part of it, within a guarded folder, such as a
-lead's. A mount whose root is not `/` is ordinary (a btrfs subvolume, say)
-and is not refused by itself. A mount made after the check, or in another
-mount namespace, is not seen; only the owner or root can make one on the
-host, and a lead cannot. `scratch.json` must be a regular
+Each rule is decided two ways: by the resolved paths, and by the identities
+(device and inode) of the open folder and of each folder above it, which also
+catch a bind mount of a guarded folder itself given as `DIR`. The checks
+guard against mistakes (a wrong path, a link, a guarded folder given by its
+other name), not against an attacker. A mount layout the owner or root makes
+is outside them: a bind mount of a folder within a guard given as `DIR`,
+nested mounts, a mount made after the check and a mount in another mount
+namespace are not looked at. A lead cannot make a mount on the host.
+`scratch.json` must be a regular
 file of the user's, mode 0600, with one name, that is not the key list, its
 head, the journal, a file of the gate or the trial's settings file by another
 name, and that holds non-trial settings. The start then prints, after the
