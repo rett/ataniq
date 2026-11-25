@@ -131,23 +131,30 @@ func decodeClosure(listing string) ([]closurePackage, error) {
 }
 
 // closureHeaders reads the header of each source the check looks at, once
-// for all four listings: the lines up to the first that is neither blank nor
-// a comment, which is all the go command reads a constraint from. It counts
-// what it reads.
+// for all four listings, as the go command reads it (see read): the leading
+// spaces and comments, which is all the go command reads a constraint from
+// in a source that is not Go, and all it applies one from in a Go file. It
+// parses each header once and keeps its constraints by path. It counts what
+// it reads and how many headers it parses.
 type closureHeaders struct {
 	// open opens a file; reads reports whether the go command, on this
 	// host, reads the file's text for constraints (hostReadsText).
 	open  func(path string) (io.ReadCloser, error)
 	reads func(dir, name string) bool
 	cache map[string]closureHeader
-	// bytes is what was read from the files, files how many were opened.
-	bytes int64
-	files int
+	// bytes is what was read from the files, files how many were opened,
+	// parses how many headers were parsed.
+	bytes  int64
+	files  int
+	parses int
 }
 
+// closureHeader is a file's header: its constraints as headerConstraintsGo
+// answers them, or the error that stopped its reading.
 type closureHeader struct {
-	text string
-	err  error
+	all, applied []constraint.Expr
+	bad          []string
+	err          error
 }
 
 func newClosureHeaders() *closureHeaders {
@@ -158,14 +165,21 @@ func newClosureHeaders() *closureHeaders {
 	}
 }
 
-// header is the header of the file at path, read once.
-func (h *closureHeaders) header(path string) (string, error) {
+// header is the header of the file at path, read and parsed once.
+func (h *closureHeaders) header(path string) closureHeader {
 	if c, ok := h.cache[path]; ok {
-		return c.text, c.err
+		return c
 	}
+	var c closureHeader
 	text, err := h.read(path)
-	h.cache[path] = closureHeader{text, err}
-	return text, err
+	if err != nil {
+		c.err = err
+	} else {
+		h.parses++
+		c.all, c.applied, _, c.bad = headerConstraintsGo(text)
+	}
+	h.cache[path] = c
+	return c
 }
 
 // countingReader counts the bytes read through it.
@@ -180,8 +194,26 @@ func (c countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// read reads the header of the file at path, with the line that ends it,
-// which headerConstraintsGo stops at.
+// headerCode stands in a header's text for the byte of code that ended it:
+// a NUL, which headerConstraintsGo reads as code and no header holds.
+const headerCode = "\x00"
+
+// read reads the header of the file at path by the go command's leading-byte
+// rules (go/build's readComments): a UTF-8 byte order mark at the start is
+// dropped; then spaces, which are a space, a tab, a form feed, a carriage
+// return, a newline and a semicolon (not a vertical tab), line comments and
+// block comments are read, up to the first byte of anything else, which ends
+// the header. A slash that starts no comment ends it too (the go command
+// refuses such a file). Nothing after that byte is read but what the reader's
+// buffer of 512 bytes holds, so a long first line of code costs no more than
+// a short one.
+//
+// The text answered is the header with headerCode for the byte that ended
+// it, so that its last line is followed by code as in the file (a plus build
+// line right above the code is not applied). A header that ends the file is
+// answered without its last newline: the go command applies a plus build
+// line only with a blank line after it, and the newline that ends the file
+// makes none.
 func (h *closureHeaders) read(path string) (string, error) {
 	f, err := h.open(path)
 	if err != nil {
@@ -190,38 +222,57 @@ func (h *closureHeaders) read(path string) (string, error) {
 	defer f.Close()
 	h.files++
 	br := bufio.NewReaderSize(countingReader{r: f, n: &h.bytes}, 512)
+	if lead, err := br.Peek(3); err == nil && string(lead) == "\uFEFF" {
+		br.Discard(3)
+	}
 	var b strings.Builder
-	inBlock := false
-	for first := true; ; first = false {
-		line, err := br.ReadString('\n')
-		b.WriteString(line)
-		if first {
-			line = strings.TrimPrefix(line, "\uFEFF")
+	ended := func(err error) (string, error) {
+		if errors.Is(err, io.EOF) {
+			return strings.TrimSuffix(b.String(), "\n"), nil
 		}
-		if headerEnds(line, &inBlock) || errors.Is(err, io.EOF) {
-			return b.String(), nil
-		}
+		return "", err
+	}
+	for {
+		c, err := br.ReadByte()
 		if err != nil {
-			return "", err
+			return ended(err)
 		}
+		switch c {
+		case ' ', '\t', '\f', '\r', '\n', ';':
+			b.WriteByte(c)
+			continue
+		case '/':
+			next, err := br.ReadByte()
+			if err != nil {
+				return ended(err)
+			}
+			switch next {
+			case '/':
+				b.WriteString("//")
+				line, err := br.ReadString('\n')
+				b.WriteString(line)
+				if err != nil {
+					return ended(err)
+				}
+				continue
+			case '*':
+				b.WriteString("/*")
+				for prev := byte(0); ; {
+					c, err := br.ReadByte()
+					if err != nil {
+						return ended(err)
+					}
+					b.WriteByte(c)
+					if prev == '*' && c == '/' {
+						break
+					}
+					prev = c
+				}
+				continue
+			}
+		}
+		return b.String() + headerCode, nil
 	}
-}
-
-// headerEnds reports whether line ends a file's header, by the rules of
-// headerConstraintsGo: a line that is not blank and not a comment, or code
-// after a block comment. inBlock carries an open block comment from line to
-// line.
-func headerEnds(line string, inBlock *bool) bool {
-	s := strings.TrimSpace(line)
-	if !*inBlock && s == "" {
-		return false
-	}
-	if *inBlock || strings.HasPrefix(s, "/*") {
-		rest, open := afterBlockComments(s, *inBlock)
-		*inBlock = open
-		return !open && rest != "" && !strings.HasPrefix(rest, "//")
-	}
-	return !strings.HasPrefix(s, "//")
 }
 
 // errNotOpened is the answer of the probe's OpenFile in hostReadsText.
@@ -299,12 +350,12 @@ func checkTestsClosure(tags string, pkgs []closurePackage, testsDir string, head
 			if !headers.reads(filepath.Dir(f), filepath.Base(f)) {
 				continue
 			}
-			text, err := headers.header(f)
-			if err != nil {
-				problems = append(problems, fmt.Sprintf("tags %q: cannot read %s of %s: %v", tags, f, p.ImportPath, err))
+			hdr := headers.header(f)
+			if hdr.err != nil {
+				problems = append(problems, fmt.Sprintf("tags %q: cannot read %s of %s: %v", tags, f, p.ImportPath, hdr.err))
 				continue
 			}
-			all, applied, _, bad := headerConstraintsGo(text)
+			all, applied, bad := hdr.all, hdr.applied, hdr.bad
 			named := false
 			for _, e := range applied {
 				if namesEitherTag(e) {
@@ -416,7 +467,7 @@ func TestCanaryTagTestsClosure(t *testing.T) {
 	headers := newClosureHeaders()
 	list := func(tags string) (string, error) { return ownerGoList(t, tags, closureListFlags, "./tests/"), nil }
 	reportCanaryProblems(t, closureGuard(list, filepath.Join(root(t), "tests"), headers))
-	t.Logf("the guard read %d bytes, the headers of %d files, for the four listings", headers.bytes, headers.files)
+	t.Logf("the guard read %d bytes, the headers of %d files, and parsed %d headers, for the four listings", headers.bytes, headers.files, headers.parses)
 }
 
 // The guard on small modules of its own, listed by the real go command with
@@ -425,7 +476,11 @@ func TestCanaryTagTestsClosure(t *testing.T) {
 // assembly file whose plus build line names the tag right above an include,
 // where the go command does not apply it, which it must accept, after reading
 // it; and the same file with a blank line after the plus build line, which it
-// must reject.
+// must reject. And a C header whose go:build line names the tag after a
+// vertical tab, which the go command does not read as a space, so it reads
+// no constraint there: the guard must accept it, after reading it; and the
+// same header with a form feed, which is a space to the go command, so the
+// constraint applies: the guard must reject it.
 func TestCanaryTagTestsClosureFixtureModules(t *testing.T) {
 	tool := canaryGoTool(t)
 	const goMod = "module review\n\ngo 1.21\n"
@@ -439,6 +494,7 @@ func TestCanaryTagTestsClosureFixtureModules(t *testing.T) {
 	plainDep := "package dep\n\n// Value is 0.\nfunc Value() int { return 0 }\n"
 	plusTag := "// +build " + canaryTag + "\n"
 	include := "#include \"textflag.h\"\n"
+	goBuildHeader := "//go:build " + canaryTag + "\n\n#define REVIEW_HEADER 1\n"
 	for _, tc := range []struct {
 		name  string
 		files map[string]string
@@ -463,6 +519,17 @@ func TestCanaryTagTestsClosureFixtureModules(t *testing.T) {
 				fmt.Sprintf("tags %q: the test closure of ./tests/ holds", ownerTag+","+canaryTag),
 				fmt.Sprintf("tags %q: the test build of ./tests/ selects review/dep", ownerTag+","+canaryTag),
 			}, "dep/value.s"},
+		{"a vertical tab before a go:build line in a C header", map[string]string{"dep/dep.go": plainDep, "dep/value.h": "\v" + goBuildHeader},
+			nil, "dep/value.h"},
+		{"a form feed before a go:build line in a C header", map[string]string{"dep/dep.go": plainDep, "dep/value.h": "\f" + goBuildHeader},
+			[]string{
+				fmt.Sprintf("tags %q: the test closure of ./tests/ holds", ""),
+				fmt.Sprintf("tags %q: the test closure of ./tests/ holds", canaryTag),
+				fmt.Sprintf("tags %q: the test build of ./tests/ selects review/dep", canaryTag),
+				fmt.Sprintf("tags %q: the test closure of ./tests/ holds", ownerTag),
+				fmt.Sprintf("tags %q: the test closure of ./tests/ holds", ownerTag+","+canaryTag),
+				fmt.Sprintf("tags %q: the test build of ./tests/ selects review/dep", ownerTag+","+canaryTag),
+			}, "dep/value.h"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -514,6 +581,9 @@ func TestCanaryTagTestsClosureFixtureModules(t *testing.T) {
 
 func TestCanaryTagTestsClosureCheck(t *testing.T) {
 	const testsDir = "/r/tests"
+	// A header whose first line, a #define, is 262,159 bytes long.
+	const defineStart = "#define REVIEW_LONG "
+	longDefine := defineStart + strings.Repeat("1", 262159-len(defineStart)-1) + "\n" + hdrTagged + "\n"
 	files := map[string]string{
 		"/r/tests/a_test.go":             "package tests\n",
 		"/r/tests/b_test.go":             "package tests_test\n",
@@ -543,6 +613,9 @@ func TestCanaryTagTestsClosureCheck(t *testing.T) {
 		"/r/internal/s/blob.syso":        hdrTagged + "\n",
 		"/r/internal/s/tagged_other.s":   hdrTagged + "\n\n#include \"textflag.h\"\n",
 		"/r/internal/s/large_amd64.s":    "// a large source\n\n#include \"textflag.h\"\n" + strings.Repeat("TEXT x(SB),0,$0\n", 4096),
+		"/r/internal/s/vtab.h":           "\v" + hdrTagged + "\n\n#define X 1\n",
+		"/r/internal/s/formfeed.h":       "\f" + hdrTagged + "\n\n#define X 1\n",
+		"/r/internal/s/define.h":         longDefine,
 		"/cache/testmain.go":             "package main\n",
 		"/std/os/os.go":                  hdrTagged + "\n\npackage os\n",
 	}
@@ -595,6 +668,9 @@ func TestCanaryTagTestsClosureCheck(t *testing.T) {
 		{"an assembly file whose plus build line is right above an include", with(closurePackage{ImportPath: "m/internal/s", Dir: "/r/internal/s", SFiles: []string{"include_amd64.s"}}), nil},
 		{"an assembly file whose tag is in a block comment before code", with(closurePackage{ImportPath: "m/internal/s", Dir: "/r/internal/s", SFiles: []string{"block_amd64.s"}}), nil},
 		{"a tagged C file of an import", with(closurePackage{ImportPath: "m/internal/s", Dir: "/r/internal/s", CFiles: []string{"c.c"}}), []string{"/r/internal/s/c.c"}},
+		{"a vertical tab before a go:build line in a C header", with(closurePackage{ImportPath: "m/internal/s", Dir: "/r/internal/s", HFiles: []string{"vtab.h"}}), nil},
+		{"a form feed before a go:build line in a C header", with(closurePackage{ImportPath: "m/internal/s", Dir: "/r/internal/s", HFiles: []string{"formfeed.h"}}), []string{"/r/internal/s/formfeed.h"}},
+		{"a tag below a long first line of code", with(closurePackage{ImportPath: "m/internal/s", Dir: "/r/internal/s", HFiles: []string{"define.h"}}), nil},
 		{"an object and a tagged source the host leaves out", with(closurePackage{ImportPath: "m/internal/s", Dir: "/r/internal/s", SysoFiles: []string{"blob.syso"}, IgnoredOtherFiles: []string{"blob.syso", "tagged_other.s"}}), nil},
 		{"a file that cannot be read", with(closurePackage{ImportPath: "m/internal/gone", Dir: "/r/internal/gone", GoFiles: []string{"gone.go"}}), []string{"/r/internal/gone/gone.go"}},
 		{"no test file of ./tests/", clean[:2], []string{"no test file of " + testsDir}},
@@ -619,20 +695,29 @@ func TestCanaryTagTestsClosureCheck(t *testing.T) {
 		})
 	}
 
-	// Each header is read once for all the listings, and only the header: a
-	// large source costs its first lines.
+	// Each header is read and parsed once for all the listings, and only
+	// the header, up to the first byte of code and what the reader's buffer
+	// holds: a large source and a long first line of code cost no more than
+	// a short one.
 	headers := newHeaders()
-	large := with(closurePackage{ImportPath: "m/internal/s", Dir: "/r/internal/s", SFiles: []string{"large_amd64.s", "asm_other.s"}, CFiles: []string{"c.c"}})
+	large := with(closurePackage{ImportPath: "m/internal/s", Dir: "/r/internal/s", SFiles: []string{"large_amd64.s", "asm_other.s"}, CFiles: []string{"c.c"}, HFiles: []string{"define.h"}})
 	for _, tags := range closureTagSets {
 		checkTestsClosure(tags, large, testsDir, headers)
 	}
 	// a.go, comment.go, linux.go, a_test.go and b_test.go of ./tests/, the
-	// test main, large_amd64.s and c.c: asm_other.s is not read.
-	if want := 8; headers.files != want {
+	// test main, large_amd64.s, c.c and define.h: asm_other.s is not read.
+	const want = 9
+	if headers.files != want {
 		t.Errorf("the check opened %d files for four listings, want each of the %d it reads once", headers.files, want)
+	}
+	if headers.parses != want {
+		t.Errorf("the check parsed %d headers for four listings, want each of the %d it reads once", headers.parses, want)
 	}
 	if size := int64(len(files["/r/internal/s/large_amd64.s"])); headers.bytes >= size/4 {
 		t.Errorf("the check read %d bytes, a quarter of the large source alone (%d) or more", headers.bytes, size)
+	}
+	if most := int64(want * 512); headers.bytes > most {
+		t.Errorf("the check read %d bytes from %d files, more than one buffer of 512 bytes each (%d)", headers.bytes, want, most)
 	}
 
 	// A tag set that selects other inputs than the untagged build: a tagged

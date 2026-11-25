@@ -369,27 +369,43 @@ func (c *stalledConn) QueryContext(ctx context.Context, q string, args []driver.
 // The recognition runs in a synctest bubble, whose clock moves only when
 // every goroutine of the bubble is blocked: the work before the query
 // (ownership, connection, configuration) takes no time on it, however slowly
-// the host runs it, and a pause the setup sleeps is counted exactly. So the
-// query's deadline is checked to be exactly OperationTimeout after the
-// operation's start, and then the query is left to wait: the bubble's clock
-// moves to the deadline, which ends it with context.DeadlineExceeded as its
-// error and its cause, and Recognize returns that error with a zero Info.
+// the host runs it, and a pause the setup sleeps is counted exactly. The
+// ownership's acquisition is given such a pause, acquireTakes, so that the
+// operation's start is located: a budget started after the ownership was
+// acquired would end acquireTakes late. So the query's deadline is checked
+// to be exactly OperationTimeout after the operation's start, and then the
+// query is left to wait: the bubble's clock moves to the deadline, which
+// ends it with context.DeadlineExceeded as its error and its cause, and
+// Recognize returns that error with a zero Info.
 // The ownership is then released: a recognition with the fixture's ordinary
 // options, outside the bubble, succeeds.
 func TestRecognizeOperationDeadline(t *testing.T) {
 	path, o := fixture(t)
 	mustCreate(t, path, o).Close()
 	reopenOptions := o
-	// Far longer than any setup: on the bubble's clock the setup takes no
-	// time, and this costs none.
+	// Far longer than the setup: on the bubble's clock the setup takes only
+	// the acquisition's pause, and this costs no real time.
 	o.OperationTimeout = 20 * time.Second
+	// The time the ownership's acquisition takes on the bubble's clock: a
+	// slow host or file system, as the operation's budget must count it.
+	const acquireTakes = 75 * time.Millisecond
 	synctest.Test(t, func(t *testing.T) {
 		saw := make(chan stalledQuery, 1)
 		d := recognitionDriver{Driver: &sqlite.Driver{}, wrap: func(raw driver.Conn) driver.Conn {
 			return &stalledConn{Conn: raw, ExecQuerierContext: raw.(sqlite.ExecQuerierContext), saw: saw, noDeadline: time.Hour}
 		}}
+		acquired := false
+		slowAcquire := func(path string, create bool) (*ownership, error) {
+			owner, err := acquire(path, create)
+			time.Sleep(acquireTakes)
+			acquired = err == nil
+			return owner, err
+		}
 		start := time.Now()
-		got, err := recognizeWithDriver(context.Background(), path, o, d)
+		got, err := recognizeWithDriver(context.Background(), path, o, d, slowAcquire)
+		if !acquired {
+			t.Fatalf("the recognition did not acquire the ownership: %v", err)
+		}
 		var q stalledQuery
 		select {
 		case q = <-saw:
@@ -525,7 +541,7 @@ func TestRecognizeConnectorAndCleanup(t *testing.T) {
 				}
 				return c
 			}}
-			got, err := recognizeWithDriver(ctx, path, o, d)
+			got, err := recognizeWithDriver(ctx, path, o, d, acquire)
 			if closed != 1 || (mode != "configuration" && !readOnly) {
 				t.Fatal("connection verification/cleanup missing", closed, readOnly)
 			}
