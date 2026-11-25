@@ -95,13 +95,13 @@ func TestT52DeterministicPrecedence(t *testing.T) {
 func TestT59IndependentPrelude(t *testing.T) {
 	x := baseline(t, "BL")
 	spec := x.expand(t)
-	x.p = decode(t, bytes.ReplaceAll(alphaPolicy, []byte("1.0"), []byte("2.0")))
+	x.p = decode(t, bytes.ReplaceAll(packtest.AlphaPolicy(), []byte("1.0"), []byte("2.0")), x.help)
 	line(t, x.judge(spec), "policy-missing", "0", "policy")
 	line(t, x.recheck(t, spec), "policy-missing", "0", "policy")
 	x.s.Version = "2.0"
 	line(t, x.recheck(t, spec), "expected-differs", "0", "snapshot")
 	x = baseline(t, "BL")
-	x.p = decode(t, unrecorded(t, alphaPolicy))
+	x.p = decode(t, unrecorded(t, packtest.AlphaPolicy()), x.help)
 	line(t, x.recheck(t, spec), "policy-unrecorded", "0", "policy")
 	x = baseline(t, "BL")
 	x.s.Role = "invalid"
@@ -136,14 +136,14 @@ func TestT61ProtocolAdmission(t *testing.T) {
 		line(t, x.recheck(t, spec), "transport-not-admitted", "0", "snapshot")
 	}
 	for _, fault := range []string{"transport", "build"} {
-		d := tree(t, alphaPolicy)
+		d := tree(t, packtest.AlphaPolicy())
 		v := modeRow(d, "m-quiet")["vector"].(obj)
 		if fault == "transport" {
 			v["protocol"] = v["terminal"]
 		} else {
 			v["protocol"].(obj)["build"] = "2.0"
 		}
-		if _, err := Decode(wire(t, d), []byte(fixtureHelp)); err == nil {
+		if _, err := Decode(wire(t, d), packtest.AlphaHelp()); err == nil {
 			t.Fatal("observation qualified wrong " + fault)
 		}
 	}

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"ataniq/internal/pack"
+	"ataniq/internal/pack/packtest"
 )
 
 func (x trial) judge(spec Spec) *Refusal { _, r := Judge(x.p, x.l, x.s, spec, fakeIntent); return r }
@@ -38,7 +39,7 @@ func TestT1MissingPolicy(t *testing.T) {
 func TestT2UnrecordedPolicy(t *testing.T) {
 	x := baseline(t, "BL")
 	spec := x.expand(t)
-	x.p = decode(t, unrecorded(t, alphaPolicy))
+	x.p = decode(t, unrecorded(t, packtest.AlphaPolicy()), x.help)
 	line(t, x.judge(spec), "policy-unrecorded", "0", "policy")
 }
 func TestSelection(t *testing.T) {
@@ -366,7 +367,7 @@ func TestT45DigestAndView(t *testing.T) {
 	line(t, x.recheck(t, spec), "expected-digest", "0", "snapshot")
 	x = baseline(t, "BL")
 	x.s.Version = "2.0"
-	x.p = decode(t, bytes.ReplaceAll(alphaPolicy, []byte("1.0"), []byte("2.0")))
+	x.p = decode(t, bytes.ReplaceAll(packtest.AlphaPolicy(), []byte("1.0"), []byte("2.0")), x.help)
 	line(t, x.recheck(t, x.expand(t)), "expected-differs", "0", "snapshot")
 	x.s.Requested = []byte("{")
 	line(t, x.recheck(t, spec), "snapshot-invalid", "0", "snapshot")
