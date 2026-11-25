@@ -1,56 +1,77 @@
 #!/bin/sh
 # ap14-level1.sh: AP14 level 1 on an AI (development) host. The everyday user
-# loses passwordless and cached sudo, so `sudo -n true` fails for it, and every
-# other route from that user to root that the script can find is reported.
-# It also creates the root-owned standing-grants register (DL-1).
+# loses cached sudo credentials, and every passwordless route from that user
+# to root that the script can find is reported, with the exact edit for the
+# owner to make by hand. It also creates the root-owned standing-grants
+# register (DL-1).
 #
 #   ap14-level1.sh --dry --user NAME
 #   ap14-level1.sh --apply --user NAME --confirm NAME
+#   ap14-level1.sh --verify --user NAME
 #   ap14-level1.sh --self-test [--fixtures DIR --user NAME]
 #
-#   --dry        run as root. Reads the sudo, polkit and doas configuration,
-#                the user's groups, the setuid files and the folders root runs
-#                things from, then prints every change --apply would make, in
-#                order, and every route to root it finds. Changes nothing.
-#   --apply      run as root, with --confirm repeating the --user name. Reads
-#                everything again, prints the same plan and makes only those
-#                changes, in the same order:
-#                  1. write the sudoers drop-in /etc/sudoers.d/zz-ap14-level1,
+#   --dry        a read-only audit, as root or not (unreadable parts are stops).
+#                It reads the sudo, polkit and doas configuration, the user's
+#                groups, the setuid files and the folders root runs things
+#                from, and prints: every sudo rule, who it gives sudo and
+#                whether it asks for a password; for each rule that gives NAME
+#                sudo without a password, the edit for the owner to make by
+#                hand with visudo; what --apply would write; every stop; every
+#                other route to root. Changes nothing.
+#   --apply      run as root, with --confirm repeating the --user name. Under a
+#                lock it reads everything again and refuses while the audit
+#                lists a stop or a by-hand edit. Otherwise it writes only NEW
+#                files, never moving, editing or removing an existing one:
+#                  1. the drop-in /etc/sudoers.d/zz-ap14-level1-NAME,
 #                     `Defaults:NAME timestamp_timeout=0` (no cached
-#                     credentials), checked with visudo before and after;
-#                  2. move aside, into a root-only backup folder, each sudoers
-#                     file in /etc/sudoers.d whose one rule gives NAME sudo
-#                     without a password, checking with visudo after each;
-#                  3. create the standing-grants register /etc/ataniq/grants.
-#                A failed visudo check undoes every sudoers change of the run.
-#                Then it checks the result (`sudo -l -U NAME`, and `sudo -n
-#                true` run as NAME) and reports again.
-#   --self-test  reads nothing on the host and runs nothing: it runs the same
-#                scan over the fixture folders in self-test/ beside the script
-#                and compares the reports with the expected ones. With
-#                --fixtures DIR it prints the report for the fake root DIR
-#                instead (the tests use it).
+#                     credentials): a temporary file, mode 0440, owner root,
+#                     checked alone with `visudo -cf`, then published under
+#                     its name with ln (which never replaces a file);
+#                  2. the standing-grants register /etc/ataniq/grants and its
+#                     README, when they are not there yet;
+#                then checks the whole configuration with `visudo -c`. A
+#                failed step removes the files this run created, newest
+#                first, and says which it could not remove. Then --verify.
+#   --verify     read-only, as root: `sudo -l -U NAME` must still list a grant
+#                that asks for the password, nothing without one, and
+#                timestamp_timeout=0; `sudo -n true` run as NAME must say that
+#                a password is required (not that NAME is not allowed, and
+#                not a probe that could not run).
+#   --self-test  unprivileged only (it refuses root). Reads only the fixture
+#                folders in self-test/ beside the script, never following a
+#                link out of them, and runs nothing from them: it compares the
+#                audit of each with its expected.txt, and runs --apply against
+#                a temporary copy of the transaction cases, with a simulated
+#                visudo and a failure at every step in turn. With --fixtures
+#                DIR it prints the audit of the fake root DIR (the tests use
+#                it).
 #
-# The script never changes a group, a polkit rule, doas, a setuid file or a
-# permission: it reports them, each with a one-line remedy for the owner. It
-# rewrites no sudoers file: a passwordless rule that does not sit alone in a
-# file of /etc/sudoers.d is listed with its file and line, and --apply then
-# stops before changing anything.
+# The script never changes a group, a polkit rule, doas, a setuid file, a
+# permission or an existing file: it reports them, each with a remedy.
 #
 # The user's name is an argument only; it is never written into this script.
 #
-# POSIX sh. Tools: awk, sed, grep, sort, cut, head, ls, find, id, getent,
-# mktemp, date, chmod, chown, mv, rm, mkdir, cmp and diff (--self-test);
-# visudo and sudo for the sudo steps; runuser (or su) for the `sudo -n` check;
-# passwd -S; pacman, dpkg or rpm when present; getfacl when present. Before
-# the root check it runs no program but `id -u`.
+# PATH is set to the system folders before the first external command; the
+# caller's PATH is kept only to report root's PATH. POSIX sh. Tools: awk, sed,
+# grep, sort, cut, head, ls, find, id, getent, mktemp, chmod, chown, ln, rm,
+# mkdir, rmdir, cmp, cksum, cp and realpath (--self-test); visudo and sudo for
+# the sudo steps; runuser (or su) for the `sudo -n` check; passwd -S; pacman,
+# dpkg or rpm when present; getfacl when present. Before the root check it
+# runs no program but `id -u`.
 #
-# Exit status: 0 clean (nothing to change, no finding); 1 findings remain (for
-# --dry: something to change or a finding; for --apply: a finding after the
-# changes, or a failed check whose changes were undone); 2 refused before
-# anything changed (bad arguments, not root, or a stop in the plan).
+# Exit status: 0 clean (--dry: nothing to write, no by-hand edit, no stop, no
+# finding; --apply: written or nothing to write, and the checks pass;
+# --verify: every check passes); 1 something remains (--dry: something to
+# write, an edit, a stop or a finding; --apply: a failed step whose files were
+# removed, or a failed check; --verify: a failed check); 2 refused before
+# anything was written (bad arguments, not root, the lock is held, or a stop
+# or a by-hand edit in the audit).
 
+# The first commands: from here on every program comes from the system folders.
 # shellcheck disable=SC2016  # the awk programs are single-quoted on purpose
+CALLER_PATH=${PATH-}
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
 set -eu
 LC_ALL=C
 export LC_ALL
@@ -58,17 +79,20 @@ umask 077
 
 ME=ap14-level1.sh
 TAB=$(printf '\t')
+NL='
+'
 
 SUDOERS=/etc/sudoers
 SUDOERS_D=/etc/sudoers.d
-DROPIN_NAME=zz-ap14-level1
-DROPIN=$SUDOERS_D/$DROPIN_NAME
-BACKUP_BASE=/etc/ap14-level1
+DROPIN_PREFIX=zz-ap14-level1-
+TMP_PREFIX=.ap14-level1.tmp.
 REGISTER_PARENT=/etc/ataniq
 REGISTER=$REGISTER_PARENT/grants
+LOCK=/run/ap14-level1.lock
 POLKIT_ETC=/etc/polkit-1/rules.d
 POLKIT_USR=/usr/share/polkit-1/rules.d
 DOAS_FILES="/etc/doas.conf /usr/local/etc/doas.conf"
+SYS_PATH=$PATH
 STD_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Root runs what these hold (searched through, links followed).
 WRITE_TREES="/etc/sudoers /etc/sudoers.d /etc/systemd/system /usr/lib/systemd/system
@@ -92,22 +116,27 @@ refuse() {
 usage() {
   printf '%s\n' "usage: $ME --dry --user NAME" \
     "       $ME --apply --user NAME --confirm NAME" \
+    "       $ME --verify --user NAME" \
     "       $ME --self-test [--fixtures DIR --user NAME]" >&2
   exit 2
 }
 
 # valid_name TEXT: a login name: lowercase letter or _, then lowercase letters,
-# digits, _ . or -, at most 32 characters.
+# digits, _ or -, at most 32 characters. No dot: sudo skips a file of
+# /etc/sudoers.d whose name holds one, and the drop-in is named after the user.
 valid_name() {
   case $1 in
     [a-z_]*) ;;
     *) return 1 ;;
   esac
   case $1 in
-    *[!a-z0-9_.-]*) return 1 ;;
+    *[!a-z0-9_-]*) return 1 ;;
   esac
   [ ${#1} -le 32 ]
 }
+
+# sq TEXT prints TEXT as one single-quoted shell word.
+sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 # --- arguments -----------------------------------------------------------------
 # Every refusal here comes before anything is read or run on the host.
@@ -119,8 +148,8 @@ HAVE_CONFIRM=0
 FIX_ARG=
 while [ $# -gt 0 ]; do
   case $1 in
-    --dry | --apply | --self-test)
-      [ -z "$MODE" ] || [ "$MODE" = "${1#--}" ] || refuse "give one of --dry, --apply and --self-test"
+    --dry | --apply | --verify | --self-test)
+      [ -z "$MODE" ] || [ "$MODE" = "${1#--}" ] || refuse "give one of --dry, --apply, --verify and --self-test"
       MODE=${1#--}
       ;;
     --user | --confirm | --fixtures)
@@ -150,23 +179,46 @@ fi
 if [ "$MODE" != apply ] && [ "$HAVE_CONFIRM" = 1 ]; then
   refuse "--confirm goes with --apply only"
 fi
+if [ "$MODE" = self-test ] && [ -z "$FIX_ARG" ] && [ "$HAVE_USER" = 1 ]; then
+  refuse "--user goes with --fixtures in a self-test"
+fi
 if [ "$MODE" != self-test ] || [ -n "$FIX_ARG" ]; then
   [ "$HAVE_USER" = 1 ] || refuse "--user NAME is required: the everyday user's login name"
-  valid_name "$NAME" || refuse "--user must be a login name (lowercase letters, digits, _ . -)"
   [ "$NAME" != root ] || refuse "--user must be the everyday user, not root"
+  valid_name "$NAME" || refuse "--user must be a login name (lowercase letters, digits, _ -; no dot, which sudo skips in a drop-in's name)"
 fi
 if [ "$MODE" = apply ]; then
   [ "$HAVE_CONFIRM" = 1 ] || refuse "--apply needs --confirm NAME, repeating the --user name"
   [ "$CONFIRM" = "$NAME" ] || refuse "--confirm must repeat the --user name exactly"
 fi
-if [ "$MODE" != self-test ]; then
-  [ "$(id -u)" = 0 ] || refuse "--$MODE runs as root (log in as root, or sudo -i, then run it)"
-fi
+case $MODE in
+  apply | verify)
+    [ "$(id -u)" = 0 ] || refuse "--$MODE runs as root (log in as root, or sudo -i, then run it)"
+    ;;
+  self-test)
+    [ "$(id -u)" != 0 ] || refuse "--self-test runs unprivileged: run it as an ordinary user, never as root"
+    ;;
+esac
 
 # FIX is the fake root of a self-test; empty on the host. hp PATH prints where
-# PATH is read from.
+# PATH is read from (and, in a self-test transaction, written to).
 FIX=
 hp() { printf '%s%s' "$FIX" "$1"; }
+# TX_TEST is 1 while a self-test runs --apply against a temporary copy: visudo
+# is simulated, chown is skipped, and step TX_FAIL_AT fails (TX_UNDO_FAIL: the
+# undo fails too).
+TX_TEST=0
+TX_FAIL_AT=0
+TX_UNDO_FAIL=0
+TX_N=0
+
+# set_user NAME: the drop-in of that user.
+set_user() {
+  NAME=$1
+  DROPIN_NAME=$DROPIN_PREFIX$NAME
+  DROPIN=$SUDOERS_D/$DROPIN_NAME
+}
+if [ -n "$NAME" ]; then set_user "$NAME"; fi
 
 # --- awk programs ----------------------------------------------------------------
 
@@ -237,15 +289,23 @@ END { if (cont != "") emit(cont, start) }'
 
 # SUDO_AWK reads the expanded record stream of /etc/sudoers (see
 # sudoers_expand) and prints, for the user (u, uid, groups, gids):
-#   NOPASS FILE LINE CERTAIN AS TEXT   a rule with NOPASSWD for the user
-#   NOAUTH FILE LINE CERTAIN - TEXT    Defaults !authenticate for the user
-#   LATE FILE LINE VALUE TEXT          a non-zero timestamp_timeout after the
-#                                      place of the drop-in
-#   WARN FILE LINE TEXT                something to check by hand
-#   PLACE 0|1                          whether the drop-in would be read
-#   LINES FILE COUNT VIA               content lines of each file read
-# CERTAIN is yes, or maybe (a netgroup or non-Unix group may hold the user).
-# AS is root when the rule may run commands as root, else other.
+#   RULE FILE LINE WHO APPLIES PW AS ALLPW TEXT  every user rule: WHO its
+#        user list; APPLIES yes, maybe (a netgroup or non-Unix group may hold
+#        the user) or no; PW asked, none (no command asks for a password) or
+#        mixed; AS root or other, where the passwordless commands run (- when
+#        there are none); ALLPW 1 when it lets the user run ALL as root with
+#        the password
+#   NOAUTH FILE LINE APPLIES WHO TEXT    Defaults !authenticate
+#   EXEMPT FILE LINE GROUP APPLIES TEXT  Defaults exempt_group (its members
+#                                        never type a password)
+#   LATE FILE LINE VALUE TEXT    a non-zero timestamp_timeout after the place
+#                                of the drop-in
+#   CMDTO FILE LINE VALUE TEXT   a non-zero timestamp_timeout of a command or
+#                                runas Defaults (Defaults!CMND, Defaults>USER),
+#                                which sudo applies last, wherever it sits
+#   WARN FILE LINE TEXT          a part sudo reads that the script could not
+#   PLACE 0|1                    whether the drop-in would be read
+#   LINES FILE COUNT VIA         content lines of each file read
 SUDO_AWK='
 function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
 function defalias(A, s,   n, p, i, cur, e) {
@@ -299,77 +359,94 @@ function asroot(r,   c, ru) {
   if (ru == "") return (c > 0) ? 0 : 1
   return rlist(ru, 0)
 }
-# nopass RHS: "" when no command of the rule runs without a password, else
-# root or other.
-function nopass(s,   t, root, any, ng, grp, gi, g, m, parts, pi, piece, state, hit) {
-  t = s
-  root = 0
-  any = 0
-  while (match(t, /\([^)]*\)/)) {
-    any = 1
-    if (asroot(substr(t, RSTART + 1, RLENGTH - 2))) root = 1
-    t = substr(t, RSTART + RLENGTH)
+# rhs RHS sets RN (a command runs without a password), RP (one asks for it),
+# RNROOT (a passwordless one runs as root) and RALL (ALL as root, asking).
+# A runas spec applies to the commands after it, a tag until the opposite
+# tag; both start again at each host part (": host ="). A command after "!"
+# is an exclusion, which grants nothing.
+function rhs(s,   t, ng, grp, gi, g, m, parts, pi, piece, state, rt, tok) {
+  t = ""
+  while (match(s, /\([^)]*\)/)) {
+    t = t substr(s, 1, RSTART - 1) (asroot(substr(s, RSTART + 1, RLENGTH - 2)) ? " @@R1@@ " : " @@R0@@ ")
+    s = substr(s, RSTART + RLENGTH)
   }
-  if (!any) root = 1
-  gsub(/\([^)]*\)/, " ", s)
+  s = t s
   gsub(/NOPASSWD[ ]*:/, " @@N@@ ", s)
   gsub(/PASSWD[ ]*:/, " @@P@@ ", s)
   gsub(/(NOEXEC|EXEC|NOSETENV|SETENV|NOLOG_INPUT|LOG_INPUT|NOLOG_OUTPUT|LOG_OUTPUT|NOMAIL|MAIL|NOFOLLOW|FOLLOW|NOINTERCEPT|INTERCEPT)[ ]*:/, " ", s)
+  RN = 0; RP = 0; RNROOT = 0; RALL = 0
   ng = split(s, grp, ":")
-  hit = 0
   state = 0
+  rt = 1
   for (gi = 1; gi <= ng; gi++) {
     g = grp[gi]
-    if (gi > 1 && g ~ /^ *[^ =,]+( *, *[^ =,]+)* *=/) { state = 0; g = substr(g, index(g, "=") + 1) }
+    if (gi > 1 && g ~ /^ *[^ =,]+( *, *[^ =,]+)* *=/) { state = 0; rt = 1; g = substr(g, index(g, "=") + 1) }
     m = split(g, parts, ",")
     for (pi = 1; pi <= m; pi++) {
       piece = parts[pi]
-      while (match(piece, /@@[NP]@@/)) {
-        state = (substr(piece, RSTART + 2, 1) == "N")
+      while (match(piece, /@@(N|P|R0|R1)@@/)) {
+        tok = substr(piece, RSTART + 2, RLENGTH - 4)
+        if (tok == "N") state = 1
+        else if (tok == "P") state = 0
+        else rt = (tok == "R1")
         piece = substr(piece, 1, RSTART - 1) " " substr(piece, RSTART + RLENGTH)
       }
-      if (state && trim(piece) != "") hit = 1
+      piece = trim(piece)
+      gsub(/^[A-Z_]+=[^ ]* /, "", piece)
+      if (piece == "" || substr(piece, 1, 1) == "!") continue
+      if (state) { RN = 1; if (rt) RNROOT = 1 }
+      else { RP = 1; if (rt && piece == "ALL") RALL = 1 }
     }
   }
-  if (!hit) return ""
-  return root ? "root" : "other"
 }
-function defaults(f, ln, t,   rest, c, sp, bind, set, app, m, S, j, s, v) {
+function defaults(f, ln, t,   rest, c, sp, bind, set, app, m, S, j, s, v, who, hit) {
   rest = substr(t, 9)
   c = substr(rest, 1, 1)
   app = 1
+  who = "everyone"
   if (c == ":" || c == "@" || c == ">" || c == "!") {
     sp = index(rest, " ")
     if (sp == 0) return
     bind = substr(rest, 2, sp - 2)
     set = substr(rest, sp + 1)
-    if (c == ":") { app = ulist(bind, 0); if (app == 0) return }
+    if (c == ":") { app = ulist(bind, 0); who = bind; if (app == 0) return }
+    else if (c == "!") who = "everyone running " bind
+    else if (c == ">") who = "everyone running as " bind
   } else set = rest
   m = split(set, S, ",")
   for (j = 1; j <= m; j++) {
     s = trim(S[j])
-    if (s == "!authenticate") print "NOAUTH\t" f "\t" ln "\t" (app == 2 ? "maybe" : "yes") "\t-\t" t
-    else if (s ~ /^timestamp_timeout[ ]*=/) {
+    if (s == "!authenticate") print "NOAUTH\t" f "\t" ln "\t" (app == 2 ? "maybe" : "yes") "\t" who "\t" t
+    else if (s ~ /^exempt_group[ ]*[+]?=/) {
+      v = s
+      sub(/^exempt_group[ ]*[+]?=[ ]*/, "", v)
+      gsub(/"/, "", v)
+      sub(/^%/, "", v)
+      hit = (v in G) || (substr(v, 1, 1) == "#" && (substr(v, 2) in GID))
+      print "EXEMPT\t" f "\t" ln "\t" v "\t" (hit ? (app == 2 ? "maybe" : "yes") : "no") "\t" t
+    } else if (s ~ /^timestamp_timeout[ ]*=/) {
       v = s
       sub(/^timestamp_timeout[ ]*=[ ]*/, "", v)
       gsub(/"/, "", v)
-      if (after && (v !~ /^[0-9.]+$/ || v + 0 != 0)) print "LATE\t" f "\t" ln "\t" v "\t" t
+      if (v ~ /^[0-9.]+$/ && v + 0 == 0) continue
+      if (c == "!" || c == ">") print "CMDTO\t" f "\t" ln "\t" v "\t" t
+      else if (after) print "LATE\t" f "\t" ln "\t" v "\t" t
     }
   }
 }
-function userspec(f, ln, t,   e, lhs, rhs, W, nl, r, np) {
+function userspec(f, ln, t,   e, lhs, rest, W, nl, r, pw, as) {
   e = index(t, "=")
   if (e == 0) return
   lhs = substr(t, 1, e - 1)
-  rhs = substr(t, e + 1)
+  rest = substr(t, e + 1)
   gsub(/ *, */, ",", lhs)
   nl = split(trim(lhs), W, " ")
   if (nl < 2) return
   r = ulist(W[1], 0)
-  if (r == 0) return
-  np = nopass(rhs)
-  if (np == "") return
-  print "NOPASS\t" f "\t" ln "\t" (r == 2 ? "maybe" : "yes") "\t" np "\t" t
+  rhs(rest)
+  pw = RN ? (RP ? "mixed" : "none") : "asked"
+  as = RN ? (RNROOT ? "root" : "other") : "-"
+  print "RULE\t" f "\t" ln "\t" W[1] "\t" (r == 1 ? "yes" : (r == 2 ? "maybe" : "no")) "\t" pw "\t" as "\t" RALL "\t" t
 }
 BEGIN {
   FS = "\t"
@@ -404,10 +481,13 @@ END {
 }'
 
 # SUDOL_AWK reads the output of `sudo -l -U NAME` and prints NOPASS LINE for
-# each command listed with NOPASSWD, NOAUTH for !authenticate among the
-# defaults, and TIMEOUT VALUE for the last timestamp_timeout among them.
+# each command listed with NOPASSWD, NOAUTH for !authenticate, GRANT LINE for
+# a command line that lets the user run ALL as root with the password,
+# NOTALLOWED when sudo says the user may not run sudo, and TIMEOUT VALUE for
+# the last timestamp_timeout among the defaults.
 SUDOL_AWK='
 function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+/is not allowed to run sudo/ { print "NOTALLOWED"; sec = ""; next }
 /^Matching Defaults entries for / { sec = "def"; next }
 /^Runas and Command-specific defaults for / { sec = "def"; next }
 /^User .* may run the following commands/ { sec = "cmd"; next }
@@ -421,8 +501,13 @@ sec == "def" {
   }
   next
 }
-sec == "cmd" && /NOPASSWD[ ]*:/ { print "NOPASS\t" trim($0); next }
-sec == "cmd" && /^[ \t]*Options:.*!authenticate/ { print "NOAUTH\t" trim($0); next }
+sec == "cmd" {
+  l = trim($0)
+  if (l ~ /NOPASSWD[ ]*:/) print "NOPASS\t" l
+  else if (l ~ /^Options:.*!authenticate/) print "NOAUTH\t" l
+  else if (l ~ /^\((ALL|root)([ ]*:[^)]*)?\)[ ]*(PASSWD:[ ]*)?ALL$/) print "GRANT\t" l
+  next
+}
 END { if (last != "") print "TIMEOUT\t" last }'
 
 # POLKIT_AWK reads one rules file (F its path) and prints, for each
@@ -557,8 +642,8 @@ MOUNTS_AWK='
 
 load_user() {
   if [ -n "$FIX" ]; then
-    lu_pw=$(cat "$FIX/etc/passwd")
-    lu_gr=$(cat "$FIX/etc/group")
+    lu_pw=$(cat "$FIX/etc/passwd") || refuse "the fixtures have no etc/passwd"
+    lu_gr=$(cat "$FIX/etc/group") || lu_gr=
     lu_extra=
   else
     lu_pw=$(getent passwd "$NAME") || refuse "there is no user named $NAME"
@@ -582,10 +667,17 @@ name_ge() {
   [ "$(printf '%s\n%s\n' "$1" "$2" | sort | head -n 1)" = "$2" ]
 }
 
+# odd_names DIR prints something when a name directly in DIR holds a newline
+# or a tab, which the line-based reading below cannot represent.
+odd_names() {
+  find "$1/." ! -name . -prune \( -name "*$NL*" -o -name "*$TAB*" \) -print 2>/dev/null | head -n 1
+}
+
 # sudoers_expand FILE DEPTH VIA prints the record stream of FILE and of what it
 # includes, in the order sudo reads them: B FILE VIA when a file starts, L FILE
-# LINE TEXT, I or D FILE LINE PATH, W FILE LINE TEXT, and P where the drop-in
-# would sit in /etc/sudoers.d. A subshell keeps each level's variables.
+# LINE TEXT, I or D FILE LINE PATH, W FILE LINE TEXT for a part it could not
+# read, and P where the drop-in would sit in /etc/sudoers.d. A subshell keeps
+# each level's variables.
 sudoers_expand() (
   se_f=$1
   se_depth=$2
@@ -596,7 +688,7 @@ sudoers_expand() (
   fi
   se_m=$(hp "$se_f")
   if [ ! -f "$se_m" ] || [ ! -r "$se_m" ]; then
-    printf 'W\t%s\t0\tnot a readable file; not checked\n' "$se_f"
+    printf 'W\t%s\t0\tnot a readable file; not read\n' "$se_f"
     exit 0
   fi
   awk "$LINES_AWK" "$se_m" | while IFS="$TAB" read -r se_k se_ln se_rest; do
@@ -606,9 +698,17 @@ sudoers_expand() (
         se_p=$se_rest
         case $se_p in
           *%h*)
-            printf 'W\t%s\t%s\t%s\n' "$se_f" "$se_ln" "an include names %h (the host name); check it by hand"
+            printf 'W\t%s\t%s\t%s\n' "$se_f" "$se_ln" "an include names %h (the host name); not followed"
             continue
             ;;
+        esac
+        case /$se_p/ in
+          */../*)
+            printf 'W\t%s\t%s\t%s\n' "$se_f" "$se_ln" "an include path with a .. part; not followed"
+            continue
+            ;;
+        esac
+        case $se_p in
           /*) ;;
           *) se_p=${se_f%/*}/$se_p ;;
         esac
@@ -619,11 +719,15 @@ sudoers_expand() (
           continue
         fi
         se_md=$(hp "$se_p")
-        if [ ! -d "$se_md" ]; then
-          printf 'W\t%s\t%s\t%s\n' "$se_f" "$se_ln" "includedir names a missing folder"
+        if [ ! -d "$se_md" ] || [ ! -r "$se_md" ]; then
+          printf 'W\t%s\t%s\t%s\n' "$se_f" "$se_ln" "includedir names a missing or unreadable folder; not read"
           continue
         fi
-        # shellcheck disable=SC2012  # sudo reads plain names; a name with a newline is not one
+        if [ -n "$(odd_names "$se_md")" ]; then
+          printf 'W\t%s\t%s\t%s\n' "$se_f" "$se_ln" "a file name in $se_p holds a newline or a tab; the folder was not read"
+          continue
+        fi
+        # shellcheck disable=SC2012  # names with a newline or a tab are refused above
         ls -A "$se_md" | sort | {
           se_placed=0
           while IFS= read -r se_e; do
@@ -641,11 +745,9 @@ sudoers_expand() (
   done
 )
 
-# field N TEXT: the Nth tab-separated field of a record.
-field() { printf '%s\n' "$2" | cut -f "$1"; }
-
 # dir_safe PATH: PATH is a folder (not a link) owned by root that no one else
-# may write. file_safe PATH: the same for a regular file.
+# may write. file_safe PATH: the same for a regular file. In a self-test the
+# fixture's not-root.txt lists the paths that are not.
 dir_safe() { path_safe d "$1"; }
 file_safe() { path_safe f "$1"; }
 path_safe() {
@@ -660,6 +762,18 @@ path_safe() {
     return
   fi
   [ -n "$(find "$2" -prune -type "$1" -user 0 ! -perm -0020 ! -perm -0002 -print)" ]
+}
+
+# mode_is PATH OCTAL: PATH has exactly that mode. In a self-test the
+# fixture's modes.txt (PATH OCTAL lines) says it when it lists PATH, since
+# git keeps no mode but 0644 and 0755.
+mode_is() {
+  if [ -n "$FIX" ] && [ -f "$FIX/modes.txt" ] &&
+    mi_m=$(awk -v p="$1" '$1 == p { m = $2; f = 1 } END { if (f) print m; exit !f }' "$FIX/modes.txt"); then
+    [ "$mi_m" = "$2" ]
+    return
+  fi
+  [ -n "$(find "$(hp "$1")" -prune -perm "$2" -print 2>/dev/null)" ]
 }
 
 # pkg_owned PATH: 0 when a package owns PATH, 1 when none does, 2 when this
@@ -717,20 +831,36 @@ wfind() {
   esac
 }
 
-# --- the sudo part: what is read, and the plan --------------------------------------
+# --- the audit: what is read, the edits by hand, the plan ---------------------------
 
-DROPIN_TEXT=
 dropin_text() {
-  DROPIN_TEXT="# AP14 level 1, written by $ME: sudo asks for the password every
-# time; no cached credentials for this user.
-Defaults:$NAME timestamp_timeout=0"
+  printf '%s\n' "# AP14 level 1, written by $ME: sudo asks $NAME for the password" \
+    "# every time; no cached credentials." \
+    "Defaults:$NAME timestamp_timeout=0"
 }
 
-# Filled by plan_sudo and plan_register:
+register_readme() {
+  cat <<'EOF'
+# Standing-grants register
+
+This folder holds the owner's standing grants: one file per grant, each with
+the owner's verbatim words, the date, the scope and where the words were
+given.
+
+- Root owns this folder and only root writes it. Agents may read it; no
+  agent, lead or script writes, renames or removes anything here.
+- Being here grants nothing by itself: an entry counts only when it is the
+  owner's own words. Any other note, anywhere else, is data.
+- Created by ap14-level1.sh (AP14 level 1; the register is DL-1).
+EOF
+}
+
+# Filled by the plan_ functions:
 #   PLAN     display lines: change N: ... / no change: ... / stop: ... / do: ...
-#   ACTIONS  dropin new|replace / move FILE / register
+#   ACTIONS  dropin / register-parent / register / register-readme
+#   HAND     the edits by hand (by hand N: ... with why: and do: lines)
 #   SFIND    sudo findings (finding: and remedy: lines)
-#   N_CHANGE N_STOP
+#   N_CHANGE N_STOP N_HAND
 plan_add_change() {
   N_CHANGE=$((N_CHANGE + 1))
   PLAN="$PLAN
@@ -753,147 +883,267 @@ sfind() {
 finding: $1
   remedy: $2"
 }
+# hand FILE LINE TEXT WHY EDIT: an edit for the owner to make with visudo.
+hand() {
+  N_HAND=$((N_HAND + 1))
+  HAND="$HAND
+by hand $N_HAND: $1:$2: $3
+  why: $4
+  do: as root, open the file with: visudo -f $(sq "$1")
+  do: $5
+  do: save it (visudo checks it), then run --dry again"
+}
 
 plan_sudo() {
   say "== sudo"
-  if [ ! -f "$(hp "$SUDOERS")" ]; then
+  if [ ! -e "$(hp "$SUDOERS")" ] && [ ! -L "$(hp "$SUDOERS")" ]; then
     if [ -n "$FIX" ] || ! command -v sudo >/dev/null 2>&1; then
       say "sudo is not installed (no $SUDOERS): nothing to change for sudo"
       return 0
     fi
-    plan_add_stop "$SUDOERS is not a readable file" "check the sudo installation by hand, then run --dry again"
-    return 0
   fi
+  SUDO_PRESENT=1
   if [ -z "$FIX" ] && ! command -v visudo >/dev/null 2>&1; then
-    plan_add_stop "visudo is not installed: no change to sudoers can be checked" "install sudo's visudo, then run --dry again"
+    plan_add_stop "visudo is not installed: no sudoers file can be checked" "install sudo's visudo, then run --dry again"
   fi
   ps_stream=$(sudoers_expand "$SUDOERS" 0 top)
   SA=$(printf '%s\n' "$ps_stream" | awk -v u="$NAME" -v uid="$U_UID" -v groups="$U_GROUPS" -v gids="$U_GIDS" "$SUDO_AWK")
   say "read: $(printf '%s\n' "$SA" | awk -F "$TAB" '$1 == "LINES" { printf "%s%s", (n++ ? ", " : ""), $2 } END { if (!n) printf "nothing" }')"
-  printf '%s\n' "$SA" | while IFS="$TAB" read -r w_k w_f w_ln w_t; do
+
+  # What sudo reads that the script could not: the audit is incomplete.
+  while IFS="$TAB" read -r w_k w_f w_ln w_t; do
     [ "$w_k" = WARN ] || continue
-    say "check by hand: $w_f:$w_ln: $w_t"
-  done
-
-  # The drop-in.
-  dropin_text
-  if printf '%s\n' "$SA" | grep -q "^PLACE${TAB}1\$"; then
-    ps_d=$(hp "$DROPIN")
-    if [ -L "$ps_d" ] || { [ -e "$ps_d" ] && [ ! -f "$ps_d" ]; }; then
-      plan_add_stop "$DROPIN exists and is not a regular file" "look at it and remove it by hand, then run --dry again"
-    elif [ -f "$ps_d" ] && [ "$(cat "$ps_d")" = "$DROPIN_TEXT" ]; then
-      plan_add_same "$DROPIN already says: Defaults:$NAME timestamp_timeout=0"
-    elif [ -f "$ps_d" ]; then
-      plan_add_change "replace $DROPIN (the old copy goes to the backup folder), mode 0440, owner root, with:
-$(printf '%s\n' "$DROPIN_TEXT" | sed 's/^/    | /')" "dropin${TAB}replace"
-    else
-      plan_add_change "write $DROPIN, mode 0440, owner root, with:
-$(printf '%s\n' "$DROPIN_TEXT" | sed 's/^/    | /')" "dropin${TAB}new"
-    fi
-  else
-    plan_add_stop "$SUDOERS does not read $SUDOERS_D (no includedir for it): the drop-in would have no effect" "add the line @includedir $SUDOERS_D at the end of $SUDOERS with visudo, then run --dry again"
-  fi
-
-  # Passwordless rules.
-  ps_moved=
-  ps_rules=$(printf '%s\n' "$SA" | grep -E "^(NOPASS|NOAUTH)$TAB" || true)
-  if [ -z "$ps_rules" ]; then
-    say "no rule gives $NAME sudo without a password"
-  fi
-  while IFS="$TAB" read -r r_k r_f r_ln r_c r_as r_t; do
-    [ -n "$r_k" ] || continue
-    if [ "$r_k" = NOAUTH ]; then r_what="Defaults !authenticate"; else r_what="NOPASSWD, as $r_as"; fi
-    say "rule: $r_f:$r_ln: $r_what: $r_t"
-    if [ "$r_c" = maybe ]; then
-      sfind "sudo-nopasswd: $r_f:$r_ln: may apply to $NAME (a netgroup or non-Unix group): $r_t" "check whether $NAME is in it; if so, remove the rule with visudo -f $r_f"
-      continue
-    fi
-    r_info=$(printf '%s\n' "$SA" | awk -F "$TAB" -v f="$r_f" '$1 == "LINES" && $2 == f { print $3 "\t" $4 }')
-    r_count=$(field 1 "$r_info")
-    r_via=$(field 2 "$r_info")
-    if [ "${r_f%/*}" = "$SUDOERS_D" ] && [ "$r_via" = "dir:$SUDOERS_D" ] && [ "$r_count" = 1 ] &&
-      [ "$r_f" != "$DROPIN" ] && [ ! -L "$(hp "$r_f")" ] && [ -f "$(hp "$r_f")" ]; then
-      case "
-$ps_moved
-" in
-        *"
-$r_f
-"*) ;;
-        *)
-          ps_moved="$ps_moved
-$r_f"
-          plan_add_change "move $r_f aside into $BACKUP_BASE/backup-<UTC time of the run>/ (its one rule, line $r_ln: $r_t)" "move${TAB}$r_f"
-          ;;
-      esac
-    else
-      plan_add_stop "$r_f:$r_ln: $r_t" "edit it with visudo -f $r_f: drop NOPASSWD (or !authenticate) for $NAME and its groups, or remove the line; then run --dry again"
-      sfind "sudo-nopasswd: $r_f:$r_ln: $r_t" "remove NOPASSWD (or !authenticate) for $NAME with visudo -f $r_f"
-    fi
-  done <<EOF
-$ps_rules
-EOF
-
-  # Later settings of the cache time.
-  while IFS="$TAB" read -r l_k l_f l_ln l_v l_t; do
-    [ "$l_k" = LATE ] || continue
-    sfind "sudo-timeout: $l_f:$l_ln: sets timestamp_timeout=$l_v after the drop-in, which it may override: $l_t" "remove it or make it timestamp_timeout=0, with visudo -f $l_f"
+    plan_add_stop "$w_f:$w_ln: $w_t: the audit cannot tell what sudo reads there" "read it by hand and fix it with visudo (so that the script can read it), then run --dry again"
   done <<EOF
 $SA
 EOF
 
-  # The backup folder, when something moves.
-  if printf '%s\n' "$ACTIONS" | grep -Eq "^(move|dropin${TAB}replace)"; then
-    if [ -e "$(hp "$BACKUP_BASE")" ] || [ -L "$(hp "$BACKUP_BASE")" ]; then
-      dir_safe "$BACKUP_BASE" ||
-        plan_add_stop "$BACKUP_BASE exists but is not a folder owned by root that only root may write" "look at it and remove it by hand, then run --dry again"
+  # Every rule, who it gives sudo and whether it asks for a password.
+  ps_fallback=0
+  while IFS="$TAB" read -r r_k r_f r_ln r_a r_b r_c r_d r_e r_t; do
+    case $r_k in
+      RULE)
+        # r_a who, r_b applies, r_c pw, r_d as, r_e allpw
+        case $r_c in
+          asked) r_pw="asked" ;;
+          none) r_pw="not asked (as $r_d)" ;;
+          *) r_pw="not asked for some commands (as $r_d)" ;;
+        esac
+        say "rule: $r_f:$r_ln: users $r_a; applies to $NAME: $r_b; password: $r_pw: $r_t"
+        [ "$r_b" = yes ] && U_GRANTS=$((U_GRANTS + 1))
+        if [ "$r_b" = yes ] && [ "$r_c" = asked ] && [ "$r_e" = 1 ]; then ps_fallback=1; fi
+        [ "$r_b" != no ] && [ "$r_c" != asked ] || continue
+        case $r_a in
+          "$NAME" | "#$U_UID") r_why="it gives $NAME sudo without a password" ;;
+          *) r_why="it gives $NAME sudo without a password; it also applies to others ($r_a), and the edit changes their sudo too" ;;
+        esac
+        [ "$r_b" = yes ] || r_why="it may give $NAME sudo without a password ($r_a is a netgroup or non-Unix group: check whether $NAME is in it); the script cannot tell, so --apply waits for the edit"
+        hand "$r_f" "$r_ln" "$r_t" "$r_why" "on line $r_ln, delete each NOPASSWD: tag (or change it to PASSWD:), or delete the whole rule"
+        ;;
+      NOAUTH)
+        # r_a applies, r_b who, r_c the text (a record of six fields)
+        say "rule: $r_f:$r_ln: Defaults !authenticate for $r_b; applies to $NAME: $r_a; password: not asked: $r_c"
+        hand "$r_f" "$r_ln" "$r_c" "!authenticate lets $r_b run sudo without a password" "on line $r_ln, delete !authenticate (the whole line when it is the only setting)"
+        ;;
+      EXEMPT)
+        # r_a group, r_b applies, r_c the text (a record of six fields)
+        say "rule: $r_f:$r_ln: exempt_group $r_a (its members never type a password); applies to $NAME: $r_b: $r_c"
+        [ "$r_b" != no ] || continue
+        hand "$r_f" "$r_ln" "$r_c" "$NAME is in $r_a, whose members never type a password for sudo" "on line $r_ln, delete the exempt_group setting (the whole line when it is the only setting)"
+        ;;
+    esac
+  done <<EOF
+$SA
+EOF
+
+  # Before the owner deletes a passwordless rule: would another rule still
+  # give the user sudo with the password?
+  if [ "$N_HAND" -gt 0 ] && [ "$ps_fallback" = 0 ]; then
+    plan_add_stop "no other rule gives $NAME sudo with a password: once the passwordless rules are gone, sudo would refuse $NAME, not ask for a password" "first add a rule that asks for it, for example $NAME ALL=(ALL:ALL) ALL (as root: visudo -f $(sq "$SUDOERS_D/50-$NAME")); if $NAME is to have no sudo at all, make sure root can log in another way first; this stop goes when the passwordless rules do"
+  fi
+  if [ "$U_GRANTS" = 0 ]; then
+    say "no rule gives $NAME sudo: sudo refuses $NAME (the drop-in changes nothing for it)"
+  fi
+
+  # Settings of the cache time that may override the drop-in.
+  while IFS="$TAB" read -r l_k l_f l_ln l_v l_t; do
+    case $l_k in
+      LATE) sfind "sudo-timeout: $l_f:$l_ln: sets timestamp_timeout=$l_v after the drop-in, which it may override: $l_t" "remove it or make it timestamp_timeout=0, as root with visudo -f $(sq "$l_f")" ;;
+      CMDTO) sfind "sudo-timeout: $l_f:$l_ln: sets timestamp_timeout=$l_v for a command or runas user, which sudo applies after the drop-in wherever it sits: $l_t" "remove it or make it timestamp_timeout=0, as root with visudo -f $(sq "$l_f")" ;;
+    esac
+  done <<EOF
+$SA
+EOF
+
+  # The drop-in: a new file, or exactly the one this script writes.
+  if ! printf '%s\n' "$SA" | grep -q "^PLACE${TAB}1\$"; then
+    plan_add_stop "$SUDOERS does not read $SUDOERS_D (no includedir for it): the drop-in would have no effect" "add the line @includedir $SUDOERS_D at the end of $SUDOERS with visudo, then run --dry again"
+    return 0
+  fi
+  if ! dir_safe "$SUDOERS_D"; then
+    plan_add_stop "$SUDOERS_D is not a folder owned by root that only root may write" "look at it by hand; the script writes nothing there until it is"
+    return 0
+  fi
+  ps_d=$(hp "$DROPIN")
+  if [ -L "$ps_d" ] || { [ -e "$ps_d" ] && [ ! -f "$ps_d" ]; }; then
+    plan_add_stop "$DROPIN exists and is not a regular file: the script never replaces or removes it" "look at it; remove it by hand if it is not wanted, then run --dry again"
+  elif [ -f "$ps_d" ]; then
+    if dropin_text | cmp -s - "$ps_d" && file_safe "$DROPIN" && mode_is "$DROPIN" 0440; then
+      plan_add_same "$DROPIN already says: Defaults:$NAME timestamp_timeout=0 (owner root, mode 0440)"
+    else
+      plan_add_stop "$DROPIN exists and is not the file this script writes (its text, owner root, mode 0440): the script never replaces it" "read it; if it is not wanted, remove it by hand (rm -f $(sq "$DROPIN"), then visudo -c), then run --dry again"
     fi
+  else
+    plan_add_change "write $DROPIN (a new file), mode 0440, owner root, with:
+$(dropin_text | sed 's/^/    | /')" "dropin"
   fi
 }
 
-plan_register() {
-  pr_new=
-  for pr_p in "$REGISTER_PARENT" "$REGISTER"; do
-    if [ -e "$(hp "$pr_p")" ] || [ -L "$(hp "$pr_p")" ]; then
-      if ! dir_safe "$pr_p"; then
-        plan_add_stop "$pr_p exists but is not a folder owned by root that only root may write" "look at who made it and what it holds, move it away by hand, then run --dry again"
-        return 0
-      fi
+# plan_sudo_l asks sudo itself for the effective policy.
+plan_sudo_l() {
+  [ "$SUDO_PRESENT" = 1 ] || return 0
+  if [ -n "$FIX" ]; then
+    if [ -f "$FIX/sudo-l.txt" ]; then
+      sl_out=$(cat "$FIX/sudo-l.txt")
+      sl_rc=$(if [ -f "$FIX/sudo-l.rc" ]; then cat "$FIX/sudo-l.rc"; else echo 0; fi)
     else
-      pr_new="$pr_new $pr_p"
+      sl_out="(no sudo-l.txt in the fixtures)"
+      sl_rc=127
     fi
-  done
-  pr_readme=$REGISTER/README
-  if [ -z "$pr_new" ]; then
-    if [ -e "$(hp "$pr_readme")" ] || [ -L "$(hp "$pr_readme")" ]; then
-      if file_safe "$pr_readme"; then
-        plan_add_same "the standing-grants register $REGISTER exists, owned by root"
-      else
-        plan_add_stop "$pr_readme is not a file owned by root that only root may write" "look at it and remove it by hand, then run --dry again"
+  elif command -v sudo >/dev/null 2>&1; then
+    if sl_out=$(sudo -n -l -U "$NAME" 2>&1 </dev/null); then sl_rc=0; else sl_rc=$?; fi
+  else
+    sl_out="(sudo is not in $SYS_PATH)"
+    sl_rc=127
+  fi
+  sl_rec=$(printf '%s\n' "$sl_out" | awk "$SUDOL_AWK")
+  if [ "$sl_rc" != 0 ]; then
+    if printf '%s\n' "$sl_rec" | grep -qx NOTALLOWED; then
+      say "sudo -l -U $NAME: $NAME is not allowed to run sudo"
+      if [ "$U_GRANTS" -gt 0 ]; then
+        plan_add_stop "sudo -l -U $NAME says $NAME may not run sudo, but the files hold rules for it: the audit and sudo disagree" "read sudo -l -U $NAME as root and the rules above, then run --dry again"
       fi
       return 0
     fi
+    plan_add_stop "sudo -l -U $NAME failed (exit $sl_rc): the effective policy is unknown: $(printf '%s\n' "$sl_out" | head -n 1)" "run sudo -l -U $NAME as root and read the error; fix it, then run --dry again"
+    return 0
   fi
-  plan_add_change "create the standing-grants register $REGISTER (folders mode 0755, owner root), holding only a README (mode 0644): the owner's verbatim words go there; agents may read it, never write it" "register"
+  while IFS="$TAB" read -r sl_k sl_t; do
+    case $sl_k in
+      NOPASS | NOAUTH)
+        if [ "$N_HAND" = 0 ]; then
+          plan_add_stop "sudo -l -U $NAME lists $sl_t, which needs no password, but the files read above hold no such rule for $NAME" "find the rule by hand (sudo -ll -U $NAME names its source in newer sudo); remove it with visudo, then run --dry again"
+        else
+          say "sudo -l -U $NAME also lists, without a password: $sl_t"
+        fi
+        ;;
+      TIMEOUT)
+        case $sl_t in
+          0 | 0.0) say "sudo -l -U $NAME: the last timestamp_timeout is 0" ;;
+          *) sfind "sudo-l: sudo -l -U $NAME shows timestamp_timeout=$sl_t last: credentials are cached" "remove the later timestamp_timeout setting (see the sudo part above)" ;;
+        esac
+        ;;
+    esac
+  done <<EOF
+$sl_rec
+EOF
 }
 
 plan_password() {
+  [ "$SUDO_PRESENT" = 1 ] || return 0
+  pp_rc=0
   if [ -n "$FIX" ]; then
-    [ -f "$FIX/passwd-S.txt" ] || return 0
-    pp_st=$(awk '{ print $2; exit }' "$FIX/passwd-S.txt")
+    if [ -f "$FIX/passwd-S.txt" ]; then
+      pp_st=$(awk '{ print $2; exit }' "$FIX/passwd-S.txt")
+    else
+      pp_st=
+      pp_rc=127
+    fi
   elif command -v passwd >/dev/null 2>&1; then
-    pp_st=$(passwd -S "$NAME" 2>/dev/null | awk '{ print $2; exit }') || pp_st=
+    if pp_out=$(passwd -S "$NAME" 2>/dev/null </dev/null); then pp_rc=0; else pp_rc=$?; fi
+    pp_st=$(printf '%s\n' "$pp_out" | awk '{ print $2; exit }')
   else
     pp_st=
+    pp_rc=127
   fi
+  [ "$pp_rc" = 0 ] || pp_st=
   case $pp_st in
     P | PS) say "$NAME has a usable password: sudo can still ask for it" ;;
     L | LK | NP)
-      if [ "$N_CHANGE" -gt 0 ]; then
-        plan_add_stop "$NAME has no usable password (passwd -S says $pp_st): after the change sudo would ask for a password $NAME does not have" "set one with passwd $NAME (as root), or make sure root can log in another way, then run --dry again"
+      if [ "$U_GRANTS" -gt 0 ]; then
+        plan_add_stop "$NAME has no usable password (passwd -S says $pp_st): sudo would ask for a password $NAME does not have" "set one with passwd $NAME (as root), or make sure root can log in another way, then run --dry again"
+      else
+        say "$NAME has no usable password (passwd -S says $pp_st), and no sudo rule"
       fi
       ;;
-    *) say "note: passwd -S did not say whether $NAME has a usable password; make sure it has one before --apply" ;;
+    *) plan_add_stop "passwd -S did not say whether $NAME has a usable password (exit $pp_rc)" "check it by hand as root (passwd -S $NAME); the script cannot tell whether sudo could still ask $NAME for one" ;;
   esac
+}
+
+plan_register() {
+  pr_new=0
+  for pr_p in "$REGISTER_PARENT" "$REGISTER"; do
+    if [ -e "$(hp "$pr_p")" ] || [ -L "$(hp "$pr_p")" ]; then
+      if ! dir_safe "$pr_p"; then
+        plan_add_stop "$pr_p exists but is not a folder owned by root that only root may write" "look at who made it and what it holds, and fix or remove it by hand, then run --dry again"
+        return 0
+      fi
+    elif [ "$pr_p" = "$REGISTER_PARENT" ]; then
+      plan_add_change "create the folder $REGISTER_PARENT (a new folder), mode 0755, owner root" "register-parent"
+      pr_new=1
+    else
+      pr_new=1
+    fi
+  done
+  if [ "$pr_new" = 1 ]; then
+    plan_add_change "create the standing-grants register $REGISTER (a new folder), mode 0755, owner root: the owner's verbatim words go there; agents may read it, never write it" "register"
+    plan_add_change "write $REGISTER/README (a new file), mode 0644, owner root" "register-readme"
+    return 0
+  fi
+  # Every entry of an existing register: a regular file root owns and only
+  # root may write.
+  pr_md=$(hp "$REGISTER")
+  if [ -n "$(odd_names "$pr_md")" ]; then
+    plan_add_stop "a file name in $REGISTER holds a newline or a tab: the script cannot check that entry" "look at the register by hand and rename the entry, then run --dry again"
+    return 0
+  fi
+  pr_bad=0
+  # shellcheck disable=SC2012  # names with a newline or a tab are refused above
+  pr_list=$(ls -A "$pr_md" | sort)
+  while IFS= read -r pr_e; do
+    [ -n "$pr_e" ] || continue
+    pr_x=$REGISTER/$pr_e
+    if [ -L "$(hp "$pr_x")" ]; then
+      plan_add_stop "the register entry $pr_x is a link: anyone who may change its target changes the grant" "replace it by a regular file root owns, or remove it, by hand; then run --dry again"
+      pr_bad=1
+    elif [ ! -f "$(hp "$pr_x")" ]; then
+      plan_add_stop "the register entry $pr_x is not a regular file" "look at it by hand; the register holds only files; then run --dry again"
+      pr_bad=1
+    elif ! file_safe "$pr_x"; then
+      plan_add_stop "the register entry $pr_x is not owned by root or may be written by another account: that account can change the grant" "check its words with the owner, then chown root:root $(sq "$pr_x") and chmod go-w $(sq "$pr_x"); then run --dry again"
+      pr_bad=1
+    fi
+  done <<EOF
+$pr_list
+EOF
+  if [ -e "$pr_md/README" ] || [ -L "$pr_md/README" ]; then
+    [ "$pr_bad" = 1 ] || plan_add_same "the standing-grants register $REGISTER exists, owned by root, and every entry is root's"
+  else
+    plan_add_change "write $REGISTER/README (a new file), mode 0644, owner root" "register-readme"
+  fi
+}
+
+# plan_leftovers notes temporary files an earlier, interrupted --apply left.
+plan_leftovers() {
+  for pl_d in "$SUDOERS_D" "$REGISTER"; do
+    [ -d "$(hp "$pl_d")" ] || continue
+    # shellcheck disable=SC2012  # a temporary name has no newline
+    ls -A "$(hp "$pl_d")" 2>/dev/null | while IFS= read -r pl_e; do
+      case $pl_e in
+        "$TMP_PREFIX"*) say "note: $pl_d/$pl_e is a temporary file of an earlier run (sudo skips it): remove it by hand: rm -f $(sq "$pl_d/$pl_e")" ;;
+      esac
+    done
+  done
 }
 
 # --- other routes to root (reported only) -------------------------------------------
@@ -932,7 +1182,11 @@ routes() {
   for rt_d in "$POLKIT_ETC" "$POLKIT_USR"; do
     rt_md=$(hp "$rt_d")
     [ -d "$rt_md" ] || continue
-    # shellcheck disable=SC2012  # polkit reads plain names; a name with a newline is not one
+    if [ -n "$(odd_names "$rt_md")" ]; then
+      printf 'POLKIT\todd\t%s\t0\t-\n' "$rt_d"
+      continue
+    fi
+    # shellcheck disable=SC2012  # names with a newline or a tab are refused above
     ls -A "$rt_md" | sort | while IFS= read -r rt_e; do
       case $rt_e in *.rules) ;; *) continue ;; esac
       if [ "$rt_d" = "$POLKIT_USR" ] && [ -e "$(hp "$POLKIT_ETC")/$rt_e" ]; then continue; fi
@@ -942,6 +1196,10 @@ routes() {
   done | while IFS="$TAB" read -r pk_k pk_kind pk_f pk_ln pk_a; do
     [ "$pk_k" = POLKIT ] || continue
     case $pk_kind in
+      odd)
+        finding "polkit: a file name in $pk_f holds a newline or a tab: its rules were not read" "read the folder by hand and rename the file"
+        continue
+        ;;
       any) pk_w="returns YES without authentication for any user" ;;
       match) pk_w="returns YES without authentication for $NAME or one of its groups" ;;
       *) pk_w="returns YES without authentication, for users the script cannot tell; read it" ;;
@@ -986,19 +1244,19 @@ routes() {
     if [ "$rt_st" = 2 ]; then
       [ "$rt_query" = 0 ] || say "note: no package query (pacman, dpkg, rpm) here: every setuid file is listed"
       rt_query=0
-      finding "setuid: $rt_s is setuid or setgid root; its package is unknown" "check where it comes from; chmod u-s,g-s $rt_s unless it is meant to be there"
+      finding "setuid: $rt_s is setuid or setgid root; its package is unknown" "check where it comes from; chmod u-s,g-s $(sq "$rt_s") unless it is meant to be there"
     else
-      finding "setuid: $rt_s is setuid or setgid root and no package owns it" "remove it, or chmod u-s,g-s $rt_s, unless you put it there on purpose"
+      finding "setuid: $rt_s is setuid or setgid root and no package owns it" "remove it, or chmod u-s,g-s $(sq "$rt_s"), unless you put it there on purpose"
     fi
   done <<EOF
 $rt_suid
 EOF
 
-  # Root's PATH.
+  # Root's PATH: the one the script was started with.
   if [ -n "$FIX" ]; then
     rt_path=$(if [ -f "$FIX/root-path.txt" ]; then cat "$FIX/root-path.txt"; else say "$STD_PATH"; fi)
   else
-    rt_path=$PATH
+    rt_path=$CALLER_PATH
   fi
   rt_flat=$(printf '%s:%s\n' "$rt_path" "$STD_PATH" | awk -F: '{ for (i = 1; i <= NF; i++) print $i }' | while IFS= read -r rt_e; do
     case $rt_e in
@@ -1049,59 +1307,49 @@ EOF
   fi
   printf '%s\n' "$rt_w" | while IFS= read -r rt_e; do
     [ -n "$rt_e" ] || continue
-    finding "writable: $NAME may write $rt_e, which root runs or reads as configuration" "chown root:root $rt_e and chmod go-w $rt_e (or remove $NAME's access)"
+    finding "writable: $NAME may write $rt_e, which root runs or reads as configuration" "chown root:root $(sq "$rt_e") and chmod go-w $(sq "$rt_e") (or remove $NAME's access)"
   done
   printf '%s\n' "$rt_acl" | awk -v u="$NAME" -v uid="$U_UID" -v groups="$U_GROUPS" -v gids="$U_GIDS" "$ACL_AWK" |
     while IFS="$TAB" read -r ac_k ac_p ac_e; do
       [ "$ac_k" = ACL ] || continue
-      finding "acl: $ac_p grants $ac_e: $NAME may write it" "setfacl -x ${ac_e%:*} $ac_p"
+      finding "acl: $ac_p grants $ac_e: $NAME may write it" "setfacl -x $(sq "${ac_e%:*}") $(sq "$ac_p")"
     done
-
-  # What sudo itself says.
-  if [ -n "$FIX" ]; then
-    rt_sl=$(if [ -f "$FIX/sudo-l.txt" ]; then cat "$FIX/sudo-l.txt"; fi)
-  elif command -v sudo >/dev/null 2>&1; then
-    rt_sl=$(sudo -l -U "$NAME" 2>&1) || true
-  else
-    rt_sl=
-  fi
-  if [ -n "$rt_sl" ]; then
-    printf '%s\n' "$rt_sl" | awk "$SUDOL_AWK" | while IFS="$TAB" read -r sl_k sl_t; do
-      case $sl_k in
-        NOPASS) finding "sudo-l: sudo -l -U $NAME lists a command without a password: $sl_t" "find the rule (see the sudo part above) and remove NOPASSWD" ;;
-        NOAUTH) finding "sudo-l: sudo -l -U $NAME lists !authenticate: $sl_t" "find the Defaults line and remove !authenticate" ;;
-        TIMEOUT)
-          case $sl_t in
-            0 | 0.0) say "check: sudo -l -U $NAME: the last timestamp_timeout is 0" ;;
-            *) finding "sudo-l: sudo -l -U $NAME shows timestamp_timeout=$sl_t last: credentials are cached" "remove the later timestamp_timeout setting (see the sudo part above)" ;;
-          esac
-          ;;
-      esac
-    done
-  fi
 }
 
 # --- the report ---------------------------------------------------------------------
 
-# report prints what the run reads, the plan and the routes, and returns 0
-# when there is nothing to change and nothing found, else 1.
+# report prints what the run reads, the edits by hand, the plan and the
+# routes, and returns 0 when there is nothing to write, no edit, no stop and
+# no finding, else 1.
 report() {
   PLAN=
   ACTIONS=
   SFIND=
+  HAND=
   N_CHANGE=0
   N_STOP=0
+  N_HAND=0
+  U_GRANTS=0
+  SUDO_PRESENT=0
   load_user
   say "== user"
   say "user: $NAME, uid $U_UID; groups: ${U_GROUPS:-none}"
   plan_sudo
+  plan_sudo_l
   plan_password
   plan_register
-  say "== plan: what --apply changes, in this order"
+  plan_leftovers
+  say "== by hand: the edits the owner makes with visudo before --apply"
+  if [ -n "$HAND" ]; then
+    printf '%s\n' "$HAND" | sed '1{/^$/d;}'
+  else
+    say "nothing: no rule gives $NAME sudo without a password"
+  fi
+  say "== plan: what --apply writes (new files only; it never moves, edits or removes a file)"
   if [ -n "$PLAN" ]; then printf '%s\n' "$PLAN" | sed '1{/^$/d;}'; fi
-  [ "$N_CHANGE" -gt 0 ] || [ "$N_STOP" -gt 0 ] || say "nothing to change"
-  if [ "$N_STOP" -gt 0 ]; then
-    say "--apply refuses while a stop is listed: it changes nothing until each is handled"
+  [ "$N_CHANGE" -gt 0 ] || [ "$N_STOP" -gt 0 ] || say "nothing to write"
+  if [ "$N_STOP" -gt 0 ] || [ "$N_HAND" -gt 0 ]; then
+    say "--apply refuses while a stop or a by-hand edit is listed: it writes nothing until each is handled"
   fi
   say "== routes to root (reported, never changed by this script)"
   rp_routes=$(
@@ -1112,119 +1360,154 @@ report() {
   N_FIND=$(printf '%s\n' "$rp_routes" | grep -c '^finding:' || true)
   [ "$N_FIND" -gt 0 ] || say "no route found"
   say "== summary"
-  say "changes: $N_CHANGE; stops: $N_STOP; findings: $N_FIND"
-  [ "$N_CHANGE" -eq 0 ] && [ "$N_STOP" -eq 0 ] && [ "$N_FIND" -eq 0 ]
+  say "changes: $N_CHANGE; by hand: $N_HAND; stops: $N_STOP; findings: $N_FIND"
+  [ "$N_CHANGE" -eq 0 ] && [ "$N_HAND" -eq 0 ] && [ "$N_STOP" -eq 0 ] && [ "$N_FIND" -eq 0 ]
 }
 
-# --- --apply ------------------------------------------------------------------------
+# --- --apply: new files only, one lock, one-step rollback ---------------------------
 
-UNDO=
-undo_push() { UNDO="$UNDO
-$1"; }
-rollback() {
-  say "a check failed: undoing every sudoers change of this run"
-  printf '%s\n' "$UNDO" | awk 'NF { a[++n] = $0 } END { for (i = n; i > 0; i--) print a[i] }' |
-    while IFS="$TAB" read -r rb_k rb_a rb_b; do
-      case $rb_k in
-        rm)
-          rm -f "$rb_a"
-          say "undone: removed $rb_a"
-          ;;
-        mv)
-          mv -f "$rb_a" "$rb_b"
-          say "undone: moved $rb_a back to $rb_b"
-          ;;
-      esac
-    done
-  if visudo -c >/dev/null 2>&1; then
-    say "visudo -c passes again"
-  else
-    say "visudo -c still fails: fix sudoers by hand from this root shell (visudo -c names the file)"
+CREATED=
+LOCKED=0
+
+# tx_step WHAT: one step of the run. In a self-test, step TX_FAIL_AT fails.
+tx_step() {
+  TX_N=$((TX_N + 1))
+  if [ "$TX_TEST" = 1 ] && [ "$TX_N" = "$TX_FAIL_AT" ]; then
+    say "self-test: step $TX_N fails here: $1"
+    return 1
   fi
+  return 0
+}
+tx_created() { CREATED="$CREATED$NL$1"; }
+tx_forget() { CREATED=$(printf '%s\n' "$CREATED" | grep -vxF -- "$1" || true); }
+tx_own() {
+  [ "$TX_TEST" = 1 ] && return 0
+  chown 0:0 -- "$1"
+}
+tx_visudo() {
+  [ "$TX_TEST" = 1 ] && return 0
+  if ! tv_out=$(visudo "$@" 2>&1); then
+    printf '%s\n' "$tv_out" | sed 's/^/    | /'
+    return 1
+  fi
+}
+
+# tx_mkdir PATH: a new folder, mode 0755, owner root.
+tx_mkdir() {
+  tx_step "make the folder $1" || return 1
+  mkdir -m 0755 -- "$(hp "$1")" || return 1
+  tx_created "d $1"
+  tx_step "owner and mode of $1" || return 1
+  tx_own "$(hp "$1")" || return 1
+  chmod 0755 -- "$(hp "$1")" || return 1
+  say "made $1 (mode 0755, owner root)"
+}
+
+# tx_publish PATH MODE TEXT CHECK: a new file at PATH with the output of the
+# function TEXT, written under a temporary name in the same folder (a name
+# with a dot, which sudo skips), checked (CHECK visudo: visudo -cf on it
+# alone), then given its name with ln, which never replaces a file.
+tx_publish() {
+  tp_dir=${1%/*}
+  tx_step "make a temporary file in $tp_dir" || return 1
+  tp_tmp=$(mktemp "$(hp "$tp_dir")/${TMP_PREFIX}XXXXXX") || return 1
+  tp_log=${tp_tmp#"$FIX"}
+  tx_created "f $tp_log"
+  tx_step "write $tp_log" || return 1
+  "$3" >"$tp_tmp" || return 1
+  if ! "$3" | cmp -s - "$tp_tmp"; then
+    say "$tp_log does not hold the whole text (is the disk full?)"
+    return 1
+  fi
+  tx_step "owner and mode of $tp_log" || return 1
+  tx_own "$tp_tmp" || return 1
+  chmod "$2" -- "$tp_tmp" || return 1
+  if [ "$4" = visudo ]; then
+    tx_step "visudo -cf $tp_log" || return 1
+    tx_visudo -cf "$tp_tmp" || return 1
+    say "visudo -cf (the new file alone): ok"
+  fi
+  tx_step "publish $1" || return 1
+  if ! ln -- "$tp_tmp" "$(hp "$1")"; then
+    say "$1 could not be made (did it appear meanwhile? it is never replaced)"
+    return 1
+  fi
+  tx_created "f $1"
+  tx_step "remove the temporary name $tp_log" || return 1
+  rm -f -- "$tp_tmp" || return 1
+  tx_forget "f $tp_log"
+  say "wrote $1 (mode $2, owner root)"
+}
+
+# tx_rollback removes what this run created, newest first; a failed removal
+# is reported and the rest goes on.
+tx_rollback() {
+  say "a step failed: removing the files this run created, newest first"
+  tr_list=$(printf '%s\n' "$CREATED" | awk 'NF { a[++n] = $0 } END { for (i = n; i > 0; i--) print a[i] }')
+  [ -n "$tr_list" ] || say "nothing was created"
+  while read -r tr_k tr_p; do
+    [ -n "$tr_k" ] || continue
+    if [ "$TX_TEST" = 1 ] && [ "$TX_UNDO_FAIL" = 1 ]; then
+      tr_ok=1
+    elif [ "$tr_k" = d ]; then
+      if rmdir -- "$(hp "$tr_p")"; then tr_ok=0; else tr_ok=1; fi
+    else
+      if rm -f -- "$(hp "$tr_p")"; then tr_ok=0; else tr_ok=1; fi
+    fi
+    if [ "$tr_ok" = 0 ]; then
+      say "undone: removed $tr_p"
+    elif [ "$tr_k" = d ]; then
+      say "NOT undone: the folder $tr_p is still there: remove it by hand (rmdir $(sq "$tr_p"))"
+    else
+      say "NOT undone: $tr_p is still there: remove it by hand (rm -f $(sq "$tr_p"))"
+    fi
+  done <<EOF
+$tr_list
+EOF
+  CREATED=
+  if [ "$TX_TEST" = 1 ]; then
+    return 0
+  fi
+  if visudo -c >/dev/null 2>&1; then
+    say "visudo -c passes"
+  else
+    say "visudo -c fails: fix sudoers by hand from a root shell (visudo -c names the file)"
+  fi
+}
+
+lock_take() {
+  if ! mkdir -m 0700 -- "$(hp "$LOCK")" 2>/dev/null; then
+    refuse "another --apply holds the lock $LOCK: wait for it; if none is running, remove it by hand (rmdir $LOCK) and run --apply again"
+  fi
+  LOCKED=1
+  trap 'lock_drop' EXIT
+  trap 'tx_abort' INT TERM HUP
+}
+lock_drop() {
+  if [ "$LOCKED" = 1 ]; then
+    rmdir -- "$(hp "$LOCK")" 2>/dev/null || true
+    LOCKED=0
+  fi
+}
+tx_abort() {
+  trap - INT TERM HUP
+  say "interrupted"
+  tx_rollback
   exit 1
 }
-check_sudoers() {
-  if ! cs_out=$(visudo -c 2>&1); then
-    printf '%s\n' "$cs_out" | sed 's/^/    | /'
-    rollback
-  fi
-  say "visudo -c: ok"
-}
 
-apply_changes() {
-  ac_stamp=$(date -u +%Y%m%dT%H%M%SZ)
-  ac_bk=$BACKUP_BASE/backup-$ac_stamp
-  ac_n=0
-  if printf '%s\n' "$ACTIONS" | grep -Eq "^(move|dropin${TAB}replace)"; then
-    if [ ! -d "$BACKUP_BASE" ]; then
-      { mkdir -m 0700 "$BACKUP_BASE" && chown 0:0 "$BACKUP_BASE"; } || rollback
-    fi
-    { mkdir -m 0700 "$ac_bk" && chown 0:0 "$ac_bk"; } || rollback
-    say "backup folder: $ac_bk (mode 0700, owner root)"
-  fi
-  # A here-document keeps the loop in this shell, so UNDO and rollback work.
-  while IFS="$TAB" read -r ac_k ac_a; do
-    [ -n "$ac_k" ] || continue
-    ac_n=$((ac_n + 1))
-    case $ac_k in
+tx_apply() {
+  while IFS= read -r ta_a; do
+    case $ta_a in
       dropin)
-        say "change $ac_n: the drop-in $DROPIN"
-        ac_tmp=$(mktemp "$SUDOERS_D/.ap14-level1.XXXXXX") || rollback
-        if ! { printf '%s\n' "$DROPIN_TEXT" >"$ac_tmp" && chown 0:0 "$ac_tmp" && chmod 0440 "$ac_tmp"; }; then
-          rm -f "$ac_tmp"
-          rollback
-        fi
-        if ! ac_out=$(visudo -cf "$ac_tmp" 2>&1); then
-          printf '%s\n' "$ac_out" | sed 's/^/    | /'
-          rm -f "$ac_tmp"
-          rollback
-        fi
-        say "visudo -cf (the new file alone): ok"
-        if [ "$ac_a" = replace ]; then
-          mv -f "$DROPIN" "$ac_bk/$DROPIN_NAME" || {
-            rm -f "$ac_tmp"
-            rollback
-          }
-          undo_push "mv${TAB}$ac_bk/$DROPIN_NAME${TAB}$DROPIN"
-          printf '%s -> %s\n' "$DROPIN" "$ac_bk/$DROPIN_NAME" >>"$ac_bk/MOVED" || true
-        fi
-        mv -f "$ac_tmp" "$DROPIN" || {
-          rm -f "$ac_tmp"
-          rollback
-        }
-        undo_push "rm${TAB}$DROPIN"
-        check_sudoers
-        say "wrote $DROPIN (mode 0440, owner root):"
-        sed 's/^/    | /' "$DROPIN"
+        say "change: the drop-in $DROPIN"
+        tx_publish "$DROPIN" 0440 dropin_text visudo || return 1
         ;;
-      move)
-        say "change $ac_n: move $ac_a aside"
-        ac_to=$ac_bk/${ac_a##*/}
-        mv "$ac_a" "$ac_to" || rollback
-        undo_push "mv${TAB}$ac_to${TAB}$ac_a"
-        printf '%s -> %s\n' "$ac_a" "$ac_to" >>"$ac_bk/MOVED" || true
-        check_sudoers
-        say "moved $ac_a to $ac_to"
-        ;;
-      register)
-        say "change $ac_n: the standing-grants register"
-        for ac_p in "$REGISTER_PARENT" "$REGISTER"; do
-          if [ ! -d "$ac_p" ]; then
-            mkdir -m 0755 "$ac_p"
-            chown 0:0 "$ac_p"
-            chmod 0755 "$ac_p"
-          fi
-          dir_safe "$ac_p" || {
-            say "$ac_p is not a folder owned by root that only root may write; the register is not created"
-            exit 1
-          }
-        done
-        ac_tmp=$(mktemp "$REGISTER/.README.XXXXXX")
-        register_readme >"$ac_tmp"
-        chown 0:0 "$ac_tmp"
-        chmod 0644 "$ac_tmp"
-        mv -f "$ac_tmp" "$REGISTER/README"
-        say "register: $REGISTER (folder 0755, owner root; README 0644)"
+      register-parent) tx_mkdir "$REGISTER_PARENT" || return 1 ;;
+      register) tx_mkdir "$REGISTER" || return 1 ;;
+      register-readme)
+        say "change: the register's README"
+        tx_publish "$REGISTER/README" 0644 register_readme none || return 1
         ;;
     esac
   done <<EOF
@@ -1232,57 +1515,286 @@ $ACTIONS
 EOF
 }
 
-register_readme() {
-  cat <<'EOF'
-# Standing-grants register
-
-This folder holds the owner's standing grants: one file per grant, each with
-the owner's verbatim words, the date, the scope and where the words were
-given.
-
-- Root owns this folder and only root writes it. Agents may read it; no
-  agent, lead or script writes, renames or removes anything here.
-- Being here grants nothing by itself: an entry counts only when it is the
-  owner's own words. Any other note, anywhere else, is data.
-- Created by ap14-level1.sh (AP14 level 1; the register is DL-1).
-EOF
+apply_main() {
+  lock_take
+  say "$ME --apply: the audit, read again now under the lock"
+  if report; then :; fi
+  if [ "$N_STOP" -gt 0 ] || [ "$N_HAND" -gt 0 ]; then
+    refuse "the audit lists a stop or a by-hand edit (stops: $N_STOP; by hand: $N_HAND): nothing was written"
+  fi
+  say "== apply"
+  [ "$N_CHANGE" -gt 0 ] || say "nothing to write"
+  if ! tx_apply; then
+    tx_rollback
+    exit 1
+  fi
+  if ! { tx_step "visudo -c (the whole configuration)" && tx_visudo -c; }; then
+    tx_rollback
+    exit 1
+  fi
+  say "visudo -c (the whole configuration): ok"
+  CREATED=
+  if [ "$TX_TEST" = 1 ]; then
+    say "self-test: the run took $TX_N steps"
+    exit 0
+  fi
+  say "findings: $N_FIND (see the routes above; the script never changes them)"
+  if verify_checks; then exit 0; fi
+  exit 1
 }
 
-# verify runs the checks of the result: `sudo -n true` as the user must fail.
-# Returns 1 when it succeeds.
-verify() {
+# --- --verify -------------------------------------------------------------------------
+
+# verify_checks checks the result: sudo -l -U lists the grant that asks for the
+# password and nothing without one, and sudo -n true run as the user says a
+# password is required. Returns 1 when a check fails.
+verify_checks() {
   say "== checks of the result"
-  if ! command -v sudo >/dev/null 2>&1; then
-    say "check: sudo is not installed"
-    return 0
-  fi
-  vf_env="env -i PATH=$STD_PATH sudo -n true"
-  if command -v runuser >/dev/null 2>&1; then
-    # shellcheck disable=SC2086  # vf_env is a fixed command line of plain words
-    if runuser -u "$NAME" -- $vf_env </dev/null >/dev/null 2>&1; then vf_ok=0; else vf_ok=1; fi
-  elif command -v su >/dev/null 2>&1; then
-    if su -s /bin/sh -c "$vf_env" "$NAME" </dev/null >/dev/null 2>&1; then vf_ok=0; else vf_ok=1; fi
+  vf_bad=0
+  # What sudo says the user may run.
+  if [ -n "$FIX" ]; then
+    vf_sl=$(if [ -f "$FIX/sudo-l.txt" ]; then cat "$FIX/sudo-l.txt"; fi)
+    vf_slrc=$(if [ -f "$FIX/sudo-l.rc" ]; then cat "$FIX/sudo-l.rc"; elif [ -f "$FIX/sudo-l.txt" ]; then echo 0; else echo 127; fi)
+  elif command -v sudo >/dev/null 2>&1; then
+    if vf_sl=$(sudo -n -l -U "$NAME" 2>&1 </dev/null); then vf_slrc=0; else vf_slrc=$?; fi
   else
-    say "finding: sudo-n: neither runuser nor su is here: sudo -n true was not tried as $NAME"
-    say "  remedy: as $NAME, in a new terminal, run sudo -k; sudo -n true: it must fail"
-    return 1
+    vf_sl=
+    vf_slrc=127
   fi
-  if [ "$vf_ok" = 1 ]; then
+  vf_rec=$(printf '%s\n' "$vf_sl" | awk "$SUDOL_AWK")
+  if [ "$vf_slrc" != 0 ]; then
+    say "finding: verify: sudo -l -U $NAME failed (exit $vf_slrc): $(printf '%s\n' "$vf_sl" | head -n 1)"
+    vf_bad=1
+  else
+    vf_grant=$(printf '%s\n' "$vf_rec" | awk -F "$TAB" '$1 == "GRANT" { print $2; exit }')
+    if [ -n "$vf_grant" ]; then
+      say "check: sudo -l -U $NAME lists a grant that asks for the password: $vf_grant"
+    else
+      say "finding: verify: sudo -l -U $NAME lists no grant of ALL as root that asks for the password: $NAME's intended grant is not there"
+      vf_bad=1
+    fi
+    printf '%s\n' "$vf_rec" | awk -F "$TAB" '$1 == "NOPASS" || $1 == "NOAUTH" { print "finding: verify: sudo -l -U lists, without a password: " $2 }'
+    if printf '%s\n' "$vf_rec" | grep -Eq "^(NOPASS|NOAUTH)$TAB"; then vf_bad=1; fi
+    vf_to=$(printf '%s\n' "$vf_rec" | awk -F "$TAB" '$1 == "TIMEOUT" { print $2 }')
+    case $vf_to in
+      0 | 0.0) say "check: sudo -l -U $NAME: the last timestamp_timeout is 0" ;;
+      '')
+        say "finding: verify: sudo -l -U $NAME shows no timestamp_timeout: is the drop-in read?"
+        vf_bad=1
+        ;;
+      *)
+        say "finding: verify: sudo -l -U $NAME shows timestamp_timeout=$vf_to last: credentials are cached"
+        vf_bad=1
+        ;;
+    esac
+  fi
+  # sudo -n true, run as the user.
+  vf_env="env -i PATH=$SYS_PATH LC_ALL=C sudo -n true"
+  if [ -n "$FIX" ]; then
+    vf_out=$(if [ -f "$FIX/sudo-n.txt" ]; then cat "$FIX/sudo-n.txt"; else echo "(no sudo-n.txt in the fixtures)"; fi)
+    vf_rc=$(if [ -f "$FIX/sudo-n.rc" ]; then cat "$FIX/sudo-n.rc"; else echo 1; fi)
+  elif command -v runuser >/dev/null 2>&1; then
+    # shellcheck disable=SC2086  # vf_env is a fixed command line of plain words
+    if vf_out=$(runuser -u "$NAME" -- $vf_env </dev/null 2>&1); then vf_rc=0; else vf_rc=$?; fi
+  elif command -v su >/dev/null 2>&1; then
+    if vf_out=$(su -s /bin/sh -c "$vf_env" "$NAME" </dev/null 2>&1); then vf_rc=0; else vf_rc=$?; fi
+  else
+    vf_out="neither runuser nor su is here"
+    vf_rc=127
+  fi
+  vf_line=$(printf '%s\n' "$vf_out" | head -n 1)
+  if [ "$vf_rc" = 0 ]; then
+    say "finding: sudo-n: sudo -n true run as $NAME succeeds: $NAME still has sudo without a password"
+    vf_bad=1
+  elif printf '%s\n' "$vf_out" | grep -q 'a password is required'; then
     say "check: sudo -n true run as $NAME fails: a password is required"
-    return 0
+  elif printf '%s\n' "$vf_out" | grep -Eq 'not in the sudoers file|is not allowed to|may not run sudo'; then
+    say "finding: sudo-n: sudo refuses $NAME outright (not allowed, no password asked): $vf_line"
+    vf_bad=1
+  else
+    say "finding: sudo-n: the probe sudo -n true as $NAME could not run or said something else (exit $vf_rc): $vf_line"
+    say "  remedy: as $NAME, in a new terminal, run sudo -k; sudo -n true: it must say that a password is required"
+    vf_bad=1
   fi
-  say "finding: sudo-n: sudo -n true run as $NAME succeeds: $NAME still has sudo without a password"
-  say "  remedy: read sudo -l -U $NAME and the sudo part of this report, and remove the rule"
-  return 1
+  return "$vf_bad"
 }
 
 # --- self-test ----------------------------------------------------------------------
 
+# fx_root DIR sets FIX to the physical path of DIR, refusing / and a fixture
+# tree with an unrepresentable name or a link that leads out of it.
+fx_root() {
+  fr_d=$(cd -P -- "$1" 2>/dev/null && pwd -P) || refuse "--fixtures must name a folder"
+  [ "$fr_d" != / ] || refuse "--fixtures must not be /: that is this host's own configuration"
+  if [ -n "$(find "$fr_d" \( -name "*$NL*" -o -name "*$TAB*" \) -print | head -n 1)" ]; then
+    refuse "a file name in the fixtures holds a newline or a tab"
+  fi
+  fr_bad=$(find "$fr_d" -type l -print | while IFS= read -r fr_l; do
+    if command -v realpath >/dev/null 2>&1 && fr_t=$(realpath -- "$fr_l" 2>/dev/null); then
+      case $fr_t in
+        "$fr_d" | "$fr_d"/*) continue ;;
+      esac
+    fi
+    say "${fr_l#"$fr_d"}"
+  done | head -n 1)
+  [ -z "$fr_bad" ] || refuse "a link in the fixtures leads out of them (or cannot be resolved): $fr_bad"
+  FIX=$fr_d
+}
+
+# st_snapshot ROOT [notmp] prints a line per path below ROOT/etc: kind, mode,
+# checksum and path, sorted; notmp leaves out temporary files.
+st_snapshot() (
+  cd -P -- "$1" || exit 1
+  find etc -print | sort | while IFS= read -r ss_p; do
+    case $ss_p in
+      */"$TMP_PREFIX"*) [ "${2-}" != notmp ] || continue ;;
+    esac
+    # shellcheck disable=SC2012  # the mode string only; names are representable
+    ss_m=$(ls -ld -- "$ss_p" | cut -c1-10)
+    if [ -L "$ss_p" ]; then
+      printf 'l %s %s\n' "$ss_m" "$ss_p"
+    elif [ -d "$ss_p" ]; then
+      printf 'd %s %s\n' "$ss_m" "$ss_p"
+    else
+      printf 'f %s %s %s\n' "$ss_m" "$(cksum <"$ss_p" | cut -d ' ' -f 1)" "$ss_p"
+    fi
+  done
+)
+
+# st_copy CASE DEST copies a transaction case to DEST, applies its modes.txt
+# and makes DEST/run for the lock.
+st_copy() {
+  mkdir -- "$2" || return 1
+  cp -RP -- "$1/." "$2/" || return 1
+  mkdir -p -- "$2/run" || return 1
+  if [ -f "$2/modes.txt" ]; then
+    while read -r sc_p sc_m; do
+      [ -n "$sc_p" ] || continue
+      chmod "$sc_m" -- "$2$sc_p" || return 1
+    done <"$2/modes.txt"
+  fi
+  fx_root "$2"
+}
+
+# st_apply ROOT USER FAIL UNDOFAIL runs --apply against ROOT, prints its output
+# and its exit status as the last line.
+st_apply() {
+  # shellcheck disable=SC2030  # the run's own fake root, in its subshell
+  if sa_out=$(
+    FIX=$1
+    set_user "$2"
+    TX_TEST=1
+    TX_FAIL_AT=$3
+    TX_UNDO_FAIL=$4
+    apply_main 2>&1
+  ); then sa_rc=0; else sa_rc=$?; fi
+  printf '%s\nexit: %s\n' "$sa_out" "$sa_rc"
+}
+
+# st_tx CASE USER checks the transaction of a case: refused.txt, the line the
+# refusal must print, nothing written; after.txt, the snapshot after a
+# successful run, every failure undone, a rerun after a failed undo recovers,
+# and a second run changes nothing.
+st_tx() {
+  st_c=$1
+  st_u=$2
+  st_w=$(mktemp -d "${TMPDIR:-/tmp}/ap14-self-test.XXXXXX") || return 1
+  st_ok=0
+  st_run=0
+  st_fresh() {
+    st_run=$((st_run + 1))
+    st_r=$st_w/r$st_run
+    st_copy "$st_c" "$st_r" || return 1
+  }
+  if [ -f "$st_c/refused.txt" ]; then
+    st_fresh || st_ok=1
+    st_pre=$(st_snapshot "$st_r")
+    st_o=$(st_apply "$st_r" "$st_u" 0 0)
+    st_want=$(cat "$st_c/refused.txt")
+    case $st_o in
+      *"$st_want"*"exit: 2") ;;
+      *)
+        say "self-test: FAIL ${st_c##*/}: --apply was not refused with: $st_want"
+        printf '%s\n' "$st_o" | tail -n 5
+        st_ok=1
+        ;;
+    esac
+    if [ "$(st_snapshot "$st_r")" != "$st_pre" ]; then
+      say "self-test: FAIL ${st_c##*/}: the refused --apply changed the tree"
+      st_ok=1
+    fi
+  fi
+  if [ -f "$st_c/after.txt" ]; then
+    st_after=$(cat "$st_c/after.txt")
+    # A run without a failure, then a second one.
+    st_fresh || st_ok=1
+    st_pre=$(st_snapshot "$st_r")
+    printf '%s\n' "$st_pre" >"$st_w/pre.txt"
+    st_o=$(st_apply "$st_r" "$st_u" 0 0)
+    st_steps=$(printf '%s\n' "$st_o" | sed -n 's/^self-test: the run took \([0-9]*\) steps$/\1/p')
+    if [ -z "$st_steps" ] || [ "$(printf '%s\n' "$st_o" | tail -n 1)" != "exit: 0" ] || [ "$(st_snapshot "$st_r")" != "$st_after" ]; then
+      say "self-test: FAIL ${st_c##*/}: --apply did not end with the tree of after.txt:"
+      printf '%s\n' "$st_o" | tail -n 5
+      st_snapshot "$st_r" | diff -u "$st_c/after.txt" - || true
+      st_ok=1
+      st_steps=0
+    fi
+    st_o=$(st_apply "$st_r" "$st_u" 0 0)
+    case $st_o in
+      *"nothing to write"*"exit: 0") ;;
+      *)
+        say "self-test: FAIL ${st_c##*/}: a second --apply did not say nothing to write"
+        st_ok=1
+        ;;
+    esac
+    [ "$(st_snapshot "$st_r")" = "$st_after" ] || {
+      say "self-test: FAIL ${st_c##*/}: a second --apply changed the tree"
+      st_ok=1
+    }
+    # A failure at every step: undone, so the tree is as before.
+    st_k=1
+    while [ "$st_k" -le "$st_steps" ]; do
+      st_fresh || st_ok=1
+      st_o=$(st_apply "$st_r" "$st_u" "$st_k" 0)
+      if [ "$(printf '%s\n' "$st_o" | tail -n 1)" != "exit: 1" ] || [ "$(st_snapshot "$st_r")" != "$st_pre" ] || [ -d "$st_r/run/ap14-level1.lock" ]; then
+        say "self-test: FAIL ${st_c##*/}: a failure at step $st_k was not undone:"
+        printf '%s\n' "$st_o" | tail -n 8
+        st_snapshot "$st_r" | diff -u "$st_w/pre.txt" - || true
+        st_ok=1
+      fi
+      # The same failure with every undo failing too: reported, and a rerun
+      # recovers.
+      st_fresh || st_ok=1
+      st_o=$(st_apply "$st_r" "$st_u" "$st_k" 1)
+      if printf '%s\n' "$st_o" | grep -q '^undone: '; then
+        say "self-test: FAIL ${st_c##*/}: step $st_k: an undo that failed was reported as done"
+        st_ok=1
+      fi
+      st_o=$(st_apply "$st_r" "$st_u" 0 0)
+      if [ "$(printf '%s\n' "$st_o" | tail -n 1)" != "exit: 0" ] || [ "$(st_snapshot "$st_r" notmp)" != "$st_after" ]; then
+        say "self-test: FAIL ${st_c##*/}: the rerun after a failed undo at step $st_k did not recover:"
+        printf '%s\n' "$st_o" | tail -n 8
+        st_ok=1
+      fi
+      st_k=$((st_k + 1))
+    done
+    ST_DETAIL="transaction of steps: $st_steps; each failure undone, each rerun recovers"
+  else
+    ST_DETAIL="transaction: --apply refused, nothing written"
+  fi
+  rm -rf -- "$st_w"
+  return "$st_ok"
+}
+
 self_test() {
   if [ -n "$FIX_ARG" ]; then
-    [ -d "$FIX_ARG" ] || refuse "--fixtures must name a folder"
-    FIX=$FIX_ARG
-    if report; then exit 0; else exit 1; fi
+    fx_root "$FIX_ARG"
+    if report; then st_code=0; else st_code=1; fi
+    # shellcheck disable=SC2031  # fx_root set FIX in this shell
+    if [ -f "$FIX/sudo-n.txt" ]; then
+      if ! verify_checks; then st_code=1; fi
+    fi
+    exit "$st_code"
   fi
   case $0 in
     */*) st_dir=${0%/*} ;;
@@ -1290,25 +1802,45 @@ self_test() {
   esac
   st_base=$st_dir/self-test
   [ -d "$st_base" ] || {
-    say "self-test: no folder $st_base: keep self-test/ beside the script"
+    say "self-test: no folder $st_base: run the self-test from the checkout, with self-test/ beside the script"
     exit 1
   }
   st_fail=0
   st_n=0
   for st_case in "$st_base"/*/; do
     st_case=${st_case%/}
-    [ -f "$st_case/expected.txt" ] || continue
-    st_n=$((st_n + 1))
+    [ -f "$st_case/user.txt" ] || continue
     st_user=$(cat "$st_case/user.txt")
-    if st_out=$(FIX=$st_case NAME=$st_user; report 2>&1); then st_code=0; else st_code=$?; fi
-    st_out="$st_out
-exit: $st_code"
-    if printf '%s\n' "$st_out" | cmp -s - "$st_case/expected.txt"; then
-      say "self-test: ok ${st_case##*/}"
-    else
-      say "self-test: FAIL ${st_case##*/}: the report differs from expected.txt:"
-      printf '%s\n' "$st_out" | diff -u "$st_case/expected.txt" - || true
+    valid_name "$st_user" || {
+      say "self-test: FAIL ${st_case##*/}: user.txt is not a login name"
       st_fail=1
+      continue
+    }
+    if [ -f "$st_case/expected.txt" ]; then
+      st_n=$((st_n + 1))
+      if st_out=$(
+        fx_root "$st_case"
+        set_user "$st_user"
+        report 2>&1
+      ); then st_code=0; else st_code=$?; fi
+      st_out="$st_out
+exit: $st_code"
+      if printf '%s\n' "$st_out" | cmp -s - "$st_case/expected.txt"; then
+        say "self-test: ok ${st_case##*/} (audit)"
+      else
+        say "self-test: FAIL ${st_case##*/}: the audit differs from expected.txt:"
+        printf '%s\n' "$st_out" | diff -u "$st_case/expected.txt" - || true
+        st_fail=1
+      fi
+    fi
+    if [ -f "$st_case/after.txt" ] || [ -f "$st_case/refused.txt" ]; then
+      st_n=$((st_n + 1))
+      ST_DETAIL=
+      if st_tx "$st_case" "$st_user"; then
+        say "self-test: ok ${st_case##*/} ($ST_DETAIL)"
+      else
+        st_fail=1
+      fi
     fi
   done
   [ "$st_n" -gt 0 ] || {
@@ -1316,7 +1848,7 @@ exit: $st_code"
     exit 1
   }
   if [ "$st_fail" = 0 ]; then
-    say "self-test: ok, $st_n cases; nothing on this host was read or run"
+    say "self-test: ok, $st_n checks; it read only the fixtures, wrote only temporary copies of them, and ran nothing from them"
     exit 0
   fi
   exit 1
@@ -1330,23 +1862,9 @@ case $MODE in
     say "$ME --dry: reads only; changes nothing"
     if report; then exit 0; else exit 1; fi
     ;;
-  apply)
-    say "$ME --apply: the plan, read again now"
-    report || true
-    if [ "$N_STOP" -gt 0 ]; then
-      refuse "the plan lists a stop: nothing was changed"
-    fi
-    if [ "$N_CHANGE" -eq 0 ]; then
-      say "== apply: nothing to change"
-    else
-      say "== apply"
-      apply_changes
-    fi
-    if verify; then vf=0; else vf=1; fi
-    say "== the report after the changes"
-    if report; then af=0; else af=1; fi
-    say "register: $REGISTER"
-    if [ "$vf" = 0 ] && [ "$af" = 0 ]; then exit 0; fi
-    exit 1
+  apply) apply_main ;;
+  verify)
+    say "$ME --verify: reads only; changes nothing"
+    if verify_checks; then exit 0; else exit 1; fi
     ;;
 esac

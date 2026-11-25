@@ -1,9 +1,12 @@
 # sudoers (a self-test fixture): rules the script must not rewrite
 Defaults env_reset
 Defaults:%wheel !authenticate
+Defaults exempt_group=wheel
+Defaults!/usr/bin/backup timestamp_timeout=15
 root ALL=(ALL:ALL) ALL
 %wheel ALL=(ALL:ALL) NOPASSWD: ALL
 agent ALL = (root) PASSWD: /usr/bin/b, /usr/bin/c
 other ALL=(ALL) NOPASSWD: ALL
 #includedir /etc/sudoers.d
 @include sudoers.site/extra
+@include /etc/sudoers.missing

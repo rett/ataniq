@@ -1,0 +1,5 @@
+Matching Defaults entries for agent on host:
+    env_reset
+
+User agent may run the following commands on host:
+    (root) NOPASSWD: /usr/bin/apt, PASSWD: ALL
