@@ -47,6 +47,23 @@ func TestTR8ToTR14aAndTR33Readback(t *testing.T) {
 		}
 	}
 }
+func TestTR14NonReadWithSourcesOnly(t *testing.T) {
+	for _, outcome := range Outcome("").All() {
+		if outcome == "read" {
+			continue
+		}
+		t.Run(string(outcome), func(t *testing.T) {
+			o := ReadbackObs{Attempt: outcome, Sources: SourcesObs{Seen: true}}
+			requireError(t, ValidateObs(Expectation{}, o), "Obs.Sources.Seen", "inconsistent")
+			v, err := ClassifyReadback(Expectation{}, o)
+			requireError(t, err, "Obs.Sources.Seen", "inconsistent")
+			if !reflect.DeepEqual(v, I4{}) {
+				t.Fatal(v)
+			}
+		})
+	}
+}
+
 func TestTR34ReadbackInvalid(t *testing.T) {
 	e := Expectation{Facts: []FactExp{{"folder-trust", true, "trusted"}}}
 	for _, tc := range []struct {
