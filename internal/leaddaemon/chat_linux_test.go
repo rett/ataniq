@@ -446,6 +446,11 @@ func (l *leadEnv) outboxOf(key string) string {
 // reply writes a reply as a lead does: under a dot-name, then renamed.
 func reply(t *testing.T, outbox, name, text string) {
 	t.Helper()
+	// A name the scan refuses would be left alone whatever the rule under
+	// test says, and a check that a reply is left alone would prove nothing.
+	if !leadchat.ValidReplyName(name) {
+		t.Fatalf("%q is not a name a scan takes", name)
+	}
 	tmp := filepath.Join(outbox, "."+name+".tmp")
 	if err := os.WriteFile(tmp, []byte(text), 0o600); err != nil {
 		t.Fatal(err)

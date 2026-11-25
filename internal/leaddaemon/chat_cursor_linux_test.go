@@ -141,8 +141,10 @@ func TestLeadChatCursorCoversTheEnabledLeadsOnly(t *testing.T) {
 		if err := os.MkdirAll(out, 0o700); err != nil {
 			t.Fatal(err)
 		}
+		// Names a scan takes: a reply left alone is left by the switch,
+		// not refused for its name.
 		for i := 0; i < n; i++ {
-			reply(t, out, filepath.Base(t.Name())+"-"+what+"-"+string(rune('a'+i))+".txt", "an off lead's reply")
+			reply(t, out, fmt.Sprintf("off-%s-%c.txt", strings.ReplaceAll(what, " ", "-"), 'a'+i), "an off lead's reply")
 		}
 		time.Sleep(10 * l.scratch.ChatScanEvery)
 		if c := cursorOf(t, port); c != before {
