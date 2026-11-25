@@ -714,16 +714,18 @@ func TestSeatStreamLogoutRacesWrites(t *testing.T) {
 
 // slowWriter is a client that stops reading after its first write: its
 // second write blocks, as on a full socket, until the test lets its deadline
-// pass (expire), and then fails. entered is closed when that write begins,
-// and blockedUntil is the deadline in force for it.
+// pass (expire), and then fails. entered is closed when that write begins;
+// blockedUntil is the deadline in force for it, and blocked the bytes it was
+// given.
 type slowWriter struct {
 	h        http.Header
 	mu       sync.Mutex
 	deadline time.Time
 	writes   int
-	// blockedUntil is the deadline the blocked write waits for, zero
-	// before.
+	// blockedUntil and blocked are the blocked write's deadline and bytes,
+	// zero before it.
 	blockedUntil time.Time
+	blocked      []byte
 	entered      chan struct{}
 	expire       chan struct{}
 	expireOnce   sync.Once
@@ -742,6 +744,7 @@ func (w *slowWriter) Write(b []byte) (int, error) {
 	n := w.writes
 	if n == 2 {
 		w.blockedUntil = d
+		w.blocked = append([]byte(nil), b...)
 	}
 	w.mu.Unlock()
 	if d.IsZero() {
@@ -769,40 +772,94 @@ func (w *slowWriter) SetWriteDeadline(t time.Time) error {
 // release lets the blocked write's deadline pass; it may be called again.
 func (w *slowWriter) release() { w.expireOnce.Do(func() { close(w.expire) }) }
 
+// blockedWrite returns the blocked write's bytes and deadline.
+func (w *slowWriter) blockedWrite() ([]byte, time.Time) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.blocked, w.blockedUntil
+}
+
+// waitWatchCalls waits until Watch has been called n times.
+func waitWatchCalls(t *testing.T, w *fakeWatcher, n int) {
+	t.Helper()
+	deadline := time.Now().Add(waitBound)
+	for w.watchCalls() < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("Watch called %d times, want %d", w.watchCalls(), n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // TestSeatStreamSlowClient: a client that does not read loses its stream
 // when its write's deadline passes, while the watcher and another client's
-// stream go on unhindered. The slow write is held until the other client
-// has the last version, so all of that happens while it is blocked, however
-// slowly the host runs; its deadline is taken by the stream's clock, which
-// the test sets, and is checked exactly.
+// stream go on unhindered.
+//
+// Both streams hear of the same first change, ee: the slow stream's blocked
+// write is that event, byte for byte, and the fast stream reads it, before
+// anything else is published. The streams' timers stand still, so no
+// heartbeat, rotation or session's end is a write of either stream however
+// slowly the host runs: a stream that lost the wake of ee writes nothing, and
+// the test fails at its liveness bound. The slow write is then held while
+// the watcher publishes 20 more versions and the fast stream says the last
+// one at the end of its gap, which the test moves on the fake clock. Its
+// deadline is taken by the stream's clock, which the test sets, and is
+// checked exactly.
 func TestSeatStreamSlowClient(t *testing.T) {
 	r, wd := newWatchRig(t, "aa", time.Minute)
+	ft := stillTimers(r)
 	// The stream's clock stands at an hour from now: the fast stream's real
 	// connection takes its deadlines by it, which are then in the future.
 	writeNow := time.Now().Add(time.Hour)
 	r.app.streamNow = func() time.Time { return writeNow }
-	r.app.streamGap = time.Millisecond
 	s := r.login(t)
 	srv := streamServer(t, r)
+	read := wd.watchCalls()
 	fast := openStream(t, srv, streamOK, s)
-	fast.next(t, waitBound)
+	if b, ok := fast.next(t, waitBound); !ok || b != ":" {
+		t.Fatalf("the fast stream's first block %q %v, want the heartbeat", b, ok)
+	}
 
 	slow := newSlowWriter()
+	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	// Registered before any assertion: one that fails lets the slow write
+	// go and ends its request before the handler is joined.
+	t.Cleanup(func() {
+		slow.release()
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(waitBound):
+			t.Error("the slow stream's handler did not end after its release")
+		}
+	})
 	go func() {
 		defer close(done)
-		r.h.ServeHTTP(slow, streamRequest(context.Background(), streamPath, streamOK, s))
+		r.h.ServeHTTP(slow, streamRequest(ctx, streamPath, streamOK, s))
 	}()
-	// An assertion that fails lets the slow write go, so the handler ends.
-	t.Cleanup(slow.release)
 	r.waitStreams(t, 2)
-	// The first change is the slow stream's event, whose write blocks.
+	// Each stream reads the view twice before it waits for a wake: at its
+	// admission and after its opening heartbeat. Once both have, ee reaches
+	// either only by its wake.
+	waitWatchCalls(t, wd.fakeWatcher, read+4)
 	wd.set(func(st *WatchState) { st.Version = "ee" })
 	select {
 	case <-slow.entered:
 	case <-time.After(waitBound):
-		t.Fatal("the slow stream's event was not written")
+		t.Fatal("the slow stream wrote nothing after ee")
 	}
+	want, _ := streamEvent("ee")
+	if got, _ := slow.blockedWrite(); string(got) != string(want) {
+		t.Fatalf("the slow stream's blocked write is %q, want the event of ee %q", got, want)
+	}
+	if b, ok := fast.nextEvent(t, waitBound); !ok || b != "event: cards-changed\ndata: {\"version\":\"ee\"}" {
+		t.Fatalf("the fast stream's first event %q %v, want ee", b, ok)
+	}
+	// The fast stream's gap after ee: the slow stream, its write blocked,
+	// arms none.
+	waitDue(t, ft, r.app.streamGap)
+
 	// The watcher publishes without waiting for anyone: the slow write is
 	// held until the end of the test, so a publication that waited for it
 	// would not end.
@@ -818,16 +875,11 @@ func TestSeatStreamSlowClient(t *testing.T) {
 	case <-time.After(waitBound):
 		t.Fatal("publishing waited for a stream")
 	}
-	// The other stream hears of the last version while the slow one is
-	// stuck.
-	for until := time.Now().Add(waitBound); ; {
-		b, ok := fast.nextEvent(t, time.Until(until))
-		if !ok || !hintRe.MatchString(b) {
-			t.Fatalf("the other stream: %q %v", b, ok)
-		}
-		if strings.Contains(b, `"13"`) {
-			break
-		}
+	// The changes came inside the fast stream's gap: at its end the stream
+	// says the last version, 13, once.
+	ft.advance(r.app.streamGap)
+	if b, ok := fast.nextEvent(t, waitBound); !ok || b != "event: cards-changed\ndata: {\"version\":\"13\"}" {
+		t.Fatalf("the fast stream's event after the gap %q %v, want the last version, 13", b, ok)
 	}
 	select {
 	case <-done:
@@ -836,10 +888,7 @@ func TestSeatStreamSlowClient(t *testing.T) {
 	}
 	// The write's deadline is streamWrite after it began, by the stream's
 	// clock: not the cutoff, and not shorter.
-	slow.mu.Lock()
-	until := slow.blockedUntil
-	slow.mu.Unlock()
-	if want := writeNow.Add(r.app.streamWrite); !until.Equal(want) {
+	if _, until := slow.blockedWrite(); !until.Equal(writeNow.Add(r.app.streamWrite)) {
 		t.Errorf("the blocked write's deadline is %v after the stream's now, want streamWrite, %v", until.Sub(writeNow), r.app.streamWrite)
 	}
 	slow.release()
