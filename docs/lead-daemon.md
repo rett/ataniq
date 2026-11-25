@@ -931,8 +931,9 @@ JSON object per line. The first line is a header that names the format
   the stored profile before it writes a scratch lead's instruction text and
   before it sets the desired state, and the registry checks it again when it
   journals the launch. So is a role whose define record repeats a
-  member anywhere in its payload, the requested member itself included,
-  compared exactly and as encoding/json folds names (`requested` and
+  member anywhere in the record, the requested member itself and the
+  envelope's `payload` member included (of two payload members only the last
+  would be read), compared exactly and as encoding/json folds names (`requested` and
   `Requested` are one member to it): no build writes one, and the typed
   decoding would merge the occurrences while the stored bytes keep the last,
   so the profile that was checked would not be the one launched. The record
