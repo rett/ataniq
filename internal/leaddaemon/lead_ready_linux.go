@@ -41,12 +41,24 @@ import (
 // starting, and its ticket and message are refused holder-version-skew as
 // before.
 //
+// A lead that an earlier daemon showed ready was ready for that daemon's
+// build. Before this daemon serves anything, every lead it adopted shown
+// ready has its holder.json of the epoch read again (revalidateAdopted): one
+// that confirms another build than this daemon's is shown degraded, with the
+// reason holder-version-skew and the refusal in the detail, so that the list
+// never shows ready a holder whose ticket this daemon refuses. Its unit is
+// left running: the daemon did not start it, and the owner's lead.stop and
+// lead.start are the way out. A file that is missing or cannot be read
+// confirms nothing, and the lead stays ready (its ticket says why it is
+// refused).
+//
 // What ready means here is the holder's word and no more: the holder is up and
 // the agent was started. The agent's login is not observed, so ready is not a
 // claim that the agent works. There is no way back: this file never sets
-// starting, sets degraded only for a holder of another build whose stop is not
-// proven, a lead that is ready stays so until a stop, and a failed or slow
-// observation leaves the lead starting with nothing else changed.
+// starting, sets degraded only for a holder of another build (whose stop is
+// not proven, or that an adopted ready lead runs), a lead that is ready stays
+// so until a stop, and a failed or slow observation leaves the lead starting
+// with nothing else changed.
 //
 // The observer never blocks lead.start or a client call, and takes no lock
 // across the holder call: it takes the role's operation lock, as a try-lock,
@@ -419,6 +431,52 @@ func (l *leadMode) showStopUnproven(lr *leadRole, epoch uint64, f *opFail) {
 		return
 	}
 	l.d.logf("scratch ready %q: the lead of epoch %d is shown degraded (%s): stop it", lr.key, epoch, codeSkewStopUnproven)
+}
+
+// revalidateAdopted reads again, before the daemon serves, the holder.json of
+// every lead it found shown ready (with its launch recorded and a holder
+// command): an earlier daemon set ready for its own build. A file of the epoch
+// that confirms another build than this daemon's (buildid.Confirmed) makes the
+// lead shown degraded, with the reason holder-version-skew, the evidence kind
+// ataniq-observation and the refusal as the detail; its unit is not stopped
+// and nothing is asked of its holder. Any other answer of the check leaves the
+// lead as it is shown. It runs before the server is started, so no command of
+// the role runs beside it; the role's lock is taken all the same.
+func (l *leadMode) revalidateAdopted() {
+	for _, role := range l.cm.router.order {
+		lr := l.roles[role]
+		if lr.in.holderCommand() == nil {
+			continue
+		}
+		e, ok := lr.in.ext.runningEntry()
+		if !ok || e.Shown.State != leadregistry.StateReady {
+			continue
+		}
+		err := lr.in.ext.holderBuild(e.Epoch)
+		if err == nil {
+			continue
+		}
+		op := "scratch ready " + strconv.Quote(lr.key)
+		if !buildid.Confirmed(err) {
+			l.d.logf("%s: the adopted ready lead's build cannot be confirmed for epoch %d; it stays ready: %s", op, e.Epoch, SafeText(err.Error()))
+			continue
+		}
+		f := lr.in.ext.skewRefusal(op, err)
+		if !lr.tryLock() {
+			continue
+		}
+		_, serr := l.reg.SetState(lr.role, leadregistry.StateChange{
+			Epoch: e.Epoch, State: leadregistry.StateDegraded, Evidence: leadregistry.EvidenceObservation,
+			Reason: leadregistry.Reason{Code: codeHolderVersionSkew, Detail: f.msg},
+		})
+		lr.unlock()
+		if serr != nil {
+			l.registryDown(serr)
+			l.d.logf("%s: the state degraded cannot be set for epoch %d: %s", op, e.Epoch, SafeText(serr.Error()))
+			continue
+		}
+		l.d.logf("%s: the holder of epoch %d, which this daemon adopted shown ready, is not its build; the lead is shown degraded and its unit is left running", op, e.Epoch)
+	}
 }
 
 // startingIn reports whether the lead is shown starting in the epoch, with its

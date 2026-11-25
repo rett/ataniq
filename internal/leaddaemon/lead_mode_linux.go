@@ -369,6 +369,9 @@ func (l *leadMode) extension(ctl *leadlifecycle.Controller, reg *leadregistry.Re
 		in := l.cm.router.byRole[role]
 		in.ext = l.cm.newExt(in, ctl, reg)
 	}
+	// A lead an earlier daemon showed ready is checked for this daemon's
+	// build before anything is served (see lead_ready_linux.go).
+	l.revalidateAdopted()
 	// The chat reads the registry's state of each lead, and nothing else of
 	// it; the seat's port gets the chat once it can answer.
 	if l.chat != nil {

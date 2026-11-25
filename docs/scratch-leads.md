@@ -398,10 +398,22 @@ on the holder's word, and in no other way:
   from its screen, and nothing says the agent works or will answer. `ready` is
   not a claim that the lead is usable: it replaces "nothing says anything" with
   "the holder said it is up", and no more. A lead that is `ready` stays so until
-  a stop. This build adds no way from `ready` back to `starting` or to
-  `degraded`: a holder that goes away after it said it was up is not noticed
-  by this observer, and a unit that ends is found by the next reconcile when
-  the daemon starts.
+  a stop, with one exception, below. This build adds no other way from `ready`
+  back to `starting` or to `degraded`: a holder that goes away after it said it
+  was up is not noticed by this observer, and a unit that ends is found by the
+  next reconcile when the daemon starts.
+- **A lead an earlier daemon showed `ready`.** `ready` was that daemon's word,
+  for its own build. Before a daemon serves anything, it reads again the
+  `holder.json` of every lead it adopted shown `ready`. A file of the epoch
+  that records another build than this daemon's (or none) makes the lead shown
+  `degraded`, with the reason `holder-version-skew`, the evidence kind
+  `ataniq-observation` and the refusal, which names both builds, as the
+  detail: the list never shows `ready` a holder whose ticket and message this
+  daemon refuses `holder-version-skew`. The unit is left running and its
+  holder is asked nothing; `lead.stop` and a `lead.start` with the matching
+  holder are the way out. A file that is missing or cannot be read confirms
+  nothing: the lead stays `ready`, the daemon logs it, and its ticket says why
+  it is refused.
 - **It does not change** what counts against `max_running` (a `starting` lead
   and a `ready` one both count), the receipts, the command table or the
   evidence file, but for the `stop` line of a holder that started as another

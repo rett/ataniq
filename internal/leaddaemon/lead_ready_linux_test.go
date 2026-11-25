@@ -18,6 +18,7 @@ import (
 	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/wire"
 	"ataniq/internal/leadregistry"
+	"ataniq/internal/leadunit"
 	"ataniq/internal/leadwire"
 )
 
@@ -877,6 +878,96 @@ func TestLeadReadyLeavesAnAdoptedHolderOfAnotherBuild(t *testing.T) {
 		t.Fatalf("%d starts", n)
 	}
 	want(t, l.ticket("alpha", 1, "writer"), leadwire.StatusRefused, "holder-version-skew")
+}
+
+// The reviewer's case of an upgraded daemon: a lead an earlier daemon showed
+// ready is adopted by a daemon of another build. Before the new daemon serves
+// anything its holder.json is read again: the very first status and list
+// show the lead degraded with the reason holder-version-skew and the refusal
+// in the detail, never ready, so the row agrees with the refused ticket. Its
+// unit is left running: no signal, no stop, no start, and the holder is asked
+// nothing. A lead of the expected build that is ready stays ready.
+func TestLeadReadyAdoptedReadyLeadOfAnotherBuildIsShownSkewed(t *testing.T) {
+	l := newLeadEnv(t)
+	l.readyBounds(10 * time.Second)
+	l.start()
+	for _, key := range []string{"alpha", "beta"} {
+		h := newReadyHolder(roleOf(key))
+		h.epoch.Store(1)
+		l.upWith(key, h)
+		l.waitState(key, "ready")
+	}
+	if err := l.running.stop(); err != nil {
+		t.Fatalf("the daemon did not stop clean: %v", err)
+	}
+	// The new daemon's build: alpha's holder recorded another, beta's the
+	// expected one.
+	ch := sameHolderBuild()
+	alphaRole := l.cfgOf("alpha").Role
+	ch.Record = func(dir string, epoch uint64) (buildid.Record, error) {
+		b := testHolderBuild
+		alphaLayout, err := l.cfgOf("alpha").Layout()
+		if err != nil {
+			return buildid.Record{}, err
+		}
+		if dir == alphaLayout.Holder() {
+			b = otherHolderBuild
+		}
+		return buildid.Record{Epoch: epoch, Build: &b}, nil
+	}
+	l.scratch.HolderBuild = ch
+	statusBefore := len(l.holders["alpha"].requests(wire.OpStatus))
+	signals := len(l.fake.CallsOf(leadunit.MethodSignal))
+	l.start()
+	state, code, evidence, detail := l.shown("alpha")
+	if state != "degraded" || code != "holder-version-skew" || evidence != "ataniq-observation" ||
+		!strings.HasPrefix(detail, "holder-version-skew: the holder is another build") ||
+		!strings.Contains(detail, "expected build "+testHolderBuild.Short()) {
+		t.Fatalf("alpha shown: %q %q %q %q", state, code, evidence, detail)
+	}
+	if row := l.row("alpha"); row.State != "degraded" || row.StateReason != "holder-version-skew" || row.Epoch != 1 {
+		t.Fatalf("the row: %+v", row)
+	}
+	if state, code, _, _ := l.shown("beta"); state != "ready" || code != "holder-ready" {
+		t.Fatalf("beta shown: %q %q", state, code)
+	}
+	want(t, l.ticket("alpha", 1, "writer"), leadwire.StatusRefused, "holder-version-skew")
+	l.stays("alpha", "degraded", 150*time.Millisecond)
+	if !l.fake.Loaded(alphaRole.UnitName()) {
+		t.Fatal("the adopted unit was stopped")
+	}
+	if n := len(l.fake.CallsOf(leadunit.MethodSignal)); n != signals {
+		t.Fatalf("%d signals were sent", n-signals)
+	}
+	if n := len(l.fake.StartedSpecs()); n != 2 {
+		t.Fatalf("%d starts", n)
+	}
+	if n := len(l.holders["alpha"].requests(wire.OpStatus)); n != statusBefore {
+		t.Fatalf("the holder was asked %d times", n-statusBefore)
+	}
+	// The owner's way out: a stop ends it.
+	want(t, l.stopLead("alpha", 1), leadwire.StatusDone, "")
+}
+
+// An adopted ready lead whose holder.json is missing confirms no other build:
+// it stays ready, and the daemon logs that its build cannot be confirmed.
+func TestLeadReadyAdoptedReadyLeadWithoutARecordStaysReady(t *testing.T) {
+	l := newLeadEnv(t)
+	l.readyBounds(10 * time.Second)
+	l.start()
+	h := newReadyHolder(roleOf("alpha"))
+	h.epoch.Store(1)
+	l.upWith("alpha", h)
+	l.waitState("alpha", "ready")
+	if err := l.running.stop(); err != nil {
+		t.Fatalf("the daemon did not stop clean: %v", err)
+	}
+	l.scratch.HolderBuild.Record = func(string, uint64) (buildid.Record, error) { return buildid.Record{}, os.ErrNotExist }
+	l.start()
+	if state, code, _, _ := l.shown("alpha"); state != "ready" || code != "holder-ready" {
+		t.Fatalf("shown %q %q", state, code)
+	}
+	l.waitLog("the adopted ready lead's build cannot be confirmed for epoch 1; it stays ready")
 }
 
 // waitLog waits for the daemon's log to hold text.

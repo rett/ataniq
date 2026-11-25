@@ -34,4 +34,8 @@
   `skew-stop-unproven`, for the owner's `lead.stop`, and the next `lead.start`
   is refused `holder-version-skew` while the executable is the other build. A
   lead the daemon adopted is left `starting`, not stopped; the canary's holder
-  is refused at its ticket and message.
+  is refused at its ticket and message. A lead an earlier daemon showed
+  `ready` is checked again before the new daemon serves: one whose
+  `holder.json` records another build than the new daemon's is shown
+  `degraded` with the reason `holder-version-skew`, never `ready`, and its
+  unit is left running for the owner to stop.
