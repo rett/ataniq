@@ -243,9 +243,15 @@ func JudgeFiles(p *Policy, s Snapshot, inv Inventory, files []FileView) *Refusal
 	}
 	expected := make(map[string][]ExpectedFile)
 	supplied := make(map[string][]FileView)
+	roles := make(map[string]int)
+	definitions := 0
 	var destinations []string
 	for _, f := range inv {
 		expected[f.Dest] = append(expected[f.Dest], f)
+		roles[f.PathRole]++
+		if f.Definition {
+			definitions++
+		}
 		destinations = append(destinations, f.Dest)
 	}
 	for _, f := range files {
@@ -261,7 +267,7 @@ func JudgeFiles(p *Policy, s Snapshot, inv Inventory, files []FileView) *Refusal
 		}
 		w, f := want[0], got[0]
 		row := p.files[w.PathRole]
-		if row == nil || f.PathRole != w.PathRole {
+		if row == nil || f.PathRole != w.PathRole || roles[w.PathRole] != 1 || w.Definition && definitions != 1 {
 			return refuse("file-refused", 2, at)
 		}
 		if f.BytesSHA256 != f.InstalledSHA256 || !shaPattern.MatchString(f.BytesSHA256) {

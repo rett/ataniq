@@ -69,3 +69,23 @@ func TestT52FirstFile(t *testing.T) {
 	slices.Reverse(f.files)
 	line(t, JudgeFiles(x.p, x.s, f.inv, f.files), "file-refused", "2", "file[a-settings]")
 }
+
+func TestUniqueInventoryRolesAndDefinition(t *testing.T) {
+	x := baseline(t, "BC")
+	f := cleanFiles()
+	extra, view := f.inv[0], f.files[0]
+	extra.Dest = "c-settings"
+	view.Dest = extra.Dest
+	line(t, JudgeFiles(x.p, x.s, append(f.inv, extra), append(f.files, view)), "file-refused", "2", "file[a-settings]")
+	// Two individually valid policy rows cannot both be the selected definition.
+	x.policy(t, func(d obj) {
+		other := row(d["files"], "path_role", "agent")
+		d["files"] = append(d["files"].([]any), obj{"path_role": "standby", "allowed": other["allowed"], "required": other["required"]})
+	})
+	extra, view = f.inv[1], f.files[1]
+	extra.PathRole = "standby"
+	extra.Dest = "c-agent"
+	view.PathRole = extra.PathRole
+	view.Dest = extra.Dest
+	line(t, JudgeFiles(x.p, x.s, append(f.inv, extra), append(f.files, view)), "file-refused", "2", "file[b-agent]")
+}
