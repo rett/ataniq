@@ -232,6 +232,28 @@ func FuzzAcceptedRecordEncodes(f *testing.F) {
 	})
 }
 
+func TestDecodeInputsFirstMember(t *testing.T) {
+	for _, row := range []struct {
+		raw, path string
+		why       InputReason
+	}{
+		{`{"Transport":{"State":"typo","Basis":"screen"},"Sight":7}`, "Inputs.Transport.State", "unknown-value"},
+		{`{"Sight":7,"Transport":{"Basis":"screen","State":"typo"}}`, "Inputs.Transport.State", "unknown-value"},
+		{`{"Transport":{"Detail":1,"At":2,"Basis":7}}`, "Inputs.Transport.State", "empty-value"},
+		{`{"Transport":{"Basis":7,"State":"typo"}}`, "Inputs.Transport.State", "unknown-value"},
+		{`{"Sight":7,"Sight":"rules","Transport":{"State":"typo"}}`, "Inputs.Transport.State", "unknown-value"},
+		{`{"Sight":"rules","Sight":1,"Transport":1,"Transport":2}`, "Inputs.Transport", "duplicate"},
+		{`{"z":1,"a":1}`, "Inputs.a", "unknown-value"},
+		{`{"a":1,"z":1}`, "Inputs.a", "unknown-value"},
+	} {
+		in, err := DecodeInputs([]byte(row.raw))
+		requireError(t, err, row.path, row.why)
+		if !reflect.DeepEqual(in, Inputs{}) {
+			t.Fatal(in)
+		}
+	}
+}
+
 func TestTC15RecordGoldens(t *testing.T) {
 	b, err := os.ReadFile("sessiontest/testdata/compose.golden")
 	if err != nil {

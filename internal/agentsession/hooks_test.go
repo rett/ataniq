@@ -223,6 +223,33 @@ func TestUUIDSpelling(t *testing.T) {
 	checkView(t, bind(t, printable, "drift", id, 0), Obs{upper, 1}, "")
 }
 
+func TestHookViewFirstMember(t *testing.T) {
+	foreign := classifiedReport{HookReport{"other", "t", 0}, "foreign"}
+	later := classifiedReport{HookReport{"drift", "s", -1}, "bound"}
+	h := HookView{bound: "s", form: "printable", reports: []classifiedReport{foreign, later}}
+	requireError(t, ValidateHooks(h), "HookView.Foreign", "inconsistent")
+	b, err := json.Marshal(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range [][]byte{b, bytes.Replace(b, []byte(`"Age":-1`), []byte(`"Age":"bad"`), 1)} {
+		_, err := DecodeHookView(raw)
+		requireError(t, err, "HookView.Foreign", "inconsistent")
+	}
+	for _, row := range []struct {
+		raw, path string
+		why       InputReason
+	}{
+		{`{"AgeLimit":-1,"Form":7}`, "HookView.AgeLimit", "negative"},
+		{`{"Form":7,"AgeLimit":-1}`, "HookView.AgeLimit", "negative"},
+		{`{"Reports":[{"Age":"bad","Kind":"typo"}],"Form":"printable"}`, "HookView.Reports[0].Kind", "unknown-value"},
+		{`{"Form":"printable","Reports":[{"Kind":"other","Session":"s","Class":"bound"},{"Age":"bad"}]}`, "HookView.Reports[0].Class", "inconsistent"},
+	} {
+		_, err := DecodeHookView([]byte(row.raw))
+		requireError(t, err, row.path, row.why)
+	}
+}
+
 func TestDecodeRejectsImpossibleHistory(t *testing.T) {
 	for _, h := range []HookView{
 		{form: "printable", reports: []classifiedReport{{HookReport{"session-start", "s", 0}, "foreign"}}, foreign: 1},

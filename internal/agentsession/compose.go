@@ -62,7 +62,10 @@ func readClaimTime(b json.RawMessage, path string, at *time.Time) error {
 	return nil
 }
 func readClaim(b []byte, path string, c *Claim) error {
-	return object(b, path, value("State", &c.State), value("Basis", &c.Basis), value("Source", &c.Source), field{"At", func(b json.RawMessage, path string) error { return readClaimTime(b, path, &c.At) }}, list("Detail", &c.Detail, stringItem))
+	return object(b, path, func() error { return validateClaim(*c, path) },
+		value("State", &c.State), value("Basis", &c.Basis), value("Source", &c.Source),
+		field{"At", func(b json.RawMessage, path string) error { return readClaimTime(b, path, &c.At) }},
+		list("Detail", &c.Detail, stringItem))
 }
 func optionalClaim(name string, c **Claim) field {
 	return field{name, func(b json.RawMessage, path string) error {
@@ -75,10 +78,14 @@ func optionalClaim(name string, c **Claim) field {
 }
 func DecodeInputs(b []byte) (Inputs, error) {
 	var in Inputs
-	err := object(b, "Inputs", value("Ended", &in.Ended), field{"Transport", func(b json.RawMessage, path string) error { return readClaim(b, path, &in.Transport) }}, optionalClaim("Self", &in.Self), optionalClaim("Hook", &in.Hook), list("Veto", (*[]string)(&in.Veto), stringItem), value("Sight", &in.Sight), field{"Policy", func(b json.RawMessage, path string) error { return object(b, path, value("Self", &in.Policy.Self)) }})
-	if err == nil {
-		err = ValidateInputs(in)
-	}
+	err := object(b, "Inputs", func() error { return ValidateInputs(in) },
+		value("Ended", &in.Ended),
+		field{"Transport", func(b json.RawMessage, path string) error { return readClaim(b, path, &in.Transport) }},
+		optionalClaim("Self", &in.Self), optionalClaim("Hook", &in.Hook),
+		list("Veto", (*[]string)(&in.Veto), stringItem), value("Sight", &in.Sight),
+		field{"Policy", func(b json.RawMessage, path string) error {
+			return object(b, path, nil, value("Self", &in.Policy.Self))
+		}})
 	if err != nil {
 		return Inputs{}, err
 	}

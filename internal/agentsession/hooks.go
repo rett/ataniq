@@ -97,31 +97,42 @@ func ValidateHooks(h HookView) error {
 		return invalid("HookView.Foreign", "negative")
 	}
 	foreign := 0
-	bindingSeen := false
-	for i, r := range h.reports {
-		if field, why := reportIssue(r.HookReport, h.form); why != "" {
-			return invalid(index("HookView.Reports", i)+field, why)
-		}
-		switch r.Class {
-		case "bound":
-			if r.Session != h.bound {
-				return invalid(index("HookView.Reports", i)+".Class", "inconsistent")
-			}
-			bindingSeen = true
-		case "foreign":
+	for _, r := range h.reports {
+		if r.Class == "foreign" {
 			foreign++
-			// Same-id foreign reports are possible only before the first start.
-			// Any retained start, even a foreign one, proves binding by that point.
-			if r.Session == h.bound && (bindingSeen || r.Kind == "session-start") || h.bound == "" && r.Kind == "session-start" {
-				return invalid(index("HookView.Reports", i)+".Class", "inconsistent")
-			}
-			bindingSeen = bindingSeen || r.Kind == "session-start"
-		default:
-			return enum(index("HookView.Reports", i)+".Class", r.Class)
 		}
 	}
 	if foreign > h.foreign {
 		return invalid("HookView.Foreign", "inconsistent")
+	}
+	bindingSeen := false
+	for i, r := range h.reports {
+		if err := h.validateReport(index("HookView.Reports", i), r, &bindingSeen); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h HookView) validateReport(path string, r classifiedReport, bindingSeen *bool) error {
+	if field, why := reportIssue(r.HookReport, h.form); why != "" {
+		return invalid(path+field, why)
+	}
+	switch r.Class {
+	case "bound":
+		if r.Session != h.bound {
+			return invalid(path+".Class", "inconsistent")
+		}
+		*bindingSeen = true
+	case "foreign":
+		// Same-id foreign reports are possible only before the first start.
+		// Any retained start, even a foreign one, proves binding by that point.
+		if r.Session == h.bound && (*bindingSeen || r.Kind == "session-start") || h.bound == "" && r.Kind == "session-start" {
+			return invalid(path+".Class", "inconsistent")
+		}
+		*bindingSeen = *bindingSeen || r.Kind == "session-start"
+	default:
+		return enum(path+".Class", r.Class)
 	}
 	return nil
 }
@@ -206,12 +217,14 @@ func (h HookView) MarshalJSON() ([]byte, error) {
 }
 func DecodeHookView(b []byte) (HookView, error) {
 	var h HookView
-	err := object(b, "HookView", value("Bound", &h.bound), value("AgeLimit", &h.ageLimit), value("Form", &h.form), value("Foreign", &h.foreign), list("Reports", &h.reports, func(b []byte, path string, r *classifiedReport) error {
-		return object(b, path, value("Kind", &r.Kind), value("Session", &r.Session), value("Age", &r.Age), value("Class", &r.Class))
-	}))
-	if err == nil {
-		err = ValidateHooks(h)
+	bindingSeen := false
+	readReport := func(b []byte, path string, r *classifiedReport) error {
+		return object(b, path, func() error { return h.validateReport(path, *r, &bindingSeen) },
+			value("Kind", &r.Kind), value("Session", &r.Session), value("Age", &r.Age), value("Class", &r.Class))
 	}
+	err := object(b, "HookView", func() error { return ValidateHooks(h) },
+		value("Bound", &h.bound), value("AgeLimit", &h.ageLimit), value("Form", &h.form),
+		value("Foreign", &h.foreign), list("Reports", &h.reports, readReport))
 	if err != nil {
 		return HookView{}, err
 	}
