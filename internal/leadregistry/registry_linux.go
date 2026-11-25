@@ -563,6 +563,12 @@ func (r *Registry) SetDesired(role leadrole.Role, desired Desired) (Entry, error
 // instance number is the coordinator's epoch. A lead is refused with
 // ErrLaunchCoordinator while a coordinator of it that was launched under one
 // of its earlier epochs is not stopped, ended or desired.
+//
+// The intent's profile digest is the digest of the requested profile as the
+// role's define record stores it. A role whose define record a newer build
+// wrote with a member this build does not know is refused with
+// ErrLaunchProfile: it replays, but this build does not launch a profile it
+// cannot read whole.
 func (r *Registry) BeginLaunch(role leadrole.Role) (Intent, error) {
 	return r.BeginLaunchWith(role, LaunchOptions{})
 }
@@ -601,6 +607,11 @@ func (r *Registry) BeginLaunchWith(role leadrole.Role, opts LaunchOptions) (Inte
 	if err := launchGate(e, r.roles); err != nil {
 		return Intent{}, err
 	}
+	// A rule of writing only: a launch a newer build journaled for such a
+	// profile replays, but this build does not launch what it cannot read.
+	if e.foreignProfile {
+		return Intent{}, ErrLaunchProfile
+	}
 	var parentEpoch uint64
 	var identity string
 	if role.Kind() == leadrole.KindCoordinator {
@@ -615,7 +626,7 @@ func (r *Registry) BeginLaunchWith(role leadrole.Role, opts LaunchOptions) (Inte
 		IntentID:      hex.EncodeToString(id[:]),
 		Epoch:         e.Epoch + 1,
 		UnitName:      role.UnitName(),
-		ProfileDigest: e.Requested.Digest(),
+		ProfileDigest: e.profileDigest,
 		ParentEpoch:   parentEpoch,
 		Identity:      identity,
 		BootID:        opts.BootIdentity,

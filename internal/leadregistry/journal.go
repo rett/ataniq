@@ -72,6 +72,15 @@ type ackPayload struct {
 type definePayload struct {
 	Manager   Manager   `json:"manager"`
 	Requested Requested `json:"requested"`
+
+	// The identity of the requested profile, taken from the stored bytes of
+	// the record by decodeLine and never encoded: digest is the profile
+	// digest of [requestedDigest], and foreign is true when the stored member
+	// is not what this build writes for the decoded profile (a member it does
+	// not know, another order or spelling of the members). See [reduce] and
+	// [Registry.BeginLaunchWith].
+	digest  string
+	foreign bool
 }
 
 type desiredPayload struct {
@@ -250,9 +259,13 @@ func encodeLine(prev [sha256.Size]byte, seq uint64, at time.Time, kind string, r
 	return line, sum, nil
 }
 
-func strictDecode(data []byte, v any) error {
+// decodeRecord decodes one JSON object of a journal line: the envelope or a
+// payload. A member the type does not know is ignored, so a line that a newer
+// build wrote with an optional member this build lacks replays as the record
+// this build knows; the line's own bytes stay what the hash chain covers.
+// Data after the object is refused.
+func decodeRecord(data []byte, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		return err
 	}
@@ -260,6 +273,34 @@ func strictDecode(data []byte, v any) error {
 		return fmt.Errorf("trailing data")
 	}
 	return nil
+}
+
+// requestedDigest returns the profile digest of the requested member of a
+// define record as it is stored, and whether that member is foreign: not the
+// bytes this build writes for the profile r it decoded to.
+//
+// The digest is the hex SHA-256 of the stored member, compacted and with the
+// characters < > & and U+2028, U+2029 escaped as json.Marshal escapes them.
+// For a member this build wrote that is exactly [Requested.Digest] of r: the
+// journal's encoder writes what json.Marshal writes but for that escaping. For
+// a member a newer build wrote with a member this build does not know, it is
+// the digest that build computed of its own profile, so its launch-begin line
+// still matches. The identity of a profile is its stored bytes, not what this
+// build makes of them.
+func requestedDigest(raw json.RawMessage, r Requested) (digest string, foreign bool, err error) {
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil {
+		return "", false, err
+	}
+	own, err := marshalCompact(r)
+	if err != nil {
+		return "", false, err
+	}
+	foreign = !bytes.Equal(compact.Bytes(), own)
+	var escaped bytes.Buffer
+	json.HTMLEscape(&escaped, compact.Bytes())
+	sum := sha256.Sum256(escaped.Bytes())
+	return hex.EncodeToString(sum[:]), foreign, nil
 }
 
 // decodeLine verifies one journal line (without its newline) against the
@@ -281,7 +322,7 @@ func decodeLine(prev [sha256.Size]byte, wantSeq uint64, line []byte) (record, [s
 		return record{}, zero, fmt.Errorf("hash chain broken")
 	}
 	var env envelope
-	if err := strictDecode(content, &env); err != nil {
+	if err := decodeRecord(content, &env); err != nil {
 		return record{}, zero, fmt.Errorf("bad JSON: %v", err)
 	}
 	if env.Seq != wantSeq {
@@ -320,8 +361,21 @@ func decodeLine(prev [sha256.Size]byte, wantSeq uint64, line []byte) (record, [s
 	default:
 		return record{}, zero, fmt.Errorf("unknown record kind %q", env.Kind)
 	}
-	if err := strictDecode(env.Payload, p); err != nil {
+	if err := decodeRecord(env.Payload, p); err != nil {
 		return record{}, zero, fmt.Errorf("bad %s payload: %v", env.Kind, err)
+	}
+	if d, ok := p.(*definePayload); ok {
+		var stored struct {
+			Requested json.RawMessage `json:"requested"`
+		}
+		if err := json.Unmarshal(env.Payload, &stored); err != nil || len(stored.Requested) == 0 {
+			return record{}, zero, fmt.Errorf("bad %s payload: no requested profile", env.Kind)
+		}
+		digest, foreign, err := requestedDigest(stored.Requested, d.Requested)
+		if err != nil {
+			return record{}, zero, fmt.Errorf("bad %s payload: %v", env.Kind, err)
+		}
+		d.digest, d.foreign = digest, foreign
 	}
 	if err := p.validate(); err != nil {
 		return record{}, zero, fmt.Errorf("bad %s payload: %w", env.Kind, err)

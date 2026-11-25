@@ -73,6 +73,12 @@ var (
 	// recorded under an earlier epoch of the lead, is not stopped, ended or
 	// desired (never launched), so it is not proven stopped.
 	ErrLaunchCoordinator error = refusal("a coordinator of the lead recorded under an earlier epoch is not proven stopped")
+	// ErrLaunchProfile is a launch refusal: the requested profile was written
+	// by another build with members this build does not know, so this build
+	// cannot launch what was requested. Defining the role again with a profile
+	// of this build lifts it. A record that holds such a profile, and a
+	// launch that a newer build journaled for it, still replay.
+	ErrLaunchProfile error = refusal("the requested profile has members this build does not know; define the role again")
 	// ErrIntentMismatch means the intent id is not the role's current intent.
 	ErrIntentMismatch = errors.New("leadregistry: not the current launch intent")
 	// ErrIntentResolved means the launch intent already has an outcome.
@@ -367,7 +373,11 @@ func (r Requested) validate() error {
 }
 
 // Digest returns the hex SHA-256 of the canonical encoding of the requested
-// profile, as recorded in a launch intent.
+// profile (json.Marshal), as recorded in a launch intent. A member that is
+// empty and marked omitempty or omitzero is not in the encoding, so a member
+// added that way leaves the digest of every profile that does not set it as
+// it was. The registry takes the digest of a defined role from the bytes its
+// define record stores, which for a profile this build wrote is this digest.
 func (r Requested) Digest() string {
 	b, err := json.Marshal(r)
 	if err != nil { // plain strings only; cannot happen
@@ -592,6 +602,15 @@ type Entry struct {
 	Intent *Intent
 	// Unit is the unit evidence of the current epoch.
 	Unit UnitEvidence
+
+	// profileDigest is the digest of the requested profile as its define
+	// record stores it (requestedDigest): the digest a launch intent of the
+	// role carries. foreignProfile is true when that record's profile is not
+	// what this build writes for Requested, which is what this build knows of
+	// it (a newer build wrote a member this one does not know): such a role
+	// replays, and BeginLaunch refuses it with ErrLaunchProfile.
+	profileDigest  string
+	foreignProfile bool
 }
 
 // pending reports whether the current launch intent has no outcome yet.

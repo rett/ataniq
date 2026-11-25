@@ -17,16 +17,19 @@ func reduce(cur Entry, exists bool, all map[leadrole.Role]Entry, rec record) (En
 			cur = cur.clone()
 			cur.Manager = p.Manager
 			cur.Requested = p.Requested
+			cur.profileDigest, cur.foreignProfile = p.digest, p.foreign
 			return cur, nil
 		}
 		if len(all) >= MaxRoles {
 			return Entry{}, ErrTooManyRoles
 		}
 		return Entry{
-			Role:      rec.role,
-			Manager:   p.Manager,
-			Requested: p.Requested,
-			Desired:   DesiredStopped,
+			Role:           rec.role,
+			Manager:        p.Manager,
+			Requested:      p.Requested,
+			profileDigest:  p.digest,
+			foreignProfile: p.foreign,
+			Desired:        DesiredStopped,
 			Shown: Shown{
 				State:    StateStopped,
 				Reason:   Reason{Code: "defined"},
@@ -55,7 +58,7 @@ func reduce(cur Entry, exists bool, all map[leadrole.Role]Entry, rec record) (En
 		if p.UnitName != e.Role.UnitName() {
 			return Entry{}, invalid("launch unit name is not the role's unit")
 		}
-		if p.ProfileDigest != e.Requested.Digest() {
+		if p.ProfileDigest != e.profileDigest {
 			return Entry{}, invalid("launch profile digest is not the requested profile's")
 		}
 		e.Epoch = p.Epoch

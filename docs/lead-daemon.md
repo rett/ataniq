@@ -911,6 +911,18 @@ JSON object per line. The first line is a header that names the format
   wider permission bits than 0600 (0700 for the folder) fail with
   `ErrInsecure`. Damage other than an unfinished last line fails with
   `ErrCorrupt` and names the line; nothing is repaired, and the daemon exits 14.
+- **Records of other builds.** Replay ignores a member of a line or of a
+  payload that this build does not know, so a journal a newer build wrote
+  still opens, and a member a build adds is written only when it is set, so a
+  record that does not use it is the bytes an older build wrote. The identity
+  of a requested profile is its stored bytes: a launch intent carries the
+  digest of the profile as its define record stores it, so recorded launch
+  digests stay valid whatever members later builds add. A role whose stored
+  profile has a member this build does not know is not launched
+  (`ErrLaunchProfile`, which the start answers as a refusal of the registry)
+  until it is defined again. `internal/leadregistry/testdata/v1-base` holds a
+  journal an older build wrote, and the tests read it back byte for byte. An
+  unknown record kind and another format version are still damage.
 
 Format version 1 has no compatibility promise until a first deployment: a rule
 may be tightened so that a journal written by an earlier build is no longer

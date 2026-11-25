@@ -92,7 +92,11 @@ func TestDefineUpdateKeepsRuntimeState(t *testing.T) {
 	if after.Manager != ManagerTmux || after.Requested != p2 {
 		t.Fatalf("update not applied: %+v", after)
 	}
+	if after.profileDigest != p2.Digest() || after.foreignProfile {
+		t.Fatalf("the profile's identity is not the new profile's: %s %v", after.profileDigest, after.foreignProfile)
+	}
 	after.Manager, after.Requested = before.Manager, before.Requested
+	after.profileDigest, after.foreignProfile = before.profileDigest, before.foreignProfile
 	if !reflect.DeepEqual(after, before) {
 		t.Fatalf("update changed more than manager and profile:\n%+v\n%+v", after, before)
 	}
