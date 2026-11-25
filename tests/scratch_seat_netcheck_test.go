@@ -179,18 +179,20 @@ func netcheckRun(t *testing.T, script, path string, args ...string) (string, int
 }
 
 // The network check classifies each probe as connected, refused, or
-// filtered/timed out, or as a probe that showed nothing, and only a refusal
-// or a timeout the probe itself reports passes the lead's network; a probe
-// that did not run is a finding (review finding 7: a missing curl, a curl
-// without telnet://, a sandbox that did not start, a line that is not the
-// probe's). The probe runs curl with no configuration file and no proxy and
-// reports curl's own exit status. A probe of the lead's network counts only
-// when the sandbox showed an address and a default route first. Everything
-// here runs on inert fixtures: the entries --classify, --class-of,
-// --lead-class-of, --net-of (on files written here) and --verdict run
-// nothing, and
-// --probe-here runs only a stub curl, the one program on its PATH; no test
-// starts pasta, bubblewrap, a unit or a network request.
+// filtered/timed out, or as a probe that showed nothing, and only a timeout
+// the probe itself reports passes the lead's network: curl's "could not
+// connect" (7, no time to connect) shows nothing and is a finding, never a
+// passing refusal, and so is a probe that did not run (a missing curl, a
+// curl without telnet://, a sandbox that did not start, a line that is not
+// the probe's) and a wrapper that ended with a status other than 0. The
+// probe runs curl with no configuration file and no proxy and reports
+// curl's own exit status. A probe of the lead's network counts only when
+// the sandbox showed the route it takes to the gate's address and a source
+// address for it first. Everything here runs on inert fixtures: the entries
+// --classify, --class-of, --lead-class-of, --status-class, --net-of (on
+// files written here) and --verdict run nothing, and --probe-here runs only
+// a stub curl, the one program on its PATH; no test starts pasta,
+// bubblewrap, a unit or a network request.
 func TestScratchSeatNetcheckClassifiesEachProbe(t *testing.T) {
 	dir, script := netcheckScript(t)
 	for _, c := range []struct{ rc, connect, want string }{
@@ -232,20 +234,27 @@ func TestScratchSeatNetcheckClassifiesEachProbe(t *testing.T) {
 		}
 	}
 	// The verdict: this host must connect, and both probes of the lead's
-	// network must be refused or time out.
+	// network must time out; a refusal there, curl's 7 with no time to
+	// connect, shows nothing and is a finding (review finding 6), and so is a
+	// wrapper that ended with a status other than 0, whatever it printed.
 	for _, c := range []struct {
 		host, shell, unit string
 		findings          int
 		want              []string
 	}{
-		{"connected", "refused", "filtered", 0, []string{"PASS     this host: connected", "PASS     the lead's network, from this shell: refused", "PASS     the lead's network, in a user unit: filtered or timed out", "netcheck: no finding"}},
-		{"connected", "connected", "refused", 1, []string{"FINDING  the lead's network, from this shell: connected to the gate's port 192.0.2.1:9: do not start a lead"}},
-		{"connected", "refused", "connected", 1, []string{"FINDING  the lead's network, in a user unit: connected"}},
-		{"connected", "error", "refused", 1, []string{"FINDING  the lead's network, from this shell: the probe did not run"}},
-		{"connected", "refused", "error", 1, []string{"FINDING  the lead's network, in a user unit: the probe did not run"}},
-		{"connected", "nonet", "refused", 1, []string{"FINDING  the lead's network, from this shell: the probe did not run: the sandbox's network did not come up"}},
-		{"connected", "refused", "nonet", 1, []string{"FINDING  the lead's network, in a user unit: the probe did not run: the sandbox's network did not come up"}},
-		{"refused", "refused", "refused", 1, []string{"FINDING  this host: refused at 192.0.2.1:9: nothing listens; run this while a daemon serves the gate (the trial at step e, the proof's daemon at step 7)"}},
+		{"connected", "filtered", "filtered", 0, []string{"PASS     this host: connected", "PASS     the lead's network, from this shell: filtered or timed out on the route to the gate", "PASS     the lead's network, in a user unit: filtered or timed out", "netcheck: no finding"}},
+		{"connected", "refused", "filtered", 1, []string{"FINDING  the lead's network, from this shell: curl could not connect (status 7, no time to connect)", "so it shows nothing; only a probe that times out"}},
+		{"connected", "filtered", "refused", 1, []string{"FINDING  the lead's network, in a user unit: curl could not connect (status 7, no time to connect)"}},
+		{"connected", "connected", "filtered", 1, []string{"FINDING  the lead's network, from this shell: connected to the gate's port 192.0.2.1:9: do not start a lead"}},
+		{"connected", "filtered", "connected", 1, []string{"FINDING  the lead's network, in a user unit: connected"}},
+		{"connected", "error", "filtered", 1, []string{"FINDING  the lead's network, from this shell: the probe did not run"}},
+		{"connected", "filtered", "error", 1, []string{"FINDING  the lead's network, in a user unit: the probe did not run"}},
+		{"connected", "nonet", "filtered", 1, []string{"FINDING  the lead's network, from this shell: the probe did not run: no usable route and source address to the gate's address in the sandbox"}},
+		{"connected", "filtered", "nonet", 1, []string{"FINDING  the lead's network, in a user unit: the probe did not run: no usable route and source address"}},
+		{"connected", "wrapper-1", "filtered", 1, []string{"FINDING  the lead's network, from this shell: the probe's wrapper ended with exit status 1, so what it printed is not taken"}},
+		{"connected", "filtered", "wrapper-125", 1, []string{"FINDING  the lead's network, in a user unit: the probe's wrapper ended with exit status 125"}},
+		{"wrapper-2", "filtered", "filtered", 1, []string{"FINDING  this host: the probe's shell ended with exit status 2"}},
+		{"refused", "filtered", "filtered", 1, []string{"FINDING  this host: refused at 192.0.2.1:9: nothing listens; run this while a daemon serves the gate (the trial at step e, the proof's daemon at step 7)"}},
 		{"filtered", "filtered", "filtered", 1, []string{"FINDING  this host: no answer from 192.0.2.1:9 (filtered or timed out)"}},
 		{"error", "error", "error", 3, []string{"FINDING  this host: the probe did not run", "netcheck: 3 finding(s)"}},
 	} {
@@ -260,11 +269,21 @@ func TestScratchSeatNetcheckClassifiesEachProbe(t *testing.T) {
 		}
 	}
 
+	// The exit status of a probe's wrapper decides before what it printed: 0
+	// keeps the class, any other status is wrapper-STATUS.
+	for _, c := range []struct{ status, class, want string }{
+		{"0", "filtered", "filtered"}, {"0", "connected", "connected"}, {"1", "filtered", "wrapper-1"},
+		{"125", "refused", "wrapper-125"}, {"x", "filtered", "wrapper-unknown"}, {"", "filtered", "wrapper-unknown"},
+	} {
+		out, code := netcheckRun(t, script, "/usr/bin:/bin", "--status-class", c.status, c.class)
+		if code != 0 || out != c.want+"\n" {
+			t.Errorf("--status-class %q %q: exit %d, %q, want %q", c.status, c.class, code, out, c.want)
+		}
+	}
+
 	// A probe of the lead's network counts only after the sandbox showed its
-	// network: a net line with a default route and an address, then the
-	// probe's line. curl's 7 is also an unreachable network, so a namespace
-	// whose network did not come up is a probe that did not run (review
-	// finding 5), never a refusal.
+	// route to the gate: a net line with a route and an address, then the
+	// probe's line; a net line of none is a probe that did not run.
 	for _, c := range []struct{ text, want string }{
 		{"net route=eth0 addr=192.0.2.5\nprobe rc=7 connect=0.000000", "refused"},
 		{"net route=eth0 addr=192.0.2.5\nprobe rc=28 connect=0.000000", "filtered"},
@@ -272,6 +291,7 @@ func TestScratchSeatNetcheckClassifiesEachProbe(t *testing.T) {
 		{"net route=none addr=192.0.2.5", "nonet"},
 		{"net route=eth0 addr=none", "nonet"},
 		{"net route=none addr=none\nprobe rc=7 connect=0.000000", "nonet"},
+		{"net route=none addr=none note=reject", "nonet"},
 		{"probe rc=7 connect=0.000000", "error"},
 		{"", "error"},
 		{"bwrap: setting up uid map: Permission denied", "error"},
@@ -284,18 +304,24 @@ func TestScratchSeatNetcheckClassifiesEachProbe(t *testing.T) {
 		}
 	}
 	// NETUP itself, on copies of /proc/net/route and /proc/net/fib_trie
-	// written here: the interface of an IPv4 default route other than lo,
-	// and an IPv4 address other than loopback; "none" for what is missing
-	// or cannot be read.
+	// written here (review finding 6): the route the namespace takes to the
+	// gate's address, as the kernel chooses it (the longest mask that holds
+	// the address, then the lowest metric), must be usable, and a source
+	// address of the namespace must lie in a subnet route on its interface.
+	// The rows are in the file's own form: hexadecimal in the host's byte
+	// order (010200C0 is 192.0.2.1), the metric in decimal.
 	routeHead := "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
-	routeDefault := routeHead + "eth0\t00000000\t010200C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n" +
-		"eth0\t000200C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n"
-	routeNoDefault := routeHead + "eth0\t000200C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n" +
-		"lo\t00000000\t00000000\t0001\t0\t0\t0\t00000000\t0\t0\t0\n"
+	route := func(lines ...string) string { return routeHead + strings.Join(lines, "\n") + "\n" }
+	const (
+		defEth0    = "eth0\t00000000\t010200C0\t0003\t0\t0\t100\t00000000\t0\t0\t0"
+		subnetEth0 = "eth0\t000200C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0"
+		gate       = "198.51.100.7" // off the subnet: through the default route
+	)
 	trieUp := "Main:\n  +-- 0.0.0.0/0 3 0 5\n     |-- 0.0.0.0\n        /0 universe UNICAST\n     +-- 127.0.0.0/8 2 0 2\n" +
 		"        +-- 127.0.0.0/31 1 0 0\n           |-- 127.0.0.0\n              /8 host LOCAL\n           |-- 127.0.0.1\n              /32 host LOCAL\n" +
 		"     |-- 192.0.2.15\n        /32 host LOCAL\nLocal:\n     |-- 192.0.2.15\n        /32 host LOCAL\n"
 	trieLoopback := "Main:\n  +-- 127.0.0.0/8 2 0 2\n     |-- 127.0.0.1\n        /32 host LOCAL\n     |-- 127.255.255.255\n        /32 link BROADCAST\n"
+	trieGate := trieUp + "     |-- 198.51.100.7\n        /32 host LOCAL\n"
 	write := func(name, body string) string {
 		f := filepath.Join(dir, name)
 		if err := os.WriteFile(f, []byte(body), 0o600); err != nil {
@@ -303,53 +329,53 @@ func TestScratchSeatNetcheckClassifiesEachProbe(t *testing.T) {
 		}
 		return f
 	}
-	rd, rn, tu, tl := write("route-default", routeDefault), write("route-no-default", routeNoDefault), write("trie-up", trieUp), write("trie-lo", trieLoopback)
+	tu, tl, tg := write("trie-up", trieUp), write("trie-lo", trieLoopback), write("trie-gate", trieGate)
 	missing := filepath.Join(dir, "missing")
-	// Default routes that are not usable (review finding 5): a reject route
-	// (RTF_UP|RTF_REJECT, 0201, as "ip route add unreachable default" or
-	// "prohibit default" shows on an interface) and a blackhole route (the
-	// same flags on "*"), a route that is down (0002), one with no gateway
-	// (0001, gateway 00000000), flags that are not hexadecimal, and a
-	// gateway flag over a zero gateway. Each reads as no route; a usable
-	// route after a reject one is taken.
-	route := func(lines ...string) string { return routeHead + strings.Join(lines, "\n") + "\n" }
-	unusable := map[string]string{
-		"route-reject":       route("eth0\t00000000\t010200C0\t0201\t0\t0\t100\t00000000\t0\t0\t0"),
-		"route-blackhole":    route("*\t00000000\t00000000\t0201\t0\t0\t0\t00000000\t0\t0\t0"),
-		"route-reject-gw":    route("eth0\t00000000\t010200C0\t0203\t0\t0\t100\t00000000\t0\t0\t0"),
-		"route-down":         route("eth0\t00000000\t010200C0\t0002\t0\t0\t100\t00000000\t0\t0\t0"),
-		"route-no-gateway":   route("eth0\t00000000\t00000000\t0001\t0\t0\t100\t00000000\t0\t0\t0"),
-		"route-zero-gateway": route("eth0\t00000000\t00000000\t0003\t0\t0\t100\t00000000\t0\t0\t0"),
-		"route-bad-flags":    route("eth0\t00000000\t010200C0\tzz03\t0\t0\t100\t00000000\t0\t0\t0"),
-	}
-	for name, body := range unusable {
-		out, code := netcheckRun(t, script, "/usr/bin:/bin", "--net-of", write(name, body), tu)
-		if code != 0 || out != "net route=none addr=192.0.2.15\n" {
-			t.Errorf("--net-of %s: exit %d, %q, want no route", name, code, out)
-		}
-	}
-	after := write("route-reject-then-up", route("eth1\t00000000\t010200C0\t0201\t0\t0\t50\t00000000\t0\t0\t0",
-		"eth0\t00000000\t010200C0\t0003\t0\t0\t100\t00000000\t0\t0\t0"))
-	if out, code := netcheckRun(t, script, "/usr/bin:/bin", "--net-of", after, tu); code != 0 || out != "net route=eth0 addr=192.0.2.15\n" {
-		t.Errorf("--net-of a reject route then a usable one: exit %d, %q", code, out)
-	}
-	for _, c := range []struct{ route, trie, want string }{
-		{rd, tu, "net route=eth0 addr=192.0.2.15\n"},
-		{rn, tu, "net route=none addr=192.0.2.15\n"},
-		{rd, tl, "net route=eth0 addr=none\n"},
-		{missing, missing, "net route=none addr=none\n"},
+	for _, c := range []struct {
+		name, gate, route, trie, want string
+	}{
+		{"a default route and an address on its interface", gate, route(defEth0, subnetEth0), tu, "net route=eth0 addr=192.0.2.15"},
+		{"the gate on the subnet itself, no gateway needed", "192.0.2.1", route(defEth0, subnetEth0), tu, "net route=eth0 addr=192.0.2.15"},
+		{"a preferred reject default before a usable default of a higher metric", gate,
+			route("eth1\t00000000\t010200C0\t0201\t0\t0\t50\t00000000\t0\t0\t0", defEth0, subnetEth0), tu, "net route=none addr=none note=reject"},
+		{"a usable default before a reject default of a higher metric", gate,
+			route(defEth0, "eth1\t00000000\t010200C0\t0201\t0\t0\t200\t00000000\t0\t0\t0", subnetEth0), tu, "net route=eth0 addr=192.0.2.15"},
+		{"a reject route for the gate's subnet before a usable default", gate,
+			route(defEth0, subnetEth0, "eth0\t006433C6\t00000000\t0201\t0\t0\t500\t00FFFFFF\t0\t0\t0"), tu, "net route=none addr=none note=reject"},
+		{"a blackhole default", gate, route("*\t00000000\t00000000\t0201\t0\t0\t0\t00000000\t0\t0\t0", subnetEth0), tu, "net route=none addr=none note=reject"},
+		{"a default route that is down", gate, route("eth0\t00000000\t010200C0\t0002\t0\t0\t100\t00000000\t0\t0\t0", subnetEth0), tu, "net route=none addr=none note=noroute"},
+		{"a gateway flag over a zero gateway", gate, route("eth0\t00000000\t00000000\t0003\t0\t0\t100\t00000000\t0\t0\t0", subnetEth0), tu, "net route=none addr=none note=nogateway"},
+		{"flags that are not hexadecimal", gate, route("eth0\t00000000\t010200C0\tzz03\t0\t0\t100\t00000000\t0\t0\t0", subnetEth0), tu, "net route=none addr=none note=noroute"},
+		{"a metric that is not a number", gate, route("eth0\t00000000\t010200C0\t0003\t0\t0\tx\t00000000\t0\t0\t0", subnetEth0), tu, "net route=none addr=none note=noroute"},
+		{"a default route on lo", gate, route("lo\t00000000\t00000000\t0001\t0\t0\t0\t00000000\t0\t0\t0", subnetEth0), tu, "net route=none addr=none note=lo"},
+		{"no route that holds the gate", gate, route(subnetEth0), tu, "net route=none addr=none note=noroute"},
+		{"the gate's address the sandbox's own", gate, route(defEth0, subnetEth0), tg, "net route=none addr=none note=local"},
+		{"a default route on an interface without an address", gate,
+			route("eth1\t00000000\t010233C6\t0003\t0\t0\t100\t00000000\t0\t0\t0", subnetEth0), tu, "net route=none addr=none note=noaddress"},
+		{"loopback addresses only", gate, route(defEth0, subnetEth0), tl, "net route=none addr=none note=noaddress"},
+		{"no files", gate, missing, missing, "net route=none addr=none note=noroute"},
+		{"a gate that is not an address", "gate.example", route(defEth0, subnetEth0), tu, "net route=none addr=none note=gate"},
 	} {
-		out, code := netcheckRun(t, script, "/usr/bin:/bin", "--net-of", c.route, c.trie)
-		if code != 0 || out != c.want {
-			t.Errorf("--net-of %s %s: exit %d, %q, want %q", filepath.Base(c.route), filepath.Base(c.trie), code, out, c.want)
+		r := c.route
+		if r != missing {
+			r = write("route", c.route)
+		}
+		out, code := netcheckRun(t, script, "/usr/bin:/bin", "--net-of", c.gate, r, c.trie)
+		if code != 0 || out != c.want+"\n" {
+			t.Errorf("--net-of %s: exit %d, %q, want %q", c.name, code, out, c.want)
 		}
 	}
 	// The sandbox runs NETUP before the probe, and the verdict reads both
 	// probes of the lead's network through it.
 	text := string(mustRead(t, script))
 	if !strings.Contains(text, `core /usr/bin/sh -c "$NETUP$PROBE" "$GATE_HOST" "$GATE_PORT"`) ||
-		!strings.Contains(text, `verdict "$(class_of "$HOSTSIDE")" "$(lead_class_of "$SHAPE")" "$(lead_class_of "$UNIT")"`) {
-		t.Error("the sandbox does not show its network before the probe, or the verdict does not read it")
+		!strings.Contains(text, `verdict "$(status_class "$HRC" "$(class_of "$HOSTSIDE")")" "$(status_class "$SRC" "$(lead_class_of "$SHAPE")")" "$(status_class "$URC" "$(lead_class_of "$UNIT")")"`) {
+		t.Error("the sandbox does not show its route to the gate before the probe, or the verdict does not read it with each wrapper's exit status")
+	}
+	for _, w := range []string{`|| HRC=$?`, `|| SRC=$?`, `UNIT=$(unit 2>&1) || URC=$?`} {
+		if !strings.Contains(text, w) {
+			t.Errorf("the script does not keep a wrapper's exit status: %s", w)
+		}
 	}
 
 	// The probe itself, with a stub curl that records its arguments and

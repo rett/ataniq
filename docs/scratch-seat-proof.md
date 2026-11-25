@@ -355,21 +355,30 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    gate answers, or the next lines prove nothing); from the lead's network,
    in the shape of the sandbox, both from this shell and in a throwaway user
    unit with the lead unit's fixed properties (where a lead's holder starts
-   pasta), it must be refused or filtered: `PASS ... refused (no connection
-   to the gate's port was made)`. A probe that did not run (no curl, a curl
-   without `telnet://`, a sandbox or unit that did not start) is a
-   `FINDING`, never a pass, and so is a connection. So is a sandbox whose
-   network did not come up: curl's "could not connect" is also what an
-   unreachable network gives, so inside the sandbox, before the probe, the
-   check looks for an IPv4 address other than loopback and a default route
-   other than on `lo` that is up, goes through a gateway and is not a
-   reject or blackhole route (its flags in `/proc/net/route`: an
-   unreachable or blackhole route gives the same "could not connect"), and
-   prints `net route=... addr=...`; without either
-   the probe is not made and the line says `the probe did not run: the
-   sandbox's network did not come up`. A host with no IPv4 default route
-   reads the same way. Any `FINDING` there ends
-   the sitting before it starts. The probe is curl with no configuration
+   pasta), it must time out: `PASS ... filtered or timed out on the route
+   to the gate (no connection to the gate's port was made)`, what a rule
+   that drops gives. curl's "could not connect" (status 7, no time to
+   connect) is a `FINDING`, never a passing refusal: a reset, an
+   unreachable or prohibited answer, a local refusal and a missing route
+   all read the same, so it shows nothing (a firewall rule that rejects
+   rather than drops reads this way too). A probe that did not run (no
+   curl, a curl without `telnet://`, a sandbox or unit that did not start)
+   is a `FINDING`, and so is a connection, and so is a wrapper (the probe's
+   shell, pasta and bubblewrap, or the unit) that ended with a status other
+   than 0, whatever it printed. Inside the sandbox, before the probe, the
+   check establishes the route the sandbox takes to the gate's address, as
+   the kernel chooses it from `/proc/net/route` (of the routes that are up
+   and hold the address, the longest mask, then the lowest metric), and
+   prints `net route=... addr=...`: the route must not be a reject,
+   unreachable or blackhole route, not on `lo`, not a gateway route with no
+   gateway, and the gate's address must not be one of the sandbox's own
+   (`/proc/net/fib_trie`: the probe would reach the sandbox, not the gate);
+   the source address must be an IPv4 address of the sandbox other than
+   loopback on the route's interface. Without them the probe is not made,
+   the line ends `note=` and why (`reject`, `noroute`, `lo`, `local`,
+   `noaddress`), and the verdict says `the probe did not run: no usable
+   route and source address to the gate's address in the sandbox`. Any
+   `FINDING` there ends the sitting before it starts. The probe is curl with no configuration
    file and no proxy, to the numeric address, and it sends no byte. The
    script then lists this host's listeners on non-loopback addresses and
    says what stays open until the drop rule is in place: the sandbox's

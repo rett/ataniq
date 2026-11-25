@@ -415,7 +415,7 @@ EOF
   cat <<EOF
   d. Check that your firewall admits TCP to $_g from the authority host only.
   e. OWNER ONLY (starts pasta, bubblewrap, curl and a throwaway user unit): { sh $ROOT/netcheck.sh; echo "netcheck: exit status \$?"; } 2>&1 | tee -a $EVIDENCE/netcheck.txt
-     It must say connected from this host and refused or filtered from the lead's network, and end "netcheck: exit status 0".
+     It must say connected from this host and filtered (timed out) from the lead's network, and end "netcheck: exit status 0".
   f. $BIN/ataniq-canary scratch-init --config $CONFIG   (the root marker; it writes nothing in owner/)
   g. sh $PREP --status $_vals --record   (the daemon's check, which must end "check: no refusal", then the baseline: it must end "status: recorded")
      $DAEMON seat-gate pins --state-dir $S

@@ -15,23 +15,32 @@
 #      prove nothing;
 #   2. from the lead's network, in the shape of the sandbox profile (pasta,
 #      then bubblewrap with the read-only root, no capabilities, UID 0),
-#      started from this shell: it must be refused or time out;
+#      started from this shell: it must time out;
 #   3. the same, started in a throwaway user unit of systemd-run with the
 #      lead unit's fixed properties, where a lead's holder starts pasta (in
-#      the user manager, not in this shell's session): it must be refused or
-#      time out too. A rule that matches the lead's processes by their unit's
-#      place in the user manager shows here and not in 2.
-# Only a refusal or a timeout that the probe itself reports passes 2 and 3; a
+#      the user manager, not in this shell's session): it must time out too.
+#      A rule that matches the lead's processes by their unit's place in the
+#      user manager shows here and not in 2.
+# Only a timeout that the probe itself reports, after the route to the gate
+# was established, passes 2 and 3: a rule that drops (as the drop rule
+# does). curl's "could not connect" (7, no time to connect) is a reset, an
+# unreachable or prohibited answer, a local refusal or a missing route
+# alike, so it shows nothing and is a finding, never a passing refusal. A
 # probe that did not run (no curl, a curl without telnet://, a sandbox or a
-# unit that did not start, output without the probe's line) is a finding.
-# Inside the sandbox, before the probe, the namespace's network is looked at
-# (NETUP): an IPv4 address other than loopback (/proc/net/fib_trie) and a
-# default route on an interface other than lo (/proc/net/route) that is up,
-# goes through a gateway and is not a reject or blackhole route. curl's
-# "could not connect" (7) is also what an unreachable network, a missing
-# route or a local refusal give, so a namespace whose network did not come
-# up would read as refused: without the address or the route the probe is
-# not made, the line "net route=... addr=..." says which is missing, and the
+# unit that did not start, output without the probe's line) is a finding,
+# and so is a wrapper (the probe's shell, pasta and bubblewrap, or the unit)
+# that ended with a status other than 0, whatever it printed.
+# Inside the sandbox, before the probe, the route the namespace takes to the
+# gate's address is established (NETUP), from /proc/net/route as the kernel
+# chooses it: of the routes that are up and whose destination and mask hold
+# the gate's address, the one of the longest mask, then of the lowest
+# metric. It must not be a reject route (RTF_REJECT: unreachable, prohibit,
+# blackhole), not on lo, not a gateway route with no gateway, and the gate's
+# address must not be one of the namespace's own (/proc/net/fib_trie: the
+# probe would reach the sandbox, not the gate). Its source address is an
+# IPv4 address of the namespace other than loopback that lies in a subnet
+# route on the same interface. Without both the probe is not made, the line
+# "net route=... addr=..." says which is missing (and note=, why), and the
 # result is a probe that did not run, a finding. The
 # probe is curl with no configuration file (-q, its first argument), no proxy
 # (--noproxy '*'; the environment is cleared on this host's side, and
@@ -61,9 +70,10 @@
 # seen by probe 3.
 #
 # Entries that run nothing, for the tests: --classify RC CONNECT,
-# --class-of TEXT and --lead-class-of TEXT print a class; --verdict HOST SHELL
-# UNIT prints the lines and ends with the exit status three classes give;
-# --net-of ROUTE TRIE runs NETUP on the two files given in place of /proc's.
+# --class-of TEXT, --lead-class-of TEXT and --status-class STATUS CLASS print
+# a class; --verdict HOST SHELL UNIT prints the lines and ends with the exit
+# status three classes give; --net-of GATE ROUTE TRIE runs NETUP for the
+# gate's address given on the two files given in place of /proc's.
 # --probe-here HOST PORT runs the probe in the caller's environment, outside
 # any sandbox (the tests run it with a stub curl first on PATH and no other).
 #
@@ -122,40 +132,120 @@ PROBE='command -v curl >/dev/null 2>&1 || { echo "probe no-curl"; exit 0; }
 t=$(curl -q -s --noproxy "*" -o /dev/null --connect-timeout 5 -m 8 -w "%{time_connect}" "telnet://$0:$1" </dev/null)
 echo "probe rc=$? connect=${t:-none}"'
 
-# NETUP, run by sh -c inside the sandbox before the probe, prints one line,
-# "net route=IFACE addr=ADDRESS" ("none" for what is not there): the
-# interface of a usable IPv4 default route other than lo, from
-# /proc/net/route, and an IPv4 address of the namespace other than loopback,
-# from /proc/net/fib_trie. A usable default route is one whose flags (the
-# fourth column, hexadecimal) say it is up (RTF_UP, 0x1) and goes through a
-# gateway (RTF_GATEWAY, 0x2) that is not 0.0.0.0, and is not a reject route
-# (RTF_REJECT, 0x200: an unreachable, prohibit or blackhole route, which
-# answers curl's connect with the same "could not connect" a refusal gives).
-# A line whose flags are not hexadecimal is not a route. Without both it ends
-# there, and the probe is not made. $2 and $3, when given, are read in place
-# of the two files (--net-of).
+# NETUP, run by sh -c inside the sandbox before the probe with the gate's
+# address as $0, prints one line, "net route=IFACE addr=ADDRESS" ("none" for
+# what is not there, and note=WHY when the route is none): the interface of
+# the route the namespace takes to the gate's address, and a source address
+# for it. Of the routes of /proc/net/route that are up (RTF_UP, 0x1) and
+# whose destination is the gate's address under their mask (both in the
+# file's byte order, the host's: little-endian, as on x86-64 and arm64), it
+# takes the one of the longest mask, then of the lowest metric, the first of
+# equals: the kernel's choice. That route is not usable when it is a reject
+# route (RTF_REJECT, 0x200: an unreachable, prohibit or blackhole route,
+# whose "could not connect" is a refusal's), on lo or on no interface, or a
+# gateway route (RTF_GATEWAY, 0x2) whose gateway is 0.0.0.0; nor when the
+# gate's address is an address of the namespace itself (a host LOCAL of
+# /proc/net/fib_trie), which the probe would reach in place of the gate. The
+# source address is an IPv4 address of the namespace other than loopback
+# that lies in a subnet route (up, not through a gateway, not a reject
+# route, with a mask) on the route's interface. A line whose fields are not
+# of the file's form is not a route. Without a route and a source address it
+# ends there, and the probe is not made. $2 and $3, when given, are read in
+# place of the two files (--net-of).
 # shellcheck disable=SC2016  # the inner shell expands these
-NETUP='r=none
+NETUP='g=$0
+r=none
 a=none
-if [ -r "${2:-/proc/net/route}" ]; then
-  while read -r i d g f c u m k rest; do
-    [ "$d" = 00000000 ] && [ "$k" = 00000000 ] && [ "$i" != lo ] && [ "$i" != Iface ] || continue
-    case $f in "" | *[!0-9A-Fa-f]* | ?????????*) continue ;; esac
-    case $g in 00000000 | "" | *[!0-9A-Fa-f]*) continue ;; esac
-    f=$((0x$f))
-    if [ $((f & 1)) -ne 0 ] && [ $((f & 2)) -ne 0 ] && [ $((f & 512)) -eq 0 ]; then r=$i; break; fi
-  done <"${2:-/proc/net/route}"
-fi
+note=
+le() {
+  o1=${1%%.*}
+  x=${1#*.}
+  o2=${x%%.*}
+  x=${x#*.}
+  o3=${x%%.*}
+  o4=${x#*.}
+  echo $((o1 + (o2 << 8) + (o3 << 16) + (o4 << 24)))
+}
+hex() { case $1 in "" | *[!0-9A-Fa-f]* | ?????????*) return 1 ;; esac; }
+quad() {
+  case $1 in "" | *[!0-9.]* | *..* | .* | *.) return 1 ;; esac
+  case $1 in *.*.*.*.*) return 1 ;; *.*.*.*) ;; *) return 1 ;; esac
+}
+routes=${2:-/proc/net/route}
+locals=
 if [ -r "${3:-/proc/net/fib_trie}" ]; then
   p=
   while read -r w x y z; do
-    if [ "$w" = /32 ] && [ "$x" = host ] && [ "$y" = LOCAL ]; then
-      case $p in 127.* | "") ;; *) a=$p; break ;; esac
+    if [ "$w" = /32 ] && [ "$x" = host ] && [ "$y" = LOCAL ] && quad "$p"; then
+      case $p in 127.*) ;; *) locals="$locals $p" ;; esac
     fi
     if [ "$w" = "|--" ]; then p=$x; fi
   done <"${3:-/proc/net/fib_trie}"
 fi
-echo "net route=$r addr=$a"
+if ! quad "$g"; then
+  note=gate
+else
+  gl=$(le "$g")
+  best=-1
+  bm=0
+  bi=
+  bf=0
+  bg=0
+  if [ -r "$routes" ]; then
+    while read -r i d gw f c u m k rest; do
+      [ "$i" != Iface ] && hex "$d" && hex "$gw" && hex "$f" && hex "$k" || continue
+      case $m in "" | *[!0-9]*) continue ;; esac
+      fl=$((0x$f))
+      mk=$((0x$k))
+      [ $((fl & 1)) -ne 0 ] && [ $((gl & mk)) -eq $((0x$d)) ] || continue
+      n=0
+      t=$mk
+      while [ "$t" -ne 0 ]; do
+        n=$((n + (t & 1)))
+        t=$((t >> 1))
+      done
+      if [ "$n" -gt "$best" ] || { [ "$n" -eq "$best" ] && [ "$m" -lt "$bm" ]; }; then
+        best=$n
+        bm=$m
+        bi=$i
+        bf=$fl
+        bg=$((0x$gw))
+      fi
+    done <"$routes"
+  fi
+  case " $locals " in *" $g "*) note=local ;; esac
+  if [ -n "$note" ]; then
+    :
+  elif [ "$best" -lt 0 ]; then
+    note=noroute
+  elif [ $((bf & 512)) -ne 0 ]; then
+    note=reject
+  elif [ "$bi" = lo ] || [ "$bi" = "*" ]; then
+    note=lo
+  elif [ $((bf & 2)) -ne 0 ] && [ "$bg" -eq 0 ]; then
+    note=nogateway
+  else
+    r=$bi
+  fi
+fi
+if [ "$r" != none ]; then
+  for s in $locals; do
+    sl=$(le "$s")
+    while read -r i d gw f c u m k rest; do
+      [ "$i" = "$r" ] && hex "$d" && hex "$f" && hex "$k" || continue
+      fl=$((0x$f))
+      mk=$((0x$k))
+      if [ $((fl & 1)) -ne 0 ] && [ $((fl & 2)) -eq 0 ] && [ $((fl & 512)) -eq 0 ] && [ "$mk" -ne 0 ] && [ $((sl & mk)) -eq $((0x$d)) ]; then
+        a=$s
+        break
+      fi
+    done <"$routes"
+    [ "$a" = none ] || break
+  done
+  [ "$a" != none ] || note=noaddress
+fi
+[ "$a" != none ] || r=none
+echo "net route=$r addr=$a${note:+ note=$note}"
 [ "$r" != none ] && [ "$a" != none ] || exit 0
 '
 
@@ -222,18 +312,32 @@ host_line() {
   case $1 in
     connected) pass "this host: connected to $GATE_HOST:$GATE_PORT (a daemon's gate listens)" ;;
     refused) finding "this host: refused at $GATE_HOST:$GATE_PORT: nothing listens; run this while a daemon serves the gate (the trial at step e, the proof's daemon at step 7), or the next probes prove nothing" ;;
+    wrapper-*) finding "this host: the probe's shell ended with exit status ${1#wrapper-}, so what it printed is not taken" ;;
     filtered) finding "this host: no answer from $GATE_HOST:$GATE_PORT (filtered or timed out); run this while a daemon serves the gate (the trial at step e, the proof's daemon at step 7), or the next probes prove nothing" ;;
     *) finding "this host: the probe did not run (no curl, a curl without telnet://, or another failure), so nothing was shown" ;;
   esac
 }
 
-# lead_line LABEL CLASS: the lead's network must not connect.
+# status_class STATUS CLASS prints CLASS when STATUS, the exit status of the
+# probe's wrapper, is 0, and wrapper-STATUS otherwise: what a wrapper that
+# failed printed is not taken, however plausible.
+status_class() {
+  case $1 in
+    0) echo "$2" ;;
+    '' | *[!0-9]*) echo wrapper-unknown ;;
+    *) echo "wrapper-$1" ;;
+  esac
+}
+
+# lead_line LABEL CLASS: the lead's network must not connect, and only a
+# timeout shows that a rule stopped it.
 lead_line() {
   case $2 in
-    refused) pass "$1: refused (no connection to the gate's port was made)" ;;
-    filtered) pass "$1: filtered or timed out (no connection to the gate's port was made)" ;;
+    filtered) pass "$1: filtered or timed out on the route to the gate (no connection to the gate's port was made)" ;;
+    refused) finding "$1: curl could not connect (status 7, no time to connect): a reset, an unreachable or prohibited answer, a local refusal and a missing route all read this way, so it shows nothing; only a probe that times out (a rule that drops, as the drop rule does) passes" ;;
     connected) finding "$1: connected to the gate's port $GATE_HOST:$GATE_PORT: do not start a lead until a rule refuses it" ;;
-    nonet) finding "$1: the probe did not run: the sandbox's network did not come up (no IPv4 address, or no default route that is up, through a gateway and not a reject or blackhole route; see its net line below), and a refusal there would show nothing" ;;
+    nonet) finding "$1: the probe did not run: no usable route and source address to the gate's address in the sandbox (no route, a reject, unreachable or blackhole route, a route on lo, the gate's address the sandbox's own, or no address on the route's interface; see its net line below), and a refusal there would show nothing" ;;
+    wrapper-*) finding "$1: the probe's wrapper ended with exit status ${2#wrapper-}, so what it printed is not taken (see its output below)" ;;
     *) finding "$1: the probe did not run, so nothing was shown (see its output below)" ;;
   esac
 }
@@ -277,9 +381,14 @@ case ${1:-} in
     exit 0
     ;;
   --net-of)
-    [ "$#" -eq 3 ] || exit 2
-    "$SH" -c "$NETUP" sh - "$2" "$3"
+    [ "$#" -eq 4 ] || exit 2
+    "$SH" -c "$NETUP" "$2" - "$3" "$4"
     exit
+    ;;
+  --status-class)
+    [ "$#" -eq 3 ] || exit 2
+    status_class "$2" "$3"
+    exit 0
     ;;
   --verdict)
     [ "$#" -eq 4 ] || exit 2
@@ -296,14 +405,18 @@ case ${1:-} in
 esac
 
 echo "netcheck: pasta $PASTA, bubblewrap $BWRAP, the gate $GATE_HOST:$GATE_PORT"
-HOSTSIDE=$(/usr/bin/env -i PATH=/usr/bin:/bin "$SH" -c "$PROBE" "$GATE_HOST" "$GATE_PORT" 2>&1)
-SHAPE=$("$SH" "$SELF" --core 2>&1)
+# Each probe's output and the exit status of its wrapper, which must be 0.
+HRC=0
+HOSTSIDE=$(/usr/bin/env -i PATH=/usr/bin:/bin "$SH" -c "$PROBE" "$GATE_HOST" "$GATE_PORT" 2>&1) || HRC=$?
+SRC=0
+SHAPE=$("$SH" "$SELF" --core 2>&1) || SRC=$?
+URC=0
 if command -v systemd-run >/dev/null 2>&1; then
-  UNIT=$(unit 2>&1)
+  UNIT=$(unit 2>&1) || URC=$?
 else
   UNIT='systemd-run is not on PATH: the probe in a user unit could not run'
 fi
-verdict "$(class_of "$HOSTSIDE")" "$(lead_class_of "$SHAPE")" "$(lead_class_of "$UNIT")"
+verdict "$(status_class "$HRC" "$(class_of "$HOSTSIDE")")" "$(status_class "$SRC" "$(lead_class_of "$SHAPE")")" "$(status_class "$URC" "$(lead_class_of "$UNIT")")"
 if command -v ss >/dev/null 2>&1; then
   _l=$(ss -ltnu 2>/dev/null | awk 'NR > 1 && $5 !~ /^(127\.|\[::1\]|\[::ffff:127\.)/ { print $1, $5 }' | LC_ALL=C sort)
   if [ -n "$_l" ]; then

@@ -83,11 +83,14 @@
   file and no proxy, from this host, from the lead's network in this shell
   and in a throwaway user unit with the lead unit's fixed properties,
   classifies each probe as connected, refused, or filtered or timed out,
-  passes the lead's network only on a refusal or timeout the probe itself
-  reports after the sandbox showed an IPv4 address and a default route
-  that is up, through a gateway and not a reject or blackhole route
-  (without them the probe did not run), takes a probe that did not run for
-  a finding, and the runbook
+  passes the lead's network only on a timeout the probe itself reports
+  after the sandbox showed the route it takes to the gate's address (the
+  kernel's choice: the longest mask, then the lowest metric; not a reject,
+  unreachable or blackhole route, not on lo, and not to an address of the
+  sandbox's own) and a source address on that route's interface (without
+  them the probe did not run), takes curl's "could not connect" (status 7,
+  no time to connect), a probe that did not run and a wrapper that ended
+  with a status other than 0 for findings, and the runbook
   records its exit status). The runbook's last steps compare the trial's
   files byte for byte with the record and start the trial again. A test in
   `cmd/ataniqd` takes a trial-shaped state folder to the scratch daemon and
