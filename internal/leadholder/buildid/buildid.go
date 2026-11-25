@@ -101,6 +101,12 @@ const (
 	MaxTags      = 256
 )
 
+// MaxToken is the length of the longest [Identity.Token] of a valid identity
+// (463 bytes): the longest module path and version, the longest revision and
+// ":modified". A field that carries a token holds this many bytes, so that
+// the revision at its end is never cut.
+const MaxToken = MaxModule + len(":") + MaxVersion + len(":rev=") + MaxRevision + len(":modified")
+
 // ErrSkew is matched by every refusal of [Checker.BeforeLaunch], and by every
 // refusal of [Checker.BeforeAttach] but that of a state file of another epoch
 // ([ErrOtherEpoch]).
