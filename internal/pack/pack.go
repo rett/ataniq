@@ -23,13 +23,17 @@ func ParseName(s string) (Name, error) {
 
 // BuiltinIdentity names the compiled code in a release. The declaration's
 // digest travels alongside it to identify the exact data that code reads.
+// The release version is preserved verbatim. The final '+' separates the revision.
 func BuiltinIdentity(name Name, version, revision string) (string, error) {
 	if _, err := ParseName(string(name)); err != nil {
 		return "", err
 	}
+	if strings.Contains(revision, "+") {
+		return "", fmt.Errorf("invalid built-in identity revision %q", revision)
+	}
 	for _, part := range []string{version, revision} {
 		if part == "" || strings.ContainsFunc(part, func(r rune) bool {
-			return r < '!' || r > '~' || r == '@' || r == '+'
+			return r < '!' || r > '~' || r == '@'
 		}) {
 			return "", fmt.Errorf("invalid built-in identity component %q", part)
 		}
