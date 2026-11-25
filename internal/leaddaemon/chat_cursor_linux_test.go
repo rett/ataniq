@@ -352,6 +352,13 @@ func (l *leadEnv) chatSetFrom(key, chat string) (leadwire.ChatLead, error) {
 // starts recording there), with the lead's head at that moment: once
 // the scan is let go, the scan's ingest signals and then the turn-off's
 // publication does, and each shows the head with the scan's reply in it.
+//
+// Coming to the hook does not prove the turn-off then waits at the lock (it
+// may publish before it takes it, after the scan was let go), so in both
+// runs every signal of the turn-off is also checked, as it is made, to be
+// made under alpha's change lock: a try of the lock in it fails. The run
+// with no scan in flight stops alpha's scanner before the turn-off, so the
+// publication's own hold is the only one there can be.
 func TestChatScanAdmittedBeforeATurnOffEndsBeforeTheOffIsSeen(t *testing.T) {
 	for _, paused := range []bool{false, true} {
 		name := "no scan in flight"
@@ -418,8 +425,26 @@ func TestChatScanAdmittedBeforeATurnOffEndsBeforeTheOffIsSeen(t *testing.T) {
 			cl.mu.Unlock()
 			var sigMu sync.Mutex
 			var signals []int64
+			// In the turn-off (offWindow), every signal is also checked to
+			// be made under alpha's change lock: the publication of the
+			// off and, in the paused run, the released scan's ingest. A
+			// try of the lock that succeeds proves the signal did not hold
+			// it, at the moment of the signal, whatever ran before; no
+			// cursor reader runs in this test, so in the run with no scan
+			// in flight (its scanner stopped first) nothing else can hold
+			// it.
+			var offWindow atomic.Bool
+			var heldAt, freeAt atomic.Int32
 			if prev := d.changed.Load(); prev != nil {
 				d.onChange(func() {
+					if offWindow.Load() {
+						if cl.chg.TryLock() {
+							cl.chg.Unlock()
+							freeAt.Add(1)
+						} else {
+							heldAt.Add(1)
+						}
+					}
 					if recording.Load() {
 						head := int64(-1)
 						if st, err := store.Status(); err == nil {
@@ -461,6 +486,7 @@ func TestChatScanAdmittedBeforeATurnOffEndsBeforeTheOffIsSeen(t *testing.T) {
 				// scan that is released (the test clock), so the turn-off
 				// waits for the scan and not for the reply's age.
 				reply(t, out, "0002-second.txt", "second")
+				offWindow.Store(true)
 				offDone = make(chan struct{})
 				var offErr error
 				go func() {
@@ -506,7 +532,30 @@ func TestChatScanAdmittedBeforeATurnOffEndsBeforeTheOffIsSeen(t *testing.T) {
 			} else {
 				reply(t, out, "0002-second.txt", "second")
 				waitFor(t, 15*time.Second, "the second reply is taken", func() bool { return l.chatRow("alpha").Entries == 3 })
+				// The scanner is stopped with the switch still read (as a
+				// turn-off stops it, under the lead's setMu), so that no
+				// scan holds the change lock when the off is published.
+				cl.setMu.Lock()
+				d.stopWorker(cl)
+				cl.setMu.Unlock()
+				if w := workerNow(d, "alpha"); w != nil {
+					t.Fatalf("alpha has a scanner, of generation %d, after it was stopped", w.gen)
+				}
+				offWindow.Store(true)
 				l.mustChatSet("alpha", leadwire.ChatOff)
+			}
+			offWindow.Store(false)
+			if n := freeAt.Load(); n != 0 {
+				t.Fatalf("%d signal(s) of the turn-off were made with alpha's change lock free: the off publication did not hold alpha's change lock", n)
+			}
+			// The publication of the off, and in the paused run the
+			// released scan's ingest before it.
+			want := int32(1)
+			if paused {
+				want = 2
+			}
+			if n := heldAt.Load(); n != want {
+				t.Fatalf("the turn-off made %d signal(s) under alpha's change lock, want %d", n, want)
 			}
 			if r := rowOf(t, port, "alpha"); r.Chat != ownerwire.ChatOff {
 				t.Fatalf("after the turn-off the seat sees %s", r.Chat)
