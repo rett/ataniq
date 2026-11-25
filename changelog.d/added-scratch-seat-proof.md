@@ -62,8 +62,11 @@
   sitting) it then takes the baseline, the digests of the trial's gate key,
   certificate, pins and settings and the daemon's prefix of the key list
   and digest of its head, both of one snapshot (prepare opens neither file
-  of the key list), and writes them, whole, into `evidence/step-g` (a
-  refusal of the key check writes nothing, and the step is taken again);
+  of the key list), and writes them, whole, into `evidence/step-g` (synced
+  to disk, published by a rename that replaces nothing, not even an empty
+  folder made meanwhile, and the evidence folder synced before it says
+  `recorded`; a refusal of the key check writes nothing, and the step is
+  taken again);
   with `--compare` it then refuses a record of
   the digests taken before the sitting that does not name each of the six
   files once (the names compared as text, before any listed file is

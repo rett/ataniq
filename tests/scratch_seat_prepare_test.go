@@ -224,7 +224,7 @@ func TestScratchSeatPrepareIsPlainShell(t *testing.T) {
 			`_kp=$("$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-prefix --expect-state "$S") || _krc=$?`,
 			`"$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-since "$_prefix" --expect-state "$S" || _krc=$?`},
 		"/usr/bin/git": {`/usr/bin/git -c core.hooksPath=/dev/null -c commit.gpgSign=false -c tag.gpgSign=false -c core.fsmonitor=false \`},
-		"mv":           {`mv -T -- "$_tmp" "$BASELINE" || {`},
+		"mv":           {`mv -n -T -- "$_tmp" "$BASELINE" || _mrc=$?`},
 	}
 	seen := map[string]int{}
 	for i, line := range strings.Split(text, "\n") {
@@ -1051,9 +1051,59 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 	if !sameScratchSeatFiles(evidenceBefore, scratchSeatFiles(t, evidence)) {
 		t.Fatal("the evidence folder is not as it was before the baselines of the cases")
 	}
+	// The baseline is on disk before "recorded" is said, and its name
+	// replaces nothing (review finding 4): a sync first on the kit's PATH
+	// records its arguments, then syncs, or, by the word in syncMode, fails
+	// on the staging folder ("files") or on the evidence folder
+	// ("evidence"), or makes an empty folder at the baseline's name while
+	// the staging folder is synced, after the script's last look at the
+	// name ("race").
+	syncLog := filepath.Join(k.dir, "sync-log")
+	syncMode := filepath.Join(k.dir, "sync-mode")
+	syncStub := filepath.Join(k.tools, "sync")
+	noErr(t, os.WriteFile(syncStub, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >>'"+syncLog+"'\nmode=$(cat '"+syncMode+"' 2>/dev/null)\n"+
+		"case $mode:$* in\n  files:*/.step-g.*) exit 1 ;;\n  evidence:*'"+evidence+"') exit 1 ;;\n  race:*/.step-g.*) mkdir '"+baseline+"' ;;\nesac\nexec /usr/bin/sync \"$@\"\n"), 0o700))
+	defer os.Remove(syncStub)
+	for _, c := range []struct{ mode, want string }{
+		{"files", "status: NOT RECORDED: the baseline written in " + evidence + "/.step-g."},
+		{"race", "was not given its name " + baseline + " (the rename ended with exit status 0): a folder of that name appeared meanwhile, and nothing was replaced"},
+		{"evidence", "status: NOT RECORDED: the evidence folder " + evidence + " cannot be synced after " + baseline + " got its name"},
+	} {
+		noErr(t, os.WriteFile(syncMode, []byte(c.mode), 0o600))
+		out, code := k.run(t, nil, record...)
+		if code != 1 || !strings.Contains(out, c.want) || strings.Contains(out, "status: recorded") {
+			t.Errorf("--record with a sync that %s: exit %d, want 1 and %q:\n%s", c.mode, code, c.want, out)
+		}
+		switch c.mode {
+		case "race":
+			if names, err := os.ReadDir(baseline); err != nil || len(names) != 0 {
+				t.Errorf("the empty folder made at the baseline's name was replaced: %v %v", names, err)
+			}
+		case "evidence":
+			if _, err := os.Stat(before); err != nil {
+				t.Errorf("the baseline was not published before the evidence folder's sync: %v", err)
+			}
+		}
+		staging, _ := filepath.Glob(filepath.Join(evidence, ".step-g.*"))
+		for _, d := range append(staging, baseline) {
+			noErr(t, os.RemoveAll(d))
+		}
+	}
+	noErr(t, os.Remove(syncMode))
+	noErr(t, os.Remove(syncLog))
 	out, code = k.run(t, nil, record...)
-	if code != 0 || !strings.Contains(out, "status: recorded: the digests of the trial's six files and the key list's prefix ") {
+	if code != 0 || !strings.Contains(out, "status: recorded: the digests of the trial's six files and the key list's prefix ") ||
+		!strings.HasSuffix(strings.TrimSpace(out), "one baseline in "+baseline+", synced to disk") {
 		t.Fatalf("--record: exit %d:\n%s", code, out)
+	}
+	syncs := strings.Split(strings.TrimSpace(string(mustRead(t, syncLog))), "\n")
+	if len(syncs) != 2 || syncs[1] != "-- "+evidence {
+		t.Fatalf("the syncs of --record: %q", syncs)
+	}
+	staged := strings.Fields(syncs[0])
+	if len(staged) != 4 || staged[0] != "--" || !strings.HasPrefix(staged[3], evidence+"/.step-g.") ||
+		staged[1] != staged[3]+"/trial-before.sha256" || staged[2] != staged[3]+"/keys-before.prefix" {
+		t.Fatalf("the first sync of --record is not of both files and their folder: %q", syncs[0])
 	}
 	if got := strings.Split(strings.TrimSpace(string(mustRead(t, keysArgs))), "\n"); !slices.Equal(got, []string{"run", "--scratch", r + "/scratch.json", "--owner-channel", "--check", "--keys-prefix", "--expect-state", k.state}) {
 		t.Fatalf("the daemon's key check of step g was run with %q", got)

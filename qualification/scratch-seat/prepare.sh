@@ -78,8 +78,10 @@
 # the daemon's "ataniqd run --scratch ROOT/scratch.json --owner-channel
 # --check --keys-prefix", both of the one snapshot the journal's checks
 # passed (prepare opens neither file of the key list); the six digests and
-# the prefix are written in a new folder that is then given its name,
-# ROOT/evidence/step-g, so that the baseline appears whole or not at all;
+# the prefix are written in a new folder, synced, that is then given its
+# name, ROOT/evidence/step-g, by a rename that replaces nothing, and the
+# evidence folder is synced, so that the baseline appears whole or not at
+# all and survives a power loss once "recorded" is said;
 # when the daemon refuses nothing is written and the step is run again, and
 # a baseline that is there is never replaced. With --compare (step 13) it then compares the trial's files with
 # the baseline of step g, which must be there: step-g/trial-before.sha256
@@ -935,9 +937,12 @@ not_recorded() {
 # checks passed (so the list and the head recorded are one pair, and
 # prepare opens neither: a FIFO in place of one is the daemon's refusal, not
 # a read that blocks). The six digests make the record; it and the prefix
-# are written into a new folder of their own that is then given its name, so
-# that the baseline appears whole or not at all. A baseline that is there is
-# kept and never replaced.
+# are written into a new folder of their own, synced with both files, and
+# that is then given its name by a rename that replaces nothing (not even
+# an empty folder made at that name meanwhile), after which the evidence
+# folder is synced too: so that the baseline appears whole or not at all,
+# and "recorded" is said only once it would survive a power loss. A
+# baseline that is there is kept and never replaced.
 record_baseline() {
   if [ "$RC" -ne 0 ]; then
     say "status: NOT RECORDED: the sitting failed preflight; nothing was written: fix what the check refused, then run this step again"
@@ -997,15 +1002,33 @@ record_baseline() {
     not_recorded "the baseline cannot be written in $_tmp, which is left half made and is not the baseline: run this step again"
     return 0
   fi
-  if [ -e "$BASELINE" ] || [ -L "$BASELINE" ]; then
-    not_recorded "a baseline $BASELINE appeared meanwhile; the one written in $_tmp is not the baseline"
+  # On disk before it has its name: both files and the folder that holds
+  # them.
+  if ! sync -- "$_tmp/trial-before.sha256" "$_tmp/keys-before.prefix" "$_tmp"; then
+    not_recorded "the baseline written in $_tmp cannot be synced to disk, so it is not the baseline: run this step again"
     return 0
   fi
-  mv -T -- "$_tmp" "$BASELINE" || {
-    not_recorded "the baseline written in $_tmp cannot be given its name $BASELINE: run this step again"
+  # The name, in one rename that replaces nothing, not even an empty folder
+  # made at that name meanwhile: GNU mv -n renames with RENAME_NOREPLACE and
+  # leaves the folder where it is when the name is taken. Whether the
+  # staging folder is gone decides, not mv's exit status (mv -n ends 0 when
+  # it skips).
+  _mrc=0
+  mv -n -T -- "$_tmp" "$BASELINE" || _mrc=$?
+  if [ -e "$_tmp" ] || [ -L "$_tmp" ]; then
+    not_recorded "the baseline written in $_tmp was not given its name $BASELINE (the rename ended with exit status $_mrc): a folder of that name appeared meanwhile, and nothing was replaced; the one in $_tmp is not the baseline"
     return 0
-  }
-  say "status: recorded: the digests of the trial's six files and the key list's prefix $_p, one baseline in $BASELINE"
+  fi
+  if [ "$_mrc" -ne 0 ] || [ -L "$BASELINE" ] || [ ! -d "$BASELINE" ]; then
+    not_recorded "the rename to $BASELINE ended with exit status $_mrc: look at $EVIDENCE; do not start the sitting, prepare a new root"
+    return 0
+  fi
+  # The name on disk too, before success is said.
+  if ! sync -- "$EVIDENCE"; then
+    not_recorded "the evidence folder $EVIDENCE cannot be synced after $BASELINE got its name, so the name may not survive a power loss: do not start the sitting, prepare a new root"
+    return 0
+  fi
+  say "status: recorded: the digests of the trial's six files and the key list's prefix $_p, one baseline in $BASELINE, synced to disk"
 }
 
 # compare_record is --status --compare: the trial's files against the record

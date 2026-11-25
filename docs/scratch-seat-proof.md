@@ -209,7 +209,11 @@ config's `state_root` by identity and runs the daemon's check with exactly
 the flags of step 2 and `--check`, `--status --record` writes the baseline of
 step g with the key list's and its head's digests from the daemon's one
 snapshot (a stub's head digest that is not the file's is the one recorded,
-and a FIFO in place of either file does not block it), and `--status --compare` refuses a record
+and a FIFO in place of either file does not block it), syncs both files and
+their folder before the rename and the evidence folder after it, and
+replaces nothing, not even an empty folder made at the baseline's name
+after its last look (a stub `sync` makes one, and fails each sync in turn:
+none of them says `recorded`), and `--status --compare` refuses a record
 of step g that does not name each of the six files once, by its name as
 text, before it opens one, takes `sha256sum -c`'s exit status for the other
 four files' digests and passes the prefix of step g to the daemon's key check,
@@ -489,9 +493,12 @@ version, and e runs pasta, bubblewrap, ip, curl and a throwaway user unit.
    the descriptors they checked, so the list and the head are one pair even
    while a phone login appends. prepare opens neither file of the key list.
    The six digests and the prefix are written into a new folder of their
-   own, which is then given its name, `$ROOT/evidence/step-g`, so the
-   baseline appears whole or not at all, and the last line is `status:
-   recorded: ...`. When the key check refuses (it prints why; a record
+   own; both files and the folder are synced to disk, the folder is given
+   its name, `$ROOT/evidence/step-g`, by a rename that replaces nothing (GNU
+   `mv -n`, a rename with `RENAME_NOREPLACE`: not even an empty folder made
+   at that name meanwhile is replaced), and the evidence folder is synced,
+   so the baseline appears whole or not at all and is on disk before the
+   last line, `status: recorded: ...`, is printed. When the key check refuses (it prints why; a record
    appended while it read is one such refusal), or when the daemon's check
    refused, nothing is written and the line says `status: NOT RECORDED:
    ...`: run the step again, and if it fails again, stop. A baseline that is there is kept and
