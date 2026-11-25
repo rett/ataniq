@@ -1,0 +1,10 @@
+Matching Defaults entries for agent on aihost:
+    env_reset, timestamp_timeout=0
+
+User other may run the following commands on aihost:
+    (ALL) NOPASSWD: ALL
+
+User agent may run the following commands on aihost:
+        /usr/bin/true
+    (ALL : ALL) ALL
+Sudoers entry: something else

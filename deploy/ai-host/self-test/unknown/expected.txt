@@ -1,0 +1,27 @@
+== sudo -n -l -U agent (exit 0)
+  | Matching Defaults entries for agent on aihost:
+  |     env_reset, timestamp_timeout=0
+  | 
+  | User other may run the following commands on aihost:
+  |     (ALL) NOPASSWD: ALL
+  | 
+  | User agent may run the following commands on aihost:
+  |         /usr/bin/true
+  |     (ALL : ALL) ALL
+  | Sudoers entry: something else
+stop: a line of sudo -l this check does not know: User other may run the following commands on aihost:
+stop: a line of sudo -l this check does not know:     (ALL) NOPASSWD: ALL
+stop: a line of sudo -l this check does not know:         /usr/bin/true
+stop: a line of sudo -l this check does not know: Sudoers entry: something else
+== register /etc/ataniq/grants
+  | d 0 755 /
+  | d 0 755 /etc
+  | d 0 755 /etc/ataniq
+  | d 0 755 /etc/ataniq/grants
+  | f 0 644 /etc/ataniq/grants/README
+  | f 0 644 /etc/ataniq/grants/backup-unit
+check: /etc/ataniq/grants and every folder above it are root's and not writable by group or others; its 2 entries are regular files of root's, not writable by group or others
+== summary
+findings: 0; stops: 4
+result: STOPPED: the check could not see everything, so it is not clean; fix what each stop says and run --check again
+exit: 3

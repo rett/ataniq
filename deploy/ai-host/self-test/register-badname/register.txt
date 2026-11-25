@@ -1,0 +1,5 @@
+d 0 755 /
+d 0 755 /etc
+d 0 755 /etc/ataniq
+d 0 755 /etc/ataniq/grants
+badname - - /etc/ataniq/grants/a?b

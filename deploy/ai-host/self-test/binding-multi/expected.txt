@@ -1,0 +1,29 @@
+== sudo -n -l -U agent (exit 0)
+  | Matching Defaults entries for agent on aihost:
+  |     env_reset, timestamp_timeout=0
+  | 
+  | Runas and Command-specific defaults for agent:
+  |     Defaults!/usr/bin/apt-get, /usr/bin/dpkg timestamp_timeout=15
+  |     Defaults>backup, operator env_reset,
+  |     rootpw
+  | 
+  | User agent may run the following commands on aihost:
+  |     (ALL : ALL) ALL
+finding: timeout: a cached ticket lets commands run unprompted after one password: Defaults!/usr/bin/apt-get, /usr/bin/dpkg has timestamp_timeout=15
+finding: otherpw: sudo asks for root's password, not agent's: Defaults>backup, operator has rootpw
+check: no command sudo lists for agent skips the password
+== register /etc/ataniq/grants
+  | d 0 755 /
+  | d 0 755 /etc
+  | d 0 755 /etc/ataniq
+  | d 0 755 /etc/ataniq/grants
+  | f 0 644 /etc/ataniq/grants/README
+  | f 0 644 /etc/ataniq/grants/backup-unit
+check: /etc/ataniq/grants and every folder above it are root's and not writable by group or others; its 2 entries are regular files of root's, not writable by group or others
+== by hand, for the owner
+- targetpw, rootpw or runaspw: sudo asks for another account's password, so whoever knows that one runs commands as root, and your test of step 6 shows only that a password is asked, not whose. As root, edit the file that sets it with visudo -f and remove the setting (README, step 3).
+- a non-zero timestamp_timeout: after one password a cached ticket lets any process of agent run sudo unprompted, an agent session included. As root, edit the file that sets it with visudo -f and remove the setting (README, step 3); the drop-in of step 4 sets 0.
+== summary
+findings: 2; stops: 0
+result: findings remain: fix them by hand, then run --check again
+exit: 1
