@@ -109,6 +109,7 @@ var reasonWords = map[string]string{
 	"unit-loaded":            "a unit with the lead's name is already loaded",
 	"limits":                 "the unit's limits are outside the bounds",
 	"launch-refused":         "the registry does not admit a launch in the lead's state",
+	"profile-not-launchable": "this build does not launch the lead's recorded profile; define the lead again",
 	"epoch-exhausted":        "the lead has no epoch left to start",
 	"previous-unit-not-gone": "the previous unit is not proven gone",
 	"start-failed":           "the start failed and nothing was started",

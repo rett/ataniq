@@ -441,6 +441,23 @@ func TestWithLeadControlLOpensTheListAndTheKeysReachTheClient(t *testing.T) {
 	}
 }
 
+// A start the daemon refuses because this build does not launch the lead's
+// recorded profile reaches the screen with its own words, which say to define
+// the lead again.
+func TestARefusedStartOfAProfileNotLaunchedSaysDefineAgain(t *testing.T) {
+	f := &fakeLeads{list: consoleclient.LeadListing{MaxRunning: 2, Leads: []consoleclient.LeadRow{aLead()}}}
+	f.receipt = consoleclient.LeadReceipt{CommandID: "c1", Op: consoleclient.LeadOpStart, Role: "lead-alpha", Status: consoleclient.LeadRefused, Code: "profile-not-launchable"}
+	rig := rigFor(t, f)
+	d := newViewDriver(t, rig.model())
+	d.send(tea.WindowSizeMsg{Width: 140, Height: 45})
+	d.send(openLeadsKey())
+	d.until("the list", func(v string) bool { return strings.Contains(v, "LEAD CONTROL") && strings.Contains(v, "alpha") })
+	d.send(tea.KeyPressMsg{Code: 's', Text: "s"})
+	d.until("the receipt", func(v string) bool {
+		return strings.Contains(v, "start: refused: this build does not launch the lead's recorded profile; define the lead again")
+	})
+}
+
 // What the daemon's row says reaches the screen: the state's reason draws the
 // ready line, and the message's words draw the MSG column, with nothing guessed
 // by the view: a message that was not delivered shows as free while the daemon

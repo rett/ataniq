@@ -920,12 +920,13 @@ JSON object per line. The first line is a header that names the format
   required member left empty and a member of another JSON type are damage, as
   are an unknown record kind and another format version, and the journal does
   not open (`ErrCorrupt`, exit 14). So a journal a newer build wrote opens
-  only when that build added members and nothing else. The identity
-  of a requested profile is its stored bytes: a launch intent carries the
-  digest of the profile as its define record stores it, so recorded launch
-  digests stay valid whatever members later builds add. A role whose stored
-  profile has a member this build does not know is not launched
-  (`ErrLaunchProfile`, which the start answers as a refusal of the registry)
+  only when that build added members and nothing else. The identity of a
+  requested profile is its stored bytes: a launch intent carries the digest of
+  the profile as its define record stores it, so recorded launch digests stay
+  valid whatever members later builds add. A role whose stored profile has a
+  member this build does not know is not launched (`ErrLaunchProfile`, which a
+  start in scratch mode answers with the code `profile-not-launchable`, and
+  the canary's start with its text, both saying to define the role again)
   until it is defined again. Only the requested profile is checked for a
   member this build does not know: in every other record kind such a member is
   dropped, and the record replays as the record this build knows. A later

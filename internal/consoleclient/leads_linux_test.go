@@ -755,6 +755,8 @@ func TestRefusedAndUnavailableReceiptsCarryOnlyAGrammarWord(t *testing.T) {
 	}{
 		{leadwire.StatusRefused, "max-running", "max-running"},
 		{leadwire.StatusRefused, "second-message", "second-message"},
+		{leadwire.StatusRefused, "profile-not-launchable", "profile-not-launchable"},
+		{leadwire.StatusRefused, "holder-version-skew", "holder-version-skew"},
 		{leadwire.StatusUnavailable, "holder-down", "holder-down"},
 		{leadwire.StatusRefused, "", ""},
 		{leadwire.StatusRefused, "Max Running!", "unrecognised"},

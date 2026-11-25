@@ -370,6 +370,9 @@ func (x *canaryExt) failure(op string, err error) *clientapi.ErrorBody {
 		return refused("a unit with the role's name is loaded")
 	case errors.Is(err, leadunit.ErrInvalidSpec):
 		return refused("the unit's limits are outside the bounds")
+	case errors.Is(err, leadregistry.ErrLaunchProfile):
+		// Before ErrLaunchRefused, which it matches too.
+		return refused(msgProfileNotLaunchable)
 	case errors.Is(err, leadregistry.ErrLaunchRefused):
 		return refused("the registry does not admit a launch in the role's state")
 	case errors.Is(err, leadregistry.ErrInvalid):

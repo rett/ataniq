@@ -583,3 +583,18 @@ func TestTheVersionSkewWordsSayWhatTheOwnerDoes(t *testing.T) {
 		}
 	}
 }
+
+// A start of a lead whose recorded profile this build does not launch (written
+// by another build, or naming a pack) is refused with its own code, and the
+// words name the way out, a define of the lead, which the words of
+// launch-refused do not.
+func TestTheProfileNotLaunchableWordsSayDefineTheLeadAgain(t *testing.T) {
+	w := reasonWords["profile-not-launchable"]
+	if !strings.Contains(w, "define the lead again") || w == reasonWords["launch-refused"] {
+		t.Errorf("profile-not-launchable: %q", w)
+	}
+	line := receiptLine(Receipt{Op: OpStart, Status: Refused, Code: "profile-not-launchable"}, heldUnknown)
+	if line != "start: refused: "+w {
+		t.Errorf("%q", line)
+	}
+}
