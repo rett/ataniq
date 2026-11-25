@@ -3,9 +3,12 @@
 package leaddaemon
 
 import (
+	"bufio"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -327,7 +330,10 @@ func TestChatScanAdmittedBeforeATurnOffEndsBeforeTheOffIsSeen(t *testing.T) {
 					defer close(offDone)
 					l.mustChatSet("alpha", leadwire.ChatOff)
 				}()
-				time.Sleep(10 * l.scratch.ChatScanEvery)
+				// The turn-off has reached the change lock that the paused
+				// scan holds, and waits there: what follows is seen while
+				// the two overlap.
+				waitForTurnOffAtChangeLock(t)
 				select {
 				case <-offDone:
 					t.Fatal("the turn-off returned while an admitted scan had not ingested")
@@ -366,6 +372,68 @@ func TestChatScanAdmittedBeforeATurnOffEndsBeforeTheOffIsSeen(t *testing.T) {
 			}
 		})
 	}
+}
+
+// changeLockLine is the line of setOff that takes the lead's change lock,
+// read from the desk's source beside this file.
+func changeLockLine(t *testing.T) int {
+	t.Helper()
+	_, here, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("no source file of the test")
+	}
+	f, err := os.Open(filepath.Join(filepath.Dir(here), "chat_desk_linux.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	in := false
+	for n := 1; sc.Scan(); n++ {
+		line := strings.TrimSpace(sc.Text())
+		switch {
+		case strings.HasPrefix(line, "func (d *chatDesk) setOff("):
+			in = true
+		case in && strings.HasPrefix(line, "func "):
+			t.Fatal("setOff takes no change lock")
+		case in && line == "cl.chg.Lock()":
+			return n
+		}
+	}
+	t.Fatal("no setOff in the desk's source")
+	return 0
+}
+
+// waitForTurnOffAtChangeLock waits until a goroutine of the daemon is in
+// setOff, waiting for the mutex it takes at the line that takes the lead's
+// change lock: the turn-off has reached that lock, which another holds.
+func waitForTurnOffAtChangeLock(t *testing.T) {
+	t.Helper()
+	at := fmt.Sprintf("/chat_desk_linux.go:%d", changeLockLine(t))
+	waitFor(t, 15*time.Second, "the turn-off waits at the lead's change lock", func() bool {
+		buf := make([]byte, 1<<20)
+		for {
+			n := runtime.Stack(buf, true)
+			if n < len(buf) {
+				buf = buf[:n]
+				break
+			}
+			buf = make([]byte, 2*len(buf))
+		}
+		for _, g := range strings.Split(string(buf), "\n\n") {
+			lines := strings.Split(g, "\n")
+			for i := 1; i+1 < len(lines); i++ {
+				// A frame is two lines: the function, then its place. The
+				// frame above setOff's is the mutex's Lock.
+				place := strings.TrimSpace(lines[i+1])
+				if strings.Contains(lines[i], "leaddaemon.(*chatDesk).setOff(") && (strings.HasSuffix(place, at) || strings.Contains(place, at+" ")) &&
+					i >= 2 && strings.Contains(lines[i-2], "Mutex).Lock") {
+					return true
+				}
+			}
+		}
+		return false
+	})
 }
 
 // The cursor samples the leads as one state of the desk: a handoff (alpha

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -381,8 +382,14 @@ func requireTestClock(t *testing.T, port *LeadChat) {
 	if d.now == nil {
 		t.Fatal("the chat stores run on the real clock: a reply left alone proves nothing about the rule under test")
 	}
-	if ahead := d.now().Sub(time.Now()); ahead < leadchat.SettleAge {
-		t.Fatalf("the chat stores' clock is %v ahead, less than the settle age %v", ahead, leadchat.SettleAge)
+	// The desk holds the fixture's clock itself, which runs chatClockLead
+	// ahead by its definition: no sample of the real clock, which a host
+	// that pauses between two samples would make look behind.
+	if reflect.ValueOf(d.now).Pointer() != reflect.ValueOf(chatTestClock).Pointer() {
+		t.Fatal("the chat stores do not run on chatTestClock")
+	}
+	if chatClockLead <= leadchat.SettleAge {
+		t.Fatalf("chatTestClock runs %v ahead, not past the settle age %v", chatClockLead, leadchat.SettleAge)
 	}
 }
 
