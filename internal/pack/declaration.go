@@ -181,6 +181,9 @@ func (d Declaration) Validate(layout BindLayout) error {
 	if strings.TrimSpace(m.Display) == "" || strings.TrimSpace(m.Vendor) == "" || m.Builds == nil {
 		return errors.New("pack needs display, vendor and builds")
 	}
+	if m.Class == "agent-files" && len(m.Builds) != 0 {
+		return errors.New("agent-files pack cannot declare runtime builds")
+	}
 	if len(m.Words) == 0 && strings.TrimSpace(m.NoWordsReason) == "" {
 		return errors.New("pack needs words or a reason for their absence")
 	}

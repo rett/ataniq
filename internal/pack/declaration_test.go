@@ -132,6 +132,28 @@ func TestManifestValidation(t *testing.T) {
 	}
 }
 
+func TestAgentFilesBuilds(t *testing.T) {
+	data := strings.Replace(rootDocument, `"runtime"`, `"agent-files"`, 1)
+	files := map[string][]byte{pack.ManifestPath: []byte(data)}
+	if _, err := pack.DecodeDeclaration(files, sampleLayout()); err == nil {
+		t.Error("agent-files pack declared a runtime build")
+	}
+	header, _, _ := strings.Cut(data, `"builds":`)
+	files[pack.ManifestPath] = []byte(header + `"builds":[]}`)
+	if _, err := pack.DecodeDeclaration(files, sampleLayout()); err != nil {
+		t.Fatal(err)
+	}
+	for path, companion := range map[string][]byte{
+		pack.HooksPath: buildDocument(hookRows), pack.SandboxPath: buildDocument(`{}`),
+	} {
+		files[path] = companion
+		if _, err := pack.DecodeDeclaration(files, sampleLayout()); err == nil {
+			t.Errorf("agent-files pack declared %s build rows", path)
+		}
+		delete(files, path)
+	}
+}
+
 func TestHookDeclaration(t *testing.T) {
 	for _, tc := range []struct{ old, replacement string }{
 		{"row", "Bad Row"}, {"none", "other"}, {"100", "0"}, {"/a~1b", "bad"}, {"/a~1b", "/~x"},
