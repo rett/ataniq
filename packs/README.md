@@ -27,3 +27,5 @@ The holder looks up a policy by pack and resolved build version. For the install
 Both policies ship with an empty fixture hash and pending terminal vectors. The matcher returns `policy-unrecorded` until the attended install records the fixture and resolves pending evidence. Recording the fixture alone cannot qualify a mode. The help for Claude names six modes without specifying their behavior, so all six have class `bypass`. The Codex requirements file permits only `on-request`, which delegates the approval decision to the model (class `bypass`). The launch policy therefore excludes `never` even for a coordinator. Both builds currently lack a lead-usable mode.
 
 The Claude capture shows `reviewer` as a custom definition. Selecting it requires a reviewed definition in a required read-only agent overlay and a matching installed file in the renderer inventory.
+
+Claude managed settings must constrain the provider version to the exact build. The build capture and delta §6.1 give no key or encoding for that range. The Claude policy therefore withholds the `provider-policy` file rule. Even with synthetic recording, the required settings file receives `file-refused`.

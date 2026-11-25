@@ -1144,46 +1144,24 @@ func TestRealPolicyFiles(t *testing.T) {
 		t.Run(string(b.name), func(t *testing.T) {
 			x := baseline(t, b)
 			raw, _, _ := b.load(t)
-			// File views are inputs supplied by the renderer. Build the passing
-			// fixture from the canonical required scalars and preserve path types.
-			var rows []struct {
-				Role     string `json:"path_role"`
-				Required []struct {
-					Path       []any
-					Type, Text string
+			// Check each admitted file role with a renderer fixture independent
+			// of the policy. Claude's managed file is exercised separately.
+			want := lp.ExpectedFile{PathRole: "provider-policy", Dest: "requirements.toml"}
+			entries := codexRequirements
+			if b.name == "claude" {
+				want = lp.ExpectedFile{PathRole: "agent", Dest: "/config/agents/reviewer.md", Definition: true, AgentName: "reviewer"}
+				entries = func() []lp.Entry {
+					return []lp.Entry{{Path: []lp.Comp{"name"}, Type: "string", Text: "reviewer"}}
 				}
 			}
-			if err := json.Unmarshal(parse(t, raw).Files, &rows); err != nil {
-				t.Fatal(err)
+			at := "file[requirements.toml]"
+			if want.Definition {
+				at = "file[#0]"
 			}
 			makeFiles := func() (lp.Inventory, []lp.FileView) {
 				hash := digest([]byte("stand-in installed file"))
-				var inv lp.Inventory
-				var files []lp.FileView
-				for _, row := range rows {
-					w := lp.ExpectedFile{PathRole: row.Role, Dest: "a-policy"}
-					f := lp.FileView{PathRole: row.Role, BytesSHA256: hash, InstalledSHA256: hash}
-					for _, r := range row.Required {
-						path := slices.Clone(r.Path)
-						for i, c := range path {
-							if n, ok := c.(float64); ok {
-								path[i] = int(n)
-							}
-						}
-						f.Entries = append(f.Entries, lp.Entry{Path: path, Type: r.Type, Text: r.Text})
-					}
-					if row.Role == "agent" {
-						w.Dest = "b-agent"
-						w.Definition = true
-						w.AgentName = x.s.Agent
-					}
-					f.Dest = w.Dest
-					inv = append(inv, w)
-					files = append(files, f)
-				}
-				slices.SortFunc(inv, func(a, b lp.ExpectedFile) int { return strings.Compare(a.Dest, b.Dest) })
-				slices.SortFunc(files, func(a, b lp.FileView) int { return strings.Compare(a.Dest, b.Dest) })
-				return inv, files
+				return lp.Inventory{want}, []lp.FileView{{PathRole: want.PathRole, Dest: want.Dest,
+					Entries: entries(), BytesSHA256: hash, InstalledSHA256: hash}}
 			}
 			inv, files := makeFiles()
 			line(t, lp.JudgeFiles(x.p, x.s, inv, files), "", 0, "")
@@ -1191,34 +1169,34 @@ func TestRealPolicyFiles(t *testing.T) {
 				name, code, at string
 				mutate         func(lp.Inventory, []lp.FileView) (lp.Inventory, []lp.FileView)
 			}{
-				{"a required entry missing", "file-refused", "file[a-policy]", func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
+				{"a required entry missing", "file-refused", at, func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
 					f[0].Entries = f[0].Entries[1:]
 					return i, f
 				}},
-				{"b extra key", "file-refused", "file[a-policy]", func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
-					f[0].Entries = append(f[0].Entries, lp.Entry{Path: []lp.Comp{"extra"}, Type: "bool", Text: "true"})
+				{"b extra key", "file-refused", at, func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
+					f[0].Entries = append(f[0].Entries, lp.Entry{Path: []lp.Comp{"description", "extra"}, Type: "bool", Text: "true"})
 					return i, f
 				}},
-				{"c wrong type", "file-refused", "file[a-policy]", func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
-					f[0].Entries[0].Type = "string"
+				{"c wrong type", "file-refused", at, func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
+					f[0].Entries[0].Type = "int"
 					return i, f
 				}},
-				{"d wrong value", "file-refused", "file[a-policy]", func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
+				{"d wrong value", "file-refused", at, func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
 					f[0].Entries[0].Text = "false"
 					return i, f
 				}},
-				{"e missing file", "file-refused", "file[a-policy]", func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) { return i, f[1:] }},
-				{"f duplicate destination", "file-refused", "file[a-policy]", func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) { return i, append(f, f[0]) }},
-				{"g unknown role", "file-refused", "file[a-policy]", func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
+				{"e missing file", "file-refused", at, func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) { return i, f[1:] }},
+				{"f duplicate destination", "file-refused", at, func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) { return i, append(f, f[0]) }},
+				{"g unknown role", "file-refused", at, func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
 					i[0].PathRole = "unknown"
 					f[0].PathRole = "unknown"
 					return i, f
 				}},
-				{"h substituted role", "file-refused", "file[a-policy]", func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
-					f[0].PathRole = "agent"
+				{"h substituted role", "file-refused", at, func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
+					f[0].PathRole = "config-overlay"
 					return i, f
 				}},
-				{"l installed bytes", "file-binding", "file[a-policy]", func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
+				{"l installed bytes", "file-binding", at, func(i lp.Inventory, f []lp.FileView) (lp.Inventory, []lp.FileView) {
 					f[0].InstalledSHA256 = digest([]byte("different file"))
 					return i, f
 				}},
@@ -1231,15 +1209,13 @@ func TestRealPolicyFiles(t *testing.T) {
 				})
 			}
 			if b.name == "claude" {
-				line(t, lp.JudgeFiles(x.p, x.s, inv, files[:1]), "file-refused", 2, "file[b-agent]")
-				files[1].Entries[0].Text = "other"
-				line(t, lp.JudgeFiles(x.p, x.s, inv, files), "file-refused", 2, "file[b-agent]")
-				files[1].Entries[0].Text = x.s.Agent
+				files[0].Entries[0].Text = "other"
+				line(t, lp.JudgeFiles(x.p, x.s, inv, files), "file-refused", 2, at)
 				for _, bad := range forbiddenKeys[b.name] {
 					t.Run("k "+bad, func(t *testing.T) {
 						inv, f := makeFiles()
-						f[1].Entries = append(f[1].Entries, lp.Entry{Path: []lp.Comp{bad}, Type: "string", Text: "private-env"})
-						line(t, lp.JudgeFiles(x.p, x.s, inv, f), "agent-key-refused", 2, "file[b-agent]")
+						f[0].Entries = append(f[0].Entries, lp.Entry{Path: []lp.Comp{bad}, Type: "string", Text: "private-env"})
+						line(t, lp.JudgeFiles(x.p, x.s, inv, f), "agent-key-refused", 2, at)
 						doc := parse(t, raw)
 						doc.Slots.Agent.Keys = append(doc.Slots.Agent.Keys, key{Key: bad})
 						if frontmatter(doc) == nil {
@@ -1248,11 +1224,10 @@ func TestRealPolicyFiles(t *testing.T) {
 					})
 				}
 				// T52 first sorted file with two faults in reversed input order.
-				files[0].Entries = nil
-				files[1].InstalledSHA256 = ""
+				files[0].InstalledSHA256 = ""
+				inv = append(inv, lp.ExpectedFile{PathRole: "provider-policy", Dest: "/etc/managed-settings.json"})
 				slices.Reverse(inv)
-				slices.Reverse(files)
-				line(t, lp.JudgeFiles(x.p, x.s, inv, files), "file-refused", 2, "file[a-policy]")
+				line(t, lp.JudgeFiles(x.p, x.s, inv, files), "file-binding", 2, at)
 			} else {
 				// T53m: a numeric requirements index is distinct from the object key "0".
 				found := false
@@ -1265,7 +1240,7 @@ func TestRealPolicyFiles(t *testing.T) {
 				if !found {
 					t.Fatal("missing indexed approval requirement")
 				}
-				line(t, lp.JudgeFiles(x.p, x.s, inv, files), "file-refused", 2, "file[a-policy]")
+				line(t, lp.JudgeFiles(x.p, x.s, inv, files), "file-refused", 2, at)
 				inv = append(inv, lp.ExpectedFile{PathRole: "agent", Dest: "b-agent", Definition: true, AgentName: "other"})
 				_, files = makeFiles()
 				line(t, lp.JudgeFiles(x.p, x.s, inv, files), "file-refused", 2, "file[b-agent]")
@@ -1345,4 +1320,34 @@ func TestClaudeReviewerSource(t *testing.T) {
 	line(t, lp.JudgeFiles(x.p, x.s, inv, []lp.FileView{file}), "", 0, "")
 	file.InstalledSHA256 = digest([]byte("substituted agent"))
 	line(t, lp.JudgeFiles(x.p, x.s, inv, []lp.FileView{file}), "file-binding", 2, "file[#0]")
+}
+
+// Delta §6.1 requires these settings and an exact version range. Neither
+// the pinned help nor the delta identifies how to encode the range.
+func claudeManagedSettings() []lp.Entry {
+	return []lp.Entry{
+		{Path: []lp.Comp{"allowManagedHooksOnly"}, Type: "bool", Text: "true"},
+		{Path: []lp.Comp{"allowManagedMcpServersOnly"}, Type: "bool", Text: "true"},
+		{Path: []lp.Comp{"allowManagedPermissionRulesOnly"}, Type: "bool", Text: "true"},
+		{Path: []lp.Comp{"disableRemoteControl"}, Type: "bool", Text: "true"},
+		{Path: []lp.Comp{"disableSideloadFlags"}, Type: "bool", Text: "true"},
+		{Path: []lp.Comp{"permissions", "defaultMode"}, Type: "string", Text: "default"},
+		{Path: []lp.Comp{"permissions", "disableAutoMode"}, Type: "string", Text: "disable"},
+		{Path: []lp.Comp{"permissions", "disableBypassPermissionsMode"}, Type: "string", Text: "disable"},
+	}
+}
+
+func TestClaudeUnqualifiedVersionRange(t *testing.T) {
+	x := baseline(t, builds[0])
+	hash := digest([]byte("stand-in managed settings"))
+	inv := lp.Inventory{{PathRole: "provider-policy", Dest: "managed-settings.json"}}
+	file := lp.FileView{PathRole: inv[0].PathRole, Dest: inv[0].Dest, InstalledSHA256: hash, BytesSHA256: hash}
+	for _, pin := range []string{"", "2.1.332", "2.1.331"} {
+		file.Entries = claudeManagedSettings()
+		if pin != "" {
+			// A guessed representation has no authority, even with the right value.
+			file.Entries = append(file.Entries, lp.Entry{Path: []lp.Comp{"test-only-version-range"}, Type: "string", Text: pin})
+		}
+		line(t, lp.JudgeFiles(x.p, x.s, inv, []lp.FileView{file}), "file-refused", 2, "file[managed-settings.json]")
+	}
 }
