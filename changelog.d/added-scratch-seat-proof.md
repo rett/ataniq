@@ -54,7 +54,10 @@
   cleared environment, never writes in the trial's state folder, never
   deletes and starts nothing, and `--status`
   refuses a `--state` that is not the config's `state_root` (the same device
-  and inode) and runs the daemon's `--check` (the printed steps that run
+  and inode), passes `--expect-state` with it to each of the daemon's
+  checks, which refuses (exit 10) before reading a file of the trial when
+  it is not the state root it decoded from the config in that invocation,
+  and runs the daemon's `--check` (the printed steps that run
   `--status` carry the selected `--daemon`); with `--record` (before the
   sitting) it then takes the baseline, the digests of the trial's gate key,
   certificate, pins and settings and the daemon's prefix of the key list

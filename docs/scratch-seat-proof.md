@@ -435,9 +435,15 @@ version, and e runs pasta, bubblewrap, ip, curl and a throwaway user unit.
    same folder by device and inode, and refuses before it runs or compares
    anything when it is not (a `--state` of another trial, or a config edited
    to name another folder): the daemon takes its state folder from the
-   config, and the digests are of `$S`. Then it runs the daemon's own check, `$D run --scratch "$CONFIG"
+   config, and the digests are of `$S`. That reading of the config is a
+   convenience; what decides is the daemon's: each of its checks that
+   `--status` runs gets `--expect-state "$S"`, and the daemon refuses (exit
+   10, `--expect-state: ... is not the state folder of the scratch config`)
+   before it reads any file of the trial when `$S` is not, by device and
+   inode, the state folder it decoded from the config in that invocation.
+   Then it runs the daemon's own check, `$D run --scratch "$CONFIG"
    --owner-channel --seat-gate "$SEAT_GATE" --owner-settings "$SETTINGS"
-   --check`, and passes its lines through. The check binds, locks, makes and
+   --check --expect-state "$S"`, and passes its lines through. The check binds, locks, makes and
    starts nothing, so it runs beside the trial. Each line is `pass` with what
    holds, or `FAIL` with the reason: the settings folder, opened by its handle
    with no link followed, is a private folder of yours that lies beside the
@@ -471,7 +477,7 @@ version, and e runs pasta, bubblewrap, ip, curl and a throwaway user unit.
    baseline that step 13 compares with: the SHA-256 digests of the trial's
    gate key, certificate, pins and settings, then the key list's from the
    daemon's read-only check of the key list and its head, `$D run --scratch
-   "$CONFIG" --owner-channel --check --keys-prefix`. That check has the
+   "$CONFIG" --owner-channel --check --keys-prefix --expect-state "$S"`. That check has the
    journal's own checks judge the trial's `owner/keys.log` and `keys.head`
    read only, on the files themselves (`ownerjournal.VerifyKeys`: the folder
    and both files opened without following a link and held to the

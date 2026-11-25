@@ -178,18 +178,24 @@ type ownerFlags struct {
 // in place of owner/ of the state folder, and --check, which checks and prints
 // what the daemon would read and exits; with --check, --keys-prefix and
 // --keys-since PREFIX check the state folder's key list alone
-// (scratch_keys_linux.go).
+// (scratch_keys_linux.go), and --expect-state DIR refuses any of them, before
+// a file of the state folder is read, unless DIR is the config's state
+// folder.
 type settingsFlags struct {
-	dir        string
-	dirSet     bool
-	check      bool
-	keysPrefix bool
-	keysSince  string
-	sinceSet   bool
+	dir         string
+	dirSet      bool
+	check       bool
+	keysPrefix  bool
+	keysSince   string
+	sinceSet    bool
+	expectState string
+	expectSet   bool
 }
 
 // given reports whether any of the flags was given.
-func (s settingsFlags) given() bool { return s.dirSet || s.check || s.keysPrefix || s.sinceSet }
+func (s settingsFlags) given() bool {
+	return s.dirSet || s.check || s.keysPrefix || s.sinceSet || s.expectSet
+}
 
 // ownerSettingsNote is the line the daemon prints after the banner when the
 // owner channel's settings come from the folder of --owner-settings: the file

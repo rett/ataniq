@@ -64,7 +64,11 @@
 # names is the state_root of ROOT/scratch.json, by identity (the same device
 # and inode), and refuses otherwise before it runs or compares anything: the
 # daemon takes its state folder from the config, so the two must be one
-# trial's. Then it runs the daemon's check, "ataniqd run --scratch
+# trial's. Each of the daemon's checks below also gets --expect-state with
+# the folder --state names, and the daemon refuses, before it reads a file of
+# the trial, when that is not the state folder it decoded from the config;
+# its refusal decides, the script's own reading of the config is a
+# convenience. Then it runs the daemon's check, "ataniqd run --scratch
 # ROOT/scratch.json --owner-channel --seat-gate IP:PORT --owner-settings
 # ROOT/owner-settings --check", which reads the trial's state folder and binds,
 # locks, makes and starts nothing, and passes its lines and its exit status
@@ -796,7 +800,11 @@ keys_fresh() {
 # --status reads the files of --state: were they two folders, the daemon's
 # check and its judgement of the key list would be of one trial and the
 # digests of another. The config must hold one state_root, in the line
-# --write writes; another form is refused, not interpreted.
+# --write writes; another form is refused, not interpreted. This reading of
+# the config is a convenience, an early and plain refusal: what decides is
+# the daemon's, which each of its checks gets --expect-state --state for and
+# compares with the state folder it decoded from the config in that
+# invocation, before it reads any file of the trial.
 same_state() {
   _c=$(LC_ALL=C grep -i -c -e '"state_root"' -- "$CONFIG") || _c=0
   [ "$_c" -eq 1 ] || die "the scratch config $CONFIG names a state_root $_c times, not once as --write writes it"
@@ -952,9 +960,9 @@ record_baseline() {
     not_recorded "sha256sum of the trial's gate key, certificate, pins or settings ended with exit status $_src; nothing was written"
     return 0
   fi
-  say "status: the daemon's check of the key list: $DAEMON run --scratch $CONFIG --owner-channel --check --keys-prefix"
+  say "status: the daemon's check of the key list: $DAEMON run --scratch $CONFIG --owner-channel --check --keys-prefix --expect-state $S"
   _krc=0
-  _kp=$("$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-prefix) || _krc=$?
+  _kp=$("$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-prefix --expect-state "$S") || _krc=$?
   if [ "$_krc" -ne 0 ]; then
     not_recorded "the daemon's check of the key list ended with exit status $_krc (the line above says why); nothing was written: run this step again, and if it fails again, stop"
     return 0
@@ -1050,9 +1058,9 @@ compare_record() {
     status_failed
     return 0
   fi
-  say "status: the daemon's check of the key list since step g: $DAEMON run --scratch $CONFIG --owner-channel --check --keys-since $_prefix"
+  say "status: the daemon's check of the key list since step g: $DAEMON run --scratch $CONFIG --owner-channel --check --keys-since $_prefix --expect-state $S"
   _krc=0
-  "$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-since "$_prefix" || _krc=$?
+  "$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-since "$_prefix" --expect-state "$S" || _krc=$?
   if [ "$_krc" -ne 0 ]; then
     say "status: CHANGED: the daemon's check of the key list ended with exit status $_krc (the lines above say why)"
     status_failed
@@ -1074,9 +1082,9 @@ if [ "$MODE" = status ]; then
   fi
   same_state
   say "status: the state folder $S is the state_root of $CONFIG (the same device and inode)"
-  say "status: the daemon's check: $DAEMON run --scratch $CONFIG --owner-channel --seat-gate $GATE --owner-settings $SETTINGS_DIR --check"
+  say "status: the daemon's check: $DAEMON run --scratch $CONFIG --owner-channel --seat-gate $GATE --owner-settings $SETTINGS_DIR --check --expect-state $S"
   RC=0
-  "$DAEMON" run --scratch "$CONFIG" --owner-channel --seat-gate "$GATE" --owner-settings "$SETTINGS_DIR" --check || RC=$?
+  "$DAEMON" run --scratch "$CONFIG" --owner-channel --seat-gate "$GATE" --owner-settings "$SETTINGS_DIR" --check --expect-state "$S" || RC=$?
   if [ "$RC" -eq 0 ]; then
     say "status: the daemon's check found no refusal"
   else

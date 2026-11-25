@@ -104,6 +104,28 @@ func defineSettingsFlags(fs *flag.FlagSet, s *settingsFlags) {
 		s.keysSince, s.sinceSet = v, true
 		return nil
 	})
+	fs.Func("expect-state", "with --check: refuse, before any file of the state folder is read, unless DIR is the state folder of the scratch config (the same device and inode)", func(v string) error {
+		s.expectState, s.expectSet = v, true
+		return nil
+	})
+}
+
+// sameStateFolder returns nil when expect, the folder of --expect-state, is
+// the folder state, the state root the scratch config of this invocation
+// decoded to: the same device and inode, both stat'ed now. It reads nothing
+// in either folder.
+func sameStateFolder(expect, state string) error {
+	var a, b unix.Stat_t
+	if err := unix.Stat(expect, &a); err != nil {
+		return fmt.Errorf("the folder %s cannot be looked at: %v", expect, err)
+	}
+	if err := unix.Stat(state, &b); err != nil {
+		return fmt.Errorf("the state folder %s of the scratch config cannot be looked at: %v", state, err)
+	}
+	if a.Mode&unix.S_IFMT != unix.S_IFDIR || idOfStat(&a) != idOfStat(&b) {
+		return fmt.Errorf("%s is not the state folder of the scratch config, %s (another device and inode): this check would be of another trial; give the config of this trial", expect, state)
+	}
+	return nil
 }
 
 // The refusals of the folder, by name. Each is one line of --check. The
@@ -502,6 +524,19 @@ func ownerSettingsRun(a *app, o *ownerFlags, cfg *leaddaemon.Config) (scratchLoa
 	case s.keysPrefix && s.sinceSet:
 		fmt.Fprint(a.stderr, "ataniqd run: --keys-prefix and --keys-since exclude each other\n")
 		return nil, leaddaemon.ExitUsage
+	case s.expectSet && !s.check:
+		fmt.Fprint(a.stderr, "ataniqd run: --expect-state needs --check\n")
+		return nil, leaddaemon.ExitUsage
+	}
+	// The state folder this invocation decoded from its config is the one
+	// the caller means, before anything in it is read.
+	if s.expectSet {
+		if err := sameStateFolder(s.expectState, cfg.StateDir); err != nil {
+			fmt.Fprintf(a.stderr, "ataniqd run: --expect-state: %s\n", leaddaemon.SafeText(err.Error()))
+			return nil, leaddaemon.ExitConfig
+		}
+	}
+	switch {
 	case s.keysPrefix || s.sinceSet:
 		// The key list alone: neither the settings folder nor the gate is
 		// looked at.

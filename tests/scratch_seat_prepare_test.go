@@ -220,9 +220,9 @@ func TestScratchSeatPrepareIsPlainShell(t *testing.T) {
 	// (--status --compare), and the rename that publishes the baseline.
 	inDoc := false
 	allowed := map[string][]string{
-		`"$DAEMON"`: {`"$DAEMON" run --scratch "$CONFIG" --owner-channel --seat-gate "$GATE" --owner-settings "$SETTINGS_DIR" --check || RC=$?`,
-			`_kp=$("$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-prefix) || _krc=$?`,
-			`"$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-since "$_prefix" || _krc=$?`},
+		`"$DAEMON"`: {`"$DAEMON" run --scratch "$CONFIG" --owner-channel --seat-gate "$GATE" --owner-settings "$SETTINGS_DIR" --check --expect-state "$S" || RC=$?`,
+			`_kp=$("$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-prefix --expect-state "$S") || _krc=$?`,
+			`"$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-since "$_prefix" --expect-state "$S" || _krc=$?`},
 		"/usr/bin/git": {`/usr/bin/git -c core.hooksPath=/dev/null -c commit.gpgSign=false -c tag.gpgSign=false -c core.fsmonitor=false \`},
 		"mv":           {`mv -T -- "$_tmp" "$BASELINE" || {`},
 	}
@@ -945,7 +945,7 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 		!strings.Contains(out, "status: no baseline "+baseline+" yet") {
 		t.Fatalf("--status: exit %d:\n%s", code, out)
 	}
-	want := []string{"run", "--scratch", r + "/scratch.json", "--owner-channel", "--seat-gate", "192.0.2.10:7443", "--owner-settings", r + "/owner-settings", "--check"}
+	want := []string{"run", "--scratch", r + "/scratch.json", "--owner-channel", "--seat-gate", "192.0.2.10:7443", "--owner-settings", r + "/owner-settings", "--check", "--expect-state", k.state}
 	if got := strings.Split(strings.TrimSpace(string(mustRead(t, args))), "\n"); !slices.Equal(got, want) {
 		t.Fatalf("the daemon's check was run with %q, want %q", got, want)
 	}
@@ -1055,7 +1055,7 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "status: recorded: the digests of the trial's six files and the key list's prefix ") {
 		t.Fatalf("--record: exit %d:\n%s", code, out)
 	}
-	if got := strings.Split(strings.TrimSpace(string(mustRead(t, keysArgs))), "\n"); !slices.Equal(got, []string{"run", "--scratch", r + "/scratch.json", "--owner-channel", "--check", "--keys-prefix"}) {
+	if got := strings.Split(strings.TrimSpace(string(mustRead(t, keysArgs))), "\n"); !slices.Equal(got, []string{"run", "--scratch", r + "/scratch.json", "--owner-channel", "--check", "--keys-prefix", "--expect-state", k.state}) {
 		t.Fatalf("the daemon's key check of step g was run with %q", got)
 	}
 	names, err := os.ReadDir(evidence)
@@ -1098,7 +1098,7 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 		!strings.Contains(out, "status: the trial's gate key, certificate, pins and settings are the same bytes as recorded in "+before+", and the daemon's check of the key list since step g holds") {
 		t.Fatalf("--status --compare with the same files: exit %d:\n%s", code, out)
 	}
-	wantKeys := []string{"run", "--scratch", r + "/scratch.json", "--owner-channel", "--check", "--keys-since", prefix}
+	wantKeys := []string{"run", "--scratch", r + "/scratch.json", "--owner-channel", "--check", "--keys-since", prefix, "--expect-state", k.state}
 	if got := strings.Split(strings.TrimSpace(string(mustRead(t, keysArgs))), "\n"); !slices.Equal(got, wantKeys) {
 		t.Fatalf("the daemon's key check was run with %q, want %q", got, wantKeys)
 	}

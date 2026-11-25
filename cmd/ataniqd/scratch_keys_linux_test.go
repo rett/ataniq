@@ -9,12 +9,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"ataniq/internal/approval/hostadapter"
 	"ataniq/internal/approval/ownerjournal"
 	"ataniq/internal/leaddaemon"
 )
@@ -186,6 +188,86 @@ func TestKeysCheckPrintsThePrefixAndHoldsOnTheSameList(t *testing.T) {
 		if !strings.Contains(help.out.String(), want) {
 			t.Errorf("the usage does not name %q", want)
 		}
+	}
+}
+
+// --expect-state DIR binds each of the daemon's checks to the trial its
+// caller means (review finding 3): --check, --keys-prefix and --keys-since
+// pass with the config's own state folder, given by its path or by a link
+// to it, and refuse another folder, a missing one and a file, before any
+// file of the state folder is read: with the trial's key list gone and its
+// settings folder unreadable, the refusal is the state folder's, and no
+// line of a check is printed. Without --check the flag is a usage error.
+func TestKeysCheckAndCheckTakeOnlyTheConfigsTrial(t *testing.T) {
+	useSuite(t, cmdSuite{})
+	w, tmp := keysWorld(t)
+	link := filepath.Join(w.dir, "state-link")
+	if err := os.Symlink(w.state, link); err != nil {
+		t.Fatal(err)
+	}
+	prefix := keysPrefixOf(t, w)
+	checks := [][]string{
+		w.runArgs(w.settings, "--check"),
+		{"run", "--scratch", w.config, "--owner-channel", "--check", "--keys-prefix"},
+		{"run", "--scratch", w.config, "--owner-channel", "--check", "--keys-since", prefix},
+	}
+	for _, args := range checks {
+		for _, same := range []string{w.state, link} {
+			if code, out, msg := w.run(t, append(slices.Clone(args), "--expect-state", same)...); code != 0 || msg != "" || out == "" {
+				t.Errorf("%v --expect-state %s: exit %d: %q %q", args[4:], same, code, out, msg)
+			}
+		}
+	}
+	w.sameTrial(t, "after the checks of the same trial")
+	nothingInTmp(t, tmp)
+
+	other := filepath.Join(w.dir, "other-trial")
+	if err := os.MkdirAll(filepath.Join(other, hostadapter.OwnerDirName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	notDir := filepath.Join(w.dir, "a-file")
+	if err := os.WriteFile(notDir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Were anything of the trial read first, these would say so.
+	keys := keysPathOf(w.state)
+	kept := fileBytes(t, keys)
+	if err := os.Remove(keys); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(w.settings, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(w.settings, 0o700) })
+	for _, args := range checks {
+		for _, c := range []struct{ dir, want string }{
+			{other, other + " is not the state folder of the scratch config, " + w.state + " (another device and inode)"},
+			{filepath.Join(w.dir, "missing"), "cannot be looked at"},
+			{notDir, notDir + " is not the state folder of the scratch config"},
+		} {
+			code, out, msg := w.run(t, append(slices.Clone(args), "--expect-state", c.dir)...)
+			if code != leaddaemon.ExitConfig || out != "" || !strings.HasPrefix(msg, "ataniqd run: --expect-state: ") || !strings.Contains(msg, c.want) {
+				t.Errorf("%v --expect-state %s: exit %d: %q %q, want %d and %q", args[4:], c.dir, code, out, msg, leaddaemon.ExitConfig, c.want)
+			}
+		}
+	}
+	os.Chmod(w.settings, 0o700)
+	if err := os.WriteFile(keys, kept, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"run", "--scratch", w.config, "--owner-channel", "--expect-state", w.state},
+		{"run", "--scratch", w.config, "--owner-channel", "--owner-settings", w.settings, "--expect-state", w.state},
+	} {
+		ta := canaryApp(t)
+		ta.getenv = w.env
+		if code := runBounded(t, ta, args); code != leaddaemon.ExitUsage || !strings.Contains(ta.err.String(), "--expect-state needs --check") {
+			t.Errorf("%v: exit %d: %s", args, code, ta.err.String())
+		}
+	}
+	help := newTestApp(t, nil)
+	if code := help.run([]string{"--help"}); code != 0 || !strings.Contains(help.out.String(), "--expect-state DIR") {
+		t.Errorf("the usage does not name --expect-state DIR")
 	}
 }
 

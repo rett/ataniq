@@ -47,7 +47,7 @@ with the seat gate together:
   samples.
 
        ataniqd run --scratch CONFIG --owner-channel --seat-gate ADDR
-               --owner-settings DIR [--check]
+               --owner-settings DIR [--check [--expect-state DIR]]
 
   --owner-settings DIR
                     read the owner channel's settings from DIR/scratch.json
@@ -96,10 +96,18 @@ with the seat gate together:
                     then what the daemon would read, and exit: 0 when nothing
                     is refused, 10 otherwise. It binds, locks, makes and
                     starts nothing.
+  --expect-state DIR
+                    with --check (and with --keys-prefix or --keys-since):
+                    before any file of the state folder is read, refuse
+                    (exit 10) unless DIR is the state folder the scratch
+                    config of this invocation names, the same device and
+                    inode, so that the check is of the trial the caller
+                    means.
 
        ataniqd run --scratch CONFIG --owner-channel --check --keys-prefix
+               [--expect-state DIR]
        ataniqd run --scratch CONFIG --owner-channel --check
-               --keys-since LEN:SHA256
+               --keys-since LEN:SHA256 [--expect-state DIR]
 
   --keys-prefix     with --check: check only the key list owner/keys.log of
                     the state root and its head owner/keys.head, with the
