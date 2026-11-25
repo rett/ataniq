@@ -61,6 +61,7 @@
   classifies each probe as connected, refused, or filtered or timed out,
   passes the lead's network only on a refusal or timeout the probe itself
   reports after the sandbox showed an IPv4 address and a default route
+  that is up, through a gateway and not a reject or blackhole route
   (without them the probe did not run), takes a probe that did not run for
   a finding, and the runbook
   records its exit status). The runbook's last steps compare the trial's

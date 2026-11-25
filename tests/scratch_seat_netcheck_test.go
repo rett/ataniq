@@ -305,6 +305,34 @@ func TestScratchSeatNetcheckClassifiesEachProbe(t *testing.T) {
 	}
 	rd, rn, tu, tl := write("route-default", routeDefault), write("route-no-default", routeNoDefault), write("trie-up", trieUp), write("trie-lo", trieLoopback)
 	missing := filepath.Join(dir, "missing")
+	// Default routes that are not usable (review finding 5): a reject route
+	// (RTF_UP|RTF_REJECT, 0201, as "ip route add unreachable default" or
+	// "prohibit default" shows on an interface) and a blackhole route (the
+	// same flags on "*"), a route that is down (0002), one with no gateway
+	// (0001, gateway 00000000), flags that are not hexadecimal, and a
+	// gateway flag over a zero gateway. Each reads as no route; a usable
+	// route after a reject one is taken.
+	route := func(lines ...string) string { return routeHead + strings.Join(lines, "\n") + "\n" }
+	unusable := map[string]string{
+		"route-reject":       route("eth0\t00000000\t010200C0\t0201\t0\t0\t100\t00000000\t0\t0\t0"),
+		"route-blackhole":    route("*\t00000000\t00000000\t0201\t0\t0\t0\t00000000\t0\t0\t0"),
+		"route-reject-gw":    route("eth0\t00000000\t010200C0\t0203\t0\t0\t100\t00000000\t0\t0\t0"),
+		"route-down":         route("eth0\t00000000\t010200C0\t0002\t0\t0\t100\t00000000\t0\t0\t0"),
+		"route-no-gateway":   route("eth0\t00000000\t00000000\t0001\t0\t0\t100\t00000000\t0\t0\t0"),
+		"route-zero-gateway": route("eth0\t00000000\t00000000\t0003\t0\t0\t100\t00000000\t0\t0\t0"),
+		"route-bad-flags":    route("eth0\t00000000\t010200C0\tzz03\t0\t0\t100\t00000000\t0\t0\t0"),
+	}
+	for name, body := range unusable {
+		out, code := netcheckRun(t, script, "/usr/bin:/bin", "--net-of", write(name, body), tu)
+		if code != 0 || out != "net route=none addr=192.0.2.15\n" {
+			t.Errorf("--net-of %s: exit %d, %q, want no route", name, code, out)
+		}
+	}
+	after := write("route-reject-then-up", route("eth1\t00000000\t010200C0\t0201\t0\t0\t50\t00000000\t0\t0\t0",
+		"eth0\t00000000\t010200C0\t0003\t0\t0\t100\t00000000\t0\t0\t0"))
+	if out, code := netcheckRun(t, script, "/usr/bin:/bin", "--net-of", after, tu); code != 0 || out != "net route=eth0 addr=192.0.2.15\n" {
+		t.Errorf("--net-of a reject route then a usable one: exit %d, %q", code, out)
+	}
 	for _, c := range []struct{ route, trie, want string }{
 		{rd, tu, "net route=eth0 addr=192.0.2.15\n"},
 		{rn, tu, "net route=none addr=192.0.2.15\n"},

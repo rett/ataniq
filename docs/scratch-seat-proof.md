@@ -318,7 +318,10 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    network did not come up: curl's "could not connect" is also what an
    unreachable network gives, so inside the sandbox, before the probe, the
    check looks for an IPv4 address other than loopback and a default route
-   other than on `lo` and prints `net route=... addr=...`; without either
+   other than on `lo` that is up, goes through a gateway and is not a
+   reject or blackhole route (its flags in `/proc/net/route`: an
+   unreachable or blackhole route gives the same "could not connect"), and
+   prints `net route=... addr=...`; without either
    the probe is not made and the line says `the probe did not run: the
    sandbox's network did not come up`. A host with no IPv4 default route
    reads the same way. Any `FINDING` there ends
