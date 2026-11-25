@@ -15,6 +15,8 @@
   have popped a confirmation on the laptop. DEPLOY.md has the owner's
   procedure, "The deploy key": kept on the laptop and loaded with
   `ssh-add -c -h -t`, the agent forwarded for the deploy session only, a
-  `restrict,from=` line on the authority host, how to prove it, and the same
-  with a FIDO2 key; the git push command of `docs/outward-keys.md` uses the
-  same options.
+  `restrict,from=` line on the authority host, how to prove it (the negative
+  check tests each identity under review, one key file at a time, on the
+  driver's own connection: the same destination, port and known-hosts file,
+  no ssh configuration, no proxy and no agent), and the same with a FIDO2
+  key; the git push command of `docs/outward-keys.md` uses the same options.

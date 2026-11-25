@@ -7,6 +7,7 @@ package tests
 // never show.
 
 import (
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -992,7 +993,10 @@ func testAuthorityHostDeployKey(t *testing.T, data string, section func(from, to
 		"refuse the confirmation on the laptop (or let it time out): it ends rsync -n failed and nothing is copied",
 		"If no confirmation popped, the key is not loaded with -c",
 		"deploy.sh --dry refuses (SSH_AUTH_SOCK is not set)",
-		`env -u SSH_AUTH_SOCK ssh -o BatchMode=yes -o IdentityAgent=none -o ControlMaster=no -o ControlPath=none -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$AUTHORITY_HOST_KNOWN_HOSTS" "$AUTHORITY_HOST_SSH" true`,
+		"Then test each identity under review, one at a time, on the very connection the driver makes",
+		"the old deploy key wherever a copy may remain. Run this once for each, with KEY its path",
+		"Each must fail with Permission denied (publickey).",
+		"add -v and look for Server accepts key",
 		"Permission denied (publickey)",
 		"ssh-keygen -lf /home/DEPLOYUSER/.ssh/authorized_keys",
 		"only the confirmation becomes a touch",
@@ -1052,6 +1056,32 @@ func testAuthorityHostDeployKey(t *testing.T, data string, section func(from, to
 	}
 	if strings.Contains(ahFlat(data), "which lives on the development host") {
 		t.Error("DEPLOY.md still says the deploy key lives on the development host")
+	}
+	// The negative check is the driver's connection with only the identity
+	// changed: the same options, destination, port and known-hosts file, no
+	// configuration file and no proxy, no agent, and the one key file KEY.
+	var negative []string
+	for _, line := range strings.Split(data, "\n") {
+		if line = strings.TrimSpace(line); strings.HasPrefix(line, "env -u SSH_AUTH_SOCK ssh ") {
+			negative = append(negative, line)
+		}
+	}
+	if len(negative) != 1 {
+		t.Fatalf("DEPLOY.md has %d negative checks, want 1: %q", len(negative), negative)
+	}
+	words := strings.Fields(strings.TrimPrefix(negative[0], "env -u SSH_AUTH_SOCK ssh "))
+	if n := len(words); n < 3 || words[n-2] != `"$AUTHORITY_HOST_SSH"` || words[n-1] != "true" {
+		t.Fatalf("the negative check does not end with the driver's destination and true: %s", negative[0])
+	}
+	got, twice := ahEffective(t, words[:len(words)-2])
+	if len(twice) != 0 {
+		t.Errorf("the negative check gives options twice: %q", twice)
+	}
+	want := ahWantEffective(`"$AUTHORITY_HOST_KNOWN_HOSTS"`)
+	want["identityfile"], want["identitiesonly"], want["identityagent"] = "KEY", "yes", "none"
+	want["port"] = `"${AUTHORITY_HOST_PORT:-22}"`
+	if !maps.Equal(got, want) {
+		t.Errorf("the negative check is not the driver's connection with the identity KEY:\n got %v\nwant %v", got, want)
 	}
 }
 

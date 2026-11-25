@@ -185,16 +185,26 @@ sees it; `DEPLOY-KEY` is the key's file on the laptop.
      with `-c`: remove it (`ssh-add -d DEPLOY-KEY` on the laptop), load it as
      in step 2, and deploy nothing until it pops.
    - In a session without the agent, `deploy.sh --dry` refuses (`SSH_AUTH_SOCK
-     is not set`), and this fails with `Permission denied (publickey)`, which
-     shows that no key file ssh reads on the development host (the defaults,
-     and any `IdentityFile` line of your ssh config, which this check reads on
-     purpose, though the driver reads none) is accepted. It, too, makes a
-     connection of its own, so that no shared connection of your
-     configuration, which may carry a forwarded agent, logs in for it:
+     is not set`). Then test each identity under review, one at a time, on
+     the very connection the driver makes: the same destination
+     (`AUTHORITY_HOST_SSH`), port, known-hosts file and direct connection, no
+     ssh configuration file (which could change the destination, the port or
+     add a proxy), no agent, and only the one key file `KEY` offered. The
+     identities under review are every private key file on the development
+     host (each file of `~/.ssh` that holds one, and any other place a key
+     may be kept) and the old deploy key wherever a copy may remain. Run this
+     once for each, with `KEY` its path:
 
      ```
-     env -u SSH_AUTH_SOCK ssh -o BatchMode=yes -o IdentityAgent=none -o ControlMaster=no -o ControlPath=none -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$AUTHORITY_HOST_KNOWN_HOSTS" "$AUTHORITY_HOST_SSH" true
+     env -u SSH_AUTH_SOCK ssh -F /dev/null -o BatchMode=yes -o IdentityFile=KEY -o IdentitiesOnly=yes -o IdentityAgent=none -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o GSSAPIAuthentication=no -o HostbasedAuthentication=no -o PKCS11Provider=none -o ProxyCommand=none -o ProxyJump=none -o ControlMaster=no -o ControlPath=none -o ForwardAgent=no -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o UserKnownHostsFile="$AUTHORITY_HOST_KNOWN_HOSTS" -o Port="${AUTHORITY_HOST_PORT:-22}" "$AUTHORITY_HOST_SSH" true
      ```
+
+     Each must fail with `Permission denied (publickey)`. A key file with a
+     passphrase cannot be used in batch mode, so its failure alone proves
+     nothing: add `-v` and look for `Server accepts key`, which means the
+     authority host would take that key; its line must then go from
+     `authorized_keys`. The command makes a connection of its own, so that
+     no shared connection, which may carry a forwarded agent, logs in for it.
 
    - From your root session on the authority host, `ssh-keygen -lf
      /home/DEPLOYUSER/.ssh/authorized_keys` lists only fingerprints that
