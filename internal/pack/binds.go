@@ -110,7 +110,7 @@ func (s Sandbox) validate(layout BindLayout) error {
 		destinations[p] = row
 	}
 	if s.Launch != nil {
-		return s.Launch.validate(destinations)
+		return s.Launch.validate(layout, destinations)
 	}
 	return nil
 }
@@ -121,7 +121,7 @@ type Agent struct {
 	Definition string `json:"definition,omitempty"` // absolute inside path of a rendered definition
 }
 
-func (a Agent) validSource(destinations map[string]Bind) bool {
+func (a Agent) validSource(layout BindLayout, destinations map[string]Bind) bool {
 	if a.Builtin {
 		return a.Definition == ""
 	}
@@ -130,6 +130,10 @@ func (a Agent) validSource(destinations map[string]Bind) bool {
 	}
 	for p, row := range destinations {
 		if row.Optional || (row.Role != ConfigOverlay && row.Role != TreeOverlay) {
+			continue
+		}
+		// A writable intermediate folder could be renamed and replaced.
+		if parent := path.Dir(p); parent != layout.Config && parent != layout.Tree {
 			continue
 		}
 		if (row.Kind == "file" && a.Definition == p) || (row.Kind == "folder" && below(a.Definition, p)) {

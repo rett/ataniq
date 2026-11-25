@@ -61,6 +61,8 @@ func TestAgentDefinition(t *testing.T) {
 		{"/config/agents/a", true, false}, {"/config/agents/../a", false, false},
 		{"/config/sessions/a", false, false}, {"/config/agents-other/a", false, false},
 		{"/config/optional/a", false, false}, {"/tree/a", false, false}, {"", false, false},
+		{"/tree/editable/defs/a", false, false}, {"/config/editable/def", false, false},
+		{"/config/agents/nested/a", false, true},
 	} {
 		l := sampleLaunch()
 		l.Agents = []pack.Agent{{Name: "sample", Builtin: tc.builtin, Definition: tc.definition}}
@@ -68,6 +70,8 @@ func TestAgentDefinition(t *testing.T) {
 			{Role: pack.ConfigOverlay, Kind: "folder", Inside: "/config/agents"},
 			{Role: pack.ConfigOverlay, Kind: "file", Inside: "/config/file"},
 			{Role: pack.TreeOverlay, Kind: "folder", Inside: ".example"},
+			{Role: pack.TreeOverlay, Kind: "folder", Inside: "editable/defs"},
+			{Role: pack.ConfigOverlay, Kind: "file", Inside: "/config/editable/def"},
 			{Role: pack.ConfigOverlay, Kind: "folder", Inside: "/config/optional", Optional: true},
 			{Role: pack.SessionStore, Kind: "folder", Inside: "/config/sessions"},
 		}}

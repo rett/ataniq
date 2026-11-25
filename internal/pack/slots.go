@@ -173,7 +173,7 @@ func tokenSlot(token string, afterSeparator bool) (Slot, error) {
 	return slot, nil
 }
 
-func (l Launch) validate(destinations map[string]Bind) error {
+func (l Launch) validate(layout BindLayout, destinations map[string]Bind) error {
 	for slot, grammar := range l.Grammars {
 		if slot != ModelSlot && slot != EffortSlot {
 			return fmt.Errorf("no declared grammar for slot %q", slot)
@@ -191,7 +191,7 @@ func (l Launch) validate(destinations map[string]Bind) error {
 	}
 	agents := make(map[string]bool)
 	for _, a := range l.Agents {
-		if !slotCeiling.MatchString(a.Name) || agents[a.Name] || !a.validSource(destinations) {
+		if !slotCeiling.MatchString(a.Name) || agents[a.Name] || !a.validSource(layout, destinations) {
 			return fmt.Errorf("invalid agent name or definition for %q", a.Name)
 		}
 		agents[a.Name] = true
