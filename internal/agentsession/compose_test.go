@@ -254,6 +254,20 @@ func TestDecodeInputsFirstMember(t *testing.T) {
 	}
 }
 
+func TestTC15NoClaims(t *testing.T) {
+	in := Inputs{Sight: "rules"}
+	requireError(t, ValidateInputs(in), "Inputs.Transport.State", "empty-value")
+	want := Record{State: "unknown", Refusal: []string{"invalid input"}}
+	if got := Compose(in); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	decoded, err := DecodeInputs([]byte(`{"Sight":"rules"}`))
+	requireError(t, err, "Inputs.Transport.State", "empty-value")
+	if !reflect.DeepEqual(decoded, Inputs{}) {
+		t.Fatal(decoded)
+	}
+}
+
 func TestTC15RecordGoldens(t *testing.T) {
 	b, err := os.ReadFile("sessiontest/testdata/compose.golden")
 	if err != nil {
