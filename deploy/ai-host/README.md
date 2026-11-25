@@ -152,7 +152,9 @@ quoted value with blanks (`exempt_group="wheel admins"`, or
 `Defaults>root exempt_group="a b"`) is a finding like an unquoted one. A word
 of another setting's value that reads as an option (for example `targetpw`
 inside an `env_keep` list) is then a finding too: check it, and leave it if
-it is only a value.
+it is only a value. A finding of a command- or runas-specific default names
+its whole binding, every command or runas user of it
+(`Defaults!/usr/bin/a, /usr/bin/b has timestamp_timeout=15`).
 
 What the check trusts: sudo's own listing, which resolves host lists,
 aliases, groups, includes and other sudoers sources (LDAP, sssd) for this

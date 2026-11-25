@@ -164,7 +164,7 @@ fi
 #       OPTION, OPTION, ...
 #
 #   Runas and Command-specific defaults for NAME:
-#       Defaults!COMMAND OPTION, OPTION
+#       Defaults!COMMAND, COMMAND OPTION, OPTION
 #       Defaults>RUNAS OPTION
 #
 #   User NAME may run the following commands on HOST:
@@ -218,12 +218,22 @@ judge_sudo() {
         option(t, rest, where, global)
       }
     }
-    # binding TOKEN is the binding of a command-specific Defaults token
-    # (Defaults!CMND or Defaults>RUNAS): the token without its option, the
-    # last word, or a last quoted value with the word it ends.
-    function binding(s) {
-      if (!sub(/[ \t]+[^ \t"]*"[^"]*"$/, "", s)) sub(/[ \t]+[^ \t]+$/, "", s)
-      return s
+    # binding LINE is the binding of a command-specific Defaults line
+    # (Defaults!CMND, CMND ... or Defaults>RUNAS, RUNAS ...), all its members:
+    # sudo separates the members by ", " and the first option by a blank, so
+    # the binding runs to the first comma-separated token with a blank in
+    # it, without the option of that token (its last word, or a last quoted
+    # value with the word it ends). It is empty when no token has a blank.
+    function binding(u,   n, tk, i, b, t) {
+      n = split(u, tk, ",")
+      b = ""
+      for (i = 1; i <= n; i++) {
+        t = trim(tk[i])
+        if (t !~ /[ \t]/) { b = b t ", "; continue }
+        if (!sub(/[ \t]+[^ \t"]*"[^"]*"$/, "", t)) sub(/[ \t]+[^ \t]+$/, "", t)
+        return b t
+      }
+      return ""
     }
     BEGIN {
       name = ENVIRON["J_NAME"]; err = ENVIRON["J_ERR"]; rc = ENVIRON["J_RC"]; route = ENVIRON["J_ROUTE"]
@@ -232,7 +242,7 @@ judge_sudo() {
       pr_head = "User " name " may run the following commands on "
       no_head1 = "User " name " is not allowed to run sudo on "
       no_head2 = "User " name " may not run sudo on "
-      sec = ""; ne = 0; md = ""; cs = ""
+      sec = ""; ne = 0; md = ""; nu = 0
     }
     /^[ \t]*$/ { sec = ""; next }
     starts($0, md_head) && /:$/ { sec = "md"; next }
@@ -240,7 +250,17 @@ judge_sudo() {
     starts($0, pr_head) && /:$/ { sec = "pr"; prheads++; next }
     (starts($0, no_head1) || starts($0, no_head2)) && /\.$/ { nogrant++; sec = ""; next }
     sec == "md" && /^    [^ ]/ { s = trim($0); sub(/,$/, "", s); md = md "," s; next }
-    sec == "cs" && /^    [^ ]/ { s = trim($0); sub(/,$/, "", s); cs = cs "," s; next }
+    # Each Defaults line of the command-specific section is one unit, its
+    # wrapped lines joined to it, so that a binding of several commands
+    # stays whole; a line before any Defaults line is a unit of its own,
+    # which the judgement stops on.
+    sec == "cs" && /^    [^ ]/ {
+      s = trim($0)
+      if (starts(s, "Defaults")) unit[++nu] = s
+      else if (nu && !orphan[nu]) unit[nu] = unit[nu] " " s
+      else { unit[++nu] = s; orphan[nu] = 1 }
+      next
+    }
     sec == "pr" && /^    \(/ { entry[++ne] = trim($0); next }
     sec == "pr" && /^        [^ ]/ && ne { entry[ne] = entry[ne] " " trim($0); next }
     { stop("a line of sudo -l this check does not know: " $0) }
@@ -267,14 +287,11 @@ judge_sudo() {
         if (!np) checks = checks "check: no command sudo lists for " name " skips the password\n"
         n = split(md, op, ",")
         for (i = 1; i <= n; i++) judge(trim(op[i]), "Matching Defaults", 1)
-        n = split(cs, op, ",")
-        bind = ""
-        for (i = 1; i <= n; i++) {
-          s = trim(op[i])
-          if (s == "") continue
-          if (starts(s, "Defaults")) bind = binding(s)
-          else if (bind == "") { stop("a command-specific default this check does not know: " s); continue }
-          judge(s, bind, 0)
+        for (u = 1; u <= nu; u++) {
+          bind = orphan[u] ? "" : binding(unit[u])
+          if (bind == "") { stop("a command-specific default this check does not know: " unit[u]); continue }
+          n = split(unit[u], op, ",")
+          for (i = 1; i <= n; i++) judge(trim(op[i]), bind, 0)
         }
         if (!zeroes) finding("dropin", "sudo -l lists no timestamp_timeout=0 for " name ": sudo\047s built-in default keeps a ticket for some minutes, so commands run unprompted after one password")
         else if (!nonzero && !odd) checks = checks "check: timestamp_timeout=0 is listed for " name ", and no other value\n"

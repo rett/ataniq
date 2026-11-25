@@ -127,7 +127,7 @@ func TestAiHostAP14SelfTest(t *testing.T) {
 		return
 	}
 	cases := ap14Cases(t)
-	if len(cases) < 26 {
+	if len(cases) < 27 {
 		t.Fatalf("only %d cases", len(cases))
 	}
 	check := func(where, out string, code int) {
@@ -228,7 +228,10 @@ func TestAiHostAP14SudoFindings(t *testing.T) {
 		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0\n\nRunas and Command-specific defaults for agent:\n    Defaults>root runaspw\n\n" + grant,
 			[]string{"finding: otherpw: sudo asks for the password of the runas_default user, not agent's: Defaults>root has runaspw\n"}, "remove the setting"},
 		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0\n\nRunas and Command-specific defaults for agent:\n    Defaults!/usr/bin/a, /usr/bin/b env_reset, targetpw\n\n" + grant,
-			[]string{"finding: otherpw: sudo asks for the target user's password (usually root's), not agent's: Defaults!/usr/bin/a has targetpw\n"}, "remove the setting"},
+			[]string{"finding: otherpw: sudo asks for the target user's password (usually root's), not agent's: Defaults!/usr/bin/a, /usr/bin/b has targetpw\n"}, "remove the setting"},
+		// A binding of several commands, wrapped, is named whole.
+		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0\n\nRunas and Command-specific defaults for agent:\n    Defaults!/usr/bin/a,\n    /usr/bin/b timestamp_timeout=15\n\n" + grant,
+			[]string{"finding: timeout: a cached ticket lets commands run unprompted after one password: Defaults!/usr/bin/a, /usr/bin/b has timestamp_timeout=15\n"}, "remove the setting"},
 		{"Matching Defaults entries for agent on aihost:\n    !authenticate, timestamp_timeout=0\n\n" + grant,
 			[]string{"finding: noauth: sudo asks no password at all: Matching Defaults has !authenticate\n"}, "!authenticate: sudo asks no password at all"},
 		{"Matching Defaults entries for agent on aihost:\n    exempt_group=wheel, timestamp_timeout=0\n\n" + grant,
@@ -341,6 +344,8 @@ func TestAiHostAP14SudoStops(t *testing.T) {
 			"stop: a timestamp_timeout this check does not know: Defaults!/usr/bin/a has timestamp_timeout=soon\n"},
 		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0\n\nRunas and Command-specific defaults for agent:\n    targetpw\n\nUser agent may run the following commands on aihost:\n    (ALL) ALL\n", "", "",
 			"stop: a command-specific default this check does not know: targetpw\n"},
+		{"Matching Defaults entries for agent on aihost:\n    timestamp_timeout=0\n\nRunas and Command-specific defaults for agent:\n    Defaults!/usr/bin/a, /usr/bin/b\n\nUser agent may run the following commands on aihost:\n    (ALL) ALL\n", "", "",
+			"stop: a command-specific default this check does not know: Defaults!/usr/bin/a, /usr/bin/b\n"},
 		{"User agent is not allowed to run sudo on aihost.\n", "", "1\n", "stop: no sudo grant: make sure root can log in another way\n"},
 	} {
 		files := map[string]string{"sudo-l.txt": c.sudo}

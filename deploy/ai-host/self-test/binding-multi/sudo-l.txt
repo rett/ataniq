@@ -1,0 +1,10 @@
+Matching Defaults entries for agent on aihost:
+    env_reset, timestamp_timeout=0
+
+Runas and Command-specific defaults for agent:
+    Defaults!/usr/bin/apt-get, /usr/bin/dpkg timestamp_timeout=15
+    Defaults>backup, operator env_reset,
+    rootpw
+
+User agent may run the following commands on aihost:
+    (ALL : ALL) ALL
