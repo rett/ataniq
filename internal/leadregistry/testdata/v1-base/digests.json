@@ -1,0 +1,32 @@
+[
+  {
+    "role": "fixture-a/coord/feat-one",
+    "requested_digest": "cf59ee399df6f856704ee2855c61d565f5142425515080fda65c14e5aae978a4",
+    "launch_digest": "cf59ee399df6f856704ee2855c61d565f5142425515080fda65c14e5aae978a4",
+    "epoch": 1,
+    "intent": "6d1aadc9e5031e4b99bf11ae0a796ebc",
+    "state": "stopped"
+  },
+  {
+    "role": "fixture-a/lead",
+    "requested_digest": "f7563705fbe5f707f4e9fb40e62eb2572a1d74237bac5108d1208f3c0545b923",
+    "launch_digest": "f7563705fbe5f707f4e9fb40e62eb2572a1d74237bac5108d1208f3c0545b923",
+    "epoch": 2,
+    "intent": "5079832da0a39e4f1cd6fdfc633c0fa6",
+    "state": "starting"
+  },
+  {
+    "role": "fixture-b/lead",
+    "requested_digest": "70ef1497a2c807eb6db10457b37d2f7c0eb625a8aaa782703c64d43cdc55d98b",
+    "launch_digest": "70ef1497a2c807eb6db10457b37d2f7c0eb625a8aaa782703c64d43cdc55d98b",
+    "epoch": 1,
+    "intent": "44c85fd174bfccf43cb5f561cd0040e8",
+    "state": "ended"
+  },
+  {
+    "role": "supervisor",
+    "requested_digest": "70ef1497a2c807eb6db10457b37d2f7c0eb625a8aaa782703c64d43cdc55d98b",
+    "epoch": 0,
+    "state": "stopped"
+  }
+]
