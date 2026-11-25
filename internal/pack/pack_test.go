@@ -59,6 +59,22 @@ func TestRegistry(t *testing.T) {
 	}
 }
 
+func TestFrozenRegistryCopy(t *testing.T) {
+	r := pack.New()
+	if err := r.Register(packtest.Beta); err != nil {
+		t.Fatal(err)
+	}
+	other := *r
+	r.Freeze()
+	_ = other.Register(packtest.Alpha)
+	if _, ok := r.Lookup(packtest.Alpha.Name()); ok {
+		t.Error("registration through a value copy changed the frozen registry")
+	}
+	if _, ok := r.Lookup(packtest.Beta.Name()); !ok {
+		t.Error("freeze lost a registered pack")
+	}
+}
+
 func TestBuiltinIdentity(t *testing.T) {
 	if got, err := pack.BuiltinIdentity("alpha", "1.0.0", "abc123"); err != nil || got != "alpha@1.0.0+abc123" {
 		t.Fatalf("identity = %q, %v", got, err)

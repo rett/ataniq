@@ -108,7 +108,13 @@ func (r *Registry) Register(p Pack) error {
 	return nil
 }
 
-func (r *Registry) Freeze() { r.frozen = true }
+func (r *Registry) Freeze() {
+	if !r.frozen {
+		// A value copy made during setup may still write the original map.
+		r.packs = maps.Clone(r.packs)
+		r.frozen = true
+	}
+}
 
 func (r *Registry) Lookup(n Name) (Pack, bool) {
 	p, ok := r.packs[n]
