@@ -10,7 +10,8 @@
 // state file, holder.json ([RecordFileName]), and in the start event of its
 // event log. A launcher reads the identity of the holder executable it is
 // about to start from that file ([ReadExecutable]), and the identity of a
-// running holder from its state file ([ReadRecord]).
+// running holder from its state file ([ReadRecord]), which must be of the
+// epoch that is to be attached ([Checker.BeforeAttach]).
 //
 // # What "expected" means
 //
@@ -45,6 +46,9 @@
 // identity, which is every holder built before this package, is named as such
 // and is never a match. An identity that cannot be read (no file, no Go build
 // information, a malformed record) is refused with the same reason, saying so.
+// Before an attach, a state file of another epoch than the one to be attached
+// is refused first, with the reason [EpochReason], stale-epoch: the build it
+// records is not that of the holder that would be asked (see [EpochError]).
 //
 // # Launchers older than this package
 //
@@ -97,8 +101,9 @@ const (
 	MaxTags      = 256
 )
 
-// ErrSkew is matched by every refusal of [Checker.BeforeLaunch] and
-// [Checker.BeforeAttach].
+// ErrSkew is matched by every refusal of [Checker.BeforeLaunch], and by every
+// refusal of [Checker.BeforeAttach] but that of a state file of another epoch
+// ([ErrOtherEpoch]).
 var ErrSkew = errors.New(Reason)
 
 // Identity is the build identity of an executable: what its embedded build
@@ -393,9 +398,41 @@ type Checker struct {
 	Expected Identity
 	// Executable reads the identity of a holder executable.
 	Executable func(path string) (Identity, error)
-	// Record reads the state file of a holder.
-	Record func(stateDir string) (Record, error)
+	// Record reads the state file of a holder. It is given the epoch that is
+	// to be attached as well: [ReadRecord] does not use it, and a test's
+	// reader that stands for the holder of every epoch answers with it.
+	Record func(stateDir string, epoch uint64) (Record, error)
 }
+
+// EpochReason is the named reason of the refusal of an attach to a holder
+// whose state file is of another epoch than the one to be attached. It is the
+// lead wire's code stale-epoch, which the daemon also answers when the holder
+// itself says the epoch is not its own.
+const EpochReason = "stale-epoch"
+
+// ErrOtherEpoch is matched by the refusal of [Checker.BeforeAttach] when the
+// holder's state file is of another epoch (an *EpochError).
+var ErrOtherEpoch = errors.New(EpochReason)
+
+// EpochError is the refusal of an attach to a holder whose state file is of
+// another epoch than the one to be attached: the build it records is then not
+// the build of the holder that would be asked. The usual case is a holder of
+// the epoch that has not yet written its state file, while the file of the
+// epoch before is still there; it passes once the holder has written it. It
+// matches [ErrOtherEpoch], not [ErrSkew]: nothing is known of a build.
+type EpochError struct {
+	// Want is the epoch to be attached; Got is the epoch of the state file.
+	Want, Got uint64
+}
+
+// Error names the reason and both epochs, in printable ASCII.
+func (e *EpochError) Error() string {
+	return fmt.Sprintf("%s: the holder's state file is of epoch %d, not of epoch %d: the holder of the epoch has not written it yet, or is not running",
+		EpochReason, e.Got, e.Want)
+}
+
+// Is makes errors.Is(err, ErrOtherEpoch) true.
+func (e *EpochError) Is(target error) bool { return target == ErrOtherEpoch }
 
 // NewChecker returns the checker of the running build: it expects [Self].
 func NewChecker() (*Checker, error) {
@@ -422,23 +459,29 @@ func (c *Checker) BeforeLaunch(path string) error {
 	return Check(c.Expected, &id)
 }
 
-// BeforeAttach checks a running holder, by the identity it recorded in its
-// state folder, before something attaches to it. It returns nil when the
-// holder recorded the expected build, and an error that matches [ErrSkew] (a
-// *SkewError) otherwise: a holder that records no identity is named as such,
-// and a state file that is missing or cannot be read is refused too.
-func (c *Checker) BeforeAttach(stateDir string) error {
+// BeforeAttach checks a running holder of the epoch, by the identity it
+// recorded in its state folder, before something attaches to it. It returns
+// nil when the state file is of the epoch and records the expected build. A
+// state file of another epoch is refused first, with an *EpochError that
+// matches [ErrOtherEpoch]: the build it records is not that of the holder of
+// the epoch. Otherwise the refusal is an error that matches [ErrSkew] (a
+// *SkewError): a holder that records no identity is named as such, and a
+// state file that is missing or cannot be read is refused too.
+func (c *Checker) BeforeAttach(stateDir string, epoch uint64) error {
 	read := c.Record
 	if read == nil {
-		read = ReadRecord
+		read = func(dir string, _ uint64) (Record, error) { return ReadRecord(dir) }
 	}
-	rec, err := read(stateDir)
+	rec, err := read(stateDir, epoch)
 	if err != nil {
 		why := WhyUnreadable
 		if errors.Is(err, os.ErrNotExist) {
 			why = WhyNoStateFile
 		}
 		return &SkewError{Expected: c.Expected, Why: why, Cause: err}
+	}
+	if rec.Epoch != epoch {
+		return &EpochError{Want: epoch, Got: rec.Epoch}
 	}
 	return Check(c.Expected, rec.Build)
 }

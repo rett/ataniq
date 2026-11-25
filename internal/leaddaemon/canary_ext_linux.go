@@ -188,7 +188,7 @@ type canaryExt struct {
 	// send another in the epoch; the canary's is spent whatever the answer.
 	scratch bool
 	// build is the check of the holder's build before a launch and before an
-	// attach (holderSkew).
+	// attach (launchSkew, attachSkew).
 	build *buildid.Checker
 
 	mu sync.Mutex
@@ -458,7 +458,7 @@ func (x *canaryExt) start(ctx context.Context) (any, *clientapi.ErrorBody) {
 	}
 	// The holder the unit would run is the daemon's own build, or nothing
 	// changes.
-	if f := x.holderSkew("canary start", false); f != nil {
+	if f := x.launchSkew("canary start"); f != nil {
 		return nil, f.body()
 	}
 	e, err := x.ctl.Start(ctx, x.role)
@@ -558,27 +558,37 @@ func (x *canaryExt) ticket(ctx context.Context, attach wire.Role) (any, *clienta
 	return res, nil
 }
 
-// holderSkew checks the holder's build against the build the daemon expects
-// (buildid): before a launch, the build of the executable the config names;
-// before an attach, the build the running holder recorded in holder.json in
-// its state folder. It returns nil for the expected build, and otherwise the
-// refusal with the code holder-version-skew and a message that says what was
-// found and names both builds; the cause of a read that failed goes to the
-// log. A holder that records no build (an older holder) is refused as such.
-func (x *canaryExt) holderSkew(op string, attach bool) *opFail {
-	var err error
-	if attach {
-		layout, lerr := x.cfg.Layout()
-		if lerr != nil {
-			// Validated at setup; a layout that cannot be worked out is
-			// refused like a record that cannot be read.
-			err = &buildid.SkewError{Expected: x.build.Expected, Why: buildid.WhyUnreadable, Cause: lerr}
-		} else {
-			err = x.build.BeforeAttach(layout.Holder())
-		}
-	} else {
-		err = x.build.BeforeLaunch(x.cfg.Holder.Executable)
+// launchSkew checks, before a launch, the build of the holder executable the
+// config names against the build the daemon expects (buildid). It returns nil
+// for the expected build, and otherwise the refusal of [skewRefusal].
+func (x *canaryExt) launchSkew(op string) *opFail {
+	return x.skewRefusal(op, x.build.BeforeLaunch(x.cfg.Holder.Executable))
+}
+
+// attachSkew checks, before anything is asked of the running holder of the
+// epoch, the build it recorded in holder.json in its state folder against the
+// build the daemon expects (buildid). A state file of another epoch says
+// nothing of the holder of this one (most often that holder has not written
+// its own yet) and is refused with stale-epoch, before its build is looked
+// at. It returns nil for a file of the epoch that records the expected build,
+// and otherwise the refusal of [skewRefusal].
+func (x *canaryExt) attachSkew(op string, epoch uint64) *opFail {
+	layout, err := x.cfg.Layout()
+	if err != nil {
+		// Validated at setup; a layout that cannot be worked out is refused
+		// like a record that cannot be read.
+		return x.skewRefusal(op, &buildid.SkewError{Expected: x.build.Expected, Why: buildid.WhyUnreadable, Cause: err})
 	}
+	return x.skewRefusal(op, x.build.BeforeAttach(layout.Holder(), epoch))
+}
+
+// skewRefusal is nil for a nil err, and otherwise the refusal of a holder
+// check: the code holder-version-skew, with a message that says what was
+// found and names both builds (a holder that records no build, an older
+// holder, is refused as such), or for a state file of another epoch the code
+// stale-epoch, with a message that names both epochs. The cause of a read
+// that failed goes to the log.
+func (x *canaryExt) skewRefusal(op string, err error) *opFail {
 	if err == nil {
 		return nil
 	}
@@ -587,6 +597,9 @@ func (x *canaryExt) holderSkew(op string, attach bool) *opFail {
 		x.logf("%s: %s (%s)", op, SafeText(err.Error()), SafeText(se.Cause.Error()))
 	} else {
 		x.logf("%s: %s", op, SafeText(err.Error()))
+	}
+	if errors.Is(err, buildid.ErrOtherEpoch) {
+		return refusal(codeStaleEpoch, SafeText(err.Error()))
 	}
 	return refusal(codeHolderVersionSkew, SafeText(err.Error()))
 }
@@ -628,9 +641,9 @@ func (x *canaryExt) ticketFor(ctx context.Context, attach wire.Role, want uint64
 	if want != 0 && want != e.Epoch {
 		return CanaryTicketResult{}, refusal(codeStaleEpoch, msgStaleEpoch)
 	}
-	// The running holder recorded the daemon's own build, or no ticket is
-	// minted and the holder is asked nothing.
-	if f := x.holderSkew("ticket", true); f != nil {
+	// The running holder recorded the daemon's own build for the epoch, or no
+	// ticket is minted and the holder is asked nothing.
+	if f := x.attachSkew("ticket", e.Epoch); f != nil {
 		return CanaryTicketResult{}, f
 	}
 	ticket, err := wire.NewTicket()

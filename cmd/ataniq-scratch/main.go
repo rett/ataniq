@@ -65,7 +65,9 @@ binary before start and from the build the running holder recorded in its
 holder.json before ticket. A holder of another build, one that records no
 build (an older holder) and one whose build cannot be read are refused with
 "refused: holder-version-skew: ...", which names both builds, and nothing is
-started or attached. Build both from one checkout.
+started or attached. Build both from one checkout. A holder.json of another
+epoch than the last one start took is refused first, with
+"refused: stale-epoch: ...", which names both epochs.
 
 Exit status: 0 done, 1 failed or refused, 2 wrong usage.
 `

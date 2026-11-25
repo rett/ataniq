@@ -90,7 +90,8 @@ const (
 	codeReceipt          = "receipt-not-recorded"
 	codeChatFolder       = "chat-folder"
 	// codeHolderVersionSkew is buildid.Reason: the holder is not the
-	// daemon's own build (a start or a ticket; see canaryExt.holderSkew).
+	// daemon's own build (a start or a ticket; see canaryExt.launchSkew and
+	// canaryExt.attachSkew).
 	codeHolderVersionSkew = "holder-version-skew"
 )
 
@@ -618,7 +619,7 @@ func (m *leadMode) start(ctx context.Context, lr *leadRole) outcome {
 		}
 		// The holder the unit would run is the daemon's own build, before
 		// anything changes.
-		if f := lr.in.ext.holderSkew("scratch start "+strconv.Quote(lr.key), false); f != nil {
+		if f := lr.in.ext.launchSkew("scratch start " + strconv.Quote(lr.key)); f != nil {
 			return fromFail(f)
 		}
 		// The reply folder and the instruction text, before the unit starts:
