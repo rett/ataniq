@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"slices"
+	"time"
 )
 
 func validateClaim(c Claim, path string) error {
@@ -13,7 +14,16 @@ func validateClaim(c Claim, path string) error {
 	if err := enum(path+".Basis", c.Basis); err != nil {
 		return err
 	}
-	return enum(path+".Source", c.Source)
+	if err := enum(path+".Source", c.Source); err != nil {
+		return err
+	}
+	// Every present claim goes in the JSON audit record, even a dropped one.
+	if c.At != (time.Time{}) {
+		if _, err := c.At.MarshalJSON(); err != nil {
+			return invalid(path+".At", "inconsistent")
+		}
+	}
+	return nil
 }
 func ValidateInputs(in Inputs) error {
 	if err := validateClaim(in.Transport, "Inputs.Transport"); err != nil {
@@ -38,8 +48,24 @@ func (p SelfDelivery) MarshalJSON() ([]byte, error) {
 	return json.Marshal(string(p))
 }
 func stringItem(b []byte, path string, s *string) error { return value("", s).read(b, path) }
+func readClaimTime(b json.RawMessage, path string, at *time.Time) error {
+	var stamp string
+	if err := stringItem(b, path, &stamp); err != nil {
+		return err
+	}
+	// Resolve numeric offsets without consulting the process's local zone.
+	parsed, err := time.ParseInLocation(time.RFC3339Nano, stamp, time.UTC)
+	if err != nil {
+		return invalid(path, "inconsistent")
+	}
+	*at = parsed
+	return nil
+}
 func readClaim(b []byte, path string, c *Claim) error {
-	return object(b, path, value("State", &c.State), value("Basis", &c.Basis), value("Source", &c.Source), value("At", &c.At), list("Detail", &c.Detail, stringItem))
+	return object(b, path, func() error { return validateClaim(*c, path) },
+		value("State", &c.State), value("Basis", &c.Basis), value("Source", &c.Source),
+		field{"At", func(b json.RawMessage, path string) error { return readClaimTime(b, path, &c.At) }},
+		list("Detail", &c.Detail, stringItem))
 }
 func optionalClaim(name string, c **Claim) field {
 	return field{name, func(b json.RawMessage, path string) error {
@@ -52,10 +78,14 @@ func optionalClaim(name string, c **Claim) field {
 }
 func DecodeInputs(b []byte) (Inputs, error) {
 	var in Inputs
-	err := object(b, "Inputs", value("Ended", &in.Ended), field{"Transport", func(b json.RawMessage, path string) error { return readClaim(b, path, &in.Transport) }}, optionalClaim("Self", &in.Self), optionalClaim("Hook", &in.Hook), list("Veto", (*[]string)(&in.Veto), stringItem), value("Sight", &in.Sight), field{"Policy", func(b json.RawMessage, path string) error { return object(b, path, value("Self", &in.Policy.Self)) }})
-	if err == nil {
-		err = ValidateInputs(in)
-	}
+	err := object(b, "Inputs", func() error { return ValidateInputs(in) },
+		value("Ended", &in.Ended),
+		field{"Transport", func(b json.RawMessage, path string) error { return readClaim(b, path, &in.Transport) }},
+		optionalClaim("Self", &in.Self), optionalClaim("Hook", &in.Hook),
+		list("Veto", (*[]string)(&in.Veto), stringItem), value("Sight", &in.Sight),
+		field{"Policy", func(b json.RawMessage, path string) error {
+			return object(b, path, nil, value("Self", &in.Policy.Self))
+		}})
 	if err != nil {
 		return Inputs{}, err
 	}

@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+	"time"
 )
 
 func claim(b Basis, s State, src ClaimSource) *Claim { return &Claim{State: s, Basis: b, Source: src} }
@@ -150,6 +151,123 @@ func TestTC14DecodeInputs(t *testing.T) {
 		requireError(t, err, "Inputs", "inconsistent")
 	}
 }
+func TestClaimTimestampAdmission(t *testing.T) {
+	base := Inputs{Transport: *claim("screen", "idle", ""), Sight: "rules"}
+	for _, slot := range []string{"Transport", "Self", "Hook"} {
+		for _, at := range []time.Time{
+			{}, time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC),
+			time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC),
+			time.Date(2025, 1, 1, 0, 0, 0, 0, time.FixedZone("", -24*60*60)),
+		} {
+			in := base
+			switch slot {
+			case "Transport":
+				in.Transport.At = at
+			case "Self":
+				in.Self = claim("self", "blocked", "client")
+				in.Self.At = at
+			case "Hook":
+				in.Hook = claim("self", "asking", "hook")
+				in.Hook.At = at
+			}
+			err := ValidateInputs(in)
+			r := Compose(in)
+			if _, encodeErr := json.Marshal(r); encodeErr != nil {
+				t.Errorf("%s: cannot encode decision: %v", slot, encodeErr)
+			}
+			if _, encodeErr := at.MarshalJSON(); encodeErr != nil {
+				requireError(t, err, "Inputs."+slot+".At", "inconsistent")
+				if !reflect.DeepEqual(r, Record{State: "unknown", Refusal: []string{"invalid input"}}) {
+					t.Fatal(r)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+func TestDecodeClaimTimestamp(t *testing.T) {
+	raw := []byte(`{"Transport":{"State":"idle","Basis":"screen","At":"2025-01-02T03:04:05+02:00"},"Sight":"rules"}`)
+	t.Run("unencodable", func(t *testing.T) {
+		in, err := DecodeInputs(bytes.Replace(raw, []byte("+02:00"), []byte("+24:00"), 1))
+		requireError(t, err, "Inputs.Transport.At", "inconsistent")
+		if !reflect.DeepEqual(in, Inputs{}) {
+			t.Fatal(in)
+		}
+	})
+	t.Run("independent of local zone", func(t *testing.T) {
+		saved := time.Local
+		defer func() { time.Local = saved }()
+		var claims []Claim
+		for _, offset := range []int{0, 2 * 60 * 60} {
+			time.Local = time.FixedZone("local", offset)
+			in, err := DecodeInputs(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := Compose(in)
+			encoded, err := json.Marshal(r)
+			if err != nil || !r.Deliverable || !bytes.Contains(encoded, []byte("2025-01-02T03:04:05+02:00")) {
+				t.Fatal(r, err)
+			}
+			claims = append(claims, r.Claims[0])
+		}
+		if !reflect.DeepEqual(claims[0], claims[1]) {
+			t.Fatal(claims)
+		}
+	})
+}
+
+func FuzzAcceptedRecordEncodes(f *testing.F) {
+	f.Add([]byte(`{"Transport":{"State":"idle","Basis":"screen","At":"2025-01-02T03:04:05+24:00"},"Sight":"rules"}`))
+	f.Add([]byte(`{"Transport":{"State":"idle","Basis":"screen","At":"9999-12-31T23:59:59.999999999Z"},"Sight":"rules"}`))
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		in, err := DecodeInputs(raw)
+		if err != nil {
+			return
+		}
+		if _, err := json.Marshal(Compose(in)); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestDecodeInputsFirstMember(t *testing.T) {
+	for _, row := range []struct {
+		raw, path string
+		why       InputReason
+	}{
+		{`{"Transport":{"State":"typo","Basis":"screen"},"Sight":7}`, "Inputs.Transport.State", "unknown-value"},
+		{`{"Sight":7,"Transport":{"Basis":"screen","State":"typo"}}`, "Inputs.Transport.State", "unknown-value"},
+		{`{"Transport":{"Detail":1,"At":2,"Basis":7}}`, "Inputs.Transport.State", "empty-value"},
+		{`{"Transport":{"Basis":7,"State":"typo"}}`, "Inputs.Transport.State", "unknown-value"},
+		{`{"Sight":7,"Sight":"rules","Transport":{"State":"typo"}}`, "Inputs.Transport.State", "unknown-value"},
+		{`{"Sight":"rules","Sight":1,"Transport":1,"Transport":2}`, "Inputs.Transport", "duplicate"},
+		{`{"z":1,"a":1}`, "Inputs.a", "unknown-value"},
+		{`{"a":1,"z":1}`, "Inputs.a", "unknown-value"},
+	} {
+		in, err := DecodeInputs([]byte(row.raw))
+		requireError(t, err, row.path, row.why)
+		if !reflect.DeepEqual(in, Inputs{}) {
+			t.Fatal(in)
+		}
+	}
+}
+
+func TestTC15NoClaims(t *testing.T) {
+	in := Inputs{Sight: "rules"}
+	requireError(t, ValidateInputs(in), "Inputs.Transport.State", "empty-value")
+	want := Record{State: "unknown", Refusal: []string{"invalid input"}}
+	if got := Compose(in); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	decoded, err := DecodeInputs([]byte(`{"Sight":"rules"}`))
+	requireError(t, err, "Inputs.Transport.State", "empty-value")
+	if !reflect.DeepEqual(decoded, Inputs{}) {
+		t.Fatal(decoded)
+	}
+}
+
 func TestTC15RecordGoldens(t *testing.T) {
 	b, err := os.ReadFile("sessiontest/testdata/compose.golden")
 	if err != nil {

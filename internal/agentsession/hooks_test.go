@@ -191,6 +191,65 @@ func TestTR34TR35HookTransitions(t *testing.T) {
 		requireError(t, err, "HookView", "inconsistent")
 	}
 }
+func TestUUIDSpelling(t *testing.T) {
+	const id = "00112233-4455-4677-8899-aabbccddeeff"
+	upper := strings.ToUpper(id)
+	h, err := NewHookView(1, "uuid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := Bind(h, HookReport{"session-start", upper, 0})
+	requireError(t, err, "HookView.Reports[0].Session", "inconsistent")
+	if !reflect.DeepEqual(next, h) {
+		t.Fatal(next)
+	}
+	h = bind(t, h, "session-start", id, 0)
+	checkView(t, bind(t, h, "drift", id, 0), Obs{id, 0}, "pack-mode-drift")
+
+	b, err := json.Marshal(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"Bound", "Session"} {
+		raw := bytes.Replace(b, []byte(`"`+field+`":"`+id+`"`), []byte(`"`+field+`":"`+upper+`"`), 1)
+		_, err := DecodeHookView(raw)
+		path := "HookView.Bound"
+		if field == "Session" {
+			path = "HookView.Reports[0].Session"
+		}
+		requireError(t, err, path, "inconsistent")
+	}
+	printable := bind(t, newView(t, 1), "session-start", upper, 0)
+	checkView(t, bind(t, printable, "drift", id, 0), Obs{upper, 1}, "")
+}
+
+func TestHookViewFirstMember(t *testing.T) {
+	foreign := classifiedReport{HookReport{"other", "t", 0}, "foreign"}
+	later := classifiedReport{HookReport{"drift", "s", -1}, "bound"}
+	h := HookView{bound: "s", form: "printable", reports: []classifiedReport{foreign, later}}
+	requireError(t, ValidateHooks(h), "HookView.Foreign", "inconsistent")
+	b, err := json.Marshal(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range [][]byte{b, bytes.Replace(b, []byte(`"Age":-1`), []byte(`"Age":"bad"`), 1)} {
+		_, err := DecodeHookView(raw)
+		requireError(t, err, "HookView.Foreign", "inconsistent")
+	}
+	for _, row := range []struct {
+		raw, path string
+		why       InputReason
+	}{
+		{`{"AgeLimit":-1,"Form":7}`, "HookView.AgeLimit", "negative"},
+		{`{"Form":7,"AgeLimit":-1}`, "HookView.AgeLimit", "negative"},
+		{`{"Reports":[{"Age":"bad","Kind":"typo"}],"Form":"printable"}`, "HookView.Reports[0].Kind", "unknown-value"},
+		{`{"Form":"printable","Reports":[{"Kind":"other","Session":"s","Class":"bound"},{"Age":"bad"}]}`, "HookView.Reports[0].Class", "inconsistent"},
+	} {
+		_, err := DecodeHookView([]byte(row.raw))
+		requireError(t, err, row.path, row.why)
+	}
+}
+
 func TestDecodeRejectsImpossibleHistory(t *testing.T) {
 	for _, h := range []HookView{
 		{form: "printable", reports: []classifiedReport{{HookReport{"session-start", "s", 0}, "foreign"}}, foreign: 1},
