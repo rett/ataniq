@@ -9,8 +9,9 @@ import (
 	"testing"
 )
 
-// The agent rule: AGENTS.md and CLAUDE.md say that agents run the script only
-// with --self-test, and AGENTS.md links the README.
+// The agent rule: AGENTS.md and CLAUDE.md say exactly what agents run: the
+// script only with --self-test, and the Go tests, which run --apply and
+// --verify only where they are refused; AGENTS.md links the README.
 func TestAiHostAP14AgentRule(t *testing.T) {
 	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
 		data, err := os.ReadFile(filepath.Join(root(t), name))
@@ -20,7 +21,9 @@ func TestAiHostAP14AgentRule(t *testing.T) {
 		for _, want := range []string{
 			"`deploy/ai-host/ap14-level1.sh`",
 			"run only by the owner's hand, as root",
-			"an agent runs it only with `--self-test`, never with `--dry` or `--apply`",
+			"an agent runs it only with `--self-test`, never with `--dry`, `--apply` or `--verify`",
+			"the Go tests of `./tests/`",
+			"run `--apply` and `--verify` only where they are refused on their arguments, never as root",
 		} {
 			if !strings.Contains(string(data), want) {
 				t.Errorf("%s does not say: %s", name, want)
