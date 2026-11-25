@@ -1001,16 +1001,132 @@ type failingListener struct{ net.Listener }
 
 func (failingListener) Accept() (net.Conn, error) { return nil, errors.New("boom") }
 
-func TestServeReturnsAListenerFailure(t *testing.T) {
+// scriptedListener fails each Accept with the next error of its script; a nil
+// entry, and every Accept after the script, accepts on the listener it wraps.
+type scriptedListener struct {
+	net.Listener
+	mu     sync.Mutex
+	script []error
+}
+
+func (l *scriptedListener) Accept() (net.Conn, error) {
+	l.mu.Lock()
+	var err error
+	if len(l.script) > 0 {
+		err, l.script = l.script[0], l.script[1:]
+	}
+	l.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return l.Listener.Accept()
+}
+
+// A listener that fails, as one out of descriptors does, is retried with a
+// backoff that starts again after each success, and the server goes on
+// serving; the first failure of each streak calls AcceptFailed once.
+func TestServeRetriesAFailingListener(t *testing.T) {
+	leakCheck(t)
+	boom := errors.New("boom")
+	var mu sync.Mutex
+	var waits []time.Duration
+	var failed atomic.Int32
+	e := startServerWrapped(t, "127.0.0.1:0", newID(t, "gate"), newID(t, "seat"),
+		func(ln net.Listener) net.Listener {
+			return &scriptedListener{Listener: ln, script: []error{boom, boom, boom, nil, boom, boom}}
+		},
+		func(c *ServerConfig) {
+			c.AcceptFailed = func() { failed.Add(1) }
+			c.acceptWait = func(d time.Duration) time.Duration {
+				mu.Lock()
+				waits = append(waits, d)
+				mu.Unlock()
+				return d
+			}
+		}, echo())
+	for i := uint64(1); i <= 2; i++ {
+		r := e.helloed()
+		if resp := r.call(i, "seat.ping", ""); resp.ID != i || resp.Code != "" {
+			t.Fatalf("connection %d: %+v", i, resp)
+		}
+	}
+	mu.Lock()
+	got := fmt.Sprint(waits)
+	mu.Unlock()
+	if want := fmt.Sprint([]time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 20 * time.Millisecond, 5 * time.Millisecond, 10 * time.Millisecond}); got != want {
+		t.Errorf("waits %s, want %s", got, want)
+	}
+	if n := failed.Load(); n != 2 {
+		t.Errorf("AcceptFailed called %d times, want 2", n)
+	}
+	if err := e.stop(); err != nil {
+		t.Errorf("Serve returned %v", err)
+	}
+}
+
+// The backoff doubles to a ceiling of one second.
+func TestServeAcceptBackoffStopsAtOneSecond(t *testing.T) {
 	leakCheck(t)
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := newID(t, "x")
-	err = Serve(context.Background(), failingListener{l}, ServerConfig{TLS: ServerTLS(id, nil)}, echo())
-	if err == nil || strings.Contains(err.Error(), "boom") {
-		t.Fatalf("%v", err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var waits []time.Duration
+	cfg := ServerConfig{TLS: ServerTLS(newID(t, "x"), nil)}
+	cfg.acceptWait = func(d time.Duration) time.Duration {
+		waits = append(waits, d) // the accept loop's goroutine only
+		if len(waits) == 10 {
+			cancel()
+		}
+		return 0
+	}
+	if err := Serve(ctx, failingListener{l}, cfg, echo()); err != nil {
+		t.Fatalf("Serve returned %v", err)
+	}
+	want := []time.Duration{5, 10, 20, 40, 80, 160, 320, 640, 1000, 1000}
+	for i := range want {
+		want[i] *= time.Millisecond
+	}
+	if fmt.Sprint(waits) != fmt.Sprint(want) {
+		t.Errorf("waits %v, want %v", waits, want)
+	}
+}
+
+// A cancel while Serve waits to accept again ends the wait at once.
+func TestServeCancelDuringTheAcceptBackoffReturnsAtOnce(t *testing.T) {
+	leakCheck(t)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waiting := make(chan struct{}, 1)
+	cfg := ServerConfig{TLS: ServerTLS(newID(t, "x"), nil)}
+	cfg.acceptWait = func(time.Duration) time.Duration {
+		select {
+		case waiting <- struct{}{}:
+		default:
+		}
+		return time.Hour
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, failingListener{l}, cfg, echo()) }()
+	select {
+	case <-waiting:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not wait after a failed accept")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve returned %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return when its context was cancelled during the backoff")
 	}
 }
 
