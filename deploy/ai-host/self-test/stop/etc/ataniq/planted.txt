@@ -1,0 +1,2 @@
+A self-test fixture: a register folder someone other than root made (see
+not-root.txt). Git keeps no empty folder, so this file keeps it.
