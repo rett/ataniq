@@ -196,8 +196,13 @@ func (l Launch) validate(layout BindLayout, destinations map[string]Bind) error 
 	if len(l.Argv) == 0 {
 		return errors.New("launch needs argv")
 	}
-	for i, token := range l.Argv {
-		slot, err := tokenSlot(token, i > 0 && l.Argv[i-1] == "--")
+	afterSeparator := false
+	for _, token := range l.Argv {
+		if token == "--" {
+			afterSeparator = true
+			continue
+		}
+		slot, err := tokenSlot(token, afterSeparator)
 		if err != nil {
 			return err
 		}

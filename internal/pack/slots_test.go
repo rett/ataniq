@@ -52,6 +52,18 @@ func TestSlotPlacement(t *testing.T) {
 	}
 }
 
+func TestPositionalSlotsAfterSeparator(t *testing.T) {
+	l := sampleLaunch()
+	l.Argv = []string{"run", "--", "{model}", "fixed", "{effort}"}
+	if err := validateSandbox(pack.Sandbox{Launch: &l}); err != nil {
+		t.Fatal(err)
+	}
+	l.Argv = append(l.Argv, "{resume}")
+	if err := validateSandbox(pack.Sandbox{Launch: &l}); err == nil {
+		t.Error("accepted positional resume")
+	}
+}
+
 func TestLaunchExtraEnv(t *testing.T) {
 	env := make(map[string]string)
 	for i := range 64 {
