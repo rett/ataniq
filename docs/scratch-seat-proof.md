@@ -204,8 +204,9 @@ every row of their bind tables, as the holder builds them
 `--self-test` read and write nothing, `--write` writes in the root only and
 refuses what it can judge, `--status` runs the daemon's check with exactly
 the flags of step 2 and `--check`, and `--status --compare` refuses a record
-of step g that does not list each of the six files once, compares the
-trial's digests and passes the prefix of step g to the daemon's key check,
+of step g that does not name each of the six files once, by its name as
+text, before it opens one, takes `sha256sum -c`'s exit status for the other
+four files' digests and passes the prefix of step g to the daemon's key check,
 printing its verdict; no line of the script deletes, moves, links or masks
 anything or runs `systemctl`.
 
@@ -684,13 +685,17 @@ it, the sitting has no live lead: go on with step 11.
     ```
 
     After the daemon's check, `--compare` takes the record of step g, which
-    must be there: `trial-before.sha256` must list each of `gate/key.pem`,
-    `gate/cert.pem`, `gate/seat-pins`, `keys.log`, `keys.head` and
-    `scratch.json` once and nothing else, or it confirms nothing and the
+    must be there: before any file it lists is opened, `trial-before.sha256`
+    must be six whole lines, each a digest, two spaces and a name, whose
+    names are `gate/key.pem`, `gate/cert.pem`, `gate/seat-pins`, `keys.log`,
+    `keys.head` and `scratch.json`, each once, compared as text (no
+    pattern: `keys-log` is not `keys.log`), or it confirms nothing and the
     line is `status: CHANGED: the record ... is incomplete` (a record cut
-    short at step g, say). Then `sha256sum -c` prints a line per file: the
-    gate key, certificate, pins and settings must be `OK`, byte-identical
-    to step g. The key list and its head are not judged by their digests,
+    short at step g, say). Then `sha256sum -c` checks the four lines of the
+    gate key, certificate, pins and settings and prints a line per file:
+    each must be `OK`, byte-identical to step g, and its exit status
+    decides: any status but 0 (a file changed, missing or unreadable) is
+    `CHANGED`. The key list and its head are not judged by their digests,
     which a phone login changes: `--status` passes the prefix of step g
     (`keys-before.prefix`) to the daemon's `--check --keys-since` and prints
     its lines. The daemon checks the list and its head with the journal's

@@ -68,15 +68,16 @@
 # locks, makes and starts nothing, and passes its lines and its exit status
 # through. With --compare (step 13) it then compares the trial's files with
 # the record of step g, which must be there: ROOT/evidence/trial-before.sha256
-# must list each of the six files once and nothing else before sha256sum -c
-# counts as confirming them, and the trial's gate key, certificate, pins and
-# settings must be the same bytes. The key list and its head are judged by the
-# daemon, not here: prepare passes the prefix the owner recorded at step g
+# must be six lines naming each of the six files once, the names compared as
+# text, before any file it lists is opened, and the trial's gate key,
+# certificate, pins and settings must be the same bytes: sha256sum -c checks
+# their four lines, and any exit status of it but 0 is CHANGED. The key list
+# and its head are judged by the daemon, not here: prepare passes the prefix the owner recorded at step g
 # (ROOT/evidence/keys-before.prefix, the output of the daemon's --check
 # --keys-prefix: the list's length and SHA-256) to "ataniqd run --scratch
 # ROOT/scratch.json --owner-channel --check --keys-since PREFIX" and prints
 # what it says. The daemon checks the list and its head with the journal's own
-# reader and names each record appended since step g; counter records alone (a
+# checks, read only, and names each record appended since step g; counter records alone (a
 # phone login) pass, and anything else, damage included, is CHANGED. A record
 # of step g that is incomplete or missing is CHANGED too. It writes nothing.
 set -eu
@@ -102,6 +103,10 @@ TOKEN='canary-token: proof-standin-0001'
 TRIAL_FILES='gate/key.pem gate/cert.pem gate/seat-pins keys.log keys.head scratch.json'
 
 say() { printf '%s\n' "$*"; }
+
+# A newline, for splitting text into lines.
+_nl='
+'
 
 die() {
   printf '%s: %s\n' "$NAME" "$*" >&2
@@ -757,28 +762,71 @@ keys_fresh() {
 # status_failed sets RC to 1 unless the daemon's check already failed.
 status_failed() { [ "$RC" -ne 0 ] || RC=1; }
 
-# record_complete prints nothing and succeeds when the record of step g
-# (BEFORE) lists each of the six files once, as sha256sum writes it (64
-# lower-case hexadecimal digits, two spaces, the name), and nothing else;
-# else it prints what is wrong and fails. Without it, sha256sum -c would
-# confirm only the files a partial record names.
-record_complete() {
-  _lines=$(wc -l <"$BEFORE") || { echo "it cannot be read"; return 1; }
-  _lines=$((_lines + 0))
-  _miss=
-  for _f in $TRIAL_FILES; do
-    _c=$(LC_ALL=C grep -c -x -e "[0-9a-f]\{64\}  $_f" -- "$BEFORE") || :
-    [ "${_c:-0}" -eq 1 ] || _miss="$_miss $_f"
+# HEX64 is the pattern of a SHA-256 digest as sha256sum writes it: 64
+# lower-case hexadecimal digits.
+HEX64=
+_i=0
+while [ "$_i" -lt 64 ]; do
+  HEX64=$HEX64'[0-9a-f]'
+  _i=$((_i + 1))
+done
+
+# manifest_ok TEXT prints nothing and succeeds when TEXT, the lines of a
+# record of step g, is exactly six lines, each a digest of HEX64, two spaces
+# and a name, whose names are the six of TRIAL_FILES, each once, compared as
+# text (no pattern); else it prints what is wrong and fails. It opens no file.
+manifest_ok() {
+  _seen=
+  _n=0
+  _rest=$1$_nl
+  while [ -n "$_rest" ]; do
+    _l=${_rest%%"$_nl"*}
+    _rest=${_rest#*"$_nl"}
+    _n=$((_n + 1))
+    if [ "$_n" -gt 6 ]; then
+      echo "it holds more than the six lines of the files"
+      return 1
+    fi
+    # shellcheck disable=SC2254  # HEX64 is a pattern on purpose
+    case $_l in
+      $HEX64'  '*) ;;
+      *) echo "its line $_n is not a digest, two spaces and a name"; return 1 ;;
+    esac
+    # shellcheck disable=SC2295  # HEX64 is a pattern on purpose
+    _name=${_l#$HEX64'  '}
+    _known=
+    for _f in $TRIAL_FILES; do
+      if [ "$_name" = "$_f" ]; then _known=$_f; fi
+    done
+    if [ -z "$_known" ]; then
+      echo "its line $_n names a file that is not one of the six"
+      return 1
+    fi
+    case " $_seen " in
+      *" $_known "*) echo "it lists $_known twice"; return 1 ;;
+    esac
+    _seen="$_seen $_known"
   done
-  if [ -n "$_miss" ]; then
-    echo "it does not list each of the six files once (missing or repeated:$_miss)"
-    return 1
-  fi
-  if [ "$_lines" -ne 6 ] || [ "$(tail -c 1 -- "$BEFORE" | wc -l)" -ne 1 ]; then
-    echo "it holds $_lines line(s), not exactly the six of the files"
+  if [ "$_n" -ne 6 ]; then
+    echo "it holds $_n line(s), not the six of the files"
     return 1
   fi
   return 0
+}
+
+# record_complete FILE prints nothing and succeeds when FILE, a record of step
+# g, is six whole lines that manifest_ok passes; else it prints what is wrong
+# and fails. It is called before any file the record lists is opened: without
+# it, sha256sum -c would confirm only the files a partial record names.
+record_complete() {
+  _lines=$(wc -l <"$1") || { echo "it cannot be read"; return 1; }
+  _lines=$((_lines + 0))
+  if [ "$_lines" -ne 6 ] || [ "$(tail -c 1 -- "$1" | wc -l)" -ne 1 ]; then
+    echo "it holds $_lines whole line(s), not exactly the six of the files"
+    return 1
+  fi
+  _text=$(cat -- "$1") || { echo "it cannot be read"; return 1; }
+  manifest_ok "$_text"
 }
 
 # compare_record is --status --compare: the trial's files against the record
@@ -790,19 +838,28 @@ compare_record() {
     status_failed
     return 0
   fi
-  if ! _why=$(record_complete); then
+  if ! _why=$(record_complete "$BEFORE"); then
     say "status: CHANGED: the record $BEFORE is incomplete: $_why; it confirms nothing"
     status_failed
     return 0
   fi
-  _out=$(cd -- "$OWNER" && sha256sum -c -- "$BEFORE" 2>&1) || :
+  # The four files other than the key list and its head, which a phone
+  # login changes and the daemon judges below: their lines of the record,
+  # checked by sha256sum -c, whose exit status decides.
+  _four=
+  _rec=$(cat -- "$BEFORE")$_nl
+  while [ -n "$_rec" ]; do
+    _l=${_rec%%"$_nl"*}
+    _rec=${_rec#*"$_nl"}
+    case $_l in *'  keys.log' | *'  keys.head') ;; *) _four=$_four$_l$_nl ;; esac
+  done
+  _crc=0
+  _out=$(cd -- "$OWNER" && printf '%s' "$_four" | sha256sum -c - 2>&1) || _crc=$?
   printf '%s\n' "$_out" | sed 's/^/status:   /'
   _others=ok
-  for _f in gate/key.pem gate/cert.pem gate/seat-pins scratch.json; do
-    printf '%s\n' "$_out" | grep -qxF -e "$_f: OK" || _others=changed
-  done
-  if [ "$_others" != ok ]; then
-    say "status: CHANGED: a file of the trial other than the key list is not the bytes recorded in $BEFORE (the lines above name it)"
+  if [ "$_crc" -ne 0 ]; then
+    say "status: CHANGED: sha256sum -c ended with exit status $_crc: a file of the trial other than the key list is not the bytes recorded in $BEFORE, or cannot be read (the lines above name it)"
+    _others=changed
     status_failed
   fi
   # The key list and its head: the daemon's own check against the prefix of

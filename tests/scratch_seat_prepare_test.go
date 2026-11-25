@@ -986,7 +986,7 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 	if err := os.WriteFile(keys, append(slices.Clone(oldKeys), []byte("appended\n")...), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if out, code := k.run(t, nil, compare...); code != 0 || !strings.Contains(out, "status:   keys.log: FAILED") || strings.Contains(out, "CHANGED") ||
+	if out, code := k.run(t, nil, compare...); code != 0 || strings.Contains(out, "keys.log: ") || strings.Contains(out, "CHANGED") ||
 		!strings.Contains(out, "and the daemon's check of the key list since step g holds") {
 		t.Fatalf("--status --compare with a key list the daemon passes: exit %d:\n%s", code, out)
 	}
@@ -1007,7 +1007,8 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, code = k.run(t, nil, compare...)
-	if code != 1 || !strings.Contains(out, "status:   gate/seat-pins: FAILED") || !strings.Contains(out, "status: CHANGED: a file of the trial other than the key list is not the bytes recorded") {
+	if code != 1 || !strings.Contains(out, "status:   gate/seat-pins: FAILED") ||
+		!strings.Contains(out, "status: CHANGED: sha256sum -c ended with exit status 1: a file of the trial other than the key list is not the bytes recorded") {
 		t.Fatalf("--status --compare with a changed pin file: exit %d:\n%s", code, out)
 	}
 	stub(10, 0)
@@ -1018,15 +1019,38 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 	if err := os.WriteFile(pins, old, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// A record that does not list the six files once confirms nothing, even
-	// when every line it holds is OK (review finding 4): a record of the
-	// gate's key alone, one with a file twice, and one with a line more.
+	// A file of the trial that cannot be read is CHANGED: sha256sum -c's
+	// exit status decides, whatever lines it printed.
+	if err := os.Chmod(pins, 0); err != nil {
+		t.Fatal(err)
+	}
+	out, code = k.run(t, nil, compare...)
+	os.Chmod(pins, 0o600)
+	if code != 1 || !strings.Contains(out, "status: CHANGED: sha256sum -c ended with exit status 1") || strings.Contains(out, "key list since step g holds") {
+		t.Fatalf("--status --compare with a pin file that cannot be read: exit %d:\n%s", code, out)
+	}
+	// A record that does not list the six files once, by name, confirms
+	// nothing, even when every line it holds is OK (review findings 4 of two
+	// rounds): a record of the gate's key alone, one with a file twice, one
+	// with a line more, six lines with one name twice, and six lines whose
+	// key names differ from the real ones by a character a pattern would
+	// take (keys-log for keys.log). No listed file is opened for it.
 	for _, c := range []struct{ name, names, extra, want string }{
-		{"the gate's key alone", "gate/key.pem", "", "missing or repeated: gate/cert.pem gate/seat-pins keys.log keys.head scratch.json"},
-		{"a file twice", all + " keys.log", "", "missing or repeated: keys.log"},
-		{"a line more", all, "not a line of sha256sum\n", "holds 7 line(s)"},
+		{"the gate's key alone", "gate/key.pem", "", "holds 1 whole line(s)"},
+		{"a file twice", all + " keys.log", "", "holds 7 whole line(s)"},
+		{"a line more", all, "not a line of sha256sum\n", "holds 7 whole line(s)"},
+		{"six lines with a name twice", "gate/key.pem gate/cert.pem gate/seat-pins keys.log keys.log scratch.json", "", "lists keys.log twice"},
+		{"names a pattern would take", "gate/key.pem gate/cert.pem gate/seat-pins keys-log keys-head scratch.json", "", "its line 4 names a file that is not one of the six"},
 	} {
+		for _, n := range []string{"keys-log", "keys-head"} {
+			if err := os.WriteFile(filepath.Join(k.state, "owner", n), []byte("a stand-in\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
 		digests(c.names)
+		for _, n := range []string{"keys-log", "keys-head"} {
+			os.Remove(filepath.Join(k.state, "owner", n))
+		}
 		if c.extra != "" {
 			f, err := os.OpenFile(before, os.O_APPEND|os.O_WRONLY, 0)
 			if err != nil {
@@ -1157,7 +1181,8 @@ func TestScratchSeatProofRunbookShellIsSafe(t *testing.T) {
 		"{ sh \"$ROOT/netcheck.sh\"; echo \"netcheck: exit status $?\"; } 2>&1 | tee -a \"$ROOT/evidence/netcheck.txt\"",
 		"sh \"$P\" --status --compare",
 		"$D run --scratch \"$CONFIG\" --owner-channel --check --keys-prefix >\"$ROOT/evidence/keys-before.prefix\"",
-		"must list each of `gate/key.pem`, `gate/cert.pem`, `gate/seat-pins`, `keys.log`, `keys.head` and `scratch.json` once and nothing else",
+		"whose names are `gate/key.pem`, `gate/cert.pem`, `gate/seat-pins`, `keys.log`, `keys.head` and `scratch.json`, each once, compared as text",
+		"and its exit status decides: any status but 0 (a file changed, missing or unreadable) is `CHANGED`",
 		"byte-identical to step g",
 		"open the seat's web app (the same seat, on the authority host)",
 		"`submitted`: the fence put it in. claude will ask to approve the write of its reply. `w` attaches as the writer",

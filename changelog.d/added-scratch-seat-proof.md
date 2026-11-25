@@ -51,9 +51,10 @@
   cleared environment, never writes in the trial's state folder, never
   deletes and starts nothing, and `--status`
   runs the daemon's `--check`; with `--compare` it then refuses a record of
-  the digests taken before the sitting that does not list each of the six
-  files once, compares the trial's gate key, certificate, pins and settings
-  with it, and has the daemon judge the key list. For that the daemon of
+  the digests taken before the sitting that does not name each of the six
+  files once (the names compared as text, before any listed file is
+  opened), compares the trial's gate key, certificate, pins and settings
+  with it (any exit status of `sha256sum -c` but 0 is CHANGED), and has the daemon judge the key list. For that the daemon of
   both tags takes `run --scratch CONFIG --owner-channel --check
   --keys-prefix`, which checks the key list and its head with the journal's
   own checks read only, on the files themselves (the ownership, mode and
