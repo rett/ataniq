@@ -10,6 +10,12 @@
   and the authority host as well; the repository fetches through a
   read-only route and pushes with the laptop's key; commits and tags are
   signed with a public-key literal (`gpg.format ssh`), so the private part
-  stays in the agent; a cutover withdraws the trust in old push, signing and
-  deploy keys for new operations, after checking the fingerprints of all
-  three; branch and tag protection is the owner's setting on the git host.
+  stays in the agent; a cutover replaces every exposed key with a new,
+  distinct keypair made on the laptop, and withdraws the old ones from all
+  three key stores, the git host, the authority host's `authorized_keys` and
+  the release signers file `ah-switch` verifies against, checking there that
+  the old signing key is rejected and the new one accepted; for git, the old
+  signing key is revoked (`gpg.ssh.revocationFile`) and history is verified
+  by object ids recorded beforehand, since `valid-before` is judged by the
+  signing time the object itself records; branch and tag protection is the
+  owner's setting on the git host.

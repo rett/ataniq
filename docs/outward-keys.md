@@ -30,8 +30,10 @@ git, and the cutover from keys kept anywhere else.
 
 The placeholders: `AI-HOST` is the development host and `git@GIT-HOST` the git
 host's ssh login, each named as the laptop's `known_hosts` names it; `OWNER/REPO`
-is the repository on the git host; `PUSH-KEY` and `SIGNING-KEY` are key files on
-the laptop; `/KNOWN-HOSTS-FILE` is a known-hosts file you keep on the
+is the repository on the git host; `PUSH-KEY`, `SIGNING-KEY` and `DEPLOY-KEY`
+are key files on the laptop, and `OLD-KEY` an exposed one; `PRINCIPAL` is the
+switch policy's `principal`, and `DEPLOYUSER` the authority host's deploying
+user; `/KNOWN-HOSTS-FILE` is a known-hosts file you keep on the
 development host with the git host's key, checked against the fingerprint the
 git host publishes.
 
@@ -107,41 +109,92 @@ each signature is a touch.
 
 Loading the laptop's keys does not make an older copy useless: a push key, a
 signing key or a deploy key that lived on the development host (or anywhere
-else) still works wherever it is trusted, until that trust is withdrawn. Make
-the cutover once, for all three keys, before the first session that uses the
-laptop's:
+else an agent session could read it) still works wherever it is trusted,
+until that trust is withdrawn. Such a key is exposed: it is replaced, never
+moved to the laptop. Make the cutover once, for all three keys, before the
+first session that uses the laptop's:
 
-1. **List what is trusted now.** On the git host, its list of login keys (and
-   deploy keys) for the account and the repository, and its list of signing
-   keys; on the authority host, from your root session,
-   `ssh-keygen -lf /home/DEPLOYUSER/.ssh/authorized_keys`; in the
-   repository, the allowed-signers file that verifies signatures
-   (`gpg.ssh.allowedSignersFile`), if there is one.
-2. **Check the fingerprints of all three keys.** On the laptop,
+1. **Make new, distinct keypairs on the laptop.** One for each role, made
+   fresh there: `ssh-keygen -t ed25519 -f PUSH-KEY`, `ssh-keygen -t ed25519
+   -f SIGNING-KEY` and `ssh-keygen -t ed25519 -f DEPLOY-KEY` (or the
+   `ed25519-sk` forms). Never copy an exposed key to the laptop, and never
+   use one keypair for two roles.
+2. **List what is trusted now, in every key store.** There are three:
+   - the git host: its list of login keys (and deploy keys) for the account
+     and the repository, and its list of signing keys;
+   - the authority host's login: from your root session,
+     `ssh-keygen -lf /home/DEPLOYUSER/.ssh/authorized_keys`;
+   - the authority host's release signers: the file the switch policy names
+     (`allowed_signers` in `/etc/authority-host/switch-policy.json`, for
+     example `/etc/authority-host/allowed_signers`), which `ah-switch`
+     verifies every signed release against, for the policy's `principal`
+     (see [the switch policy](../deploy/authority-host/README.md#the-switch-policy)):
+     `ssh-keygen -lf /etc/authority-host/allowed_signers`.
+
+   Beside them, the repository's allowed-signers file
+   (`gpg.ssh.allowedSignersFile`), if there is one, decides what
+   `git verify-commit` and `git verify-tag` accept.
+3. **Check the fingerprints of all three keys.** On the laptop,
    `ssh-keygen -lf PUSH-KEY`, `ssh-keygen -lf SIGNING-KEY` and
-   `ssh-keygen -lf DEPLOY-KEY` (or the `.pub` files). Each list of step 1 must
-   hold the laptop's fingerprint where it belongs (the push key as a login
-   key, the signing key as a signing key only, the deploy key in the
-   deploying user's `authorized_keys` only) and no other outward key.
-3. **Withdraw the old trust for new operations.** Remove every other key from
-   those lists: the old push key from the git host's login and deploy keys,
-   the old deploy key's line from `authorized_keys`, the old signing key from
-   the git host's signing keys. In the allowed-signers file keep an old
-   signing key only with `valid-before="DATE"` (the cutover date), so that
-   the signatures it made before still verify and none it makes after does.
-   Then delete the old private keys where they lived: on the development host
-   no file of `~/.ssh` (or elsewhere) holds a private key for the git host,
-   the authority host or signing.
-4. **Check what remains usable once the laptop's keys are loaded.** In a
-   forwarded session, `ssh-add -l` lists only the laptop's keys, each with
-   its laptop fingerprint. Without the agent (`env -u SSH_AUTH_SOCK`), a push
+   `ssh-keygen -lf DEPLOY-KEY` (or the `.pub` files): three different
+   fingerprints. Each store of step 2 must end up holding the new
+   fingerprint where it belongs (the push key as a login key on the git host;
+   the signing key as a signing key only on the git host, in the release
+   signers file under the policy's principal and in the repository's
+   allowed-signers file; the deploy key in the deploying user's
+   `authorized_keys` only) and no other outward key.
+4. **Withdraw the old trust.** Remove every old key from those stores: the
+   old push key from the git host's login and deploy keys, the old deploy
+   key's line from `authorized_keys`, the old signing key from the git host's
+   signing keys, and, in the release signers file, the old key's line for the
+   principal, replaced by the new key's (as root, written as a new file and
+   renamed over the old one; it stays root's and not writable by group or
+   others, with every folder above it, or `ah-switch` refuses it). For git:
+   - **Current trust:** revoke the old signing key. List its public key in a
+     revocation file (`git config gpg.ssh.revocationFile FILE`, a file of
+     public keys or an `ssh-keygen -k` key revocation list) and take it out
+     of the allowed-signers file: git then refuses every signature it made,
+     whatever date the signature claims.
+   - **Archival verification:** before you revoke it, record the object ids
+     of the commits and tags it signed that you keep (at least each release
+     tag and its commit, `git rev-parse TAG TAG^{commit}`), on a machine
+     agents do not use. Later, history is checked against that record: an
+     object id fixes the content and all the history below it.
+   - Do not rely on `valid-before` in the allowed-signers file: git compares
+     it with the signing time recorded in the object, which whoever holds the
+     key writes, so it cannot tell when a signature was really made.
+
+   Then delete the old private keys where they lived: on the development
+   host no file of `~/.ssh` (or elsewhere) holds a private key for the git
+   host, the authority host or signing.
+5. **Check what remains usable once the laptop's keys are loaded.** In a
+   forwarded session, `ssh-add -l` lists only the laptop's keys, each with its
+   laptop fingerprint. Without the agent (`env -u SSH_AUTH_SOCK`), a push
    fails with `Permission denied (publickey)`, and so does the negative check
    of the deploy manual; an old key, tried by name
    (`ssh -o IdentitiesOnly=yes -o IdentityAgent=none -i OLD-KEY git@GIT-HOST`
    from wherever a copy may remain), is refused by the git host and by the
-   authority host; and a commit signed with the old signing key after the
-   cutover does not verify. What remains usable is the laptop's keys, through
-   the forwarded agent, within their `-h` limits, one confirmation at a time.
+   authority host. For signatures, check the old key's rejection and the new
+   key's acceptance in each verifier:
+   - **The release verifier**, from your root session on the authority host,
+     with the command `ah-switch` runs:
+
+     ```
+     ssh-keygen -Y verify -f /etc/authority-host/allowed_signers -I PRINCIPAL -n authority-host-release -s SHA256SUMS.sig < SHA256SUMS
+     ```
+
+     The sums and signature of the last release the old key signed must now
+     fail (`Could not verify signature`); a file you signed with the new key
+     on the laptop
+     (`ssh-keygen -Y sign -f SIGNING-KEY -n authority-host-release FILE`,
+     then the same command with `-s FILE.sig < FILE`) must pass with
+     `Good "authority-host-release" signature for PRINCIPAL`.
+   - **Git:** a commit or tag signed with the old key does not verify
+     (`git verify-commit`, `git verify-tag`), whatever its recorded date, and
+     a new tag signed with the new key does.
+
+   What remains usable is the laptop's keys, through the forwarded agent,
+   within their `-h` limits, one confirmation at a time.
 
 ## Branch and tag protection
 

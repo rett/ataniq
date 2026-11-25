@@ -1229,14 +1229,52 @@ func TestAuthorityHostDeployOutwardKeys(t *testing.T) {
 		"## The cutover: from old keys to the laptop's",
 		"Check the fingerprints of all three keys.",
 		"ssh-keygen -lf PUSH-KEY, ssh-keygen -lf SIGNING-KEY and ssh-keygen -lf DEPLOY-KEY",
-		"Withdraw the old trust for new operations.",
-		`keep an old signing key only with valid-before="DATE"`,
+		// An exposed key is replaced by a distinct new keypair, never moved.
+		"Such a key is exposed: it is replaced, never moved to the laptop.",
+		"Make new, distinct keypairs on the laptop.",
+		"ssh-keygen -t ed25519 -f PUSH-KEY, ssh-keygen -t ed25519 -f SIGNING-KEY and ssh-keygen -t ed25519 -f DEPLOY-KEY",
+		"never use one keypair for two roles", "three different fingerprints",
+		// The release signers file is a key store of its own.
+		"List what is trusted now, in every key store.", "There are three:",
+		"the authority host's release signers: the file the switch policy names (allowed_signers in /etc/authority-host/switch-policy.json",
+		"ssh-keygen -lf /etc/authority-host/allowed_signers",
+		"in the release signers file, the old key's line for the principal, replaced by the new key's",
+		"Withdraw the old trust.",
+		// Git: revocation for current trust, recorded object ids for history.
+		"Current trust:", "revoke the old signing key.", "git config gpg.ssh.revocationFile FILE",
+		"git then refuses every signature it made, whatever date the signature claims",
+		"Archival verification:", "before you revoke it, record the object ids of the commits and tags it signed",
+		"git rev-parse TAG TAG^{commit}", "on a machine agents do not use",
+		"Do not rely on valid-before in the allowed-signers file: git compares it with the signing time recorded in the object",
 		"Check what remains usable once the laptop's keys are loaded.",
+		// The old key's rejection and the new key's acceptance in each verifier.
+		"check the old key's rejection and the new key's acceptance in each verifier",
+		"ssh-keygen -Y verify -f /etc/authority-host/allowed_signers -I PRINCIPAL -n authority-host-release -s SHA256SUMS.sig < SHA256SUMS",
+		"The sums and signature of the last release the old key signed must now fail (Could not verify signature)",
+		"ssh-keygen -Y sign -f SIGNING-KEY -n authority-host-release FILE",
+		`must pass with Good "authority-host-release" signature for PRINCIPAL`,
+		"a commit or tag signed with the old key does not verify (git verify-commit, git verify-tag), whatever its recorded date, and a new tag signed with the new key does",
 		"What remains usable is the laptop's keys, through the forwarded agent, within their -h limits, one confirmation at a time.",
 	} {
 		if !strings.Contains(flat, want) {
 			t.Errorf("docs/outward-keys.md does not say %q", want)
 		}
+	}
+	// valid-before is never offered as what keeps later signatures out.
+	for _, bad := range []string{`keep an old signing key only with valid-before`, "none it makes after does", "for new operations"} {
+		if strings.Contains(flat, bad) {
+			t.Errorf("docs/outward-keys.md still says %q", bad)
+		}
+	}
+	// The verifier the page checks is the one ah-switch runs: the same
+	// namespace, and the principal given, never discovered.
+	verify, err := os.ReadFile(filepath.Join(root(t), "internal/authorityhost/switcher/verify.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(verify), `const SignatureNamespace = "authority-host-release"`) ||
+		!strings.Contains(string(verify), `"-Y", "verify", "-f", allowedSigners, "-I", principal, "-n", SignatureNamespace, "-s", signaturePath`) {
+		t.Error("the switcher's verifier is not the ssh-keygen -Y verify -f FILE -I PRINCIPAL -n authority-host-release the page checks")
 	}
 	// The signing key is a literal, never a key file.
 	for _, line := range strings.Split(string(data), "\n") {
