@@ -185,7 +185,11 @@ fails, with one line on standard error:
    the registry is (see [Reconcile](#reconcile-and-what-starts-by-itself)).
    Reconcile does not run again on a timer; in scratch mode (a build with the
    `ataniq_canary` tag) a timer settles a launch that is still pending at its
-   deadline (see [the late-start window](#the-late-start-window)).
+   deadline (see [the late-start window](#the-late-start-window)). In scratch
+   mode this step then checks the build of every lead the daemon adopted
+   shown `ready`, and a lead of another build whose `degraded` state cannot
+   be written to the registry fails the step (exit 16): the daemon does not
+   serve a `ready` it knows to be wrong.
 8. **stale socket**: with both locks held, remove a socket file an earlier
    daemon left. It removes a socket owned by the caller and refuses anything
    else at that name.
@@ -211,7 +215,7 @@ completed. It writes no log file.
 | 13 | The daemon lock could not be taken for another reason. |
 | 14 | Registry: cannot be opened, corrupt, or locked by another writer. |
 | 15 | Manager: the boot identity cannot be read, or the manager or controller cannot be built. |
-| 16 | Reconcile: failed in the registry. |
+| 16 | Reconcile: failed in the registry, or (scratch mode) the `degraded` state of an adopted `ready` lead of another build could not be written. |
 | 17 | Socket: another daemon serves the runtime folder (its lock is held; refused before the registry is opened), or the socket path is too long, the folder is not usable, or the stale socket or the bind failed. |
 | 18 | The server stopped by itself. |
 | 19 | The server did not end within the shutdown grace (5 s). The registry is left open and both locks held, and all end with the process. |
@@ -933,7 +937,8 @@ JSON object per line. The first line is a header that names the format
   journals the launch. So is a role whose define record repeats a
   member anywhere in the record, the requested member itself and the
   envelope's `payload` member included (of two payload members only the last
-  would be read), compared exactly and as encoding/json folds names (`requested` and
+  would be read), and the line's final `hash` member (an earlier `hash` is a
+  repeat), compared exactly and as encoding/json folds names (`requested` and
   `Requested` are one member to it): no build writes one, and the typed
   decoding would merge the occurrences while the stored bytes keep the last,
   so the profile that was checked would not be the one launched. The record
@@ -1279,10 +1284,13 @@ with `holder-version-skew`, with a message that names both builds, and a
 role shown `starting` whose holder has written no `holder.json` yet, with a
 text that says it is still starting; nothing changes. In scratch mode the
 ready observer checks that `holder.json` again before it shows a lead
-`ready`, and stops a lead whose holder started as another build than the
-executable checked before the start; before it serves, the daemon reads it
-again for every lead it adopted shown `ready`, and shows one whose holder is
-another build `degraded` (`holder-version-skew`), its unit left running (see
+`ready`, and shows a lead whose holder started as another build than the
+executable checked before the start `degraded` (`holder-version-skew`)
+instead; before it serves, the daemon reads it again for every lead it
+adopted shown `ready`, and shows one whose holder is another build
+`degraded` in the same way. The daemon never stops a holder for its build:
+the unit is left running, its ticket and message are refused, and the owner
+stops the lead and starts it again (see
 [the scratch leads guide](scratch-leads.md#ready)) (see `internal/leadholder/buildid` for what "the same build" means, and
 [the scratch leads guide](scratch-leads.md) for the receipt). A daemon whose
 own build cannot be read does not start (the config step).

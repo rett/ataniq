@@ -233,9 +233,9 @@ func newTwoRoles(t *testing.T, c *canaryEnv) *twoRoles {
 		t.Fatal(err)
 	}
 	w.reg, w.ctl = reg, ctl
-	exts := w.mode.extensions(ctl, reg)
-	if len(exts) != 1 {
-		t.Fatalf("%d extensions", len(exts))
+	exts, err := w.mode.extensions(ctl, reg)
+	if err != nil || len(exts) != 1 {
+		t.Fatalf("%d extensions: %v", len(exts), err)
 	}
 	w.ext = exts[0].(*routerExt)
 	return w

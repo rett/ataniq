@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -155,42 +156,40 @@ func exitText(r exitResult) string {
 // the build its executable was before the start.
 const msgStartedSkew = "the holder that started is not the build checked before the start (was the holder executable replaced in between?)"
 
-// startedSkew checks the holder that has answered for the epoch by the build
-// it recorded in holder.json, read from its own running executable: nil for
-// the expected build of the epoch, and otherwise the refusal (an error that
+// startedSkew checks the holder that this start launched, by the build it
+// recorded in holder.json, read from its own running executable: nil for the
+// expected build of this launch, and otherwise the refusal (an error that
 // matches buildid.ErrSkew, or buildid.ErrOtherEpoch for a state file of
-// another epoch).
-func (a *app) startedSkew(l layout, epoch uint64) error {
+// another epoch or of another launch of the epoch). The file must name the
+// launch intent this start gave the holder as well as the epoch: an epoch
+// that a failed start gave back is taken again by the next start, and the
+// file the failed start's holder left is then of the epoch but not of this
+// launch.
+func (a *app) startedSkew(l layout, epoch uint64, intent string) error {
 	ch, err := a.checker()
 	if err != nil {
 		return err
 	}
-	return ch.BeforeAttach(l.state, epoch)
+	return ch.BeforeAttachLaunch(l.state, epoch, intent)
 }
 
-// stopStartedSkew ends a holder that started as another build than the one
-// checked before the start, and refuses the start: a direct child is
-// terminated and its epoch given back once it is seen to end; a unit is
-// stopped with systemctl, and its epoch is kept. note is added to the refusal
-// (it says when the holder did not answer).
-func (a *app) stopStartedSkew(cfg startConfig, l layout, hold *epochHold, proc child, exited <-chan exitResult, note string) int {
-	msg := msgStartedSkew + note
+// refuseStarted refuses a start whose holder started but cannot be counted
+// started: what says why (that it is another build than the one checked
+// before the start, or that its build cannot be confirmed). A unit is never
+// stopped: it is left running, its epoch is kept, and the refusal names the
+// command that stops it. A direct child, which no unit holds and which is in
+// the foreground of this command, is ended as after any other failed start,
+// and its epoch given back once it is seen to end.
+func (a *app) refuseStarted(cfg startConfig, l layout, hold *epochHold, proc child, exited <-chan exitResult, what string) int {
 	if cfg.direct {
 		ended, killed := a.terminate(proc, exited)
 		if !ended {
-			return a.fail("%s, and it was told to end but was not seen to end, so it may still be running (epoch %d is kept)", msg, hold.N)
+			return a.fail("%s, and it was told to end but was not seen to end, so it may still be running (epoch %d is kept)", what, hold.N)
 		}
 		hold.Undo()
-		return a.fail("%s; it was ended%s", msg, killNote(killed))
+		return a.fail("%s; it was ended%s", what, killNote(killed))
 	}
-	code, err := a.launch.Run(systemctlStopArgv(l.name), io.Discard, a.errout)
-	switch {
-	case err != nil:
-		return a.fail("%s, and systemctl could not be run (%v), so its unit %s may still be running (epoch %d is kept)", msg, err, unitName(l.name), hold.N)
-	case code != 0:
-		return a.fail("%s, and systemctl --user stop %s failed with status %d, so it may still be running (epoch %d is kept)", msg, unitName(l.name), code, hold.N)
-	}
-	return a.fail("%s; its unit %s was stopped (epoch %d is kept)", msg, unitName(l.name), hold.N)
+	return a.fail("%s; its unit %s is left running (epoch %d is kept): stop it with: %s", what, unitName(l.name), hold.N, strings.Join(systemctlStopArgv(l.name), " "))
 }
 
 func (a *app) cmdStart(cfg startConfig) int {
@@ -288,13 +287,14 @@ func (a *app) cmdStart(cfg startConfig) int {
 		return a.fail("the holder answered with a refusal (%s: %s); another holder may be running for this name%s", res.resp.Code, res.resp.Text, note)
 	case readyTimeout:
 		// A holder that did not answer may still have written its holder.json
-		// for the epoch, from its own running executable: one whose file
-		// confirms another build is stopped and refused as below, as one that
-		// answered would be. A file that is missing or unreadable confirms
-		// nothing, and the start fails as a holder that did not answer.
-		if err := a.startedSkew(l, hold.N); buildid.Confirmed(err) {
+		// for this launch, from its own running executable: one whose file
+		// confirms another build is refused as below, as one that answered
+		// would be. A file that is missing, unreadable, or of another epoch
+		// or launch confirms nothing, and the start fails as a holder that
+		// did not answer.
+		if err := a.startedSkew(l, hold.N, intent); buildid.Confirmed(err) {
 			fmt.Fprintf(a.errout, "refused: %v\n", err)
-			return a.stopStartedSkew(cfg, l, hold, proc, exited, fmt.Sprintf(" (it did not answer within %s)", a.lim.startWait))
+			return a.refuseStarted(cfg, l, hold, proc, exited, fmt.Sprintf("%s (it did not answer within %s)", msgStartedSkew, a.lim.startWait))
 		}
 		if cfg.direct {
 			ended, killed := a.terminate(proc, exited)
@@ -309,11 +309,16 @@ func (a *app) cmdStart(cfg startConfig) int {
 	// The holder that answered is checked again, by the build it recorded
 	// from its own running executable, before it counts as started: exec and
 	// systemd-run look the holder path up again after the check above, so a
-	// holder rebuilt in between starts as another build. One that is not the
-	// expected build of the epoch is stopped, and the start is refused.
-	if err := a.startedSkew(l, hold.N); err != nil {
-		fmt.Fprintf(a.errout, "refused: %v\n", err)
-		return a.stopStartedSkew(cfg, l, hold, proc, exited, "")
+	// holder rebuilt in between starts as another build. One whose file of
+	// this launch confirms another build is refused; one whose build cannot
+	// be confirmed (no file of this launch, or one that cannot be read) is
+	// not counted started either. Neither unit is stopped.
+	if err := a.startedSkew(l, hold.N, intent); err != nil {
+		if buildid.Confirmed(err) {
+			fmt.Fprintf(a.errout, "refused: %v\n", err)
+			return a.refuseStarted(cfg, l, hold, proc, exited, msgStartedSkew)
+		}
+		return a.refuseStarted(cfg, l, hold, proc, exited, "the holder answered, but the build it started as cannot be confirmed ("+err.Error()+")")
 	}
 	hold.Release()
 

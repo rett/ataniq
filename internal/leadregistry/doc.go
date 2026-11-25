@@ -108,8 +108,9 @@
 // role whose stored profile is not what this build would write for it, with
 // ErrLaunchProfile, until the role is defined again. A define record that
 // repeats a member anywhere in the record, its payload and the envelope that
-// holds it (two payload members of which only the last would be read)
-// included, exactly or as a name encoding/json
+// holds it (two payload members of which only the last would be read) and the
+// line's final hash member (an earlier "hash" member is a repeat) included,
+// exactly or as a name encoding/json
 // folds to the same field, is such a profile too: no build writes one, and the
 // typed decoding merges the occurrences while the stored bytes keep the last,
 // so it replays and is not launched (see repeatsMember). testdata/v1-base holds a

@@ -264,20 +264,25 @@ func (m *canaryMode) announce() error {
 }
 
 // extensions returns the canary extension: the router's, over one extension of
-// each role.
-func (m *canaryMode) extensions(ctl *leadlifecycle.Controller, reg *leadregistry.Registry) []clientapi.Extension {
+// each role. Scratch mode's fails when it found the state of a lead it could
+// not record (see leadMode.extension).
+func (m *canaryMode) extensions(ctl *leadlifecycle.Controller, reg *leadregistry.Registry) ([]clientapi.Extension, error) {
 	if m == nil {
-		return nil
+		return nil, nil
 	}
 	// Scratch mode registers the lead.* operations and never the canary's.
 	if m.lead != nil {
-		return []clientapi.Extension{m.lead.extension(ctl, reg), m.lead.chatExtension()}
+		ext, err := m.lead.extension(ctl, reg)
+		if err != nil {
+			return nil, err
+		}
+		return []clientapi.Extension{ext, m.lead.chatExtension()}, nil
 	}
 	for _, role := range m.router.order {
 		in := m.router.byRole[role]
 		in.ext = m.newExt(in, ctl, reg)
 	}
-	return []clientapi.Extension{&routerExt{router: m.router}}
+	return []clientapi.Extension{&routerExt{router: m.router}}, nil
 }
 
 // startObservers lets the background observers of scratch mode run, under the

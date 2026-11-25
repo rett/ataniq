@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -134,27 +133,31 @@ func TestStatusAndStopAreNotChecked(t *testing.T) {
 	}
 }
 
-// writeHolderRecord writes holder.json in the state folder of l as a holder of
-// the epoch writes it, recording build: what a holder reads from its own
-// running executable.
-func writeHolderRecord(t *testing.T, l layout, epoch uint64, build buildid.Identity) {
+// writeHolderRecord writes holder.json in the state folder of l as the holder
+// of the epoch started with the launch intent writes it, recording build:
+// what a holder reads from its own running executable.
+func writeHolderRecord(t *testing.T, l layout, epoch uint64, intent string, build buildid.Identity) {
 	t.Helper()
 	if err := os.MkdirAll(l.state, 0o700); err != nil {
 		t.Error(err)
 		return
 	}
-	content := `{"version":1,"role":"scratch/` + l.name + `","epoch":` + strconv.FormatUint(epoch, 10) + `,"scratch":true,"build":{"module":"` +
-		build.Module + `","version":"` + build.Version + `","revision":"` + build.Revision + `"}}`
+	content := `{"version":1,"role":"scratch/` + l.name + `","epoch":` + strconv.FormatUint(epoch, 10) + `,"launch_intent":"` + intent +
+		`","scratch":true,"build":{"module":"` + build.Module + `","version":"` + build.Version + `","revision":"` + build.Revision + `"}}`
 	if err := os.WriteFile(filepath.Join(l.state, buildid.RecordFileName), []byte(content), 0o600); err != nil {
 		t.Error(err)
 	}
 }
 
+// stopCommand is what a refusal of a started unit names to stop it.
+const stopCommand = "stop it with: systemctl --user stop ataniq-scratch-demo"
+
 // TestStartChecksTheHolderThatStarted: the holder executable is the expected
 // build when it is checked, and the holder that then starts (the file was
 // replaced in between) records another build from its running executable. In
-// unit mode the start is refused holder-version-skew, the unit is stopped and
-// nothing says started; the holder of the expected build is counted started.
+// unit mode the start is refused holder-version-skew and nothing says
+// started, and the unit is not stopped: the refusal names the command that
+// stops it. The holder of the expected build is counted started.
 func TestStartChecksTheHolderThatStarted(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -167,7 +170,7 @@ func TestStartChecksTheHolderThatStarted(t *testing.T) {
 			start := r.fl.runFn
 			r.fl.runFn = func(argv []string) (int, error) {
 				if argv[0] == "systemd-run" {
-					writeHolderRecord(t, r.l, 1, tc.recorded)
+					writeHolderRecord(t, r.l, 1, argAfter(argv, "--launch-intent"), tc.recorded)
 				}
 				return start(argv)
 			}
@@ -184,27 +187,69 @@ func TestStartChecksTheHolderThatStarted(t *testing.T) {
 			msg := errout.String()
 			if code != exitFail || !strings.HasPrefix(msg, "refused: holder-version-skew: the holder is another build") ||
 				!strings.Contains(msg, "holder build "+otherBuild.Short()) || !strings.Contains(msg, "expected build "+testBuild.Short()) ||
-				!strings.Contains(msg, msgStartedSkew+"; its unit ataniq-scratch-demo was stopped (epoch 1 is kept)") {
+				!strings.Contains(msg, msgStartedSkew+"; its unit ataniq-scratch-demo is left running (epoch 1 is kept): "+stopCommand) {
 				t.Fatalf("exit %d %q", code, msg)
 			}
 			if strings.Contains(out.String(), "started") {
 				t.Fatalf("out %q", out.String())
 			}
-			if len(runs) != 2 || !reflect.DeepEqual(runs[1], systemctlStopArgv("demo")) {
-				t.Fatalf("runs %q", runs)
+			if len(runs) != 1 {
+				t.Fatalf("the unit was acted on: runs %q", runs)
+			}
+		})
+	}
+}
+
+// TestStartDoesNotStopAHolderWhoseBuildIsNotConfirmed is the reviewer's case
+// of a read that fails after the holder answered: a holder.json that cannot
+// be read, or that is not of this launch, confirms nothing. The start is not
+// counted started and says why, and the unit, which may be the expected
+// build, is left running with the command that stops it.
+func TestStartDoesNotStopAHolderWhoseBuildIsNotConfirmed(t *testing.T) {
+	for name, content := range map[string]string{
+		"an unreadable file": "garbage",
+		"a file of another launch": `{"version":1,"role":"scratch/demo","epoch":1,"launch_intent":"old","scratch":true,"build":{"module":"` +
+			otherBuild.Module + `","version":"` + otherBuild.Version + `","revision":"` + otherBuild.Revision + `"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t, "demo")
+			start := r.fl.runFn
+			r.fl.runFn = func(argv []string) (int, error) {
+				if argv[0] == "systemd-run" {
+					if err := os.MkdirAll(r.l.state, 0o700); err != nil {
+						t.Error(err)
+					}
+					if err := os.WriteFile(filepath.Join(r.l.state, buildid.RecordFileName), []byte(content), 0o600); err != nil {
+						t.Error(err)
+					}
+				}
+				return start(argv)
+			}
+			a, out, errout := r.e.newApp(r.fl)
+			a.build.Record = nil // buildid.ReadRecord
+			code := a.run([]string{"start", "demo", "--holder", r.e.holderFile(t), "--", "/bin/agent"})
+			msg, runs := errout.String(), r.fl.runList()
+			if code != exitFail || strings.Contains(out.String(), "started") || strings.Contains(msg, "refused:") ||
+				!strings.Contains(msg, "the holder answered, but the build it started as cannot be confirmed") ||
+				!strings.Contains(msg, "its unit ataniq-scratch-demo is left running (epoch 1 is kept): "+stopCommand) {
+				t.Fatalf("exit %d %q out %q", code, msg, out.String())
+			}
+			if len(runs) != 1 {
+				t.Fatalf("the unit was acted on: runs %q", runs)
 			}
 		})
 	}
 }
 
 // TestStartDirectChecksTheHolderThatStarted: with --direct, a holder that
-// records another build is ended, the epoch is given back and the start is
-// refused holder-version-skew.
+// records another build is refused holder-version-skew and, being this
+// command's own child in its foreground, is ended as after any failed start,
+// with its epoch given back.
 func TestStartDirectChecksTheHolderThatStarted(t *testing.T) {
 	r, ch := directRig(t, true, 0)
 	start := r.fl.startFn
 	r.fl.startFn = func(argv, env []string) (child, error) {
-		writeHolderRecord(t, r.l, 1, otherBuild)
+		writeHolderRecord(t, r.l, 1, argAfter(argv, "--launch-intent"), otherBuild)
 		return start(argv, env)
 	}
 	a, out, errout := r.e.newApp(r.fl)
@@ -228,12 +273,13 @@ func TestStartDirectChecksTheHolderThatStarted(t *testing.T) {
 
 // TestStartChecksTheHolderThatDidNotAnswer is the reviewer's case of the
 // standalone launcher: a holder rebuilt between the check and the start
-// writes its holder.json for the epoch from its own running executable and
+// writes its holder.json for this launch from its own running executable and
 // never answers its status. The start does not end as a holder that did not
-// answer: the file confirms another build, so the unit is stopped and the
-// start refused holder-version-skew. A file of the epoch that records the
-// checked build, and no file at all, confirm nothing: the start fails as
-// before, and the unit is left for the owner.
+// answer: the file confirms another build, so the start is refused
+// holder-version-skew, and the unit is left running with the command that
+// stops it. A file of this launch that records the checked build, and no file
+// at all, confirm nothing: the start fails as before, and the unit is left
+// for the owner.
 func TestStartChecksTheHolderThatDidNotAnswer(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -244,7 +290,7 @@ func TestStartChecksTheHolderThatDidNotAnswer(t *testing.T) {
 			r := newRig(t, "demo")
 			r.fl.runFn = func(argv []string) (int, error) {
 				if argv[0] == "systemd-run" && tc.recorded != nil {
-					writeHolderRecord(t, r.l, 1, *tc.recorded) // and nothing listens
+					writeHolderRecord(t, r.l, 1, argAfter(argv, "--launch-intent"), *tc.recorded) // and nothing listens
 				}
 				return 0, nil
 			}
@@ -253,34 +299,69 @@ func TestStartChecksTheHolderThatDidNotAnswer(t *testing.T) {
 			a.lim.startWait = 100 * time.Millisecond
 			code := a.run([]string{"start", "demo", "--holder", r.e.holderFile(t), "--", "/bin/agent"})
 			msg, runs := errout.String(), r.fl.runList()
-			if code != exitFail || strings.Contains(out.String(), "started") {
-				t.Fatalf("exit %d %q out %q", code, msg, out.String())
+			if code != exitFail || strings.Contains(out.String(), "started") || len(runs) != 1 {
+				t.Fatalf("exit %d %q out %q runs %q", code, msg, out.String(), runs)
 			}
 			if !tc.skew {
-				if strings.Contains(msg, "holder-version-skew") || !strings.Contains(msg, "did not answer within") || len(runs) != 1 {
-					t.Fatalf("%q, runs %q", msg, runs)
+				if strings.Contains(msg, "holder-version-skew") || !strings.Contains(msg, "did not answer within") {
+					t.Fatalf("%q", msg)
 				}
 				return
 			}
 			if !strings.HasPrefix(msg, "refused: holder-version-skew: the holder is another build") ||
-				!strings.Contains(msg, msgStartedSkew+" (it did not answer within 100ms); its unit ataniq-scratch-demo was stopped (epoch 1 is kept)") {
+				!strings.Contains(msg, msgStartedSkew+" (it did not answer within 100ms); its unit ataniq-scratch-demo is left running (epoch 1 is kept): "+stopCommand) {
 				t.Fatalf("%q", msg)
-			}
-			if len(runs) != 2 || !reflect.DeepEqual(runs[1], systemctlStopArgv("demo")) {
-				t.Fatalf("runs %q", runs)
 			}
 		})
 	}
 }
 
+// TestStartDoesNotTakeTheFileOfAnEarlierLaunchOfTheEpoch is the reviewer's
+// two-launch case: a direct holder of another build writes its holder.json
+// for epoch 1 and ends before it answers, so the start gives epoch 1 back.
+// The next start, in unit mode, takes epoch 1 again with a launch intent of
+// its own, and its holder does not answer in time. The file the first holder
+// left is of the epoch but not of this launch: it confirms nothing, and the
+// second start fails as a holder that did not answer, with no word of
+// another build.
+func TestStartDoesNotTakeTheFileOfAnEarlierLaunchOfTheEpoch(t *testing.T) {
+	r := newRig(t, "demo")
+	holder := r.e.holderFile(t)
+	r.fl.startFn = func(argv, env []string) (child, error) {
+		writeHolderRecord(t, r.l, 1, argAfter(argv, "--launch-intent"), otherBuild)
+		ch := newFakeChild(1)
+		ch.finish() // it ends before it answers
+		return ch, nil
+	}
+	a, _, errout := r.e.newApp(r.fl)
+	a.build.Record = nil // buildid.ReadRecord
+	if code := a.run([]string{"start", "demo", "--direct", "--holder", holder, "--", "/bin/agent"}); code != exitFail ||
+		!strings.Contains(errout.String(), "the holder ended before it answered") {
+		t.Fatalf("the direct start: exit %d %q", code, errout.String())
+	}
+	if r.epochFile() != "0\n" && r.epochFile() != "" {
+		t.Fatalf("epoch file %q: the epoch was not given back", r.epochFile())
+	}
+	r.fl.runFn = func([]string) (int, error) { return 0, nil } // nothing listens, nothing is written
+	a, out, errout := r.e.newApp(r.fl)
+	a.build.Record = nil // buildid.ReadRecord
+	a.lim.startWait = 100 * time.Millisecond
+	code := a.run([]string{"start", "demo", "--holder", holder, "--", "/bin/agent"})
+	msg, runs := errout.String(), r.fl.runList()
+	if code != exitFail || strings.Contains(out.String(), "started") || strings.Contains(msg, "holder-version-skew") ||
+		!strings.Contains(msg, "did not answer within 100ms") || len(runs) != 1 || argAfter(runs[0], "--epoch") != "1" {
+		t.Fatalf("the unit start: exit %d %q runs %q", code, msg, runs)
+	}
+}
+
 // TestStartDirectChecksTheHolderThatDidNotAnswer: with --direct, a silent
-// holder whose holder.json confirms another build is ended and the start is
-// refused holder-version-skew, with its epoch given back.
+// holder whose holder.json of this launch confirms another build is ended and
+// the start is refused holder-version-skew, with its epoch given back.
 func TestStartDirectChecksTheHolderThatDidNotAnswer(t *testing.T) {
 	r, ch := directRig(t, false, -1)
 	start := r.fl.startFn
 	r.fl.startFn = func(argv, env []string) (child, error) {
-		writeHolderRecord(t, r.l, 1, otherBuild)
+		writeHolderRecord(t, r.l, 1, argAfter(argv, "--launch-intent"), otherBuild)
 		return start(argv, env)
 	}
 	a, out, errout := r.e.newApp(r.fl)

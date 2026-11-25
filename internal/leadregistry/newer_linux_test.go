@@ -480,6 +480,21 @@ func TestRepeatedPayloadIsNotLaunched(t *testing.T) {
 			}
 		})
 	}
+	// The reviewer's case of the hash member: a canonical payload with a
+	// "hash" member (or its case alias) before the line's final one. The
+	// content alone has no repeat; the line has.
+	for _, name := range []string{"hash", "Hash"} {
+		t.Run("an earlier "+name+" member", func(t *testing.T) {
+			r := rawDefine(t, alpha, `"payload":`+last+`,"`+name+`":"`+hex.EncodeToString(make([]byte, 32))+`"`)
+			e, err := r.Get(alpha)
+			if err != nil || e.Requested != p || !e.foreignProfile {
+				t.Fatalf("%+v %v", e, err)
+			}
+			if _, err := r.BeginLaunch(alpha); !errors.Is(err, ErrLaunchProfile) {
+				t.Fatalf("BeginLaunch = %v, want ErrLaunchProfile", err)
+			}
+		})
+	}
 	// One payload member, as a writer makes it: launched.
 	r := rawDefine(t, alpha, `"payload":`+last)
 	if _, err := r.BeginLaunch(alpha); err != nil {

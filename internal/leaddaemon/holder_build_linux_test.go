@@ -147,8 +147,9 @@ func TestLeadStartAndTicketRefuseASkewedHolder(t *testing.T) {
 	l.scratch.HolderBuild = other
 	// The ready observer of the start below gives up at once (the holder
 	// gives no status), before the record is changed: one that still ran
-	// would read the record of no build and stop the lead this daemon
-	// launched (see lead_ready_linux.go), which this test is not about.
+	// would read the record of no build and show the lead degraded (see
+	// lead_ready_linux.go), which this test is not about, while its reader
+	// is being replaced.
 	l.readyBounds(50 * time.Millisecond)
 	l.start()
 	want(t, l.define("alpha"), leadwire.StatusDone, "")

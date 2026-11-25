@@ -4,7 +4,6 @@
   holder built again, or the daemon restarted with the matching build), and
   restarts a lead that is running. A refused start leaves the lead stopped, so
   starting it again alone is refused again. It also has words for a lead the
-  daemon shows `degraded` because its running holder is another build: with
-  the reason `holder-version-skew` (stop the lead, then start it again) and
-  with `skew-stop-unproven` (the daemon's stop of it is not proven; stop the
-  lead).
+  daemon shows `degraded`, with the reason `holder-version-skew`, because its
+  running holder is another build: the daemon leaves its unit running, and
+  the owner stops the lead, then starts it again.

@@ -132,12 +132,74 @@ func TestEveryReasonCodeHasWords(t *testing.T) {
 	}
 }
 
+// reasonCodesSet returns the value of every Code member of a composite
+// literal in the Go file that names a constant: the reason codes of the
+// states it sets. The constants are looked up in the files of defs.
+func reasonCodesSet(t *testing.T, path string, defs ...string) []string {
+	t.Helper()
+	values := map[string]string{}
+	for _, def := range defs {
+		f, err := parser.ParseFile(token.NewFileSet(), filepath.FromSlash(def), nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range f.Decls {
+			gd, ok := d.(*ast.GenDecl)
+			if !ok || gd.Tok != token.CONST {
+				continue
+			}
+			for _, sp := range gd.Specs {
+				vs := sp.(*ast.ValueSpec)
+				for i, n := range vs.Names {
+					if i < len(vs.Values) {
+						if lit, ok := vs.Values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+							s, err := strconv.Unquote(lit.Value)
+							if err != nil {
+								t.Fatal(err)
+							}
+							values[n.Name] = s
+						}
+					}
+				}
+			}
+		}
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), filepath.FromSlash(path), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		kv, ok := n.(*ast.KeyValueExpr)
+		if !ok {
+			return true
+		}
+		if k, ok := kv.Key.(*ast.Ident); ok && k.Name == "Code" {
+			id, ok := kv.Value.(*ast.Ident)
+			if !ok {
+				t.Errorf("a Code in %s that is not a constant", path)
+				return true
+			}
+			v, ok := values[id.Name]
+			if !ok {
+				t.Errorf("the constant %s of %s is not found", id.Name, path)
+				return true
+			}
+			out = append(out, v)
+		}
+		return true
+	})
+	return out
+}
+
 // TestEveryObserverStateReasonHasWords: every reason code the daemon's ready
-// observer gives a state it sets (the code constants of lead_ready_linux.go)
-// has state words, so the line under the cursor says what the state means.
+// observer gives a state it sets (each Code of lead_ready_linux.go, with the
+// constants of that file and of the lead extension) has state words, so the
+// line under the cursor says what the state means.
 func TestEveryObserverStateReasonHasWords(t *testing.T) {
-	codes := constStrings(t, "../../leaddaemon/lead_ready_linux.go", "code")
-	if len(codes) < 2 {
+	const dir = "../../leaddaemon/"
+	codes := reasonCodesSet(t, dir+"lead_ready_linux.go", dir+"lead_ready_linux.go", dir+"lead_ext_linux.go")
+	if !slices.Contains(codes, "holder-ready") || !slices.Contains(codes, "holder-version-skew") {
 		t.Fatalf("read %v: the observer's source was not read", codes)
 	}
 	for _, c := range codes {
