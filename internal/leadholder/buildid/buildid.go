@@ -333,6 +333,13 @@ func Check(expected Identity, holder *Identity) error {
 	return nil
 }
 
+// ErrRecordBuild is matched by the error of [ReadRecord] for a state file that
+// is a holder's JSON object whose member "build" is not a valid identity (of
+// another JSON type, with a member this reader does not know, or with a value
+// out of the bounds). The [Record] returned with it carries the file's epoch,
+// so that [Checker.BeforeAttach] compares the epoch first.
+var ErrRecordBuild = errors.New("the state file's build identity is not valid")
+
 // Record is what a launcher reads of a holder's state file.
 type Record struct {
 	// Epoch is the epoch the holder was started for.
@@ -345,7 +352,9 @@ type Record struct {
 // ReadRecord reads the state file of the holder whose state folder is dir. The
 // file must be a regular file (not a link), of at most [MaxRecordBytes] bytes,
 // holding a JSON object. Only "epoch" and "build" are read; every other member
-// is left alone. A build member that is present must be a valid identity.
+// is left alone. A build member that is present must be a valid identity; when
+// it is not, the error matches [ErrRecordBuild] and the Record still carries
+// the epoch.
 func ReadRecord(dir string) (Record, error) {
 	f, err := os.OpenFile(filepath.Join(dir, RecordFileName), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
 	if err != nil {
@@ -381,10 +390,10 @@ func ReadRecord(dir string) (Record, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw.Build))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&id); err != nil {
-		return Record{}, errors.New("the state file's build identity is malformed")
+		return rec, fmt.Errorf("%w: it is malformed", ErrRecordBuild)
 	}
 	if err := id.Validate(); err != nil {
-		return Record{}, fmt.Errorf("the state file's build identity: %w", err)
+		return rec, fmt.Errorf("%w: %w", ErrRecordBuild, err)
 	}
 	rec.Build = &id
 	return rec, nil
@@ -464,24 +473,30 @@ func (c *Checker) BeforeLaunch(path string) error {
 // nil when the state file is of the epoch and records the expected build. A
 // state file of another epoch is refused first, with an *EpochError that
 // matches [ErrOtherEpoch]: the build it records is not that of the holder of
-// the epoch. Otherwise the refusal is an error that matches [ErrSkew] (a
-// *SkewError): a holder that records no identity is named as such, and a
-// state file that is missing or cannot be read is refused too.
+// the epoch; so is a file whose build member is not valid ([ErrRecordBuild]),
+// whose epoch is still read. Otherwise the refusal is an error that matches
+// [ErrSkew] (a *SkewError): a holder that records no identity is named as
+// such, and a state file that is missing or cannot be read is refused too.
 func (c *Checker) BeforeAttach(stateDir string, epoch uint64) error {
 	read := c.Record
 	if read == nil {
 		read = func(dir string, _ uint64) (Record, error) { return ReadRecord(dir) }
 	}
 	rec, err := read(stateDir, epoch)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrRecordBuild) {
 		why := WhyUnreadable
 		if errors.Is(err, os.ErrNotExist) {
 			why = WhyNoStateFile
 		}
 		return &SkewError{Expected: c.Expected, Why: why, Cause: err}
 	}
+	// The epoch first: the build of a file of another epoch is not that of
+	// the holder that would be asked, whether it is valid or not.
 	if rec.Epoch != epoch {
 		return &EpochError{Want: epoch, Got: rec.Epoch}
+	}
+	if err != nil {
+		return &SkewError{Expected: c.Expected, Why: WhyUnreadable, Cause: err}
 	}
 	return Check(c.Expected, rec.Build)
 }

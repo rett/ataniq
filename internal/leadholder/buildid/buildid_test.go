@@ -352,3 +352,36 @@ func TestBeforeAttachComparesTheEpoch(t *testing.T) {
 		t.Fatalf("%v, asked %v", err, asked)
 	}
 }
+
+// TestStaleFileTakesPriorityOverItsBuild: a state file of another epoch is
+// refused stale-epoch also when its build member is not one this reader
+// takes (the reviewer's case, a provenance member it does not know, and a
+// member of another type or out of the bounds); the same file of the epoch is
+// refused as a build that cannot be read. ReadRecord gives the epoch with the
+// error.
+func TestStaleFileTakesPriorityOverItsBuild(t *testing.T) {
+	ch := Checker{Expected: build(revNew, false)}
+	for name, content := range map[string]string{
+		"an unknown build member": strings.Replace(newRecord(ch.Expected), `"build":{`, `"build":{"toolchain_id":"sample",`, 1),
+		"a build of a string":     `{"epoch":3,"build":"x"}`,
+		"a bad revision":          `{"epoch":3,"build":{"module":"ataniq","version":"v1","revision":"ZZ"}}`,
+	} {
+		dir := writeRecord(t, content)
+		rec, err := ReadRecord(dir)
+		if !errors.Is(err, ErrRecordBuild) || rec.Epoch != 3 || rec.Build != nil {
+			t.Errorf("%s: ReadRecord %+v %v", name, rec, err)
+		}
+		if err := ch.BeforeAttach(dir, 4); !errors.Is(err, ErrOtherEpoch) || errors.Is(err, ErrSkew) {
+			t.Errorf("%s: file epoch 3, attach epoch 4: got %v, want stale-epoch", name, err)
+		}
+		var se *SkewError
+		if err := ch.BeforeAttach(dir, 3); !errors.As(err, &se) || se.Why != WhyUnreadable || !errors.Is(se.Cause, ErrRecordBuild) {
+			t.Errorf("%s: the file's own epoch: %v", name, err)
+		}
+	}
+	// A file that is not a holder's object has no epoch to compare.
+	var se *SkewError
+	if err := ch.BeforeAttach(writeRecord(t, `{"epoch":"3"}`), 4); !errors.As(err, &se) || se.Why != WhyUnreadable {
+		t.Errorf("an epoch of a string: %v", err)
+	}
+}
