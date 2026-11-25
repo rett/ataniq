@@ -559,17 +559,24 @@ func TestUnsettledWordsNameTheWindowAndTheFallback(t *testing.T) {
 	}
 }
 
-// A holder of another build is refused before a start and before a ticket; the
-// words say what the owner does: stop the lead and start it with the current
-// holder.
+// A holder of another build is refused before a start, a ticket and a
+// message; the words say what the owner does in each case: run the holder and
+// the daemon of one checkout (a refused start leaves the lead stopped, and
+// starting it again alone is refused again), and restart a lead that runs.
 func TestTheVersionSkewWordsSayWhatTheOwnerDoes(t *testing.T) {
 	w := reasonWords["holder-version-skew"]
-	for _, part := range []string{"another build", "stop the lead", "start it"} {
+	for _, part := range []string{"builds differ", "holder and daemon from one checkout", "restart a running lead"} {
 		if !strings.Contains(w, part) {
 			t.Errorf("holder-version-skew: %q lacks %q", w, part)
 		}
 	}
-	for _, op := range []Op{OpStart, OpTicket} {
+	// No way out that does not fit a refused start, whose lead is stopped.
+	for _, part := range []string{"stop the lead", "start it with"} {
+		if strings.Contains(w, part) {
+			t.Errorf("holder-version-skew: %q says %q", w, part)
+		}
+	}
+	for _, op := range []Op{OpStart, OpTicket, OpInject} {
 		line := receiptLine(Receipt{Op: op, Status: Refused, Code: "holder-version-skew"}, heldUnknown)
 		if !strings.HasSuffix(line, w) {
 			t.Errorf("%v: %q", op, line)

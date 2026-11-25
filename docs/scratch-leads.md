@@ -445,7 +445,10 @@ builds, as read from the binary or the record: a version, the first 12
 characters of the revision and `modified`, in a restricted character set. Not
 checked are `lead.stop` and the `status` questions of the daemon's ready
 observer, which only read the holder's state: stop a skewed lead and start it
-again with the new holder.
+again with the new holder. A refused start leaves the lead stopped, and a start
+again is refused again until the holder executable and the daemon are of one
+checkout: build the holder again, or restart the daemon with the build that
+matches. The console says both in one line.
 
 Every operation can also end `refused` with `daemon-broken` (the registry or the
 table cannot be written, and the daemon admits no new command until it is
