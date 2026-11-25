@@ -43,3 +43,21 @@
   and back on the files `--write` makes and with the swaps, and shows the
   gate's key, the pins, the paired keys and the trial's settings unchanged;
   another holds the script's gate check to the daemon's.
+  The daemon of both tags takes `run --scratch CONFIG --owner-channel
+  --owner-settings DIR`: the owner channel reads its settings from
+  `DIR/scratch.json` and never from `owner/scratch.json` of the state root,
+  so a phone trial's settings, gate identity, pins and paired phones stay as
+  they are, read and never moved. It refuses to start (exit 10), naming every
+  rule that fails, a folder that is not private or that is, lies in or holds
+  the trial's settings folder `owner/`, the state or runtime root, a path a
+  lead's sandbox reaches (each lead's folder, mirror, mailbox, published and
+  holder runtime folders, the agent install, the probe, the host paths every
+  sandbox binds) or the gate's folder, decided on the resolved path and on
+  the folders' identities, and a settings file that is a link, not private,
+  has a second name, is the key list, the journal, a gate file or the trial's
+  settings, or holds a trial's settings; the folder is opened by its handle
+  with no link followed and the file read beneath it, so a link planted
+  after the check changes nothing. `--check` with the same flags prints every
+  check the daemon makes before its locks, pass or FAIL with the reason, and
+  what it would read, then exits 0 or 10, binding, locking, making and
+  starting nothing.

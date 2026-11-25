@@ -46,21 +46,28 @@ var ownerNotice = func(line string) { fmt.Fprintf(os.Stderr, "ataniqd: owner cha
 
 func init() {
 	ownerServiceBuilder = buildOwnerService
+	ownerBuildFrom = buildOwnerServiceFrom
 	ownerGuard = &ownerGuardSet{
 		check: func(stateDir string, getenv func(string) string) error {
-			sc, err := checkOwnerScratch(stateDir, getenv)
-			if err != nil {
-				return err
-			}
-			// Without a suite of a test, the settings must name the real
-			// one, so that the daemon refuses before it takes a lock.
-			if ownerSuite == nil {
-				_, err = sc.VerifySuiteOf()
-			}
-			return err
+			return checkOwnerSettings(stateDir, stateScratch(stateDir), getenv)
 		},
-		banner: ownerBanner,
+		checkFrom: checkOwnerSettings,
+		banner:    ownerBanner,
 	}
+}
+
+// checkOwnerSettings is the guard of the builder on the settings load reads:
+// the guards of [checkOwnerScratchFrom] and, without a suite of a test, a
+// suite the settings name, so that the daemon refuses before it takes a lock.
+func checkOwnerSettings(stateDir string, load scratchLoad, getenv func(string) string) error {
+	sc, err := checkOwnerScratchFrom(stateDir, load, getenv)
+	if err != nil {
+		return err
+	}
+	if ownerSuite == nil {
+		_, err = sc.VerifySuiteOf()
+	}
+	return err
 }
 
 // openOwnerKeys opens the list of the owner's deciding keys, the file
@@ -127,10 +134,19 @@ func scratchDoorConfig(sc hostadapter.Scratch, now func() time.Time) doortest.Co
 // building it starts nothing, and the template is read and the sandbox started
 // only when a request is verified.
 func buildOwnerService(stateDir string) (leaddaemon.OwnerService, func() error, error) {
+	return buildOwnerServiceFrom(stateDir, stateScratch(stateDir))
+}
+
+// buildOwnerServiceFrom is [buildOwnerService] on the settings load reads in
+// place of owner/scratch.json of the state folder: the [ownerBuildFrom] of
+// this build, which run --owner-settings uses (a build with both tags). The
+// journal, the list of keys and the records are the state folder's all the
+// same.
+func buildOwnerServiceFrom(stateDir string, load scratchLoad) (leaddaemon.OwnerService, func() error, error) {
 	// The settings select the stand-in door, and the state folder, the roots
 	// and the mirror are not the account's real ones. ownerRun makes the same
 	// check before the daemon starts; this one is the builder's own.
-	sc, err := checkOwnerScratch(stateDir, ownerGetenv)
+	sc, err := checkOwnerScratchFrom(stateDir, load, ownerGetenv)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -1202,7 +1202,10 @@ keeps its sample leads.
    every lead's reply folder; the daemon refuses a drop folder in the state
    root. This adapter can collect requests from the drop folder and run the
    suite in the verification sandbox: the word stand-in on its door does not
-   make every host action inert.
+   make every host action inert. On a state root that keeps other settings
+   in `owner/scratch.json` (a phone trial's), the owner gives the folder of
+   the non-trial settings with `--owner-settings` instead (below), and
+   `owner/scratch.json` stays as it is.
 3. The gate's identity and the pinned seat key: `ataniqd seat-gate init
    --state-dir STATE` with the config's state root as `STATE` prints the gate's
    fingerprint, which the seat on the authority host pins, and
@@ -1232,6 +1235,64 @@ nothing a lead whose chat is off does. It carries no text and no lead's name,
 and it is keyed by a secret the daemon makes at each start and never sends, so
 its value means nothing after a restart. It only hints that the seat should
 read again: it never allows a read, which the desk checks on every one.
+
+**Settings from a folder of their own.** With `--owner-settings DIR` the
+owner channel reads its settings from `DIR/scratch.json` and not from
+`owner/scratch.json` of the state root, which is not read at all, so a phone
+trial's state folder keeps its own settings while the scratch daemon serves its
+gate identity, its pins and its paired phones:
+
+```sh
+build/scratch-seat/ataniqd run --scratch CONFIG --owner-channel --seat-gate IP:PORT --owner-settings DIR
+```
+
+The flag's name follows run's other flags (`--owner-channel` says what is
+served; `--scratch`, `--seat-gate` and `--owner-settings` name what it is
+served from), and it names a folder because the folder is what is checked and
+held: the daemon resolves `DIR` through every link and `..`, opens it with no
+link followed and reads `scratch.json` beneath that handle each time, without
+following a link, so a link planted after the check changes nothing. It
+refuses to start (exit 10, one line naming every rule that fails, before any
+lock and with nothing made) when `DIR` is not a private folder (mode 0700) of
+the daemon's user, or when it is, lies in or holds:
+
+- `owner/` of the state root, the trial's own settings folder ("not the
+  trial's settings folder");
+- the state root or the runtime root ("outside the state and runtime
+  folders");
+- a path a lead's sandbox reaches: each lead's folder (home, provider config,
+  tree and the copies its sandbox binds), mirror, mailbox, published folder and
+  holder runtime folder, whether or not the lead is defined, the agent install
+  and the probe of the config, and the host paths every sandbox binds ("out of
+  every lead's reach");
+- `owner/gate`, the gate's identity and pins ("not the key list, the journal
+  or the gate identity").
+
+Each rule is decided on the resolved path and on the identities (device and
+inode) of the open folder and of each folder above it, so a second name of a
+folder, such as a bind mount, is caught too. `scratch.json` must be a regular
+file of the user's, mode 0600, with one name, that is not the key list, its
+head, the journal, a file of the gate or the trial's settings file by another
+name, and that holds non-trial settings. The start then prints, after the
+STAND-IN banner, `owner channel: settings read from DIR/scratch.json
+(--owner-settings); owner/scratch.json of the state folder is not read`. The
+journal (`owner/journal.db`), the records, the list of keys and the gate's key
+and pins are the state root's all the same: the gate's identity and pins are
+read and never written, and the key list only grows by a pairing, a revocation
+or a raised sign counter. The folder is the user's own: a process of the
+owner's user, not a lead (the folder is out of every lead's reach), could still
+change the file between the two reads the daemon makes, before its locks and
+when it builds the service, and each read is checked again.
+
+`--check` with the same flags makes every check the daemon makes before it
+takes a lock and prints one line each, `pass` with what holds or `FAIL` with
+why: the folder and its four rules, the settings file and the settings, the
+scratch roots, the suite, the root marker, the gate's address, key and pins,
+and the socket paths of the daemon and of every lead's holder. Then it lists
+what the daemon would read and open, says that `owner/scratch.json` is not
+read, and ends `check: no refusal` (exit 0) or `check: N refusal(s)` (exit
+10). It binds, locks, makes and starts nothing; the locks and the gate's port,
+which it does not take, are the start's own refusals (exit 12, 17 and 18).
 
 **Reading a lead's replies.** The owner defines and starts a lead from the
 console ([the console guide](terminal-console.md)). Its chat is off, like every
