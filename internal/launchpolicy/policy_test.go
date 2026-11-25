@@ -2,8 +2,10 @@ package launchpolicy
 
 import (
 	"bytes"
+	"crypto/sha256"
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -273,6 +275,12 @@ func TestHelpDefinitionEvidence(t *testing.T) {
 	}{
 		{"  -m, --mode=<v>   select a value", "--mode=", true},
 		{"--[no-]quiet     suppress output", "--no-quiet", true},
+		{"--[no-]quiet     suppress output", "--[no-]quiet", false},
+		{"-m <mode>, --mode=<mode>  choose mode", "--mode=", true},
+		{"-m <mode>, --mode=<mode>  choose mode", "--mode=<mode>", false},
+		{"-m<mode>, --mode MODE   choose mode", "-m", true},
+		{"--quiet   see -m, --mode=<mode>", "--mode=", false},
+		{"--quiet, broken", "--quiet", false},
 		{"--mode=m-plan    select this value", "--mode=m-plan", true},
 		{"examples: --mode=m-plan", "--mode=m-plan", false},
 		{"--quiet    see --mode=m-plan", "--mode=m-plan", false},
@@ -281,5 +289,28 @@ func TestHelpDefinitionEvidence(t *testing.T) {
 		if got := defines(tc.line, tc.spelling); got != tc.want {
 			t.Errorf("defines(%q, %q) = %t", tc.line, tc.spelling, got)
 		}
+	}
+}
+
+func TestGroupedHelpLocator(t *testing.T) {
+	const help = "-m <mode>, --mode=<mode>  choose mode\n--[no-]quiet  suppress output\n"
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(help)))
+	raw := bytes.ReplaceAll(alphaPolicy, []byte(fmt.Sprintf("%x", sha256.Sum256([]byte(fixtureHelp)))), []byte(hash))
+	for _, tc := range []struct {
+		token string
+		valid bool
+	}{{"--quiet", true}, {"--no-quiet", true}, {"--[no-]quiet", false}} {
+		t.Run(tc.token, func(t *testing.T) {
+			d := tree(t, raw)
+			scope := d["options"].([]any)[0].(obj)
+			scope["to"] = 2
+			f := formRow(d, "quiet")
+			f["token"] = tc.token
+			f["evidence"] = obj{"source": "help", "scope": scope["scope"], "line": 2}
+			_, err := Decode(wire(t, d), []byte(help))
+			if (err == nil) != tc.valid {
+				t.Fatalf("valid = %t, decode error = %v", tc.valid, err)
+			}
+		})
 	}
 }
