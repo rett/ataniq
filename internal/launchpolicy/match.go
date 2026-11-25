@@ -234,3 +234,109 @@ func (q *sequence) expect(s Snapshot, spec Spec, pairs map[pack.Slot]string) (Ve
 	}
 	return Verdict{m.Class, recognizer, q.policy.digest}, nil
 }
+
+// JudgeFiles checks the renderer's typed views against the independently
+// derived inventory. The caller binds each view to the bytes it installed.
+func JudgeFiles(p *Policy, s Snapshot, inv Inventory, files []FileView) *Refusal {
+	if _, r := identity(p, s); r != nil {
+		return r
+	}
+	expected := make(map[string][]ExpectedFile)
+	supplied := make(map[string][]FileView)
+	var destinations []string
+	for _, f := range inv {
+		expected[f.Dest] = append(expected[f.Dest], f)
+		destinations = append(destinations, f.Dest)
+	}
+	for _, f := range files {
+		supplied[f.Dest] = append(supplied[f.Dest], f)
+		destinations = append(destinations, f.Dest)
+	}
+	slices.Sort(destinations)
+	for i, dest := range slices.Compact(destinations) {
+		at := location("file", dest, i)
+		want, got := expected[dest], supplied[dest]
+		if dest == "" || len(want) != 1 || len(got) != 1 {
+			return refuse("file-refused", 2, at)
+		}
+		w, f := want[0], got[0]
+		row := p.files[w.PathRole]
+		if row == nil || f.PathRole != w.PathRole {
+			return refuse("file-refused", 2, at)
+		}
+		if f.BytesSHA256 != f.InstalledSHA256 || !shaPattern.MatchString(f.BytesSHA256) {
+			return refuse("file-binding", 2, at)
+		}
+		if code := p.fileEntries(s, w, row, f.Entries); code != "" {
+			return refuse(code, 2, at)
+		}
+	}
+	return nil
+}
+
+func validPath(path []Comp) bool {
+	if path == nil {
+		return false
+	}
+	for _, c := range path {
+		switch v := c.(type) {
+		case string:
+		case int:
+			if v < 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+func (p *Policy) fileEntries(s Snapshot, w ExpectedFile, row *fileRow, entries []Entry) string {
+	const invalid = "file-refused"
+	if w.Definition && (w.AgentName != s.Agent || !p.agent(w.AgentName)) {
+		return invalid
+	}
+	for _, e := range entries {
+		if !validPath(e.Path) || !scalar(e.Type) {
+			return invalid
+		}
+	}
+	ordered := slices.Clone(entries)
+	slices.SortFunc(ordered, func(a, b Entry) int { return comparePath(a.Path, b.Path) })
+	haveName := false
+	requiredCount := 0
+	for i, e := range ordered {
+		if i > 0 && comparePath(ordered[i-1].Path, e.Path) == 0 {
+			return invalid
+		}
+		if w.Definition {
+			if len(e.Path) == 0 {
+				return "agent-key-refused"
+			}
+			key, ok := e.Path[0].(string)
+			if !ok || !slices.ContainsFunc(p.doc.Slots.Agent.Keys, func(k keyEvidence) bool { return k.Key == key }) {
+				return "agent-key-refused"
+			}
+			if key == "name" && len(e.Path) == 1 {
+				if e.Type != "string" || e.Text != w.AgentName {
+					return invalid
+				}
+				haveName = true
+			}
+		}
+		n, needed := slices.BinarySearchFunc(row.Required, e.Path, func(k requirement, path []Comp) int { return comparePath(k.Path, path) })
+		if needed {
+			k := row.Required[n]
+			if k.Type != e.Type || *k.Text != e.Text {
+				return invalid
+			}
+			requiredCount++
+		} else if _, allowed := slices.BinarySearchFunc(row.Allowed, e.Path, comparePath); !allowed {
+			return invalid
+		}
+	}
+	if requiredCount != len(row.Required) || w.Definition && !haveName {
+		return invalid
+	}
+	return ""
+}

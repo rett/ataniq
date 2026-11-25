@@ -55,6 +55,7 @@ var (
 	recognizerPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 	ceiling           = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,63}$`)
 	profilePattern    = regexp.MustCompile(`^[ -~]{1,128}$`)
+	shaPattern        = regexp.MustCompile(`^[a-f0-9]{64}$`)
 )
 var slots = [...]pack.Slot{pack.PermissionModeSlot, pack.ModelSlot, pack.EffortSlot, pack.AgentSlot, pack.ResumeSlot}
 
