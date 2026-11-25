@@ -916,37 +916,44 @@ func (k *KeyFile) headPath() string { return filepath.Join(filepath.Dir(k.path),
 // file of the user with mode 0600 and one name, not a link. It returns false
 // when there is no such file. A file that is not of the form is damage.
 func (k *KeyFile) readHead() (h head, present bool, err error) {
+	h, _, present, err = k.readHeadData()
+	return h, present, err
+}
+
+// readHeadData is readHead, and also returns the head's bytes as they were
+// read from the descriptor that was checked.
+func (k *KeyFile) readHeadData() (h head, data []byte, present bool, err error) {
 	fd, err := unix.Openat(int(k.dir.Fd()), k.headName(), unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
 	switch {
 	case errors.Is(err, unix.ENOENT):
-		return head{}, false, nil
+		return head{}, nil, false, nil
 	case errors.Is(err, unix.ELOOP):
-		return head{}, false, fmt.Errorf("%w: the head of the list is a symbolic link", ErrNotPrivate)
+		return head{}, nil, false, fmt.Errorf("%w: the head of the list is a symbolic link", ErrNotPrivate)
 	case err != nil:
-		return head{}, false, fmt.Errorf("ownerjournal: the head of the list: %w", err)
+		return head{}, nil, false, fmt.Errorf("ownerjournal: the head of the list: %w", err)
 	}
 	f := os.NewFile(uintptr(fd), k.headPath())
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return head{}, false, err
+		return head{}, nil, false, err
 	}
 	if !privateFile(info) {
-		return head{}, false, fmt.Errorf("%w: the head of the list must be a plain file of the user with mode 0600 and one name", ErrNotPrivate)
+		return head{}, nil, false, fmt.Errorf("%w: the head of the list must be a plain file of the user with mode 0600 and one name", ErrNotPrivate)
 	}
 	if info.Size() > maxKeysHeadBytes {
-		return head{}, false, keysDamaged("the head of the list is larger than %d bytes", maxKeysHeadBytes)
+		return head{}, nil, false, keysDamaged("the head of the list is larger than %d bytes", maxKeysHeadBytes)
 	}
-	data, err := io.ReadAll(io.LimitReader(f, maxKeysHeadBytes+1))
+	data, err = io.ReadAll(io.LimitReader(f, maxKeysHeadBytes+1))
 	if err != nil {
-		return head{}, false, err
+		return head{}, nil, false, err
 	}
 	h, ok := parseHead(data)
 	if !ok {
-		return head{}, false, keysDamaged("the head of the list is not of the form")
+		return head{}, nil, false, keysDamaged("the head of the list is not of the form")
 	}
 	k.hstamp = stampOf(info)
-	return h, true, nil
+	return h, data, true, nil
 }
 
 func parseHead(data []byte) (head, bool) {

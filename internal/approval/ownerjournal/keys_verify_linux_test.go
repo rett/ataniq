@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // folderState is every name in the folder of a list with its mode, its
@@ -79,6 +80,9 @@ func TestVerifyKeysPassesTheListTheJournalOpens(t *testing.T) {
 	}
 	if !bytes.Equal(got.Data, fileBytes(t, path)) || got.Records != 3 {
 		t.Errorf("the snapshot: %d bytes, %d records", len(got.Data), got.Records)
+	}
+	if !bytes.Equal(got.Head, fileBytes(t, headPathOf(path))) {
+		t.Errorf("the snapshot's head %q is not the head file's", got.Head)
 	}
 	if !sameFolderState(before, folderState(t, filepath.Dir(path))) {
 		t.Error("VerifyKeys changed the folder")
@@ -228,6 +232,36 @@ func TestVerifyKeysRefusesWhatTheOpenerRefuses(t *testing.T) {
 	}
 }
 
+// A FIFO in place of the list or of its head is refused at once, as a file
+// that is not a plain file, and never blocks the check: both are opened
+// nonblocking and checked before they are read.
+func TestVerifyKeysRefusesAFIFOWithoutBlocking(t *testing.T) {
+	for _, which := range []string{"the list", "the head"} {
+		t.Run(which, func(t *testing.T) {
+			path := aList(t)
+			target := path
+			if which == "the head" {
+				target = headPathOf(path)
+			}
+			must(t, os.Remove(target))
+			must(t, syscall.Mkfifo(target, 0o600))
+			done := make(chan error, 1)
+			go func() {
+				_, err := VerifyKeys(path)
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if !errors.Is(err, ErrNotPrivate) {
+					t.Fatalf("VerifyKeys with a FIFO as %s: %v, want %v", which, err, ErrNotPrivate)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatalf("VerifyKeys blocked on a FIFO as %s", which)
+			}
+		})
+	}
+}
+
 // A record appended while the check reads is never passed as the list's: the
 // head that lags is refused, and a check run again afterwards passes the
 // whole list.
@@ -246,6 +280,82 @@ func TestVerifyKeysAfterAnAppendReadsTheWholeList(t *testing.T) {
 	}
 	if !strings.HasSuffix(string(again.Data), "\n") {
 		t.Fatal("the snapshot does not end with a whole line")
+	}
+}
+
+// withStat is a file's FileInfo with another stat in place of its own.
+type withStat struct {
+	os.FileInfo
+	st *syscall.Stat_t
+}
+
+func (w withStat) Sys() any { return w.st }
+
+// The owner predicate of the list and of the head, on its own (review
+// evidence item): with the folder the user's own, a list or a head whose
+// stat names another owner is refused, each by the check VerifyKeys makes of
+// it (keysFileProblem for the list, privateFile for the head), while the
+// same stat with the user's own UID passes. The UID is changed in the stat
+// alone, so the folder's owner stays the right one and only the file's is
+// wrong; the test of "files of another owner" above changes the user for
+// every object and is refused at the folder.
+func TestVerifyKeysRefusesAListOrAHeadOfAnotherOwner(t *testing.T) {
+	path := aList(t)
+	dir, err := os.Stat(filepath.Dir(path))
+	if err != nil || !dir.IsDir() || !private(dir) {
+		t.Fatalf("the folder is not the user's own: %v", err)
+	}
+	for _, c := range []struct {
+		name, file string
+		passes     func(os.FileInfo) bool
+	}{
+		{"the list", path, func(info os.FileInfo) bool {
+			err := keysFileProblem(info)
+			if err != nil && !errors.Is(err, ErrNotPrivate) {
+				t.Errorf("the list's check: %v, want %v", err, ErrNotPrivate)
+			}
+			return err == nil
+		}},
+		{"the head", headPathOf(path), privateFile},
+	} {
+		info, err := os.Lstat(c.file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !c.passes(info) {
+			t.Fatalf("%s of the user's own is refused", c.name)
+		}
+		st := *info.Sys().(*syscall.Stat_t)
+		st.Uid = uint32(euid()) + 1
+		if c.passes(withStat{info, &st}) {
+			t.Errorf("%s of another owner passes, in a folder of the user's own", c.name)
+		}
+	}
+}
+
+// A record appended between the read of the head and the last look at the
+// list (review evidence item): the hook appends one through the journal's
+// own opener at that point, and VerifyKeys refuses the list as one that
+// changed while it was checked, returning nothing of it; run again, it
+// passes the whole list.
+func TestVerifyKeysRefusesAnAppendBetweenTheHeadAndTheLastLook(t *testing.T) {
+	path := aList(t)
+	calls := 0
+	verifyKeysAfterHead = func() {
+		calls++
+		k := mustOpenKeys(t, path)
+		mustAdd(t, k, 3)
+		mustClose2(t, k)
+	}
+	t.Cleanup(func() { verifyKeysAfterHead = nil })
+	snap, err := VerifyKeys(path)
+	if calls != 1 || err == nil || !strings.Contains(err.Error(), "changed while it was checked") || snap.Data != nil || snap.Head != nil {
+		t.Fatalf("an append after the head was read: %d call(s), %d bytes, %v", calls, len(snap.Data), err)
+	}
+	verifyKeysAfterHead = nil
+	again, err := VerifyKeys(path)
+	if err != nil || again.Records != 4 || !bytes.Equal(again.Head, fileBytes(t, headPathOf(path))) {
+		t.Fatalf("after the append: %d records, %v", again.Records, err)
 	}
 }
 

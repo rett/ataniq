@@ -189,9 +189,9 @@ func netcheckRun(t *testing.T, script, path string, args ...string) (string, int
 // curl's own exit status. A probe of the lead's network counts only when
 // the sandbox showed the route it takes to the gate's address and a source
 // address for it first. Everything here runs on inert fixtures: the entries
-// --classify, --class-of, --lead-class-of, --status-class, --net-of (on
-// files written here) and --verdict run nothing, and --probe-here runs only
-// a stub curl, the one program on its PATH; no test starts pasta,
+// --classify, --class-of, --lead-class-of, --status-class and --verdict
+// run nothing, --net-of runs only a stub ip and --probe-here only a stub
+// curl, each the one program on its PATH; no test starts pasta,
 // bubblewrap, a unit or a network request.
 func TestScratchSeatNetcheckClassifiesEachProbe(t *testing.T) {
 	dir, script := netcheckScript(t)
@@ -303,67 +303,69 @@ func TestScratchSeatNetcheckClassifiesEachProbe(t *testing.T) {
 			t.Errorf("--lead-class-of %q: exit %d, %q, want %q", c.text, code, out, c.want)
 		}
 	}
-	// NETUP itself, on copies of /proc/net/route and /proc/net/fib_trie
-	// written here (review finding 6): the route the namespace takes to the
-	// gate's address, as the kernel chooses it (the longest mask that holds
-	// the address, then the lowest metric), must be usable, and a source
-	// address of the namespace must lie in a subnet route on its interface.
-	// The rows are in the file's own form: hexadecimal in the host's byte
-	// order (010200C0 is 192.0.2.1), the metric in decimal.
-	routeHead := "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
-	route := func(lines ...string) string { return routeHead + strings.Join(lines, "\n") + "\n" }
-	const (
-		defEth0    = "eth0\t00000000\t010200C0\t0003\t0\t0\t100\t00000000\t0\t0\t0"
-		subnetEth0 = "eth0\t000200C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0"
-		gate       = "198.51.100.7" // off the subnet: through the default route
-	)
-	trieUp := "Main:\n  +-- 0.0.0.0/0 3 0 5\n     |-- 0.0.0.0\n        /0 universe UNICAST\n     +-- 127.0.0.0/8 2 0 2\n" +
-		"        +-- 127.0.0.0/31 1 0 0\n           |-- 127.0.0.0\n              /8 host LOCAL\n           |-- 127.0.0.1\n              /32 host LOCAL\n" +
-		"     |-- 192.0.2.15\n        /32 host LOCAL\nLocal:\n     |-- 192.0.2.15\n        /32 host LOCAL\n"
-	trieLoopback := "Main:\n  +-- 127.0.0.0/8 2 0 2\n     |-- 127.0.0.1\n        /32 host LOCAL\n     |-- 127.255.255.255\n        /32 link BROADCAST\n"
-	trieGate := trieUp + "     |-- 198.51.100.7\n        /32 host LOCAL\n"
-	write := func(name, body string) string {
-		f := filepath.Join(dir, name)
-		if err := os.WriteFile(f, []byte(body), 0o600); err != nil {
+	// NETUP itself, on answers of the kernel's lookup (review findings 6 and
+	// 1 of two rounds): a stub ip, the only program on PATH, answers "ip -4
+	// route get GATE" as ip does, and NETUP takes the route type, the output
+	// interface and the source address from it, inferring nothing from
+	// subnets or address lists. A loopback gate with a default route is the
+	// kernel's local route and refused; a /32 address with an on-link peer
+	// is a usable route with its source. An indeterminate lookup (no ip, a
+	// lookup that fails, an answer out of its form) is refused before any
+	// probe.
+	ipStubs := filepath.Join(dir, "ip-stubs")
+	if err := os.Mkdir(ipStubs, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ipArgs := filepath.Join(dir, "ip-args")
+	const gate = "198.51.100.7"
+	for _, c := range []struct {
+		name, gate, answer string
+		rc                 int
+		want               string
+	}{
+		{"a default route through a gateway", gate, gate + " via 192.0.2.1 dev eth0 src 192.0.2.15 uid 0 \n    cache \n", 0, "net route=eth0 addr=192.0.2.15"},
+		{"a /32 address with an on-link peer", "192.0.2.99", "192.0.2.99 dev eth0 src 203.0.113.5 uid 0 \n    cache \n", 0, "net route=eth0 addr=203.0.113.5"},
+		{"a loopback gate with a default route", "127.0.0.1", "local 127.0.0.1 dev lo src 127.0.0.1 uid 0 \n    cache <local> \n", 0, "net route=none addr=none note=local"},
+		{"the gate's address the sandbox's own", "192.0.2.15", "local 192.0.2.15 dev lo table local src 192.0.2.15 uid 0 \n    cache <local> \n", 0, "net route=none addr=none note=local"},
+		{"a unicast route whose source is the gate", gate, gate + " dev eth0 src " + gate + " uid 0 \n", 0, "net route=none addr=none note=local"},
+		{"an unreachable route (the lookup fails)", gate, "RTNETLINK answers: Network is unreachable\n", 2, "net route=none addr=none note=lookup"},
+		{"a lookup that fails after a well-formed line", gate, gate + " via 192.0.2.1 dev eth0 src 192.0.2.15 uid 0 \n", 2, "net route=none addr=none note=lookup"},
+		{"a blackhole route the lookup names", gate, "blackhole " + gate + " dev lo uid 0 \n", 0, "net route=none addr=none note=reject"},
+		{"a broadcast route", "192.0.2.255", "broadcast 192.0.2.255 dev eth0 table local src 192.0.2.15 uid 0 \n", 0, "net route=none addr=none note=type"},
+		{"a unicast route on lo", gate, gate + " dev lo src 192.0.2.15 uid 0 \n", 0, "net route=none addr=none note=lo"},
+		{"a gateway of 0.0.0.0", gate, gate + " via 0.0.0.0 dev eth0 src 192.0.2.15 uid 0 \n", 0, "net route=none addr=none note=nogateway"},
+		{"no source address", gate, gate + " via 192.0.2.1 dev eth0 uid 0 \n", 0, "net route=none addr=none note=noaddress"},
+		{"a loopback source on eth0", gate, gate + " dev eth0 src 127.0.0.2 uid 0 \n", 0, "net route=none addr=none note=noaddress"},
+		{"no interface", gate, gate + " via 192.0.2.1 src 192.0.2.15 uid 0 \n", 0, "net route=none addr=none note=lookup"},
+		{"an answer for another address", gate, "198.51.100.8 via 192.0.2.1 dev eth0 src 192.0.2.15 \n", 0, "net route=none addr=none note=lookup"},
+		{"an empty answer", gate, "", 0, "net route=none addr=none note=lookup"},
+		{"a gate that is not an address", "gate.example", gate + " via 192.0.2.1 dev eth0 src 192.0.2.15\n", 0, "net route=none addr=none note=gate"},
+	} {
+		stub := "#!/bin/sh\nfor a; do printf '%s\\n' \"$a\"; done >'" + ipArgs + "'\nprintf '%s' '" + c.answer + "'\nexit " + strconv.Itoa(c.rc) + "\n"
+		if err := os.WriteFile(filepath.Join(ipStubs, "ip"), []byte(stub), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		return f
-	}
-	tu, tl, tg := write("trie-up", trieUp), write("trie-lo", trieLoopback), write("trie-gate", trieGate)
-	missing := filepath.Join(dir, "missing")
-	for _, c := range []struct {
-		name, gate, route, trie, want string
-	}{
-		{"a default route and an address on its interface", gate, route(defEth0, subnetEth0), tu, "net route=eth0 addr=192.0.2.15"},
-		{"the gate on the subnet itself, no gateway needed", "192.0.2.1", route(defEth0, subnetEth0), tu, "net route=eth0 addr=192.0.2.15"},
-		{"a preferred reject default before a usable default of a higher metric", gate,
-			route("eth1\t00000000\t010200C0\t0201\t0\t0\t50\t00000000\t0\t0\t0", defEth0, subnetEth0), tu, "net route=none addr=none note=reject"},
-		{"a usable default before a reject default of a higher metric", gate,
-			route(defEth0, "eth1\t00000000\t010200C0\t0201\t0\t0\t200\t00000000\t0\t0\t0", subnetEth0), tu, "net route=eth0 addr=192.0.2.15"},
-		{"a reject route for the gate's subnet before a usable default", gate,
-			route(defEth0, subnetEth0, "eth0\t006433C6\t00000000\t0201\t0\t0\t500\t00FFFFFF\t0\t0\t0"), tu, "net route=none addr=none note=reject"},
-		{"a blackhole default", gate, route("*\t00000000\t00000000\t0201\t0\t0\t0\t00000000\t0\t0\t0", subnetEth0), tu, "net route=none addr=none note=reject"},
-		{"a default route that is down", gate, route("eth0\t00000000\t010200C0\t0002\t0\t0\t100\t00000000\t0\t0\t0", subnetEth0), tu, "net route=none addr=none note=noroute"},
-		{"a gateway flag over a zero gateway", gate, route("eth0\t00000000\t00000000\t0003\t0\t0\t100\t00000000\t0\t0\t0", subnetEth0), tu, "net route=none addr=none note=nogateway"},
-		{"flags that are not hexadecimal", gate, route("eth0\t00000000\t010200C0\tzz03\t0\t0\t100\t00000000\t0\t0\t0", subnetEth0), tu, "net route=none addr=none note=noroute"},
-		{"a metric that is not a number", gate, route("eth0\t00000000\t010200C0\t0003\t0\t0\tx\t00000000\t0\t0\t0", subnetEth0), tu, "net route=none addr=none note=noroute"},
-		{"a default route on lo", gate, route("lo\t00000000\t00000000\t0001\t0\t0\t0\t00000000\t0\t0\t0", subnetEth0), tu, "net route=none addr=none note=lo"},
-		{"no route that holds the gate", gate, route(subnetEth0), tu, "net route=none addr=none note=noroute"},
-		{"the gate's address the sandbox's own", gate, route(defEth0, subnetEth0), tg, "net route=none addr=none note=local"},
-		{"a default route on an interface without an address", gate,
-			route("eth1\t00000000\t010233C6\t0003\t0\t0\t100\t00000000\t0\t0\t0", subnetEth0), tu, "net route=none addr=none note=noaddress"},
-		{"loopback addresses only", gate, route(defEth0, subnetEth0), tl, "net route=none addr=none note=noaddress"},
-		{"no files", gate, missing, missing, "net route=none addr=none note=noroute"},
-		{"a gate that is not an address", "gate.example", route(defEth0, subnetEth0), tu, "net route=none addr=none note=gate"},
-	} {
-		r := c.route
-		if r != missing {
-			r = write("route", c.route)
-		}
-		out, code := netcheckRun(t, script, "/usr/bin:/bin", "--net-of", c.gate, r, c.trie)
+		os.Remove(ipArgs)
+		out, code := netcheckRun(t, script, ipStubs, "--net-of", c.gate)
 		if code != 0 || out != c.want+"\n" {
 			t.Errorf("--net-of %s: exit %d, %q, want %q", c.name, code, out, c.want)
 		}
+		if c.want == "net route=none addr=none note=gate" {
+			continue
+		}
+		if got := strings.Split(strings.TrimSpace(string(mustRead(t, ipArgs))), "\n"); !slices.Equal(got, []string{"-4", "route", "get", c.gate}) {
+			t.Errorf("--net-of %s: ip was run with %q", c.name, got)
+		}
+	}
+	if err := os.Remove(filepath.Join(ipStubs, "ip")); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := netcheckRun(t, script, ipStubs, "--net-of", gate); code != 0 || out != "net route=none addr=none note=noip\n" {
+		t.Errorf("--net-of without ip: exit %d, %q", code, out)
+	}
+	// The sandbox finds ip in the host's /usr/bin or /usr/sbin.
+	if !strings.Contains(string(mustRead(t, script)), "--setenv PATH /usr/bin:/usr/sbin") {
+		t.Error("the sandbox's PATH does not hold /usr/sbin, where some hosts keep ip")
 	}
 	// The sandbox runs NETUP before the probe, and the verdict reads both
 	// probes of the lead's network through it.

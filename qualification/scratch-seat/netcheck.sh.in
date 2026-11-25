@@ -31,17 +31,17 @@
 # and so is a wrapper (the probe's shell, pasta and bubblewrap, or the unit)
 # that ended with a status other than 0, whatever it printed.
 # Inside the sandbox, before the probe, the route the namespace takes to the
-# gate's address is established (NETUP), from /proc/net/route as the kernel
-# chooses it: of the routes that are up and whose destination and mask hold
-# the gate's address, the one of the longest mask, then of the lowest
-# metric. It must not be a reject route (RTF_REJECT: unreachable, prohibit,
-# blackhole), not on lo, not a gateway route with no gateway, and the gate's
-# address must not be one of the namespace's own (/proc/net/fib_trie: the
-# probe would reach the sandbox, not the gate). Its source address is an
-# IPv4 address of the namespace other than loopback that lies in a subnet
-# route on the same interface. Without both the probe is not made, the line
-# "net route=... addr=..." says which is missing (and note=, why), and the
-# result is a probe that did not run, a finding. The
+# gate's address is established (NETUP) by the kernel's own lookup, ip -4
+# route get (iproute2's ip, from the host's /usr, which the sandbox binds):
+# its route type, output interface and selected source address. It must be
+# a unicast route, not local (the gate's address one of the namespace's
+# own: the probe would reach the sandbox, not the gate), not a reject route
+# (unreachable, prohibit, blackhole), not on lo, not through a gateway of
+# 0.0.0.0, with a source address that is not loopback and not the gate's;
+# a lookup that fails or answers out of its form is indeterminate, and so
+# is a sandbox without ip. Without a usable route the probe is not made, the
+# line "net route=... addr=..." says so (and note=, why), and the result is
+# a probe that did not run, a finding. The
 # probe is curl with no configuration file (-q, its first argument), no proxy
 # (--noproxy '*'; the environment is cleared on this host's side, and
 # bubblewrap clears it inside) and telnet://, which sends nothing but its empty
@@ -61,7 +61,7 @@
 # filter); and the unit's properties are leadunit.FixedProperties(). What
 # differs, and why the probes still show whether the gate is reachable from a
 # lead: the binds (the host's /usr and a few /etc files here, the profile's
-# table there) and the program inside (sh and curl here, the probe and the
+# table there) and the program inside (sh, ip and curl here, the probe and the
 # agent there) do not change the network; the resolv.conf here is the host's
 # (its upstream list behind a systemd-resolved stub), where the holder writes
 # one it derives, and the gate is an address, so no name is looked up. The
@@ -72,8 +72,8 @@
 # Entries that run nothing, for the tests: --classify RC CONNECT,
 # --class-of TEXT, --lead-class-of TEXT and --status-class STATUS CLASS print
 # a class; --verdict HOST SHELL UNIT prints the lines and ends with the exit
-# status three classes give; --net-of GATE ROUTE TRIE runs NETUP for the
-# gate's address given on the two files given in place of /proc's.
+# status three classes give; --net-of GATE runs NETUP for the gate's address
+# given, with the caller's PATH (the tests put a stub ip first on it).
 # --probe-here HOST PORT runs the probe in the caller's environment, outside
 # any sandbox (the tests run it with a stub curl first on PATH and no other).
 #
@@ -112,7 +112,7 @@ core() {
     --ro-bind /etc/hosts /etc/hosts \
     --ro-bind /etc/passwd /etc/passwd --ro-bind /etc/group /etc/group \
     --ro-bind "$RESOLV" /etc/resolv.conf \
-    --dev /dev --proc /proc --tmpfs /tmp --setenv PATH /usr/bin --setenv HOME /tmp \
+    --dev /dev --proc /proc --tmpfs /tmp --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp \
     --remount-ro / -- "$@"
 }
 
@@ -134,117 +134,93 @@ echo "probe rc=$? connect=${t:-none}"'
 
 # NETUP, run by sh -c inside the sandbox before the probe with the gate's
 # address as $0, prints one line, "net route=IFACE addr=ADDRESS" ("none" for
-# what is not there, and note=WHY when the route is none): the interface of
-# the route the namespace takes to the gate's address, and a source address
-# for it. Of the routes of /proc/net/route that are up (RTF_UP, 0x1) and
-# whose destination is the gate's address under their mask (both in the
-# file's byte order, the host's: little-endian, as on x86-64 and arm64), it
-# takes the one of the longest mask, then of the lowest metric, the first of
-# equals: the kernel's choice. That route is not usable when it is a reject
-# route (RTF_REJECT, 0x200: an unreachable, prohibit or blackhole route,
-# whose "could not connect" is a refusal's), on lo or on no interface, or a
-# gateway route (RTF_GATEWAY, 0x2) whose gateway is 0.0.0.0; nor when the
-# gate's address is an address of the namespace itself (a host LOCAL of
-# /proc/net/fib_trie), which the probe would reach in place of the gate. The
-# source address is an IPv4 address of the namespace other than loopback
-# that lies in a subnet route (up, not through a gateway, not a reject
-# route, with a mask) on the route's interface. A line whose fields are not
-# of the file's form is not a route. Without a route and a source address it
-# ends there, and the probe is not made. $2 and $3, when given, are read in
-# place of the two files (--net-of).
+# what is not there, and note=WHY when the route is none): the interface and
+# the source address of the route the namespace takes to the gate's address,
+# as the kernel's own lookup gives them ("ip -4 route get ADDRESS": the route
+# type, the output interface and the source address the kernel selects). The
+# route is not usable, and the probe is not made, when the lookup is
+# indeterminate (no ip, a lookup that fails, as one through an unreachable,
+# prohibit or blackhole route does, or an answer not of its form:
+# note=noip, note=lookup), when its type is local, the gate's address an
+# address of the namespace itself, which the probe would reach in place of
+# the gate (note=local), or any type other than unicast (note=reject for
+# unreachable, prohibit and blackhole, note=type otherwise), when it is on lo
+# (note=lo), when it goes through a gateway of 0.0.0.0 (note=nogateway), and
+# when the source address is missing, 0.0.0.0 or a loopback address
+# (note=noaddress) or the gate's own (note=local). Nothing is inferred from
+# subnets or address lists: what the kernel answers decides. Only the first
+# line of the answer is read. ip is found on the sandbox's PATH (/usr/bin
+# and /usr/sbin of the host); --net-of runs NETUP with the caller's PATH,
+# where the tests put a stub ip.
 # shellcheck disable=SC2016  # the inner shell expands these
 NETUP='g=$0
 r=none
 a=none
 note=
-le() {
-  o1=${1%%.*}
-  x=${1#*.}
-  o2=${x%%.*}
-  x=${x#*.}
-  o3=${x%%.*}
-  o4=${x#*.}
-  echo $((o1 + (o2 << 8) + (o3 << 16) + (o4 << 24)))
-}
-hex() { case $1 in "" | *[!0-9A-Fa-f]* | ?????????*) return 1 ;; esac; }
 quad() {
   case $1 in "" | *[!0-9.]* | *..* | .* | *.) return 1 ;; esac
   case $1 in *.*.*.*.*) return 1 ;; *.*.*.*) ;; *) return 1 ;; esac
 }
-routes=${2:-/proc/net/route}
-locals=
-if [ -r "${3:-/proc/net/fib_trie}" ]; then
-  p=
-  while read -r w x y z; do
-    if [ "$w" = /32 ] && [ "$x" = host ] && [ "$y" = LOCAL ] && quad "$p"; then
-      case $p in 127.*) ;; *) locals="$locals $p" ;; esac
-    fi
-    if [ "$w" = "|--" ]; then p=$x; fi
-  done <"${3:-/proc/net/fib_trie}"
-fi
+# answer WORDS reads the words of the lookup'"'"'s first line: [TYPE] ADDRESS,
+# then pairs such as dev IFACE, src ADDRESS and via GATEWAY.
+answer() {
+  [ "$#" -gt 0 ] || { note=lookup; return; }
+  t=unicast
+  if [ "$1" != "$g" ]; then
+    t=$1
+    shift
+  fi
+  [ "$#" -gt 0 ] && [ "$1" = "$g" ] || { note=lookup; return; }
+  shift
+  dev=
+  src=
+  via=
+  while [ "$#" -gt 1 ]; do
+    case $1 in
+      dev) dev=$2; shift ;;
+      src) src=$2; shift ;;
+      via) via=$2; shift ;;
+    esac
+    shift
+  done
+  case $t in
+    unicast) ;;
+    local) note=local; return ;;
+    unreachable | prohibit | blackhole) note=reject; return ;;
+    *) note=type; return ;;
+  esac
+  if [ -z "$dev" ]; then
+    note=lookup
+  elif [ "$dev" = lo ]; then
+    note=lo
+  elif [ -n "$via" ] && ! quad "$via"; then
+    note=lookup
+  elif [ "$via" = 0.0.0.0 ]; then
+    note=nogateway
+  elif ! quad "$src" || [ "$src" = 0.0.0.0 ]; then
+    note=noaddress
+  elif [ "$src" = "$g" ]; then
+    note=local
+  else
+    case $src in
+      127.*) note=noaddress ;;
+      *) r=$dev; a=$src ;;
+    esac
+  fi
+}
 if ! quad "$g"; then
   note=gate
+elif ! command -v ip >/dev/null 2>&1; then
+  note=noip
+elif ! out=$(ip -4 route get "$g" 2>/dev/null); then
+  note=lookup
 else
-  gl=$(le "$g")
-  best=-1
-  bm=0
-  bi=
-  bf=0
-  bg=0
-  if [ -r "$routes" ]; then
-    while read -r i d gw f c u m k rest; do
-      [ "$i" != Iface ] && hex "$d" && hex "$gw" && hex "$f" && hex "$k" || continue
-      case $m in "" | *[!0-9]*) continue ;; esac
-      fl=$((0x$f))
-      mk=$((0x$k))
-      [ $((fl & 1)) -ne 0 ] && [ $((gl & mk)) -eq $((0x$d)) ] || continue
-      n=0
-      t=$mk
-      while [ "$t" -ne 0 ]; do
-        n=$((n + (t & 1)))
-        t=$((t >> 1))
-      done
-      if [ "$n" -gt "$best" ] || { [ "$n" -eq "$best" ] && [ "$m" -lt "$bm" ]; }; then
-        best=$n
-        bm=$m
-        bi=$i
-        bf=$fl
-        bg=$((0x$gw))
-      fi
-    done <"$routes"
-  fi
-  case " $locals " in *" $g "*) note=local ;; esac
-  if [ -n "$note" ]; then
-    :
-  elif [ "$best" -lt 0 ]; then
-    note=noroute
-  elif [ $((bf & 512)) -ne 0 ]; then
-    note=reject
-  elif [ "$bi" = lo ] || [ "$bi" = "*" ]; then
-    note=lo
-  elif [ $((bf & 2)) -ne 0 ] && [ "$bg" -eq 0 ]; then
-    note=nogateway
-  else
-    r=$bi
-  fi
+  set -f
+  # shellcheck disable=SC2086  # the words are split on purpose
+  answer ${out%%"
+"*}
+  set +f
 fi
-if [ "$r" != none ]; then
-  for s in $locals; do
-    sl=$(le "$s")
-    while read -r i d gw f c u m k rest; do
-      [ "$i" = "$r" ] && hex "$d" && hex "$f" && hex "$k" || continue
-      fl=$((0x$f))
-      mk=$((0x$k))
-      if [ $((fl & 1)) -ne 0 ] && [ $((fl & 2)) -eq 0 ] && [ $((fl & 512)) -eq 0 ] && [ "$mk" -ne 0 ] && [ $((sl & mk)) -eq $((0x$d)) ]; then
-        a=$s
-        break
-      fi
-    done <"$routes"
-    [ "$a" = none ] || break
-  done
-  [ "$a" != none ] || note=noaddress
-fi
-[ "$a" != none ] || r=none
 echo "net route=$r addr=$a${note:+ note=$note}"
 [ "$r" != none ] && [ "$a" != none ] || exit 0
 '
@@ -336,7 +312,7 @@ lead_line() {
     filtered) pass "$1: filtered or timed out on the route to the gate (no connection to the gate's port was made)" ;;
     refused) finding "$1: curl could not connect (status 7, no time to connect): a reset, an unreachable or prohibited answer, a local refusal and a missing route all read this way, so it shows nothing; only a probe that times out (a rule that drops, as the drop rule does) passes" ;;
     connected) finding "$1: connected to the gate's port $GATE_HOST:$GATE_PORT: do not start a lead until a rule refuses it" ;;
-    nonet) finding "$1: the probe did not run: no usable route and source address to the gate's address in the sandbox (no route, a reject, unreachable or blackhole route, a route on lo, the gate's address the sandbox's own, or no address on the route's interface; see its net line below), and a refusal there would show nothing" ;;
+    nonet) finding "$1: the probe did not run: no usable route and source address to the gate's address in the sandbox (the kernel's lookup failed or was not made, or gave a reject, unreachable or blackhole route, a local route, the gate's address the sandbox's own, a route on lo, or no source address; see its net line below), and a refusal there would show nothing" ;;
     wrapper-*) finding "$1: the probe's wrapper ended with exit status ${2#wrapper-}, so what it printed is not taken (see its output below)" ;;
     *) finding "$1: the probe did not run, so nothing was shown (see its output below)" ;;
   esac
@@ -381,8 +357,8 @@ case ${1:-} in
     exit 0
     ;;
   --net-of)
-    [ "$#" -eq 4 ] || exit 2
-    "$SH" -c "$NETUP" "$2" - "$3" "$4"
+    [ "$#" -eq 2 ] || exit 2
+    "$SH" -c "$NETUP" "$2"
     exit
     ;;
   --status-class)

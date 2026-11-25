@@ -5,6 +5,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -642,11 +644,13 @@ func TestScratchSeatTakesThePhoneTrialsStateFolder(t *testing.T) {
 	if code != leaddaemon.ExitLockHeld {
 		t.Fatalf("while the trial runs: exit %d: %s", code, msg)
 	}
-	// Step g: the key list's prefix, judged by the journal's own reader on a
-	// copy, while the trial runs and holds the list.
+	// Step g: the key list's prefix and its head's digest, judged by the
+	// journal's own checks read only, while the trial runs and holds the
+	// list.
 	code, out, msg = scratchRun("--check", "--keys-prefix")
-	keysBefore := strings.TrimSpace(out)
-	if code != 0 || msg != "" || !strings.Contains(keysBefore, ":") || strings.Count(out, "\n") != 1 {
+	keysBefore, headBefore, _ := strings.Cut(strings.TrimSpace(out), " ")
+	if headSum := sha256.Sum256(fileBytes(t, filepath.Join(owner, ownerjournal.KeysHeadFileName))); code != 0 || msg != "" ||
+		!strings.Contains(keysBefore, ":") || headBefore != hex.EncodeToString(headSum[:]) || strings.Count(out, "\n") != 1 {
 		t.Fatalf("--check --keys-prefix while the trial runs: exit %d: %q %q", code, out, msg)
 	}
 	if !sameTreeOf(ownerTree, treeOf(t, owner)) {

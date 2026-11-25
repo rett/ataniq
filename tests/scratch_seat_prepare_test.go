@@ -2,6 +2,8 @@ package tests
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -12,8 +14,10 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // Tests of qualification/scratch-seat/prepare.sh, the preparation of the
@@ -125,6 +129,14 @@ func (k scratchSeatKit) run(t *testing.T, env []string, args ...string) (string,
 	return string(out), code
 }
 
+// noErr fails the test at once on an error.
+func noErr(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 // noCalls fails the test when a stub ran.
 func (k scratchSeatKit) noCalls(t *testing.T) {
 	t.Helper()
@@ -208,11 +220,11 @@ func TestScratchSeatPrepareIsPlainShell(t *testing.T) {
 	// (--status --compare), and the rename that publishes the baseline.
 	inDoc := false
 	allowed := map[string][]string{
-		`"$DAEMON"`: {`"$DAEMON" run --scratch "$CONFIG" --owner-channel --seat-gate "$GATE" --owner-settings "$SETTINGS_DIR" --check || RC=$?`,
-			`_kp=$("$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-prefix) || _krc=$?`,
-			`"$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-since "$_prefix" || _krc=$?`},
+		`"$DAEMON"`: {`"$DAEMON" run --scratch "$CONFIG" --owner-channel --seat-gate "$GATE" --owner-settings "$SETTINGS_DIR" --check --expect-state "$S" || RC=$?`,
+			`_kp=$("$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-prefix --expect-state "$S") || _krc=$?`,
+			`"$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-since "$_prefix" --expect-state "$S" || _krc=$?`},
 		"/usr/bin/git": {`/usr/bin/git -c core.hooksPath=/dev/null -c commit.gpgSign=false -c tag.gpgSign=false -c core.fsmonitor=false \`},
-		"mv":           {`mv -T -- "$_tmp" "$BASELINE" || {`},
+		"mv":           {`mv -n -T -- "$_tmp" "$BASELINE" || _mrc=$?`},
 	}
 	seen := map[string]int{}
 	for i, line := range strings.Split(text, "\n") {
@@ -253,6 +265,25 @@ func TestScratchSeatPrepareIsPlainShell(t *testing.T) {
 	}
 	if !strings.Contains(text, "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$ROOT\"") {
 		t.Error("proof_git does not clear the environment")
+	}
+}
+
+// An exported CDPATH does not change where the script finds itself (review
+// finding 7): run by its relative path from the checkout, with CDPATH=. and
+// with CDPATH naming another folder, --self-test passes as without one.
+func TestScratchSeatPrepareIgnoresCDPATH(t *testing.T) {
+	other := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(other, "qualification", "scratch-seat"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, cdpath := range []string{"", ".", other, ".:" + other} {
+		cmd := exec.Command("/bin/sh", scratchSeatPrepare, "--self-test")
+		cmd.Dir = root(t)
+		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=/nonexistent", "CDPATH=" + cdpath}
+		out, err := cmd.CombinedOutput()
+		if err != nil || !strings.HasPrefix(string(out), "prepare.sh self-test: ") || !strings.Contains(string(out), " checks passed") {
+			t.Errorf("--self-test with CDPATH=%q: %v\n%s", cdpath, err, out)
+		}
 	}
 }
 
@@ -899,19 +930,20 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 	keysArgs := filepath.Join(k.dir, "daemon-keys-args")
 	daemon := filepath.Join(k.dir, "check-daemon")
 	keys := filepath.Join(k.state, "owner", "keys.log")
-	appendFirst := filepath.Join(k.dir, "append-before-prefix")
+	head := filepath.Join(k.state, "owner", "keys.head")
+	keysLine := filepath.Join(k.dir, "keys-prefix-line")
 	// stub answers the daemon's check with code, and its key checks with
 	// keysCode: --keys-since with a line of its own, --keys-prefix with the
-	// prefix of the key list as it is then (after appending a line to it,
-	// as a phone login would between the digests and the prefix, when the
-	// file appendFirst is there).
+	// line the daemon prints, the prefix of the key list and the digest of
+	// its head as they are then, or the bytes of the file keysLine when it
+	// is there (another snapshot's line, or one not of the form).
 	stub := func(code, keysCode int) {
 		body := "#!/bin/sh\ncase \" $* \" in *' --keys-since '*) for a; do printf '%s\\n' \"$a\"; done >'" + keysArgs + "'\n" +
 			"  echo 'keys: from the stub'; exit " + strconv.Itoa(keysCode) + " ;;\n" +
 			"*' --keys-prefix '*) for a; do printf '%s\\n' \"$a\"; done >'" + keysArgs + "'\n" +
-			"  if [ -e '" + appendFirst + "' ]; then echo appended >>'" + keys + "'; fi\n" +
 			"  [ " + strconv.Itoa(keysCode) + " -eq 0 ] || { echo 'keys: refused by the stub' >&2; exit " + strconv.Itoa(keysCode) + "; }\n" +
-			"  printf '%s:%s\\n' \"$(wc -c <'" + keys + "' | tr -d ' ')\" \"$(sha256sum <'" + keys + "' | cut -c1-64)\"; exit 0 ;;\nesac\n" +
+			"  if [ -e '" + keysLine + "' ]; then cat '" + keysLine + "'; exit 0; fi\n" +
+			"  printf '%s:%s %s\\n' \"$(wc -c <'" + keys + "' | tr -d ' ')\" \"$(sha256sum <'" + keys + "' | cut -c1-64)\" \"$(sha256sum <'" + head + "' | cut -c1-64)\"; exit 0 ;;\nesac\n" +
 			"for a; do printf '%s\\n' \"$a\"; done >'" + args + "'\necho 'check: from the stub'\nexit " + strconv.Itoa(code) + "\n"
 		if err := os.WriteFile(daemon, []byte(body), 0o700); err != nil {
 			t.Fatal(err)
@@ -932,7 +964,7 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 		!strings.Contains(out, "status: no baseline "+baseline+" yet") {
 		t.Fatalf("--status: exit %d:\n%s", code, out)
 	}
-	want := []string{"run", "--scratch", r + "/scratch.json", "--owner-channel", "--seat-gate", "192.0.2.10:7443", "--owner-settings", r + "/owner-settings", "--check"}
+	want := []string{"run", "--scratch", r + "/scratch.json", "--owner-channel", "--seat-gate", "192.0.2.10:7443", "--owner-settings", r + "/owner-settings", "--check", "--expect-state", k.state}
 	if got := strings.Split(strings.TrimSpace(string(mustRead(t, args))), "\n"); !slices.Equal(got, want) {
 		t.Fatalf("the daemon's check was run with %q, want %q", got, want)
 	}
@@ -956,35 +988,38 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 	}
 
 	// --record (step g) records the baseline only when the daemon's check
-	// found no refusal, the digests were taken, the daemon's check of the
-	// key list printed its prefix, and the prefix's digest is the digests'
-	// of keys.log (review finding 3): a record appended between the two,
-	// a refusal of the key check, and a refusal of the check write nothing
-	// at all in the evidence folder and say to run the step again.
+	// found no refusal, the digests of the four other files were taken and
+	// the daemon's check of the key list printed its line, the list's
+	// prefix and its head's digest: a refusal of the check, a refusal of the
+	// key check and a line not of that form write nothing at all in the
+	// evidence folder and say to run the step again.
 	evidenceBefore := scratchSeatFiles(t, evidence)
+	keysSum := sha256.Sum256(mustRead(t, keys))
+	realPrefix := strconv.Itoa(len(mustRead(t, keys))) + ":" + hex.EncodeToString(keysSum[:])
+	otherHead := strings.Repeat("ef", 32)
 	for _, c := range []struct {
 		name           string
 		code, keysCode int
-		appendFirst    bool
+		line           string
 		exit           int
 		want           string
 	}{
-		{"a refusal of the check", 10, 0, false, 10, "status: NOT RECORDED: the sitting failed preflight; nothing was written"},
-		{"a refusal of the key check", 0, 1, false, 1, "status: NOT RECORDED: the daemon's check of the key list ended with exit status 1"},
-		{"a record appended between the two", 0, 0, true, 1, "status: NOT RECORDED: the key list changed between its digest and the daemon's check"},
+		{"a refusal of the check", 10, 0, "", 10, "status: NOT RECORDED: the sitting failed preflight; nothing was written"},
+		{"a refusal of the key check", 0, 1, "", 1, "status: NOT RECORDED: the daemon's check of the key list ended with exit status 1"},
+		{"a prefix without the head's digest", 0, 0, realPrefix + "\n", 1, "printed no line of the form LEN:SHA256 HEADSHA256"},
+		{"a head's digest not of the form", 0, 0, realPrefix + " " + strings.ToUpper(otherHead) + "\n", 1, "printed no line of the form LEN:SHA256 HEADSHA256"},
+		{"three words", 0, 0, realPrefix + " " + otherHead + " " + otherHead + "\n", 1, "printed no line of the form LEN:SHA256 HEADSHA256"},
+		{"two lines", 0, 0, realPrefix + "\n" + otherHead + "\n", 1, "printed no line of the form LEN:SHA256 HEADSHA256"},
+		{"a prefix not of the form", 0, 0, "012:" + otherHead + " " + otherHead + "\n", 1, "printed no line of the form LEN:SHA256 HEADSHA256"},
 	} {
 		stub(c.code, c.keysCode)
-		oldKeys := mustRead(t, keys)
-		if c.appendFirst {
-			if err := os.WriteFile(appendFirst, nil, 0o600); err != nil {
+		if c.line != "" {
+			if err := os.WriteFile(keysLine, []byte(c.line), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}
 		out, code := k.run(t, nil, record...)
-		os.Remove(appendFirst)
-		if err := os.WriteFile(keys, oldKeys, 0o600); err != nil {
-			t.Fatal(err)
-		}
+		os.Remove(keysLine)
 		if code != c.exit || !strings.Contains(out, c.want) || strings.Contains(out, "status: recorded") {
 			t.Errorf("--record with %s: exit %d, want %d and %q:\n%s", c.name, code, c.exit, c.want, out)
 		}
@@ -993,11 +1028,103 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 		}
 	}
 	stub(0, 0)
+	// The digests of the key list and its head are the daemon's, of its one
+	// snapshot, and prepare opens neither file (review finding 2): a head's
+	// digest the daemon prints that is not the head file's now is the one
+	// recorded, and a FIFO in place of the list and of its head does not
+	// block the step.
+	if err := os.WriteFile(keysLine, []byte(realPrefix+" "+otherHead+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	out, code = k.run(t, nil, record...)
-	if code != 0 || !strings.Contains(out, "status: recorded: the digests of the trial's six files and the key list's prefix ") {
+	if code != 0 || !strings.Contains(out, "status: recorded") || !strings.Contains(string(mustRead(t, before)), "\n"+otherHead+"  keys.head\n") ||
+		!strings.Contains(string(mustRead(t, before)), "\n"+hex.EncodeToString(keysSum[:])+"  keys.log\n") {
+		t.Fatalf("--record with the daemon's head digest: exit %d:\n%s\n%s", code, out, mustRead(t, before))
+	}
+	noErr(t, os.RemoveAll(baseline))
+	oldKeys, oldHead := mustRead(t, keys), mustRead(t, head)
+	for _, f := range []string{keys, head} {
+		noErr(t, os.Remove(f))
+		noErr(t, syscall.Mkfifo(f, 0o600))
+	}
+	var blocked atomic.Bool
+	unblock := time.AfterFunc(30*time.Second, func() {
+		blocked.Store(true)
+		for _, f := range []string{keys, head} {
+			if h, err := os.OpenFile(f, os.O_RDWR, 0); err == nil {
+				h.Close()
+			}
+		}
+	})
+	out, code = k.run(t, nil, record...)
+	unblock.Stop()
+	for f, b := range map[string][]byte{keys: oldKeys, head: oldHead} {
+		noErr(t, os.Remove(f))
+		noErr(t, os.WriteFile(f, b, 0o600))
+	}
+	os.Remove(keysLine)
+	if blocked.Load() || code != 0 || !strings.Contains(out, "status: recorded") {
+		t.Fatalf("--record with a FIFO in place of the key list and its head: blocked %v, exit %d:\n%s", blocked.Load(), code, out)
+	}
+	noErr(t, os.RemoveAll(baseline))
+	if !sameScratchSeatFiles(evidenceBefore, scratchSeatFiles(t, evidence)) {
+		t.Fatal("the evidence folder is not as it was before the baselines of the cases")
+	}
+	// The baseline is on disk before "recorded" is said, and its name
+	// replaces nothing (review finding 4): a sync first on the kit's PATH
+	// records its arguments, then syncs, or, by the word in syncMode, fails
+	// on the staging folder ("files") or on the evidence folder
+	// ("evidence"), or makes an empty folder at the baseline's name while
+	// the staging folder is synced, after the script's last look at the
+	// name ("race").
+	syncLog := filepath.Join(k.dir, "sync-log")
+	syncMode := filepath.Join(k.dir, "sync-mode")
+	syncStub := filepath.Join(k.tools, "sync")
+	noErr(t, os.WriteFile(syncStub, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >>'"+syncLog+"'\nmode=$(cat '"+syncMode+"' 2>/dev/null)\n"+
+		"case $mode:$* in\n  files:*/.step-g.*) exit 1 ;;\n  evidence:*'"+evidence+"') exit 1 ;;\n  race:*/.step-g.*) mkdir '"+baseline+"' ;;\nesac\nexec /usr/bin/sync \"$@\"\n"), 0o700))
+	defer os.Remove(syncStub)
+	for _, c := range []struct{ mode, want string }{
+		{"files", "status: NOT RECORDED: the baseline written in " + evidence + "/.step-g."},
+		{"race", "was not given its name " + baseline + " (the rename ended with exit status 0): a folder of that name appeared meanwhile, and nothing was replaced"},
+		{"evidence", "status: NOT RECORDED: the evidence folder " + evidence + " cannot be synced after " + baseline + " got its name"},
+	} {
+		noErr(t, os.WriteFile(syncMode, []byte(c.mode), 0o600))
+		out, code := k.run(t, nil, record...)
+		if code != 1 || !strings.Contains(out, c.want) || strings.Contains(out, "status: recorded") {
+			t.Errorf("--record with a sync that %s: exit %d, want 1 and %q:\n%s", c.mode, code, c.want, out)
+		}
+		switch c.mode {
+		case "race":
+			if names, err := os.ReadDir(baseline); err != nil || len(names) != 0 {
+				t.Errorf("the empty folder made at the baseline's name was replaced: %v %v", names, err)
+			}
+		case "evidence":
+			if _, err := os.Stat(before); err != nil {
+				t.Errorf("the baseline was not published before the evidence folder's sync: %v", err)
+			}
+		}
+		staging, _ := filepath.Glob(filepath.Join(evidence, ".step-g.*"))
+		for _, d := range append(staging, baseline) {
+			noErr(t, os.RemoveAll(d))
+		}
+	}
+	noErr(t, os.Remove(syncMode))
+	noErr(t, os.Remove(syncLog))
+	out, code = k.run(t, nil, record...)
+	if code != 0 || !strings.Contains(out, "status: recorded: the digests of the trial's six files and the key list's prefix ") ||
+		!strings.HasSuffix(strings.TrimSpace(out), "one baseline in "+baseline+", synced to disk") {
 		t.Fatalf("--record: exit %d:\n%s", code, out)
 	}
-	if got := strings.Split(strings.TrimSpace(string(mustRead(t, keysArgs))), "\n"); !slices.Equal(got, []string{"run", "--scratch", r + "/scratch.json", "--owner-channel", "--check", "--keys-prefix"}) {
+	syncs := strings.Split(strings.TrimSpace(string(mustRead(t, syncLog))), "\n")
+	if len(syncs) != 2 || syncs[1] != "-- "+evidence {
+		t.Fatalf("the syncs of --record: %q", syncs)
+	}
+	staged := strings.Fields(syncs[0])
+	if len(staged) != 4 || staged[0] != "--" || !strings.HasPrefix(staged[3], evidence+"/.step-g.") ||
+		staged[1] != staged[3]+"/trial-before.sha256" || staged[2] != staged[3]+"/keys-before.prefix" {
+		t.Fatalf("the first sync of --record is not of both files and their folder: %q", syncs[0])
+	}
+	if got := strings.Split(strings.TrimSpace(string(mustRead(t, keysArgs))), "\n"); !slices.Equal(got, []string{"run", "--scratch", r + "/scratch.json", "--owner-channel", "--check", "--keys-prefix", "--expect-state", k.state}) {
 		t.Fatalf("the daemon's key check of step g was run with %q", got)
 	}
 	names, err := os.ReadDir(evidence)
@@ -1040,14 +1167,14 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 		!strings.Contains(out, "status: the trial's gate key, certificate, pins and settings are the same bytes as recorded in "+before+", and the daemon's check of the key list since step g holds") {
 		t.Fatalf("--status --compare with the same files: exit %d:\n%s", code, out)
 	}
-	wantKeys := []string{"run", "--scratch", r + "/scratch.json", "--owner-channel", "--check", "--keys-since", prefix}
+	wantKeys := []string{"run", "--scratch", r + "/scratch.json", "--owner-channel", "--check", "--keys-since", prefix, "--expect-state", k.state}
 	if got := strings.Split(strings.TrimSpace(string(mustRead(t, keysArgs))), "\n"); !slices.Equal(got, wantKeys) {
 		t.Fatalf("the daemon's key check was run with %q, want %q", got, wantKeys)
 	}
 	// The key list is the daemon's to judge: whatever the digests say of
 	// keys.log and keys.head, its verdict decides, and prepare says CHANGED
 	// when it does not hold.
-	oldKeys := mustRead(t, keys)
+	oldKeys = mustRead(t, keys)
 	if err := os.WriteFile(keys, append(slices.Clone(oldKeys), []byte("appended\n")...), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1135,10 +1262,33 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 		}
 	}
 	digests(all)
+	// A record is checked as bytes (review finding 5): a NUL, which the
+	// shell's command substitution would drop, is refused wherever it is,
+	// in a name, in a digest or after the last line, and the record's own
+	// lines are those of the one reading the checks passed. No listed file
+	// is opened for it.
+	whole := mustRead(t, before)
+	for _, c := range []struct{ name, from, to, want string }{
+		{"a NUL in a name", "  keys.log\n", "  keys.\x00log\n", "its line 4 names a file that is not one of the six"},
+		{"a NUL in a digest", string(whole[:4]), string(whole[:2]) + "\x00" + string(whole[2:4]), "its line 1 is not a digest, two spaces and a name"},
+		{"a NUL after the last line", "  scratch.json\n", "  scratch.json\n\x00", "holds 6 whole line(s)"},
+	} {
+		noErr(t, os.WriteFile(before, bytes.Replace(whole, []byte(c.from), []byte(c.to), 1), 0o600))
+		os.Remove(keysArgs)
+		out, code := k.run(t, nil, compare...)
+		if code != 1 || !strings.Contains(out, "status: CHANGED: the record "+before+" is incomplete: ") || !strings.Contains(out, c.want) ||
+			strings.Contains(out, ": OK") {
+			t.Errorf("%s: exit %d, want CHANGED and %q:\n%s", c.name, code, c.want, out)
+		}
+		if _, err := os.Lstat(keysArgs); err == nil {
+			t.Errorf("%s: the key list was judged on a record with a NUL", c.name)
+		}
+	}
+	noErr(t, os.WriteFile(before, whole, 0o600))
 	// A prefix that is missing or not of the daemon's form is CHANGED, and
-	// the daemon's key check is not run.
+	// the daemon's key check is not run; a NUL in it is not dropped.
 	for _, bad := range []string{"", "12", "12:" + strings.Repeat("0123456789abcdef", 4) + "\nmore", "012:" + strings.Repeat("0123456789abcdef", 4),
-		"12:" + strings.Repeat("0123456789ABCDEF", 4), "12:" + strings.Repeat("0123456789abcdef", 3)} {
+		"12:" + strings.Repeat("0123456789ABCDEF", 4), "12:" + strings.Repeat("0123456789abcdef", 3), prefix[:4] + "\x00" + prefix[4:]} {
 		if err := os.WriteFile(prefixFile, []byte(bad+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -1306,7 +1456,7 @@ func TestScratchSeatProofRunbookShellIsSafe(t *testing.T) {
 		"{ sh \"$ROOT/netcheck.sh\"; echo \"netcheck: exit status $?\"; } 2>&1 | tee -a \"$ROOT/evidence/netcheck.txt\"",
 		"sh \"$P\" --status --compare",
 		"sh \"$P\" --status --record",
-		"The two are one record only when the prefix's digest is the digest of `keys.log` taken just before",
+		"both of the bytes the checks read from the descriptors they checked, so the list and the head are one pair even while a phone login appends. prepare opens neither file of the key list.",
 		"whose names are `gate/key.pem`, `gate/cert.pem`, `gate/seat-pins`, `keys.log`, `keys.head` and `scratch.json`, each once, compared as text",
 		"and its exit status decides: any status but 0 (a file changed, missing or unreadable) is `CHANGED`",
 		"byte-identical to step g",

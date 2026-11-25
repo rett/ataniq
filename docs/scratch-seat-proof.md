@@ -182,7 +182,11 @@ catch-up, and the `owner/` folder and `TMPDIR` are as they were.
 `internal/approval/ownerjournal/keys_verify_linux_test.go` runs each refusal
 through `VerifyKeys` and then the opener on the same files (another owner,
 faked, among them), and holds that where the opener would make or repair a
-file the check refuses and writes nothing.
+file the check refuses and writes nothing; it also holds the owner check of
+the list and of the head on its own, with the folder the user's own and
+another owner's UID in the file's stat alone, and, through a hook between
+the read of the head and the last look at the list, that a record appended
+there is refused as a list that changed while it was checked.
 
 The tests of the flag (`cmd/ataniqd/scratch_settings_linux_test.go`) hold its
 refusals, each with `--check` (the line of its rule says `FAIL` and why) and
@@ -207,8 +211,13 @@ every row of their bind tables, as the holder builds them
 refuses what it can judge, `--status` refuses a `--state` that is not the
 config's `state_root` by identity and runs the daemon's check with exactly
 the flags of step 2 and `--check`, `--status --record` writes the baseline of
-step g only when the daemon's prefix and the digests agree (a record
-appended between them writes nothing), and `--status --compare` refuses a record
+step g with the key list's and its head's digests from the daemon's one
+snapshot (a stub's head digest that is not the file's is the one recorded,
+and a FIFO in place of either file does not block it), syncs both files and
+their folder before the rename and the evidence folder after it, and
+replaces nothing, not even an empty folder made at the baseline's name
+after its last look (a stub `sync` makes one, and fails each sync in turn:
+none of them says `recorded`), and `--status --compare` refuses a record
 of step g that does not name each of the six files once, by its name as
 text, before it opens one, takes `sha256sum -c`'s exit status for the other
 four files' digests and passes the prefix of step g to the daemon's key check,
@@ -237,7 +246,7 @@ step 10, and the files stay, private (see [What is recorded](#what-is-recorded))
 ## Before the sitting
 
 None of these starts the daemon or a lead; c runs the claude copy, to read its
-version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
+version, and e runs pasta, bubblewrap, ip, curl and a throwaway user unit.
 `prepare.sh` prints c to g with your values.
 
 - **a. Build**, in the checkout, after `make doctor`:
@@ -340,7 +349,8 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
 - **d. The firewall is your rule.** The gate's port admits TCP from the
    authority host only, as [the firewall](seat-gate.md#the-firewall) says.
 - **e. OWNER ONLY: the lead's network, with the trial running** (it starts
-   pasta, bubblewrap, curl and a throwaway user unit, as the canary kit's
+   pasta, bubblewrap, ip (a route lookup, no packet), curl and a throwaway
+   user unit, as the canary kit's
    `netcheck.sh` does; it uses no credential and starts no agent):
 
    ```sh
@@ -366,19 +376,25 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    is a `FINDING`, and so is a connection, and so is a wrapper (the probe's
    shell, pasta and bubblewrap, or the unit) that ended with a status other
    than 0, whatever it printed. Inside the sandbox, before the probe, the
-   check establishes the route the sandbox takes to the gate's address, as
-   the kernel chooses it from `/proc/net/route` (of the routes that are up
-   and hold the address, the longest mask, then the lowest metric), and
-   prints `net route=... addr=...`: the route must not be a reject,
-   unreachable or blackhole route, not on `lo`, not a gateway route with no
-   gateway, and the gate's address must not be one of the sandbox's own
-   (`/proc/net/fib_trie`: the probe would reach the sandbox, not the gate);
-   the source address must be an IPv4 address of the sandbox other than
-   loopback on the route's interface. Without them the probe is not made,
-   the line ends `note=` and why (`reject`, `noroute`, `lo`, `local`,
-   `noaddress`), and the verdict says `the probe did not run: no usable
-   route and source address to the gate's address in the sandbox`. Any
-   `FINDING` there ends the sitting before it starts. The probe is curl with no configuration
+   check asks the kernel's own lookup for the gate's address, `ip -4 route
+   get` (iproute2's `ip`, from the host's `/usr/bin` or `/usr/sbin`, which
+   the sandbox binds), and prints `net route=... addr=...` with the output
+   interface and the source address the kernel selected. The route must be
+   a unicast route: not local (the gate's address one of the sandbox's own,
+   a loopback gate among them: the probe would reach the sandbox, not the
+   gate), not a reject, unreachable or blackhole route, not on `lo`, not
+   through a gateway of 0.0.0.0, with a source address that is not loopback
+   and not the gate's. A lookup that fails (as one through an unreachable
+   or prohibit route does), answers out of its form, or cannot be made (no
+   `ip` in the sandbox) is indeterminate. Nothing is inferred from subnets
+   or the sandbox's address list. Without a usable route the probe is not
+   made, the line ends `note=` and why (`local`, `reject`, `type`, `lo`,
+   `nogateway`, `noaddress`, `lookup`, `noip`), and the verdict says `the
+   probe did not run: no usable route and source address to the gate's
+   address in the sandbox`. What the two tables of the kernel would say is
+   what this lookup says; the check establishes no more than the kernel's
+   answer for that one address at that moment. Any `FINDING` there ends
+   the sitting before it starts. The probe is curl with no configuration
    file and no proxy, to the numeric address, and it sends no byte. The
    script then lists this host's listeners on non-loopback addresses and
    says what stays open until the drop rule is in place: the sandbox's
@@ -398,7 +414,7 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    `TestScratchSeatNetcheckClassifiesEachProbe` holds the classes on inert
    fixtures. What differs does not decide whether the gate answers: the binds
    (the host's `/usr` and a few `/etc` files here, the profile's table in the
-   sandbox) and the program inside (`sh` and `curl` here, the probe and the
+   sandbox) and the program inside (`sh`, `ip` and `curl` here, the probe and the
    agent there); the `resolv.conf` (the host's here, one the holder derives
    there), since the gate is an address and no name is looked up. The
    throwaway unit's name is systemd-run's, not a lead unit's: a rule that
@@ -427,9 +443,15 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    same folder by device and inode, and refuses before it runs or compares
    anything when it is not (a `--state` of another trial, or a config edited
    to name another folder): the daemon takes its state folder from the
-   config, and the digests are of `$S`. Then it runs the daemon's own check, `$D run --scratch "$CONFIG"
+   config, and the digests are of `$S`. That reading of the config is a
+   convenience; what decides is the daemon's: each of its checks that
+   `--status` runs gets `--expect-state "$S"`, and the daemon refuses (exit
+   10, `--expect-state: ... is not the state folder of the scratch config`)
+   before it reads any file of the trial when `$S` is not, by device and
+   inode, the state folder it decoded from the config in that invocation.
+   Then it runs the daemon's own check, `$D run --scratch "$CONFIG"
    --owner-channel --seat-gate "$SEAT_GATE" --owner-settings "$SETTINGS"
-   --check`, and passes its lines through. The check binds, locks, makes and
+   --check --expect-state "$S"`, and passes its lines through. The check binds, locks, makes and
    starts nothing, so it runs beside the trial. Each line is `pass` with what
    holds, or `FAIL` with the reason: the settings folder, opened by its handle
    with no link followed, is a private folder of yours that lies beside the
@@ -461,25 +483,29 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    start.
    With `--record`, once the check found no refusal, `--status` takes the
    baseline that step 13 compares with: the SHA-256 digests of the trial's
-   gate key, certificate, pins, key list, its head and settings, then the
-   key list's prefix from the daemon's read-only check of the key list and
-   its head, `$D run --scratch "$CONFIG" --owner-channel --check
-   --keys-prefix`. That check has the journal's own checks judge the trial's
-   `owner/keys.log` and `keys.head` read only, on the files themselves
-   (`ownerjournal.VerifyKeys`: the folder and both files opened without
-   following a link and held to the ownership, mode and link-count checks
-   of the journal's opener, the records under its replay, and a head that
-   counts them exactly; it creates, repairs, locks and writes nothing), and
-   prints one line, `LEN:SHA256`, the list's length and SHA-256 (a digest,
-   not the keys). The two are one record only when the prefix's digest is
-   the digest of `keys.log` taken just before: then both files are written
-   into a new folder of their own, which is then given its name,
-   `$ROOT/evidence/step-g`, so the baseline appears whole or not at all, and
-   the last line is `status: recorded: ...`. When they disagree (a record
-   was appended between them, by a phone login, say), when the key check
-   refuses (it prints why), or when the daemon's check refused, nothing is
-   written and the line says `status: NOT RECORDED: ...`: run the step
-   again, and if it fails again, stop. A baseline that is there is kept and
+   gate key, certificate, pins and settings, then the key list's from the
+   daemon's read-only check of the key list and its head, `$D run --scratch
+   "$CONFIG" --owner-channel --check --keys-prefix --expect-state "$S"`. That check has the
+   journal's own checks judge the trial's `owner/keys.log` and `keys.head`
+   read only, on the files themselves (`ownerjournal.VerifyKeys`: the folder
+   and both files opened without following a link and held to the
+   ownership, mode and link-count checks of the journal's opener, the
+   records under its replay, and a head that counts them exactly; it
+   creates, repairs, locks and writes nothing), and prints one line,
+   `LEN:SHA256 HEADSHA256`: the list's length and SHA-256 and the head's
+   SHA-256 (digests, not the keys), both of the bytes the checks read from
+   the descriptors they checked, so the list and the head are one pair even
+   while a phone login appends. prepare opens neither file of the key list.
+   The six digests and the prefix are written into a new folder of their
+   own; both files and the folder are synced to disk, the folder is given
+   its name, `$ROOT/evidence/step-g`, by a rename that replaces nothing (GNU
+   `mv -n`, a rename with `RENAME_NOREPLACE`: not even an empty folder made
+   at that name meanwhile is replaced), and the evidence folder is synced,
+   so the baseline appears whole or not at all and is on disk before the
+   last line, `status: recorded: ...`, is printed. When the key check refuses (it prints why; a record
+   appended while it read is one such refusal), or when the daemon's check
+   refused, nothing is written and the line says `status: NOT RECORDED:
+   ...`: run the step again, and if it fails again, stop. A baseline that is there is kept and
    never replaced. The pins line and the trial's fingerprint line of its
    current run go with it. Nothing of the trial is changed by any of it.
 
@@ -724,7 +750,9 @@ it, the sitting has no live lead: go on with step 11.
     must be six whole lines, each a digest, two spaces and a name, whose
     names are `gate/key.pem`, `gate/cert.pem`, `gate/seat-pins`, `keys.log`,
     `keys.head` and `scratch.json`, each once, compared as text (no
-    pattern: `keys-log` is not `keys.log`), or it confirms nothing and the
+    pattern: `keys-log` is not `keys.log`), checked as bytes (a NUL
+    anywhere in it is refused, not dropped) and read once: the digests
+    compared below are of that one reading, or it confirms nothing and the
     line is `status: CHANGED: the record ... is incomplete` (a record cut
     short at step g, say). Then `sha256sum -c` checks the four lines of the
     gate key, certificate, pins and settings and prints a line per file:

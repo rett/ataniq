@@ -64,22 +64,31 @@
 # names is the state_root of ROOT/scratch.json, by identity (the same device
 # and inode), and refuses otherwise before it runs or compares anything: the
 # daemon takes its state folder from the config, so the two must be one
-# trial's. Then it runs the daemon's check, "ataniqd run --scratch
+# trial's. Each of the daemon's checks below also gets --expect-state with
+# the folder --state names, and the daemon refuses, before it reads a file of
+# the trial, when that is not the state folder it decoded from the config;
+# its refusal decides, the script's own reading of the config is a
+# convenience. Then it runs the daemon's check, "ataniqd run --scratch
 # ROOT/scratch.json --owner-channel --seat-gate IP:PORT --owner-settings
 # ROOT/owner-settings --check", which reads the trial's state folder and binds,
 # locks, makes and starts nothing, and passes its lines and its exit status
 # through. With --record (step g), once the check found no refusal, it takes
-# the baseline of step g: the digests of the trial's six files, then the
-# key list's prefix from the daemon's "ataniqd run --scratch
-# ROOT/scratch.json --owner-channel --check --keys-prefix"; only when the
-# prefix's digest is the digest of keys.log just taken are both written, in
-# a new folder that is then given its name, ROOT/evidence/step-g, so that
-# the baseline appears whole or not at all; on disagreement nothing is
-# written and the step is run again, and a baseline that is there is never
-# replaced. With --compare (step 13) it then compares the trial's files with
+# the baseline of step g: the digests of the trial's gate key, certificate,
+# pins and settings, then the key list's prefix and its head's digest from
+# the daemon's "ataniqd run --scratch ROOT/scratch.json --owner-channel
+# --check --keys-prefix", both of the one snapshot the journal's checks
+# passed (prepare opens neither file of the key list); the six digests and
+# the prefix are written in a new folder, synced, that is then given its
+# name, ROOT/evidence/step-g, by a rename that replaces nothing, and the
+# evidence folder is synced, so that the baseline appears whole or not at
+# all and survives a power loss once "recorded" is said;
+# when the daemon refuses nothing is written and the step is run again, and
+# a baseline that is there is never replaced. With --compare (step 13) it then compares the trial's files with
 # the baseline of step g, which must be there: step-g/trial-before.sha256
 # must be six lines naming each of the six files once, the names compared as
-# text, before any file it lists is opened, and the trial's gate key,
+# text, checked as bytes (a NUL is refused, not dropped) and read once, the
+# checks below being of that one reading, before any file it lists is
+# opened, and the trial's gate key,
 # certificate, pins and settings must be the same bytes: sha256sum -c checks
 # their four lines, and any exit status of it but 0 is CHANGED. The key list
 # and its head are judged by the daemon, not here: prepare passes the prefix
@@ -93,6 +102,11 @@
 # not one record is CHANGED too. --status writes nothing but the baseline.
 set -eu
 umask 077
+# A CDPATH of the caller's would make cd print the folder it found, and the
+# script's own folder be read wrong; the repository's Go wrapper clears it
+# too.
+CDPATH=
+export CDPATH
 
 NAME=prepare.sh
 case $0 in
@@ -112,6 +126,10 @@ BINARIES='ataniq-holder ataniq-canary ataniq-canary-standin ataniq-console atani
 TOKEN='canary-token: proof-standin-0001'
 # The trial's files whose digests the sitting compares, relative to owner/.
 TRIAL_FILES='gate/key.pem gate/cert.pem gate/seat-pins keys.log keys.head scratch.json'
+# Of them, the gate's files, which prepare hashes itself at step g with the
+# settings scratch.json: all but the key list and its head, whose digests
+# the daemon gives from the one snapshot its checks passed.
+GATE_FILES='gate/key.pem gate/cert.pem gate/seat-pins'
 
 say() { printf '%s\n' "$*"; }
 
@@ -791,7 +809,11 @@ keys_fresh() {
 # --status reads the files of --state: were they two folders, the daemon's
 # check and its judgement of the key list would be of one trial and the
 # digests of another. The config must hold one state_root, in the line
-# --write writes; another form is refused, not interpreted.
+# --write writes; another form is refused, not interpreted. This reading of
+# the config is a convenience, an early and plain refusal: what decides is
+# the daemon's, which each of its checks gets --expect-state --state for and
+# compares with the state folder it decoded from the config in that
+# invocation, before it reads any file of the trial.
 same_state() {
   _c=$(LC_ALL=C grep -i -c -e '"state_root"' -- "$CONFIG") || _c=0
   [ "$_c" -eq 1 ] || die "the scratch config $CONFIG names a state_root $_c times, not once as --write writes it"
@@ -869,19 +891,30 @@ manifest_ok() {
   return 0
 }
 
-# record_complete FILE prints nothing and succeeds when FILE, a record of step
-# g, is six whole lines that manifest_ok passes; else it prints what is wrong
-# and fails. It is called before any file the record lists is opened: without
-# it, sha256sum -c would confirm only the files a partial record names.
+# read_bytes FILE prints the bytes of FILE with each NUL as the byte 001,
+# and then a dot. The shell's command substitution drops a NUL and the
+# newlines at the end; read through this, neither is lost: a NUL becomes a
+# byte that no line of a record holds, and the dot keeps the last newline.
+read_bytes() {
+  LC_ALL=C tr '\000' '\001' <"$1" && printf .
+}
+
+# record_complete TEXT prints nothing and succeeds when TEXT, the bytes of a
+# record of step g as read_bytes read them (the dot removed), is six whole
+# lines that manifest_ok passes; else it prints what is wrong and fails. It
+# is called before any file the record lists is opened: without it,
+# sha256sum -c would confirm only the files a partial record names. It
+# opens nothing: the caller checks, and then uses, the one reading.
 record_complete() {
-  _lines=$(wc -l <"$1") || { echo "it cannot be read"; return 1; }
+  _lines=$(printf '%s' "$1" | wc -l)
   _lines=$((_lines + 0))
-  if [ "$_lines" -ne 6 ] || [ "$(tail -c 1 -- "$1" | wc -l)" -ne 1 ]; then
+  _whole=0
+  case $1 in *"$_nl") _whole=1 ;; esac
+  if [ "$_lines" -ne 6 ] || [ "$_whole" -ne 1 ]; then
     echo "it holds $_lines whole line(s), not exactly the six of the files"
     return 1
   fi
-  _text=$(cat -- "$1") || { echo "it cannot be read"; return 1; }
-  manifest_ok "$_text"
+  manifest_ok "${1%"$_nl"}"
 }
 
 # prefix_form TEXT prints TEXT when it is a prefix of the daemon's form,
@@ -916,14 +949,18 @@ not_recorded() {
 }
 
 # record_baseline is --status --record (step g), once the daemon's check
-# found no refusal: the digests of the trial's six files and the daemon's
-# prefix of the key list, taken one after the other while the trial runs,
-# must agree, the prefix's digest being the record's of keys.log; only then
-# are both written, into a new folder of their own that is then given its
-# name, so that the baseline appears whole or not at all. On disagreement
-# (a record was appended between the two, by a phone login, say) nothing is
-# written and the step is run again. A baseline that is there is kept and
-# never replaced.
+# found no refusal: the digests of the trial's gate key, certificate, pins
+# and settings, which prepare takes, and the daemon's line of the key list,
+# its prefix and its head's digest, both of the one snapshot the journal's
+# checks passed (so the list and the head recorded are one pair, and
+# prepare opens neither: a FIFO in place of one is the daemon's refusal, not
+# a read that blocks). The six digests make the record; it and the prefix
+# are written into a new folder of their own, synced with both files, and
+# that is then given its name by a rename that replaces nothing (not even
+# an empty folder made at that name meanwhile), after which the evidence
+# folder is synced too: so that the baseline appears whole or not at all,
+# and "recorded" is said only once it would survive a power loss. A
+# baseline that is there is kept and never replaced.
 record_baseline() {
   if [ "$RC" -ne 0 ]; then
     say "status: NOT RECORDED: the sitting failed preflight; nothing was written: fix what the check refused, then run this step again"
@@ -938,30 +975,40 @@ record_baseline() {
     return 0
   fi
   _src=0
-  # shellcheck disable=SC2086  # the six names are split on purpose
-  _sums=$(cd -- "$OWNER" && sha256sum -- $TRIAL_FILES) || _src=$?
+  # shellcheck disable=SC2086  # the names are split on purpose
+  _gate=$(cd -- "$OWNER" && sha256sum -- $GATE_FILES) || _src=$?
+  _conf=
+  [ "$_src" -ne 0 ] || _conf=$(cd -- "$OWNER" && sha256sum -- scratch.json) || _src=$?
   if [ "$_src" -ne 0 ]; then
-    not_recorded "sha256sum of the trial's files ended with exit status $_src; nothing was written"
+    not_recorded "sha256sum of the trial's gate key, certificate, pins or settings ended with exit status $_src; nothing was written"
     return 0
   fi
-  if ! _why=$(manifest_ok "$_sums"); then
-    not_recorded "the digests of the trial's files are not a record of the six files ($_why); nothing was written"
-    return 0
-  fi
-  say "status: the daemon's check of the key list: $DAEMON run --scratch $CONFIG --owner-channel --check --keys-prefix"
+  say "status: the daemon's check of the key list: $DAEMON run --scratch $CONFIG --owner-channel --check --keys-prefix --expect-state $S"
   _krc=0
-  _kp=$("$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-prefix) || _krc=$?
+  _kp=$("$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-prefix --expect-state "$S") || _krc=$?
   if [ "$_krc" -ne 0 ]; then
     not_recorded "the daemon's check of the key list ended with exit status $_krc (the line above says why); nothing was written: run this step again, and if it fails again, stop"
     return 0
   fi
-  _p=$(prefix_form "$_kp")
+  # One line: LEN:SHA256 of the list, a space, the SHA-256 of the head.
+  _p=
+  _h=${_kp#* }
+  case $_kp in
+    *"$_nl"* | *' '*' '*) ;;
+    *' '*) _p=$(prefix_form "${_kp%% *}") ;;
+  esac
+  # shellcheck disable=SC2254  # HEX64 is a pattern on purpose
+  case $_h in
+    $HEX64) ;;
+    *) _p= ;;
+  esac
   if [ -z "$_p" ]; then
-    not_recorded "the daemon's check of the key list printed no prefix of the form LEN:SHA256; nothing was written"
+    not_recorded "the daemon's check of the key list printed no line of the form LEN:SHA256 HEADSHA256 (the list's prefix and its head's digest); nothing was written"
     return 0
   fi
-  if [ "${_p#*:}" != "$(keys_digest "$_sums")" ]; then
-    not_recorded "the key list changed between its digest and the daemon's check (a record was appended meanwhile: a phone login, say), so the two are not one baseline; nothing was written: run this step again"
+  _sums=$_gate$_nl${_p#*:}'  keys.log'$_nl$_h'  keys.head'$_nl$_conf
+  if ! _why=$(manifest_ok "$_sums"); then
+    not_recorded "the digests of the trial's files are not a record of the six files ($_why); nothing was written"
     return 0
   fi
   _tmp=$EVIDENCE/.step-g.$$
@@ -973,15 +1020,33 @@ record_baseline() {
     not_recorded "the baseline cannot be written in $_tmp, which is left half made and is not the baseline: run this step again"
     return 0
   fi
-  if [ -e "$BASELINE" ] || [ -L "$BASELINE" ]; then
-    not_recorded "a baseline $BASELINE appeared meanwhile; the one written in $_tmp is not the baseline"
+  # On disk before it has its name: both files and the folder that holds
+  # them.
+  if ! sync -- "$_tmp/trial-before.sha256" "$_tmp/keys-before.prefix" "$_tmp"; then
+    not_recorded "the baseline written in $_tmp cannot be synced to disk, so it is not the baseline: run this step again"
     return 0
   fi
-  mv -T -- "$_tmp" "$BASELINE" || {
-    not_recorded "the baseline written in $_tmp cannot be given its name $BASELINE: run this step again"
+  # The name, in one rename that replaces nothing, not even an empty folder
+  # made at that name meanwhile: GNU mv -n renames with RENAME_NOREPLACE and
+  # leaves the folder where it is when the name is taken. Whether the
+  # staging folder is gone decides, not mv's exit status (mv -n ends 0 when
+  # it skips).
+  _mrc=0
+  mv -n -T -- "$_tmp" "$BASELINE" || _mrc=$?
+  if [ -e "$_tmp" ] || [ -L "$_tmp" ]; then
+    not_recorded "the baseline written in $_tmp was not given its name $BASELINE (the rename ended with exit status $_mrc): a folder of that name appeared meanwhile, and nothing was replaced; the one in $_tmp is not the baseline"
     return 0
-  }
-  say "status: recorded: the digests of the trial's six files and the key list's prefix $_p, one baseline in $BASELINE"
+  fi
+  if [ "$_mrc" -ne 0 ] || [ -L "$BASELINE" ] || [ ! -d "$BASELINE" ]; then
+    not_recorded "the rename to $BASELINE ended with exit status $_mrc: look at $EVIDENCE; do not start the sitting, prepare a new root"
+    return 0
+  fi
+  # The name on disk too, before success is said.
+  if ! sync -- "$EVIDENCE"; then
+    not_recorded "the evidence folder $EVIDENCE cannot be synced after $BASELINE got its name, so the name may not survive a power loss: do not start the sitting, prepare a new root"
+    return 0
+  fi
+  say "status: recorded: the digests of the trial's six files and the key list's prefix $_p, one baseline in $BASELINE, synced to disk"
 }
 
 # compare_record is --status --compare: the trial's files against the record
@@ -993,16 +1058,25 @@ compare_record() {
     status_failed
     return 0
   fi
-  if ! _why=$(record_complete "$BEFORE"); then
+  # The record is read once, as bytes; the checks below and the digests
+  # they compare are of that one reading, and the file is not opened again.
+  if ! _raw=$(read_bytes "$BEFORE"); then
+    say "status: CHANGED: the record $BEFORE cannot be read; it confirms nothing"
+    status_failed
+    return 0
+  fi
+  _raw=${_raw%.}
+  if ! _why=$(record_complete "$_raw"); then
     say "status: CHANGED: the record $BEFORE is incomplete: $_why; it confirms nothing"
     status_failed
     return 0
   fi
+  _record=${_raw%"$_nl"}
   # The four files other than the key list and its head, which a phone
   # login changes and the daemon judges below: their lines of the record,
   # checked by sha256sum -c, whose exit status decides.
   _four=
-  _rec=$(cat -- "$BEFORE")$_nl
+  _rec=$_record$_nl
   while [ -n "$_rec" ]; do
     _l=${_rec%%"$_nl"*}
     _rec=${_rec#*"$_nl"}
@@ -1021,7 +1095,7 @@ compare_record() {
   # step g. A prefix that is missing or not of the daemon's form is CHANGED.
   _prefix=
   if [ -f "$KEYS_BEFORE" ] && [ ! -L "$KEYS_BEFORE" ] && [ "$(wc -l <"$KEYS_BEFORE")" -eq 1 ]; then
-    _prefix=$(cat -- "$KEYS_BEFORE")
+    _prefix=$(LC_ALL=C tr '\000' '\001' <"$KEYS_BEFORE")
   fi
   _prefix=$(prefix_form "$_prefix")
   if [ -z "$_prefix" ]; then
@@ -1029,14 +1103,14 @@ compare_record() {
     status_failed
     return 0
   fi
-  if [ "${_prefix#*:}" != "$(keys_digest "$(cat -- "$BEFORE")")" ]; then
+  if [ "${_prefix#*:}" != "$(keys_digest "$_record")" ]; then
     say "status: CHANGED: the prefix in $KEYS_BEFORE is not of the list whose digest $BEFORE holds: the two are not one baseline of step g, so the key list is not confirmed"
     status_failed
     return 0
   fi
-  say "status: the daemon's check of the key list since step g: $DAEMON run --scratch $CONFIG --owner-channel --check --keys-since $_prefix"
+  say "status: the daemon's check of the key list since step g: $DAEMON run --scratch $CONFIG --owner-channel --check --keys-since $_prefix --expect-state $S"
   _krc=0
-  "$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-since "$_prefix" || _krc=$?
+  "$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-since "$_prefix" --expect-state "$S" || _krc=$?
   if [ "$_krc" -ne 0 ]; then
     say "status: CHANGED: the daemon's check of the key list ended with exit status $_krc (the lines above say why)"
     status_failed
@@ -1058,9 +1132,9 @@ if [ "$MODE" = status ]; then
   fi
   same_state
   say "status: the state folder $S is the state_root of $CONFIG (the same device and inode)"
-  say "status: the daemon's check: $DAEMON run --scratch $CONFIG --owner-channel --seat-gate $GATE --owner-settings $SETTINGS_DIR --check"
+  say "status: the daemon's check: $DAEMON run --scratch $CONFIG --owner-channel --seat-gate $GATE --owner-settings $SETTINGS_DIR --check --expect-state $S"
   RC=0
-  "$DAEMON" run --scratch "$CONFIG" --owner-channel --seat-gate "$GATE" --owner-settings "$SETTINGS_DIR" --check || RC=$?
+  "$DAEMON" run --scratch "$CONFIG" --owner-channel --seat-gate "$GATE" --owner-settings "$SETTINGS_DIR" --check --expect-state "$S" || RC=$?
   if [ "$RC" -eq 0 ]; then
     say "status: the daemon's check found no refusal"
   else

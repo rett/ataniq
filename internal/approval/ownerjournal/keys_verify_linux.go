@@ -11,11 +11,20 @@ import (
 )
 
 // KeysSnapshot is what [VerifyKeys] read and passed: the bytes of the list's
-// file, as read from the descriptor it checked, and its number of records.
+// file and of its head, each as read from the descriptor it checked, and the
+// list's number of records. The two are one snapshot: the head was read
+// while the list's file was unchanged, and holds the list's count and last
+// digest.
 type KeysSnapshot struct {
 	Data    []byte
+	Head    []byte
 	Records int
 }
+
+// verifyKeysAfterHead, when set, is called by VerifyKeys once the head is
+// read and checked against the list, before the list's file is looked at
+// again. Only a test sets it, to append a record at that point.
+var verifyKeysAfterHead func()
 
 // VerifyKeys checks the list in the file at path and its head, read only:
 // the checks [OpenKeys] makes, and no write. The folder is opened once
@@ -27,7 +36,16 @@ type KeysSnapshot struct {
 // read from the descriptor that was checked, must hold under the replay of
 // OpenKeys: the header, each record by the strict reader, the numbers in
 // sequence, the digest chain and the rules of the list ([ErrDamaged]). The
-// head must be exact: it counts every record and holds the last digest.
+// head must be exact: it counts every record and holds the last digest. It
+// returns the bytes of the list and of the head that it checked, so that a
+// caller that records digests of the two takes them from this one snapshot
+// and opens neither file itself.
+//
+// A pass is a snapshot of the files' identity, metadata, content and head
+// agreement at the moment of the check, not a promise that OpenKeys will
+// open the list: VerifyKeys opens read only and takes no lock, so a file
+// OpenKeys cannot open for writing (read-only storage) or whose lock another
+// process holds ([ErrLocked]) passes here and is refused only at startup.
 //
 // It creates, repairs, locks and writes nothing. Where OpenKeys would make
 // something, VerifyKeys refuses: no file ([ErrNoKeys], where OpenKeys makes a
@@ -73,7 +91,7 @@ func VerifyKeys(path string) (_ KeysSnapshot, err error) {
 	if err != nil {
 		return KeysSnapshot{}, err
 	}
-	h, ok, err := k.readHead()
+	h, headData, ok, err := k.readHeadData()
 	if err != nil {
 		return KeysSnapshot{}, err
 	}
@@ -82,6 +100,9 @@ func VerifyKeys(path string) (_ KeysSnapshot, err error) {
 	}
 	if err := headAgainst(h, digests); err != nil {
 		return KeysSnapshot{}, err
+	}
+	if verifyKeysAfterHead != nil {
+		verifyKeysAfterHead()
 	}
 	// The file read is the file now: the same size, times and inode, at
 	// the same path in the same folder.
@@ -95,5 +116,5 @@ func VerifyKeys(path string) (_ KeysSnapshot, err error) {
 	if err := k.checkPath(); err != nil {
 		return KeysSnapshot{}, err
 	}
-	return KeysSnapshot{Data: data, Records: list.records}, nil
+	return KeysSnapshot{Data: data, Head: headData, Records: list.records}, nil
 }

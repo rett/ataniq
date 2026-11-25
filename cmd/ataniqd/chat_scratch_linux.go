@@ -47,7 +47,7 @@ with the seat gate together:
   samples.
 
        ataniqd run --scratch CONFIG --owner-channel --seat-gate ADDR
-               --owner-settings DIR [--check]
+               --owner-settings DIR [--check [--expect-state DIR]]
 
   --owner-settings DIR
                     read the owner channel's settings from DIR/scratch.json
@@ -96,10 +96,18 @@ with the seat gate together:
                     then what the daemon would read, and exit: 0 when nothing
                     is refused, 10 otherwise. It binds, locks, makes and
                     starts nothing.
+  --expect-state DIR
+                    with --check (and with --keys-prefix or --keys-since):
+                    before any file of the state folder is read, refuse
+                    (exit 10) unless DIR is the state folder the scratch
+                    config of this invocation names, the same device and
+                    inode, so that the check is of the trial the caller
+                    means.
 
        ataniqd run --scratch CONFIG --owner-channel --check --keys-prefix
+               [--expect-state DIR]
        ataniqd run --scratch CONFIG --owner-channel --check
-               --keys-since LEN:SHA256
+               --keys-since LEN:SHA256 [--expect-state DIR]
 
   --keys-prefix     with --check: check only the key list owner/keys.log of
                     the state root and its head owner/keys.head, with the
@@ -110,12 +118,19 @@ with the seat gate together:
                     formed, in sequence, on the digest chain and within the
                     list's rules; the head's count and digest exactly the
                     list's. Nothing is created, repaired, locked or written,
-                    anywhere. Then print the list's prefix, LEN:SHA256, its
-                    length in bytes and its SHA-256. Exit 0, or 1 with the
+                    anywhere. Then print one line: the list's prefix,
+                    LEN:SHA256, its length in bytes and its SHA-256, a space
+                    and the SHA-256 of the head, both of the bytes the
+                    checks read from the descriptors they checked, one
+                    snapshot. Exit 0, or 1 with the
                     reason on standard error when the list or its head does
                     not hold (a mode or owner the daemon would refuse, a
                     missing list or head, and a head that lags the list,
-                    which a start would make right, do not).
+                    which a start would make right, do not). A pass is a
+                    snapshot of the files' identity, metadata, content
+                    and the head's agreement with the list; whether the
+                    list can be opened for writing and locked is checked
+                    only when the daemon starts.
   --keys-since LEN:SHA256
                     with --check: check the key list and its head as
                     --keys-prefix does, check that the prefix is the list's
