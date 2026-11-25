@@ -475,12 +475,15 @@ func decodeLine(prev [sha256.Size]byte, wantSeq uint64, line []byte) (record, [s
 		if err != nil {
 			return record{}, zero, fmt.Errorf("bad %s payload: %v", env.Kind, err)
 		}
-		// A member repeated anywhere in the payload, the requested member
-		// itself included, makes the stored profile ambiguous: the typed
-		// decoding merges the occurrences and the raw one keeps the last, so
-		// what was checked would not be what is launched. Such a profile is
-		// not launched (see [repeatsMember]).
-		repeated, err := repeatsMember(env.Payload)
+		// A member repeated anywhere in the record, the requested member
+		// itself and the envelope's payload member included, makes the stored
+		// profile ambiguous: the typed decoding merges the occurrences and
+		// the raw one keeps the last, so what was checked would not be what
+		// is launched, and of two payload members of the envelope only the
+		// last is decoded at all. The whole record is checked, not the
+		// payload that was selected from it. Such a profile is not launched
+		// (see [repeatsMember]).
+		repeated, err := repeatsMember(content)
 		if err != nil {
 			return record{}, zero, fmt.Errorf("bad %s payload: %v", env.Kind, err)
 		}
