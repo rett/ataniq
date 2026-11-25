@@ -563,7 +563,7 @@ func baseline(t *testing.T, b build) launchCase {
 	if b.name == "claude" {
 		x.prefix, x.strict, x.refused = "--permission-mode=", "--strict-mcp-config", "--dangerously-skip-permissions"
 		x.s.Mode, x.s.Recognizer, x.s.Agent = "manual", "manual", "reviewer"
-		x.l.Agents = []pack.Agent{{Name: "reviewer", Builtin: true}}
+		x.l.Agents = []pack.Agent{{Name: "reviewer", Definition: "/config/agents/reviewer.md"}}
 		x.l.Grammars[pack.EffortSlot] = "^(low|medium|high|xhigh|max)$"
 	} else {
 		x.prefix, x.strict, x.refused = "--ask-for-approval=", "--strict-config", "--dangerously-bypass-approvals-and-sandbox"
@@ -1079,9 +1079,11 @@ func TestRealResumeAndAgent(t *testing.T) {
 	// sandbox declaration yet, so assemble its launch document in memory.
 	files := map[string][]byte{
 		pack.ManifestPath: read(t, "../claude/declaration.json"),
-		pack.SandboxPath:  wire(t, map[string]any{"schema": pack.DeclarationSchema, "builds": map[string]any{x.b.version: pack.Sandbox{Launch: &x.l}}}),
+		pack.SandboxPath: wire(t, map[string]any{"schema": pack.DeclarationSchema, "builds": map[string]any{x.b.version: pack.Sandbox{Launch: &x.l, Binds: []pack.Bind{
+			{Role: pack.ConfigOverlay, Kind: "folder", Inside: "/config/agents"},
+		}}}}),
 	}
-	d, err := pack.DecodeDeclaration(files, pack.BindLayout{})
+	d, err := pack.DecodeDeclaration(files, pack.BindLayout{Config: "/config", Tree: "/tree", CoreRows: []string{"/config", "/tree"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1174,7 +1176,6 @@ func TestRealPolicyFiles(t *testing.T) {
 						w.Dest = "b-agent"
 						w.Definition = true
 						w.AgentName = x.s.Agent
-						f.Entries = append(f.Entries, lp.Entry{Path: []lp.Comp{"name"}, Type: "string", Text: x.s.Agent})
 					}
 					f.Dest = w.Dest
 					inv = append(inv, w)
@@ -1186,7 +1187,6 @@ func TestRealPolicyFiles(t *testing.T) {
 			}
 			inv, files := makeFiles()
 			line(t, lp.JudgeFiles(x.p, x.s, inv, files), "", 0, "")
-			line(t, lp.JudgeFiles(x.p, x.s, nil, nil), "", 0, "")
 			for _, tc := range []struct {
 				name, code, at string
 				mutate         func(lp.Inventory, []lp.FileView) (lp.Inventory, []lp.FileView)
@@ -1232,7 +1232,6 @@ func TestRealPolicyFiles(t *testing.T) {
 			}
 			if b.name == "claude" {
 				line(t, lp.JudgeFiles(x.p, x.s, inv, files[:1]), "file-refused", 2, "file[b-agent]")
-				line(t, lp.JudgeFiles(x.p, x.s, inv[:1], files[:1]), "", 0, "")
 				files[1].Entries[0].Text = "other"
 				line(t, lp.JudgeFiles(x.p, x.s, inv, files), "file-refused", 2, "file[b-agent]")
 				files[1].Entries[0].Text = x.s.Agent
@@ -1324,4 +1323,26 @@ func TestCodexIsolatedTerminal(t *testing.T) {
 		_, r := lp.Expand(x.p, x.l, x.s)
 		line(t, r, "required-missing", 1, "form[no-daemon]")
 	}
+}
+
+func TestClaudeReviewerSource(t *testing.T) {
+	x := baseline(t, builds[0])
+	// The capture shows reviewer as a custom agent. Its definition must be
+	// resolved in the reviewed overlay even if the declaration calls it built-in.
+	want := pack.Agent{Name: "reviewer", Definition: "/config/agents/reviewer.md"}
+	if !slices.Equal(x.l.Agents, []pack.Agent{want}) || x.s.Agent != want.Name {
+		t.Fatalf("reviewer source: got %+v, want %+v", x.l.Agents, want)
+	}
+	inv := lp.Inventory{{PathRole: "agent", Dest: want.Definition, Definition: true, AgentName: want.Name}}
+	line(t, lp.JudgeFiles(x.p, x.s, inv, nil), "file-refused", 2, "file[#0]")
+	hash := digest(read(t, "testdata/launchpolicy/claude/reviewer.md"))
+	file := lp.FileView{PathRole: "agent", Dest: want.Definition, InstalledSHA256: hash, BytesSHA256: hash,
+		Entries: []lp.Entry{
+			{Path: []lp.Comp{"name"}, Type: "string", Text: "reviewer"},
+			{Path: []lp.Comp{"description"}, Type: "string", Text: "Reviews code changes."},
+		},
+	}
+	line(t, lp.JudgeFiles(x.p, x.s, inv, []lp.FileView{file}), "", 0, "")
+	file.InstalledSHA256 = digest([]byte("substituted agent"))
+	line(t, lp.JudgeFiles(x.p, x.s, inv, []lp.FileView{file}), "file-binding", 2, "file[#0]")
 }

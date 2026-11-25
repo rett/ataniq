@@ -455,14 +455,11 @@
   "files": [
     {
       "path_role": "agent",
-      "required": [],
+      "required": [
+        {"path": ["name"], "type": "string", "text": "reviewer"}
+      ],
       "allowed": [
-        [
-          "description"
-        ],
-        [
-          "name"
-        ]
+        ["description"]
       ]
     },
     {
