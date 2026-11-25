@@ -34,10 +34,10 @@
   settings are decoded from the bytes read from the descriptor that was
   checked, never from a second open by name.
   `--check` with the same flags prints every check the daemon makes before
-  its locks (also the root marker, the gate's key and pins and the socket
-  paths of the daemon and the leads' holders), pass or FAIL with the
-  reason, and what it would read, then exits 0 or 10, binding, locking,
-  making and starting nothing. `qualification/scratch-seat/prepare.sh`
+  its locks (also the root marker, the gate's key and pins and the daemon's
+  socket path) and one the start does not make, the socket paths of the
+  leads' holders, pass or FAIL with the reason, and what it would read,
+  then exits 0 or 10, binding, locking, making and starting nothing. `qualification/scratch-seat/prepare.sh`
   writes the scratch config and the settings folder (modes 0600 and 0700)
   and the files they name in a folder of the proof's own, with leads fresh
   for each sitting (`standin-N`, `live-N`): `--dry` prints from the values

@@ -1306,7 +1306,9 @@ takes a lock and prints one line each, `pass` with what holds or `FAIL` with
 why: the folder and its four rules, the settings file and the settings, the
 folders the settings name, the scratch roots, the suite, the root marker, the
 gate's address, key and pins, and the socket paths of the daemon and of every
-lead's holder. Then it lists
+lead's holder. The last of these is one the daemon's start does not make: a
+holder meets the limit of a socket address only when it starts, so the check
+is the place to find a runtime root too long for a holder. Then it lists
 what the daemon would read and open, says that `owner/scratch.json` is not
 read, and ends `check: no refusal` (exit 0) or `check: N refusal(s)` (exit
 10). It binds, locks, makes and starts nothing; the locks and the gate's port,

@@ -416,7 +416,9 @@ EOF
 The live lead (only once the drop rule is in place):
   7. The drop rule (a separate change, SB-1) is in place: you install it as root at the start of sitting 1, and its own check passes.
      OWNER ONLY (starts pasta, bubblewrap, curl and a throwaway user unit): { sh $ROOT/netcheck.sh; echo "netcheck: exit status \$?"; } 2>&1 | tee -a $EVIDENCE/netcheck.txt
-     Without the rule: no live lead; go on with step 11.
+     Go on to step 8 only if the rule's own check passed and this ended "netcheck: exit status 0".
+     Otherwise there is no live lead: skip 8 to 10 and take step 11 as a sitting without it does: $_c set $KEY_STANDIN off --config $CONFIG,
+     its page says Chat is off, then $_c set $KEY_STANDIN read --config $CONFIG (on again, for the restart).
   8. Note the login rows of the provider's account page.
      OWNER ONLY (the daemon runs git to define it): d on $KEY_LIVE
      then (terminal C): $_c set $KEY_LIVE read --config $CONFIG
@@ -518,7 +520,10 @@ self_check() {
     case $_o in *'live-7'*) [ -n "$_m" ] || _fail 'the steps name a lead that is not configured' ;; esac
     case $_o in *'claude --version'*) [ -n "$_m" ] || _fail 'the steps run claude without a live lead' ;; esac
     case $_o in *'drop rule'*'d on live-7'*) ;; *) [ -z "$_m" ] || _fail 'the live lead does not wait for the drop rule' ;; esac
-    _n=$((_n + 10))
+    case $_o in *'Go on to step 8 only if the rule'"'"'s own check passed and this ended "netcheck: exit status 0"'*'d on live-7'*) ;;
+      *) [ -z "$_m" ] || _fail 'step 7 does not stop the live lead unless the rule'"'"'s check passed and netcheck ended with exit status 0' ;;
+    esac
+    _n=$((_n + 11))
     _rest=$_o$_nl
     while [ -n "$_rest" ]; do
       _l=${_rest%%"$_nl"*}

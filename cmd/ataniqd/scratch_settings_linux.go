@@ -523,7 +523,9 @@ func ownerSettingsRun(a *app, o *ownerFlags, cfg *leaddaemon.Config) (scratchLoa
 }
 
 // ownerSettingsCheck is run --check: every check the daemon makes before it
-// takes a lock, on the same flags and config, one line each, with what passes
+// takes a lock, on the same flags and config, and one the start does not
+// make, the socket paths of every lead's holder (a holder meets that limit
+// only when it starts, during the sitting), one line each, with what passes
 // and why a refusal fails, then what the daemon would read. It binds, locks,
 // makes and starts nothing. It ends 0 when nothing is refused, else 10.
 func (a *app) ownerSettingsCheck(o *ownerFlags, cfg *leaddaemon.Config, p settingsPlace) int {

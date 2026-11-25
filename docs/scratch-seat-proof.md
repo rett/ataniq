@@ -419,9 +419,13 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    lead's holder. It then lists what the daemon will read (the settings
    file, the gate's key, certificate and pins, read only; the key list; the
    journal and records) and that `owner/scratch.json` is not read. It must end
-   `check: no refusal`. The daemon makes the same checks at its start and
-   refuses (exit 10) with the same reasons, before any lock; only the locks
-   and the gate's port, which the check does not take, are left to the start.
+   `check: no refusal`. The daemon makes these checks at its start too and
+   refuses (exit 10) with the same reasons, before any lock, with one
+   exception: the socket paths of the leads' holders are checked only here,
+   before the sitting, since the daemon's start does not look at them (a
+   holder meets that limit only when it starts, during the sitting). The
+   locks and the gate's port, which the check does not take, are left to the
+   start.
    The pins line, the trial's fingerprint line of its current run, the
    digests of the trial's gate key, certificate, pins, key list and settings,
    and the key list's prefix are the record that step 13 compares with. The

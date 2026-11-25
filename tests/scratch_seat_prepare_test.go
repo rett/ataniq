@@ -435,6 +435,17 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root string, live bool) {
 		!strings.Contains(out, "stay for the approval of that one write") || !strings.Contains(out, "cannot-identify")) {
 		t.Errorf("the live lead's approval, paste and revocation steps:\n%s", out)
 	}
+	// Step 7 says when the live lead may follow, and what to do otherwise
+	// (review finding 9): the second netcheck's exit status 0 and the rule's
+	// own check, else the stand-in-only branch of step 11.
+	if live && (!strings.Contains(out, "Go on to step 8 only if the rule's own check passed and this ended \"netcheck: exit status 0\".") ||
+		!strings.Contains(out, "Otherwise there is no live lead: skip 8 to 10 and take step 11 as a sitting without it does: ") ||
+		!strings.Contains(out, "chat set standin-3 read --config "+root+"/scratch.json (on again, for the restart)")) {
+		t.Errorf("step 7 does not state when the live lead may follow:\n%s", out)
+	}
+	if live && strings.Contains(out, "Without the rule: no live lead; go on with step 11.") {
+		t.Errorf("step 7 still names only the rule as its stop condition:\n%s", out)
+	}
 	if live && !strings.Contains(out, "chat set live-3 off") || !live && !strings.Contains(out, "chat set standin-3 off") {
 		t.Errorf("the off step, live %v:\n%s", live, out)
 	}
@@ -1153,6 +1164,7 @@ func TestScratchSeatProofRunbookShellIsSafe(t *testing.T) {
 		"Stay attached: claude asks next.",
 		"`cannot-identify:`", "`uncertain delivery:`",
 		"in the leads view (not attached), `x` and `y` on `live-N`",
+		"the socket paths of the leads' holders are checked only here, before the sitting, since the daemon's start does not look at them",
 	} {
 		if !strings.Contains(flat, want) {
 			t.Errorf("the runbook does not say %q", want)
@@ -1164,7 +1176,8 @@ func TestScratchSeatProofRunbookShellIsSafe(t *testing.T) {
 	}
 	for _, stale := range []string{"chat purge", "plain Yes", "leads/scratch-live-lead/home", "test ! -e", "--swap-in", "--swap-out",
 		"--record-trial", "trial-restart.sh", "mask --runtime", "swap-record", "scratch.json.trial", "owner-scratch.json", "env -i HOME=\"$(mktemp -d)\"",
-		"keys-before.log", "sha256sum -c --", "head catching up", "scratch_mounts_linux", "by place in the filesystem"} {
+		"keys-before.log", "sha256sum -c --", "head catching up", "scratch_mounts_linux", "by place in the filesystem",
+		"The daemon makes the same checks at its start"} {
 		if strings.Contains(text, stale) {
 			t.Errorf("the runbook still says %q", stale)
 		}
@@ -1199,11 +1212,59 @@ func TestScratchSeatPrepareAgentRule(t *testing.T) {
 		}
 	}
 	agents := string(mustRead(t, filepath.Join(root(t), "AGENTS.md")))
-	for _, want := range []string{"`sh scripts/go-tool.sh test ./tests/ -run ScratchSeat`",
-		"`sh scripts/go-tool.sh test -tags ataniq_ownerchannel,ataniq_canary -run 'ScratchSeat|OwnerSettings|ScratchLeadReach' ./cmd/ataniqd/ ./internal/leaddaemon/`"} {
+	checks := []string{"`sh scripts/go-tool.sh test ./tests/ -run ScratchSeat`",
+		"`sh scripts/go-tool.sh test -tags ataniq_ownerchannel,ataniq_canary -run 'ScratchSeat|OwnerSettings|KeysCheck|ScratchLeadReach' ./cmd/ataniqd/ ./internal/leaddaemon/`",
+		"`sh scripts/go-tool.sh test -tags ataniq_canary -run BindTable ./internal/leadholder/sandboxstart/`",
+		"`sh scripts/go-tool.sh test -tags ataniq_ownerchannel -run TheScratchSettings ./internal/approval/hostadapter/`"}
+	for _, want := range checks {
 		if !strings.Contains(agents, want) {
 			t.Errorf("AGENTS.md does not name the targeted check %s", want)
 		}
+	}
+	// The filters name the tests that exist (review finding 11): every test
+	// of the feature's test files is selected by the filter of the check
+	// that names its package, and each filter selects at least one test.
+	filterOf := map[string]*regexp.Regexp{}
+	for _, c := range checks {
+		f := strings.Fields(strings.Trim(c, "`"))
+		var re string
+		var dirs []string
+		for i, w := range f {
+			switch {
+			case w == "-run":
+				re = strings.Trim(f[i+1], "'")
+			case strings.HasPrefix(w, "./"):
+				dirs = append(dirs, strings.TrimSuffix(strings.TrimPrefix(w, "./"), "/"))
+			}
+		}
+		for _, d := range dirs {
+			filterOf[d] = regexp.MustCompile("^Test(" + re + ")")
+		}
+	}
+	for _, file := range []string{"tests/scratch_seat_prepare_test.go", "tests/scratch_seat_netcheck_test.go",
+		"cmd/ataniqd/scratch_settings_linux_test.go", "cmd/ataniqd/scratch_keys_linux_test.go", "cmd/ataniqd/scratch_seat_proof_linux_test.go",
+		"internal/leaddaemon/lead_reach_linux_test.go", "internal/leadholder/sandboxstart/bindtable_test.go"} {
+		dir := filepath.Dir(file)
+		re, ok := filterOf[dir]
+		if !ok {
+			t.Errorf("no targeted check of AGENTS.md names %s", dir)
+			continue
+		}
+		n := 0
+		for _, m := range regexp.MustCompile(`(?m)^func (Test[A-Za-z0-9_]+)\(t \*testing\.T\)`).FindAllStringSubmatch(string(mustRead(t, filepath.Join(root(t), file))), -1) {
+			n++
+			if !re.MatchString(m[1]) {
+				t.Errorf("the targeted check of %s does not select %s (%s)", dir, m[1], file)
+			}
+		}
+		if n == 0 {
+			t.Errorf("%s has no test", file)
+		}
+	}
+	hostadapter := string(mustRead(t, filepath.Join(root(t), "internal/approval/hostadapter/scratch_test.go")))
+	if re := filterOf["internal/approval/hostadapter"]; re == nil || !re.MatchString("TestTheScratchSettingsReadFromBytesAsFromTheFile") ||
+		!strings.Contains(hostadapter, "func TestTheScratchSettingsReadFromBytesAsFromTheFile(") {
+		t.Error("the targeted check of the host adapter does not select the test of its byte reader")
 	}
 }
 

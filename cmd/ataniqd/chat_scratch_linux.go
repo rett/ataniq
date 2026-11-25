@@ -89,10 +89,13 @@ with the seat gate together:
   --check           with --owner-settings: make every check the daemon makes
                     before it takes a lock (the folder's refusals, the
                     settings, the roots, the root marker, the gate's address,
-                    key and pins, the socket paths), print one line each,
-                    "pass" or "FAIL" with the reason, then what the daemon
-                    would read, and exit: 0 when nothing is refused, 10
-                    otherwise. It binds, locks, makes and starts nothing.
+                    key and pins, the daemon's socket path) and one more that
+                    the start does not make, the socket paths of every lead's
+                    holder (a holder meets that limit only when it starts);
+                    print one line each, "pass" or "FAIL" with the reason,
+                    then what the daemon would read, and exit: 0 when nothing
+                    is refused, 10 otherwise. It binds, locks, makes and
+                    starts nothing.
 
        ataniqd run --scratch CONFIG --owner-channel --check --keys-prefix
        ataniqd run --scratch CONFIG --owner-channel --check
