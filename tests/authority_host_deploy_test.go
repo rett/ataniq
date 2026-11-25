@@ -9,6 +9,7 @@ package tests
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -647,6 +648,93 @@ func testAuthorityHostFirstDeploy(t *testing.T, data string, section func(from, 
 	if !strings.Contains(hit, "before activation") {
 		t.Error("the HIT troubleshooting row does not say it is about the check before activation")
 	}
+}
+
+var (
+	// ahUserAtHost finds a USER@HOST word; ahDottedQuad an IPv4 address.
+	ahUserAtHost = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+`)
+	ahDottedQuad = regexp.MustCompile(`\b[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b`)
+	// ahPlaceholderHost is a host written as a placeholder: capitals,
+	// digits and hyphens, such as AUTHORITY-HOST or GIT-HOST.
+	ahPlaceholderHost = regexp.MustCompile(`^[A-Z][A-Z0-9-]*$`)
+)
+
+// ahPlaceholdersOnly checks that a text about keys names no real login, host,
+// address or home folder: every USER@HOST has a placeholder host (or is the
+// name of the FIDO2 key type), every address is in a documentation range, and
+// the only home folder is /home/DEPLOYUSER.
+func ahPlaceholdersOnly(t *testing.T, name, text string) {
+	t.Helper()
+	for _, m := range ahUserAtHost.FindAllString(text, -1) {
+		host := m[strings.LastIndex(m, "@")+1:]
+		if m != "sk-ssh-ed25519@openssh.com" && !ahPlaceholderHost.MatchString(host) {
+			t.Errorf("%s names a login that is not a placeholder: %q", name, m)
+		}
+	}
+	for _, m := range ahDottedQuad.FindAllString(text, -1) {
+		if !strings.HasPrefix(m, "192.0.2.") && !strings.HasPrefix(m, "198.51.100.") && !strings.HasPrefix(m, "203.0.113.") {
+			t.Errorf("%s names an address outside the documentation ranges: %s", name, m)
+		}
+	}
+	for _, home := range []string{"/home/", "/Users/"} {
+		for rest := text; ; {
+			i := strings.Index(rest, home)
+			if i < 0 {
+				break
+			}
+			rest = rest[i+len(home):]
+			if !strings.HasPrefix(rest, "DEPLOYUSER") {
+				t.Errorf("%s names a home folder: %s%.20s", name, home, rest)
+			}
+		}
+	}
+}
+
+// TestAuthorityHostDeployOutwardKeys checks the outward keys page: the
+// owner's rule for the deploy, push and signing keys, the split of a
+// read-only fetch from a push with the laptop's key, signing with a public-key
+// literal so the private part stays in the agent, a signing key without a
+// destination constraint (which the agent would refuse for a signature), and
+// protection left to the owner. It names only placeholders.
+func TestAuthorityHostDeployOutwardKeys(t *testing.T) {
+	path := filepath.Join(root(t), "docs/outward-keys.md")
+	if err := checkDoc(root(t), path); err != nil {
+		t.Error(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flat := ahFlat(string(data))
+	for _, want := range []string{
+		"They live on the owner's laptop, in its ssh-agent",
+		"ssh-add -c",
+		"The agent is forwarded to the development host only for a deploy, push or release session",
+		"No private key for the authority host, the git remote or signing lives on the development host",
+		"## Git: fetch and push",
+		"git remote set-url origin https://GIT-HOST/OWNER/REPO.git",
+		"git remote set-url --push origin ssh://git@GIT-HOST/OWNER/REPO.git",
+		"is read-only: anonymous https when the repository is public",
+		"ssh-add -c -t 30m -h AI-HOST -h 'AI-HOST>git@GIT-HOST' PUSH-KEY",
+		"git config core.sshCommand 'ssh -o IdentityFile=none -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no",
+		"git config gpg.format ssh",
+		"git config user.signingkey 'key::ssh-ed25519 AAAA...PUBLIC-KEY signing-key'",
+		"the private part stays in the agent on the laptop",
+		"ssh-add -c -t 30m SIGNING-KEY",
+		"refuses it for any other signature",
+		"Branch and tag protection on the git host is the owner's setting",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("docs/outward-keys.md does not say %q", want)
+		}
+	}
+	// The signing key is a literal, never a key file.
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(line, "user.signingkey") && strings.Contains(line, "git config") && !strings.Contains(line, "key::") {
+			t.Errorf("docs/outward-keys.md names a signing key file: %s", line)
+		}
+	}
+	ahPlaceholdersOnly(t, "docs/outward-keys.md", string(data))
 }
 
 // ahBootUnit is the unit that runs ah-switch boot at every boot.
