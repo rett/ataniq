@@ -260,7 +260,12 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    It takes `OWNER_STATE_DIR`, `ROOT`, `SEAT_GATE`, `SITTING`, `CLAUDE_FILE`
    and `CLAUDE_MODEL` from the environment (or `--state`, `--root`, `--gate`,
    `--sitting`, `--claude` and `--model`); without the two claude values the
-   config has the stand-in lead only. `--dry` prints from the values alone and
+   config has the stand-in lead only. The daemon is `$D` unless you give
+   `--daemon FILE` (and `--bin DIR` for the canary binaries); the steps it
+   prints run that daemon throughout, and its own steps g and 13 carry the
+   `--daemon` they were printed with, so the check and the comparison run
+   the daemon the sitting runs. Give the same `--daemon` to each `--status`
+   you type from this guide when yours is not `$D`. `--dry` prints from the values alone and
    reads none of your folders, so what depends on them (pasta, bubblewrap) is
    printed as a condition. `--write` first checks, and refuses before it makes
    anything: a state folder that is a link, not at its physical path or

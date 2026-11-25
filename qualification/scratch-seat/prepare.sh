@@ -394,7 +394,9 @@ commands() {
   _g=$1
   _live=${2:-}
   _c="$DAEMON chat"
-  _vals="--state $S --root $ROOT --gate $_g"
+  # The values of prepare's own steps g and 13, the daemon among them, so
+  # that both run the daemon the sitting runs.
+  _vals="--state $S --root $ROOT --gate $_g --daemon $DAEMON"
   _lu=ataniq-lead-scratch-$KEY_LIVE.service
   _su=ataniq-lead-scratch-$KEY_STANDIN.service
   _run="$DAEMON run --scratch $CONFIG --owner-channel --seat-gate $_g --owner-settings $SETTINGS_DIR"
@@ -532,6 +534,9 @@ self_check() {
       *) _fail 'the steps do not check, stop the trial, run the daemon on the settings folder, compare and start the trial, in order' ;;
     esac
     case $_o in *'scratch-init '*'--status '*) ;; *) _fail 'the steps do not make the root marker before the daemon'"'"'s check' ;; esac
+    case $_o in *"--status --state /srv/sample/trial-state --root /srv/sample/proof --gate 192.0.2.10:7443 --daemon $DAEMON --record "*"--status --state /srv/sample/trial-state --root /srv/sample/proof --gate 192.0.2.10:7443 --daemon $DAEMON --compare "*) ;;
+      *) _fail 'steps g and 13 do not run prepare with the daemon the sitting runs (--daemon)' ;;
+    esac
     case $_o in *'--status '*' --record '*'systemctl --user stop'*'--compare'*'key list since g'*'systemctl --user start'*) ;;
       *) _fail 'the steps do not record the baseline at g, before the trial stops, and have the daemon judge the key list at 13' ;;
     esac
@@ -545,7 +550,7 @@ self_check() {
     case $_o in *'Go on to step 8 only if the rule'"'"'s own check passed and this ended "netcheck: exit status 0"'*'d on live-7'*) ;;
       *) [ -z "$_m" ] || _fail 'step 7 does not stop the live lead unless the rule'"'"'s check passed and netcheck ended with exit status 0' ;;
     esac
-    _n=$((_n + 11))
+    _n=$((_n + 12))
     _rest=$_o$_nl
     while [ -n "$_rest" ]; do
       _l=${_rest%%"$_nl"*}

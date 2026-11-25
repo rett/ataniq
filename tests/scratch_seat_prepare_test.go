@@ -364,7 +364,7 @@ func TestScratchSeatPrepareSelfTest(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("--self-test commands: exit %d:\n%s", code, out)
 		}
-		scratchSeatCommandsHold(t, out, "/srv/sample/trial", "/srv/sample/proof", live)
+		scratchSeatCommandsHold(t, out, "/srv/sample/trial", "/srv/sample/proof", filepath.Join(root(t), "build", "scratch-seat", "ataniqd"), live)
 	}
 	if after := scratchSeatFiles(t, k.dir); !sameScratchSeatFiles(before, after) {
 		t.Error("a self-test changed the folder")
@@ -382,7 +382,7 @@ func TestScratchSeatPrepareSelfTest(t *testing.T) {
 // again by the owner's own command; the daemon's exit status is printed; the
 // live lead waits for the drop rule; the commands of the leads name only the
 // leads configured, by their keys.
-func scratchSeatCommandsHold(t *testing.T, out, state, root string, live bool) {
+func scratchSeatCommandsHold(t *testing.T, out, state, root, daemon string, live bool) {
 	t.Helper()
 	i := strings.Index(out, "Your steps, in order")
 	if i < 0 {
@@ -397,7 +397,9 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root string, live bool) {
 			t.Errorf("the steps lack %d:\n%s", n, out)
 		}
 	}
-	prep := " --state " + state + " --root " + root + " --gate 192.0.2.10:7443"
+	// Steps g and 13 run prepare with the daemon given (review finding 8),
+	// so that the check and the comparison run the daemon the sitting runs.
+	prep := " --state " + state + " --root " + root + " --gate 192.0.2.10:7443 --daemon " + daemon
 	for _, want := range []string{
 		"A for the daemon, B for the console, C for the desk",
 		"Nothing of the trial is renamed, moved or masked: the proof's daemon reads its settings from " + root + "/owner-settings.",
@@ -508,7 +510,7 @@ func TestScratchSeatPrepareDryWritesNothing(t *testing.T) {
 		if live != strings.Contains(out, "lead live-3: live claude 2.1.325, argv [\"/ataniq/agent/claude\", \"--model\", \"sample-model\"]") {
 			t.Errorf("the dry run's live lead, live %v:\n%s", live, out)
 		}
-		scratchSeatCommandsHold(t, out, k.state, r, live)
+		scratchSeatCommandsHold(t, out, k.state, r, filepath.Join(k.bin, "ataniqd"), live)
 	}
 	// From the values alone: a state folder, a root's parent and binaries
 	// that are not there at all.
@@ -766,7 +768,7 @@ func TestScratchSeatPrepareWriteTouchesOnlyTheRoot(t *testing.T) {
 	if !strings.Contains(out, "nothing was started, and nothing in "+k.state+" was changed") {
 		t.Errorf("--write does not say what it did not do:\n%s", out)
 	}
-	scratchSeatCommandsHold(t, out, k.state, r, true)
+	scratchSeatCommandsHold(t, out, k.state, r, filepath.Join(k.bin, "ataniqd"), true)
 	if after := scratchSeatFiles(t, k.state); !sameScratchSeatFiles(beforeState, after) {
 		t.Fatal("--write changed the trial's state folder")
 	}

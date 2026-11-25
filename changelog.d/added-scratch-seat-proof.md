@@ -51,7 +51,8 @@
   cleared environment, never writes in the trial's state folder, never
   deletes and starts nothing, and `--status`
   refuses a `--state` that is not the config's `state_root` (the same device
-  and inode) and runs the daemon's `--check`; with `--record` (before the
+  and inode) and runs the daemon's `--check` (the printed steps that run
+  `--status` carry the selected `--daemon`); with `--record` (before the
   sitting) it then takes the baseline, the digests of the trial's six files
   and the daemon's prefix of the key list, and writes both, whole, into
   `evidence/step-g` only when the prefix's digest is the digests' of the
