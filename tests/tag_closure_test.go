@@ -5,7 +5,8 @@ package tests
 // is sound only while the package builds the same under every tag set, which
 // holds while no file of its test closure, its own test files and the files of
 // every package they import, has a build constraint that names the canary tag
-// or the owner channel's tag. The tagged runs' grep reads only the folders it finds, so it
+// or the owner channel's tag, and no cgo setting of the closure is selected by
+// either tag. The tagged runs' grep reads only the folders it finds, so it
 // would not notice a tagged file in a package that ./tests/ imports; this check
 // does, under each of the four tag sets the targets build with, so that any
 // return of ./tests/ to a tagged run is a deliberate change.
@@ -14,10 +15,11 @@ package tests
 // C and the like, which a constraint selects as it does a Go file): only their
 // headers, each once, and only the sources the go command reads a constraint
 // from on this host (no object, and no file whose name leaves it out for the
-// host's system or architecture, which no tag set can select). And it compares
-// the sources each tag set selects with those the untagged build selects, so
-// that a selection that differs is found even where reading a constraint would
-// miss it.
+// host's system or architecture, which no tag set can select). And it compares,
+// package by package, the sources each tag set selects and the cgo settings it
+// selects (compiler and linker flags, pkg-config arguments, each list in its
+// order) with those of the untagged build, so that a selection that differs is
+// found even where reading a constraint would miss it.
 //
 // The checks of the tags in this package run go list with the tags they need
 // and do not depend on the tags the package itself is built with.
@@ -59,6 +61,14 @@ type closurePackage struct {
 	// SysoFiles are objects, selected by their names alone; they are compared
 	// and not read.
 	SysoFiles []string
+	// The settings of the #cgo lines, which a constraint on a #cgo line
+	// selects as a constraint selects a file: compared, in order.
+	CgoCFLAGS    []string
+	CgoCPPFLAGS  []string
+	CgoCXXFLAGS  []string
+	CgoFFLAGS    []string
+	CgoLDFLAGS   []string
+	CgoPkgConfig []string
 	// The files a constraint leaves out, Go and other.
 	IgnoredGoFiles    []string
 	IgnoredOtherFiles []string
@@ -70,12 +80,31 @@ type closurePackage struct {
 // closurePackage.
 var closureListFlags = []string{"-deps", "-test", "-json=ImportPath,Dir,Standard,GoFiles,CgoFiles," +
 	"CFiles,CXXFiles,MFiles,HFiles,FFiles,SFiles,SwigFiles,SwigCXXFiles,SysoFiles," +
+	"CgoCFLAGS,CgoCPPFLAGS,CgoCXXFLAGS,CgoFFLAGS,CgoLDFLAGS,CgoPkgConfig," +
 	"IgnoredGoFiles,IgnoredOtherFiles,TestGoFiles,XTestGoFiles"}
 
 // otherSources are the selected sources of p that are not Go and that hold
 // text a constraint is read from.
 func (p closurePackage) otherSources() []string {
 	return slices.Concat(p.CFiles, p.CXXFiles, p.MFiles, p.HFiles, p.FFiles, p.SFiles, p.SwigFiles, p.SwigCXXFiles)
+}
+
+// cgoSettings are the cgo settings of p that the build selects, one entry for
+// each kind that has any: its name and its list, in its order.
+func (p closurePackage) cgoSettings() []string {
+	var out []string
+	for _, s := range []struct {
+		name string
+		v    []string
+	}{
+		{"CFLAGS", p.CgoCFLAGS}, {"CPPFLAGS", p.CgoCPPFLAGS}, {"CXXFLAGS", p.CgoCXXFLAGS},
+		{"FFLAGS", p.CgoFFLAGS}, {"LDFLAGS", p.CgoLDFLAGS}, {"pkg-config", p.CgoPkgConfig},
+	} {
+		if len(s.v) > 0 {
+			out = append(out, fmt.Sprintf("cgo %s %q", s.name, s.v))
+		}
+	}
+	return out
 }
 
 // closureTagSets are the tag settings the targets build with: none (make
@@ -305,8 +334,9 @@ func checkTestsClosure(tags string, pkgs []closurePackage, testsDir string, head
 
 // closureInputs are the inputs the test build of the package in testsDir
 // selects, one entry for each, its package first: the Go files and the other
-// sources of every package of the closure, the standard library's too, and the
-// test files of the package in testsDir, which alone are built.
+// sources of every package of the closure, the standard library's too, the
+// test files of the package in testsDir, which alone are built, and the cgo
+// settings of every package, each kind's list in its order.
 func closureInputs(pkgs []closurePackage, testsDir string) []string {
 	var in []string
 	for _, p := range pkgs {
@@ -319,6 +349,9 @@ func closureInputs(pkgs []closurePackage, testsDir string) []string {
 				f = filepath.Join(p.Dir, f)
 			}
 			in = append(in, p.ImportPath+" "+f)
+		}
+		for _, s := range p.cgoSettings() {
+			in = append(in, p.ImportPath+" "+s)
 		}
 	}
 	slices.Sort(in)
@@ -377,7 +410,8 @@ func closureGuard(list func(tags string) (string, error), testsDir string, heade
 
 // TestCanaryTagTestsClosure lists the test closure of ./tests/ under each tag
 // set the targets build with, finds no file whose constraint names a tag, and
-// finds that every tag set selects the sources the untagged build does.
+// finds that every tag set selects the sources and the cgo settings the
+// untagged build does.
 func TestCanaryTagTestsClosure(t *testing.T) {
 	headers := newClosureHeaders()
 	list := func(tags string) (string, error) { return ownerGoList(t, tags, closureListFlags, "./tests/"), nil }
@@ -385,8 +419,9 @@ func TestCanaryTagTestsClosure(t *testing.T) {
 	t.Logf("the guard read %d bytes, the headers of %d files, for the four listings", headers.bytes, headers.files)
 }
 
-// The guard on small modules of its own, listed by the real go command,
-// under the four tag sets: an
+// The guard on small modules of its own, listed by the real go command with
+// cgo on, under the four tag sets: a dependency whose #cgo line a tag
+// selects, which it must reject though no file's selection differs; and an
 // assembly file whose plus build line names the tag right above an include,
 // where the go command does not apply it, which it must accept, after reading
 // it; and the same file with a blank line after the plus build line, which it
@@ -396,6 +431,11 @@ func TestCanaryTagTestsClosureFixtureModules(t *testing.T) {
 	const goMod = "module review\n\ngo 1.21\n"
 	const testFile = "package tests\n\nimport (\n\t\"testing\"\n\n\t\"review/dep\"\n)\n\n" +
 		"func TestValue(t *testing.T) {\n\tif v := dep.Value(); v != 0 {\n\t\tt.Fatalf(\"dependency returned %d, want 0\", v)\n\t}\n}\n"
+	// A #cgo line that the canary tag selects: the dependency's value is 1
+	// under it and 0 without it, with the same files built.
+	cgoDep := "package dep\n\n/*\n#cgo " + canaryTag + " CFLAGS: -DREVIEW_VALUE=1\n" +
+		"#ifndef REVIEW_VALUE\n#define REVIEW_VALUE 0\n#endif\nstatic int value(void) { return REVIEW_VALUE; }\n*/\n" +
+		"import \"C\"\n\n// Value is the C value.\nfunc Value() int { return int(C.value()) }\n"
 	plainDep := "package dep\n\n// Value is 0.\nfunc Value() int { return 0 }\n"
 	plusTag := "// +build " + canaryTag + "\n"
 	include := "#include \"textflag.h\"\n"
@@ -407,6 +447,11 @@ func TestCanaryTagTestsClosureFixtureModules(t *testing.T) {
 		want []string
 		read string
 	}{
+		{"a cgo flag a tag selects", map[string]string{"dep/dep.go": cgoDep},
+			[]string{
+				fmt.Sprintf("tags %q: the test build of ./tests/ selects review/dep cgo CFLAGS [\"-DREVIEW_VALUE=1\"]", canaryTag),
+				fmt.Sprintf("tags %q: the test build of ./tests/ selects review/dep cgo CFLAGS [\"-DREVIEW_VALUE=1\"]", ownerTag+","+canaryTag),
+			}, "dep/dep.go"},
 		{"a plus build line right above an include", map[string]string{"dep/dep.go": plainDep, "dep/value.s": plusTag + include},
 			nil, "dep/value.s"},
 		{"a plus build line with a blank line after it", map[string]string{"dep/dep.go": plainDep, "dep/value.s": plusTag + "\n" + include},
@@ -441,7 +486,7 @@ func TestCanaryTagTestsClosureFixtureModules(t *testing.T) {
 				}
 				cmd := exec.Command(tool, append(append(args, closureListFlags...), "./tests/")...)
 				cmd.Dir = dir
-				cmd.Env = canaryGoEnv()
+				cmd.Env = append(canaryGoEnv(), "CGO_ENABLED=1")
 				var stderr bytes.Buffer
 				cmd.Stderr = &stderr
 				out, err := cmd.Output()
@@ -591,8 +636,8 @@ func TestCanaryTagTestsClosureCheck(t *testing.T) {
 	}
 
 	// A tag set that selects other inputs than the untagged build: a tagged
-	// assembly file of an import, and a test file of ./tests/ that only the tag
-	// builds.
+	// assembly file of an import, a test file of ./tests/ that only the tag
+	// builds, and cgo settings that differ, or come in another order.
 	asmUntagged := with(closurePackage{ImportPath: "m/internal/s", Dir: "/r/internal/s", GoFiles: []string{"s.go"}, IgnoredOtherFiles: []string{"asm_amd64.s"}})
 	asmTagged := with(closurePackage{ImportPath: "m/internal/s", Dir: "/r/internal/s", GoFiles: []string{"s.go"}, SFiles: []string{"asm_amd64.s"}})
 	if got := compareClosureInputs("x", closureInputs(asmUntagged, testsDir), closureInputs(asmTagged, testsDir)); len(got) != 1 ||
@@ -609,6 +654,40 @@ func TestCanaryTagTestsClosureCheck(t *testing.T) {
 		!strings.Contains(got[0], "/r/tests/bom_x_test.go") {
 		t.Errorf("a test file of ./tests/ that only the tag builds: %q", got)
 	}
+	cgo := func(set func(*closurePackage)) []string {
+		p := closurePackage{ImportPath: "m/internal/c", Dir: "/r/internal/c", CgoFiles: []string{"c.go"}, CgoCFLAGS: []string{"-O2", "-DA=1"}, CgoLDFLAGS: []string{"-lm"}}
+		if set != nil {
+			set(&p)
+		}
+		return closureInputs(with(p), testsDir)
+	}
+	for _, tc := range []struct {
+		name string
+		set  func(*closurePackage)
+		want []string
+	}{
+		{"a C flag the tag adds", func(p *closurePackage) { p.CgoCFLAGS = append(p.CgoCFLAGS, "-DREVIEW_VALUE=1") },
+			[]string{`selects m/internal/c cgo CFLAGS ["-O2" "-DA=1" "-DREVIEW_VALUE=1"]`, `leaves out m/internal/c cgo CFLAGS ["-O2" "-DA=1"]`}},
+		{"the C flags in another order", func(p *closurePackage) { p.CgoCFLAGS = []string{"-DA=1", "-O2"} },
+			[]string{`selects m/internal/c cgo CFLAGS ["-DA=1" "-O2"]`, `leaves out m/internal/c cgo CFLAGS ["-O2" "-DA=1"]`}},
+		{"a C preprocessor flag", func(p *closurePackage) { p.CgoCPPFLAGS = []string{"-DB"} }, []string{`selects m/internal/c cgo CPPFLAGS ["-DB"]`}},
+		{"a C++ flag", func(p *closurePackage) { p.CgoCXXFLAGS = []string{"-DB"} }, []string{`selects m/internal/c cgo CXXFLAGS ["-DB"]`}},
+		{"a Fortran flag", func(p *closurePackage) { p.CgoFFLAGS = []string{"-DB"} }, []string{`selects m/internal/c cgo FFLAGS ["-DB"]`}},
+		{"a linker flag the tag drops", func(p *closurePackage) { p.CgoLDFLAGS = nil }, []string{`leaves out m/internal/c cgo LDFLAGS ["-lm"]`}},
+		{"a pkg-config package", func(p *closurePackage) { p.CgoPkgConfig = []string{"sqlite3"} }, []string{`selects m/internal/c cgo pkg-config ["sqlite3"]`}},
+		{"the same settings", nil, nil},
+	} {
+		got := compareClosureInputs("x", cgo(nil), cgo(tc.set))
+		if len(got) != len(tc.want) {
+			t.Errorf("%s: want %d problems, got %q", tc.name, len(tc.want), got)
+			continue
+		}
+		for i, want := range tc.want {
+			if !strings.Contains(got[i], want) {
+				t.Errorf("%s: problem %d is %q, want one with %s", tc.name, i, got[i], want)
+			}
+		}
+	}
 	// An imported package's test files are not built, so they are not inputs.
 	importTests := slices.Clone(clean)
 	importTests[1].TestGoFiles = []string{"x_test.go", "y_test.go"}
@@ -620,10 +699,10 @@ func TestCanaryTagTestsClosureCheck(t *testing.T) {
 	}
 
 	// The listing go list prints, a stream of objects, is read whole.
-	pkgs, err := decodeClosure(`{"ImportPath": "m/tests", "Dir": "/r/tests", "TestGoFiles": ["a_test.go"]}
+	pkgs, err := decodeClosure(`{"ImportPath": "m/tests", "Dir": "/r/tests", "TestGoFiles": ["a_test.go"], "CgoCFLAGS": ["-DX"]}
 {"ImportPath": "os", "Standard": true}
 `)
-	if err != nil || len(pkgs) != 2 || pkgs[0].TestGoFiles[0] != "a_test.go" || !pkgs[1].Standard {
+	if err != nil || len(pkgs) != 2 || pkgs[0].TestGoFiles[0] != "a_test.go" || !slices.Equal(pkgs[0].CgoCFLAGS, []string{"-DX"}) || !pkgs[1].Standard {
 		t.Errorf("decodeClosure = %+v, %v", pkgs, err)
 	}
 	if _, err := decodeClosure("{"); err == nil {
