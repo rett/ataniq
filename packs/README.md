@@ -19,3 +19,9 @@ The screen-qualified Claude 2.1.325 and Codex 0.169 builds have no launch policy
 4. Keep each provider concern in its own file. A pack can use the standard library, the neutral pack and concern contracts, and shared code under `packs/internal`. Only the composition packages may import sibling packs.
 
 Provider names, boundary words and provider-specific decisions belong in the packs. Core looks up packs by name and uses neutral interfaces. Code above the transports uses the session vocabulary. Core tests use the synthetic packs in `internal/pack/packtest`. Put tests that need real packs in the provider package or in `packs/all`.
+
+## Launch policies
+
+The holder looks up a policy by pack and resolved build version. For the installed builds it reads `launchpolicy/<version>.json` and the adjacent help capture. Codex has one fixture containing both the main and exec help, with a labelled separator. The exec scope inventories options. Only the terminal executable is admitted.
+
+Both policies ship with an empty fixture hash and pending terminal vectors. The matcher returns `policy-unrecorded` until the attended install records the fixture and resolves pending evidence. Recording the fixture alone cannot qualify a mode. The help for Claude names six modes without specifying their behavior, so all six have class `bypass`. Codex delegates the approval decision to the model under `on-request` (class `bypass`) and returns failures under `never` (class `no-prompt`). All of these classes are refused for leads.
