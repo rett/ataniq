@@ -356,7 +356,7 @@ func TestSeatLeadsStreamEndsWhenTheHintDies(t *testing.T) {
 	r, _ := newLeadsRig(t)
 	ft := stillTimers(r)
 	s := r.login(t)
-	got := r.streamAsync(context.Background(), leadsOK, s)
+	got := r.heldStream(t, leadsOK, s)
 	r.waitStreams(t, 1)
 	waitTimers(t, ft, 3) // the life, the heartbeat and the session's end
 	r.postWith("/api/logout", "{}", s)

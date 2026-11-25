@@ -64,6 +64,34 @@ func (r *rig) streamAsync(ctx context.Context, body string, cookies ...*http.Coo
 	return out
 }
 
+// heldStream runs a stream on a recorder in a goroutine, as streamAsync
+// does, for a test that waits for an event to end it. The request's
+// cancellation and the join of its handler are registered before the caller
+// asserts anything: when the stream ignores the event and the test fails,
+// the stream, parked on timers that stand still, is ended and its handler
+// joined, so none is left behind.
+func (r *rig) heldStream(t *testing.T, body string, cookies ...*http.Cookie) <-chan *httptest.ResponseRecorder {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	out := make(chan *httptest.ResponseRecorder, 1)
+	ended := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-ended:
+		case <-time.After(waitBound):
+			t.Errorf("a stream's handler did not end within %v of its request's end", waitBound)
+		}
+	})
+	go func() {
+		defer close(ended)
+		w := httptest.NewRecorder()
+		r.h.ServeHTTP(w, streamRequest(ctx, streamPath, body, cookies...))
+		out <- w
+	}()
+	return out
+}
+
 // streamConn is a stream read over a real connection, block by block: a
 // block is the lines up to a blank line, joined by newlines.
 type streamConn struct {
@@ -568,7 +596,7 @@ func TestSeatStreamEndsInSilence(t *testing.T) {
 	r.app.streamBeat = time.Hour
 	s := r.login(t)
 	r.clock.Advance(20 * time.Minute)
-	got := r.streamAsync(context.Background(), streamOK, s)
+	got := r.heldStream(t, streamOK, s)
 	r.waitStreams(t, 1)
 	waitTimers(t, ft, 3)
 	ft.advance(10*time.Minute - time.Second)
@@ -599,7 +627,7 @@ func TestSeatStreamEndsInSilence(t *testing.T) {
 			t.Fatalf("read %d: %d", i, w.Code)
 		}
 	}
-	got = r2.streamAsync(context.Background(), streamOK, s2)
+	got = r2.heldStream(t, streamOK, s2)
 	r2.waitStreams(t, 1)
 	waitTimers(t, ft2, 3)
 	ft2.advance(10 * time.Minute)
@@ -949,7 +977,7 @@ func TestSeatStreamPerCredentialAndGlobalLimits(t *testing.T) {
 	// A logout frees the place too. The stream's timers stand still from
 	// here, so that the logout, not a heartbeat, ends it.
 	ft := stillTimers(r)
-	got := r.streamAsync(context.Background(), streamOK, other)
+	got := r.heldStream(t, streamOK, other)
 	r.waitStreams(t, 1)
 	waitTimers(t, ft, 3)
 	r.postWith("/api/logout", "{}", other)
@@ -1065,7 +1093,7 @@ func TestSeatStreamAppCloseEndsStreams(t *testing.T) {
 	ft := stillTimers(r)
 	s := r.login(t)
 	x := &App{Handler: r.h, stop: func() {}}
-	got := r.streamAsync(context.Background(), streamOK, s)
+	got := r.heldStream(t, streamOK, s)
 	r.waitStreams(t, 1)
 	waitTimers(t, ft, 3) // the life, the heartbeat and the session's end
 	x.Close()
@@ -1118,9 +1146,7 @@ func TestSeatStreamCheckInIsTheForeground(t *testing.T) {
 	// heartbeat, ends the stream.
 	ft := stillTimers(r)
 	r.clock.Advance(SessionIdle - 10*time.Second)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	got := r.streamAsync(ctx, `{"version":"bb"}`, s)
+	got := r.heldStream(t, `{"version":"bb"}`, s)
 	r.waitStreams(t, 1)
 	waitTimers(t, ft, 3)
 	k, _ := keyOf(s.Value)
@@ -1308,12 +1334,13 @@ func TestSeatStreamStrictInput(t *testing.T) {
 // pausedBody is a request body whose first read waits until it is let go:
 // a client that sends its body slowly. reads counts the reads begun.
 type pausedBody struct {
-	body    string
-	reading chan struct{} // closed at the first read
-	letGo   chan struct{}
-	once    sync.Once
-	reads   atomic.Int32
-	off     int
+	body      string
+	reading   chan struct{} // closed at the first read
+	letGo     chan struct{}
+	once      sync.Once
+	letGoOnce sync.Once
+	reads     atomic.Int32
+	off       int
 }
 
 func newPausedBody(body string) *pausedBody {
@@ -1426,6 +1453,9 @@ func TestSeatStreamAdmissionLooksAgainAfterTheBody(t *testing.T) {
 	}
 }
 
+// release lets the paused body go; it may be called again.
+func (b *pausedBody) release() { b.letGoOnce.Do(func() { close(b.letGo) }) }
+
 // TestSeatStreamBoundsHandshakes: the requests in their admission are
 // bounded before a byte of their body is read, three for a credential and
 // eight in all, apart from the open streams; a refusal is fixed; every
@@ -1441,21 +1471,57 @@ func TestSeatStreamBoundsHandshakes(t *testing.T) {
 		r.clock.Advance(loginAllWindow)
 		cookies = append(cookies, r.login(t))
 	}
+	// Every request of the test ends with it. Before any assertion, the
+	// test registers the cancellation of every request, the release of
+	// every paused body and the join of every handler: when an assertion
+	// fails (a handshake that is not given back, say), no handler is left
+	// waiting on a body or on timers that stand still.
+	reqs, cancelReqs := context.WithCancel(context.Background())
+	var handlers sync.WaitGroup
+	var paused []*pausedBody
+	t.Cleanup(func() {
+		cancelReqs()
+		for _, b := range paused {
+			b.release()
+		}
+		joined := make(chan struct{})
+		go func() { handlers.Wait(); close(joined) }()
+		select {
+		case <-joined:
+		case <-time.After(waitBound):
+			t.Errorf("the handlers did not end within %v of their requests' end", waitBound)
+		}
+	})
+	send := func(ctx context.Context, b *pausedBody, c *http.Cookie) <-chan *httptest.ResponseRecorder {
+		paused = append(paused, b)
+		handlers.Add(1)
+		in := r.pausedStream(ctx, b, c)
+		out := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			defer handlers.Done()
+			out <- <-in
+		}()
+		return out
+	}
 	var bodies []*pausedBody
 	var outs []<-chan *httptest.ResponseRecorder
 	pause := func(c *http.Cookie) {
 		b := newPausedBody(streamOK)
 		bodies = append(bodies, b)
-		outs = append(outs, r.pausedStream(context.Background(), b, c))
-		<-b.reading
+		outs = append(outs, send(reqs, b, c))
+		select {
+		case <-b.reading:
+		case <-time.After(waitBound):
+			t.Fatal("a handshake did not read its body")
+		}
 	}
 	for i := 0; i < streamHandshakesPer; i++ {
 		pause(cookies[0])
 	}
 	// A fourth of the credential is refused, its body unread.
 	extra := newPausedBody(streamOK)
-	close(extra.letGo)
-	w := within(t, r.pausedStream(context.Background(), extra, cookies[0]), waitBound)
+	extra.release()
+	w := within(t, send(reqs, extra, cookies[0]), waitBound)
 	if w.Code != 429 || w.Body.String() != streamTextLimited || w.Header().Get("Retry-After") != "25" || extra.reads.Load() != 0 {
 		t.Errorf("a fourth handshake of the credential: %d %q %q, %d reads", w.Code, w.Body, w.Header().Get("Retry-After"), extra.reads.Load())
 	}
@@ -1466,9 +1532,9 @@ func TestSeatStreamBoundsHandshakes(t *testing.T) {
 		t.Fatalf("%d handshakes and %d streams, want %d and none", r.handshakes(), r.streams(), streamHandshakes)
 	}
 	extra = newPausedBody(streamOK)
-	close(extra.letGo)
+	extra.release()
 	// cookies[1] has two handshakes in progress: the refusal is the total's.
-	w = within(t, r.pausedStream(context.Background(), extra, cookies[1]), waitBound)
+	w = within(t, send(reqs, extra, cookies[1]), waitBound)
 	if w.Code != 503 || w.Body.String() != streamTextFull || extra.reads.Load() != 0 {
 		t.Errorf("a handshake past %d: %d %q, %d reads", streamHandshakes, w.Code, w.Body, extra.reads.Load())
 	}
@@ -1478,15 +1544,17 @@ func TestSeatStreamBoundsHandshakes(t *testing.T) {
 	// Every end gives its place back: a bad body, a stream that opens and
 	// ends.
 	bodies[0].body = "{"
-	close(bodies[0].letGo)
+	bodies[0].release()
 	if w := within(t, outs[0], waitBound); w.Code != 400 {
 		t.Errorf("a bad body: %d", w.Code)
 	}
 	// The stream's timers stand still, so that it cannot end on its own
 	// (at its rotation, say), which gives its handshake back too.
 	stillTimers(r)
-	ctx, cancel := context.WithCancel(context.Background())
-	opened := r.streamAsync(ctx, streamOK, cookies[0])
+	ctx, cancel := context.WithCancel(reqs)
+	open := newPausedBody(streamOK)
+	open.release()
+	opened := send(ctx, open, cookies[0])
 	r.waitStreams(t, 1)
 	// The stream counts as open when its place is taken, and gives its
 	// handshake back once its first heartbeat is written, a moment after,
@@ -1499,7 +1567,7 @@ func TestSeatStreamBoundsHandshakes(t *testing.T) {
 	within(t, opened, waitBound)
 	for i, b := range bodies[1:] {
 		b.body = "null"
-		close(b.letGo)
+		b.release()
 		within(t, outs[i+1], waitBound)
 	}
 	if r.handshakes() != 0 || r.streams() != 0 {
