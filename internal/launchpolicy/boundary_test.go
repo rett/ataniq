@@ -14,7 +14,7 @@ import (
 
 func TestT55ProductionBoundary(t *testing.T) {
 	const self = "ataniq/internal/launchpolicy"
-	cmd := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "list", "-deps", "-json=ImportPath,Standard,Deps,GoFiles,Dir", ".")
+	cmd := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "list", "-deps", "-json=ImportPath,Standard,Deps,Dir", ".")
 	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local", "GOPROXY=off", "GOWORK=off", "GOFLAGS=")
 	out, err := cmd.Output()
 	if err != nil {
@@ -26,7 +26,7 @@ func TestT55ProductionBoundary(t *testing.T) {
 		var p struct {
 			ImportPath, Dir string
 			Standard        bool
-			Deps, GoFiles   []string
+			Deps            []string
 		}
 		if err := decoder.Decode(&p); err == io.EOF {
 			break
@@ -44,8 +44,15 @@ func TestT55ProductionBoundary(t *testing.T) {
 				}
 			}
 		case p.ImportPath == self:
-			for _, file := range p.GoFiles {
-				b, err := os.ReadFile(filepath.Join(p.Dir, file))
+			files, err := filepath.Glob(filepath.Join(p.Dir, "*.go"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, file := range files {
+				if strings.HasSuffix(file, "_test.go") {
+					continue
+				}
+				b, err := os.ReadFile(file)
 				if err != nil {
 					t.Fatal(err)
 				}

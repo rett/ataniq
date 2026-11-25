@@ -8,6 +8,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -539,7 +540,8 @@ func (p *Policy) validateForms(check evidenceCheck) error {
 		if len(f.Kinds) == 0 || len(f.Kinds) > 2 {
 			return errors.New("invalid kinds")
 		}
-		for k, c := range f.Kinds {
+		for _, k := range slices.Sorted(maps.Keys(f.Kinds)) {
+			c := f.Kinds[k]
 			if k != "lead" && k != "coordinator" || c > 1 && (f.Slot != "" || f.Separator) || f.Slot == pack.ResumeSlot && c != 1 {
 				return errors.New("invalid kind or cardinality")
 			}

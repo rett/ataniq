@@ -55,3 +55,27 @@ func TestT54RefusalLines(t *testing.T) {
 		}
 	}
 }
+
+func TestT54MatcherRedaction(t *testing.T) {
+	x := baseline(t, "BL")
+	for _, token := range []string{rid, "--resume:" + rid, "-m=" + rid, "--approve-all=" + rid} {
+		spec := x.expand(t)
+		spec.Argv = append(spec.Argv, token)
+		code := "unknown-token"
+		switch token {
+		case "-m=" + rid:
+			code = "alias-spelling"
+		case "--approve-all=" + rid:
+			code = "refused-option"
+		}
+		line(t, x.recheck(t, spec), code, "2", "argv[2]")
+	}
+	spec := x.expand(t)
+	spec.Env = map[string]string{"]bad": rid}
+	line(t, x.recheck(t, spec), "env-refused", "2", "env[#0]")
+	// An invalid byte cannot survive a JSON round trip. Check the daemon's
+	// in-memory input directly, where it still requires escaped output.
+	spec = x.expand(t)
+	spec.Argv = append(spec.Argv, "--model=\xff\n\x7f]")
+	line(t, x.judge(spec), "value-outside-ceiling", "2", "argv[2]", strconv.Quote("\xff\n\x7f]"))
+}
