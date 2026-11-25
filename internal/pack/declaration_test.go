@@ -132,6 +132,24 @@ func TestManifestValidation(t *testing.T) {
 	}
 }
 
+func TestBoundaryWordMinimums(t *testing.T) {
+	for _, tc := range []struct {
+		match, text string
+		valid       bool
+	}{
+		{"substring", "café", false}, {"substring", "café2", false}, {"substring", "cafés", true},
+		{"token", "é2", false}, {"token", "é23", true}, {"token", "x-y", false},
+		{"literal", "abc", false}, {"literal", "éé", true},
+	} {
+		m := packtest.Alpha.Manifest()
+		m.Words = []pack.Word{{Text: tc.text, Match: tc.match}}
+		err := (pack.Declaration{Manifest: m}).Validate(sampleLayout())
+		if (err == nil) != tc.valid {
+			t.Errorf("%s %q: %v", tc.match, tc.text, err)
+		}
+	}
+}
+
 func TestAgentFilesBuilds(t *testing.T) {
 	data := strings.Replace(rootDocument, `"runtime"`, `"agent-files"`, 1)
 	files := map[string][]byte{pack.ManifestPath: []byte(data)}

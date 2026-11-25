@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -188,7 +190,7 @@ func (d Declaration) Validate(layout BindLayout) error {
 		return errors.New("pack needs words or a reason for their absence")
 	}
 	for _, w := range m.Words {
-		if w.Text == "" || (w.Match != "substring" && w.Match != "literal" && w.Match != "token") {
+		if !w.valid() {
 			return fmt.Errorf("invalid pack word %+v", w)
 		}
 	}
@@ -223,6 +225,26 @@ func (d Declaration) Validate(layout BindLayout) error {
 		}
 	}
 	return nil
+}
+
+func (w Word) valid() bool {
+	switch w.Match {
+	case "substring":
+		letters := 0
+		for _, r := range w.Text {
+			if unicode.IsLetter(r) {
+				letters++
+			}
+		}
+		return letters >= 5
+	case "token":
+		return utf8.RuneCountInString(w.Text) >= 3 && strings.IndexFunc(w.Text, func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+		}) == -1
+	case "literal":
+		return len(w.Text) >= 4
+	}
+	return false
 }
 
 var sha256Hex = regexp.MustCompile("^[a-f0-9]{64}$")
