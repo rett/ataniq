@@ -17,6 +17,7 @@ import (
 
 	"ataniq/internal/clientapi"
 	"ataniq/internal/leadcanary"
+	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/canaryroot"
 	"ataniq/internal/leadholder/wire"
 	"ataniq/internal/leadlifecycle"
@@ -186,6 +187,9 @@ type canaryExt struct {
 	// written, see [leadcanary.ReleasesMessage]) is not spent, so the lead may
 	// send another in the epoch; the canary's is spent whatever the answer.
 	scratch bool
+	// build is the check of the holder's build before a launch and before an
+	// attach (holderSkew).
+	build *buildid.Checker
 
 	mu sync.Mutex
 	// spent holds the epochs whose one message is spent. It starts from the
@@ -218,6 +222,7 @@ func (m *canaryMode) newExt(in *leadInstance, ctl *leadlifecycle.Controller, reg
 	return &canaryExt{
 		cfg: cfg, role: cfg.Role, holderDir: holderDir, ctl: ctl, reg: reg, ev: in.ev, adm: adm,
 		dial: m.dialFor, wait: m.injectFor, logf: m.d.logf, spent: spent, idPrefix: m.idPrefix, scratch: m.lead != nil,
+		build: m.build,
 		profile: leadregistry.Requested{
 			// The registry's runtime enum is checked by the registry; the config
 			// names the key. The model, the effort and the access mode are not
@@ -451,6 +456,11 @@ func (x *canaryExt) start(ctx context.Context) (any, *clientapi.ErrorBody) {
 		x.logf("canary start: %s", logRecordLeft)
 		return nil, refused(msgRecordLeft)
 	}
+	// The holder the unit would run is the daemon's own build, or nothing
+	// changes.
+	if f := x.holderSkew("canary start", false); f != nil {
+		return nil, f.body()
+	}
 	e, err := x.ctl.Start(ctx, x.role)
 	if err != nil {
 		return nil, x.failure("start", err)
@@ -548,6 +558,39 @@ func (x *canaryExt) ticket(ctx context.Context, attach wire.Role) (any, *clienta
 	return res, nil
 }
 
+// holderSkew checks the holder's build against the build the daemon expects
+// (buildid): before a launch, the build of the executable the config names;
+// before an attach, the build the running holder recorded in holder.json in
+// its state folder. It returns nil for the expected build, and otherwise the
+// refusal with the code holder-version-skew and a message that says what was
+// found and names both builds; the cause of a read that failed goes to the
+// log. A holder that records no build (an older holder) is refused as such.
+func (x *canaryExt) holderSkew(op string, attach bool) *opFail {
+	var err error
+	if attach {
+		layout, lerr := x.cfg.Layout()
+		if lerr != nil {
+			// Validated at setup; a layout that cannot be worked out is
+			// refused like a record that cannot be read.
+			err = &buildid.SkewError{Expected: x.build.Expected, Why: buildid.WhyUnreadable, Cause: lerr}
+		} else {
+			err = x.build.BeforeAttach(layout.Holder())
+		}
+	} else {
+		err = x.build.BeforeLaunch(x.cfg.Holder.Executable)
+	}
+	if err == nil {
+		return nil
+	}
+	var se *buildid.SkewError
+	if errors.As(err, &se) && se.Cause != nil {
+		x.logf("%s: %s (%s)", op, SafeText(err.Error()), SafeText(se.Cause.Error()))
+	} else {
+		x.logf("%s: %s", op, SafeText(err.Error()))
+	}
+	return refusal(codeHolderVersionSkew, SafeText(err.Error()))
+}
+
 // opFail is why an operation of the extension did not give a result: whether it
 // was refused (nothing was done) or could not be carried out, the reason code
 // and the fixed text. The canary's operations answer it as an error; the lead
@@ -584,6 +627,11 @@ func (x *canaryExt) ticketFor(ctx context.Context, attach wire.Role, want uint64
 	}
 	if want != 0 && want != e.Epoch {
 		return CanaryTicketResult{}, refusal(codeStaleEpoch, msgStaleEpoch)
+	}
+	// The running holder recorded the daemon's own build, or no ticket is
+	// minted and the holder is asked nothing.
+	if f := x.holderSkew("ticket", true); f != nil {
+		return CanaryTicketResult{}, f
 	}
 	ticket, err := wire.NewTicket()
 	if err != nil {

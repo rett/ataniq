@@ -16,6 +16,7 @@ import (
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadcanary/provision"
 	"ataniq/internal/leadcontrol"
+	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/canaryroot"
 	"ataniq/internal/leadlifecycle"
 	"ataniq/internal/leadlock"
@@ -86,6 +87,9 @@ type Scratch struct {
 	// ChatScanEvery is how often the scanner of a lead whose chat is on reads
 	// its reply folder; default [DefaultChatScanEvery].
 	ChatScanEvery time.Duration
+	// HolderBuild is the holder build the daemon expects and how it reads a
+	// holder's, as [Canary.HolderBuild]; nil is the daemon's own build.
+	HolderBuild *buildid.Checker
 }
 
 // leadActHook is called by a command, after it holds the role's operation lock
@@ -228,7 +232,11 @@ func (d *daemon) scratchSetup() (*canaryMode, error) {
 		return nil, fail(StepConfig, "scratch mode: %v", err)
 	}
 	router := newLeadRouter(msgNotALead)
-	m := &canaryMode{d: d, router: router, injectFor: s.InjectWait, dialFor: s.DialTimeout, idPrefix: idPrefixLead}
+	build, err := holderBuildCheck(s.HolderBuild)
+	if err != nil {
+		return nil, fail(StepConfig, "scratch mode: %v", err)
+	}
+	m := &canaryMode{d: d, router: router, injectFor: s.InjectWait, dialFor: s.DialTimeout, idPrefix: idPrefixLead, build: build}
 	if m.injectFor <= 0 {
 		m.injectFor = DefaultInjectWait
 	}

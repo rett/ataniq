@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/wire"
 )
 
@@ -158,6 +159,11 @@ func (a *app) cmdStart(cfg startConfig) int {
 	holder, err := a.resolveHolder(cfg.holder)
 	if err != nil {
 		return a.fail("%v", err)
+	}
+	// The holder binary is the build of this command, or nothing is made,
+	// taken or started.
+	if code, done := a.buildRefusal(func(ch *buildid.Checker) error { return ch.BeforeLaunch(holder) }); done {
+		return code
 	}
 	if err := a.makeFolders(l); err != nil {
 		return a.fail("cannot make the scratch folders: %v", err)
@@ -310,6 +316,11 @@ func (a *app) cmdTicket(cfg ticketConfig) int {
 	l, epoch, err := a.target(cfg.name)
 	if err != nil {
 		return a.fail("%v", err)
+	}
+	// The running holder recorded the build of this command, or no ticket
+	// is minted.
+	if code, done := a.buildRefusal(func(ch *buildid.Checker) error { return ch.BeforeAttach(l.state) }); done {
+		return code
 	}
 	ticket, err := wire.NewTicket()
 	if err != nil {

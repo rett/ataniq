@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"strconv"
 	"strings"
 
 	"golang.org/x/sys/unix"
@@ -88,6 +89,9 @@ const (
 	codeDaemonBroken     = "daemon-broken"
 	codeReceipt          = "receipt-not-recorded"
 	codeChatFolder       = "chat-folder"
+	// codeHolderVersionSkew is buildid.Reason: the holder is not the
+	// daemon's own build (a start or a ticket; see canaryExt.holderSkew).
+	codeHolderVersionSkew = "holder-version-skew"
 )
 
 // The fixed texts of the receipts and the errors this file answers. They are
@@ -611,6 +615,11 @@ func (m *leadMode) start(ctx context.Context, lr *leadRole) outcome {
 		if lr.in.ext.recordFolderLeft() {
 			m.d.logf("scratch start %q: %s", lr.key, logRecordLeft)
 			return refusedOut(codeRecordLeft, msgRecordLeft)
+		}
+		// The holder the unit would run is the daemon's own build, before
+		// anything changes.
+		if f := lr.in.ext.holderSkew("scratch start "+strconv.Quote(lr.key), false); f != nil {
+			return fromFail(f)
 		}
 		// The reply folder and the instruction text, before the unit starts:
 		// a lead that is proven stopped starts with the text.

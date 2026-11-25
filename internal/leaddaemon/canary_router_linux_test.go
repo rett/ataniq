@@ -260,7 +260,7 @@ func (w *twoRoles) buildMode() *canaryMode {
 			w.t.Fatal(err)
 		}
 	}
-	return &canaryMode{d: d, router: r, injectFor: 10 * time.Second, dialFor: 2 * time.Second}
+	return &canaryMode{d: d, router: r, injectFor: 10 * time.Second, dialFor: 2 * time.Second, build: sameHolderBuild()}
 }
 
 // call makes one call of op on the router's extension.

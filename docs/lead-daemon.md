@@ -1245,6 +1245,16 @@ once. It never waits for readiness, and it never sets `ready`. (In scratch
 mode a background observer sets `ready` afterwards, on the holder's word: see
 [the scratch leads guide](scratch-leads.md#ready).)
 
+**The holder's build.** In canary and scratch mode the daemon also checks,
+before the lifecycle is asked to start anything, that the holder executable of
+the config is the daemon's own build, and before it mints an attach ticket
+that the running holder recorded that build in its `holder.json`. A holder
+that is not is refused with `holder-version-skew`, with a message that names
+both builds, and nothing changes (see `internal/leadholder/buildid` for what
+"the same build" means, and [the scratch leads guide](scratch-leads.md) for the
+receipt). A daemon whose own build cannot be read does not start (the config
+step).
+
 A reply that is lost is its own error. The caller inspects and does not start
 again. A unit with exactly this epoch and intent is adopted. Otherwise the
 intent stays pending and the role is shown `unknown` with the reason
