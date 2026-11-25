@@ -112,13 +112,13 @@ a holder that is not the build of `ataniq-scratch` itself, with
 before it asks the holder anything. A `holder.json` of another epoch than the
 last one `start` took is refused first, with `refused: stale-epoch: ...`, which
 names both epochs: it is not the record of the holder that would be asked. The
-same build is the same main module version, VCS revision and modified flag (the
-build tags and the Go version are not compared), and a build without a VCS
-revision (built with `-buildvcs=false` or outside a git checkout) is never the
+same build is the same main module path, module version, VCS revision and
+modified flag (the build tags and the Go version are not compared), and a
+build without a VCS revision (built with `-buildvcs=false` or outside a git checkout) is never the
 same build. A holder that records no build, which is every holder built before
 build identities, is refused as an older holder: stop it (`stop` and `status`
 are not checked) and start it again with the new build. The message names what
-was found and both builds.
+was found and both builds, and both module paths when they differ.
 
 The holder refuses to start, with exit status 2 and a line on its standard
 error, in these cases, among others, each checked before the agent starts:

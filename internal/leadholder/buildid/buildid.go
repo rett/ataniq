@@ -303,14 +303,57 @@ const (
 	WhyNoStateFile = "the holder has no state file"
 )
 
-// Error names the reason, what was found and both builds, in at most 256 bytes
-// of printable ASCII without < > &.
+// MaxErrorBytes bounds the message of a [SkewError], so that a receipt can
+// carry it whole.
+const MaxErrorBytes = 256
+
+// Error names the reason, what was found and both builds, in at most
+// [MaxErrorBytes] bytes of printable ASCII without < > &. [Identity.Short]
+// leaves the module path out, so when the two module paths differ both are
+// named as well, before the builds: whole when they fit, and otherwise each cut
+// in its middle to an equal share of what the bound leaves (the builds are left
+// out when that share would be under [minModuleShare] bytes with them). Two
+// builds that differ only in their module would otherwise read the same.
 func (e *SkewError) Error() string {
 	holder := "unknown"
 	if e.Holder != nil {
 		holder = e.Holder.Short()
 	}
-	return Reason + ": " + e.Why + "; holder build " + holder + ", expected build " + e.Expected.Short()
+	head := Reason + ": " + e.Why
+	builds := "; holder build " + holder + ", expected build " + e.Expected.Short()
+	if e.Holder == nil || e.Holder.Module == e.Expected.Module {
+		return head + builds
+	}
+	modules := func(share int) string {
+		return "; holder module " + clipMiddle(e.Holder.Module, share) + ", expected module " + clipMiddle(e.Expected.Module, share)
+	}
+	const fixed = len("; holder module , expected module ")
+	room := MaxErrorBytes - len(head) - len(builds) - fixed
+	switch {
+	case len(e.Holder.Module)+len(e.Expected.Module) <= room:
+		return head + modules(MaxModule) + builds
+	case room/2 >= minModuleShare:
+		return head + modules(room/2) + builds
+	}
+	return head + modules((MaxErrorBytes-len(head)-fixed)/2)
+}
+
+// minModuleShare is the least share of a module path in a [SkewError]'s
+// message that is shown together with the builds.
+const minModuleShare = 32
+
+// clipMiddle cuts s to at most n bytes by replacing its middle with "...",
+// keeping its start and its end, where module paths most often differ. s is
+// ASCII ([Identity.Validate]).
+func clipMiddle(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	if n < 5 {
+		return s[:max(n, 0)]
+	}
+	keep := n - 3
+	return s[:keep-keep/2] + "..." + s[len(s)-keep/2:]
 }
 
 // Is makes errors.Is(err, ErrSkew) true.

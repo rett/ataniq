@@ -5,8 +5,9 @@
   daemon) a message, from the build the running holder recorded in its
   `holder.json`; a `holder.json` of another epoch than the one to be attached
   is refused first, with `stale-epoch`, as it is not the record of the holder
-  that would be asked. The same build is the same main module version, VCS
-  revision and modified flag; build tags and the Go version are not compared,
+  that would be asked. The same build is the same main module path, module
+  version, VCS revision and modified flag (the message names both module
+  paths when they differ); build tags and the Go version are not compared,
   and a build without a VCS revision is never the expected one. A holder that
   records no build, as every holder before this release, is refused as an
   older holder. Nothing changes on a refusal (a refused message is not spent),

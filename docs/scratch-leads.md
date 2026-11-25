@@ -435,14 +435,16 @@ current one is refused with `stale-epoch` before its build is looked at, since
 it is not the record of the holder that would be asked: most often the holder
 of a lead that is starting has not written its own yet, and the ticket or the
 message is asked again once the list shows the lead ready. The same build is
-the same main module version, VCS revision and modified flag; the build tags
-and the Go version are not compared, so the daemon of `make scratch-seat-build`
+the same main module path, module version, VCS revision and modified flag;
+the build tags and the Go version are not compared, so the daemon of `make scratch-seat-build`
 and the holder of `make canary-build` from one checkout are the same build. A
 build without a VCS revision is never the expected one, and a holder that
 records no build (a holder older than build identities) is refused as such. Its
 message, unlike the other codes' fixed texts, names what was found and both
 builds, as read from the binary or the record: a version, the first 12
-characters of the revision and `modified`, in a restricted character set. Not
+characters of the revision and `modified`, in a restricted character set, and
+both module paths when they differ (cut in the middle when the 256 bytes of
+the message would not hold them). Not
 checked are `lead.stop` and the `status` questions of the daemon's ready
 observer, which only read the holder's state: stop a skewed lead and start it
 again with the new holder. A refused start leaves the lead stopped, and a start

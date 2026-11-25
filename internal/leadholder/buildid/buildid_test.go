@@ -385,3 +385,62 @@ func TestStaleFileTakesPriorityOverItsBuild(t *testing.T) {
 		t.Errorf("an epoch of a string: %v", err)
 	}
 }
+
+// TestModuleMismatchIsNamed: two builds that differ only in their module path
+// have the same short text, so the refusal names both module paths; long
+// paths are cut in the middle within the bound, keep their differing ends,
+// and the builds stay when there is room for them.
+func TestModuleMismatchIsNamed(t *testing.T) {
+	exp := build(revNew, false)
+	other := exp
+	other.Module = "example.com/fork/ataniq"
+	if exp.Short() != other.Short() {
+		t.Fatal("the short texts differ; the test proves nothing")
+	}
+	err := Check(exp, &other)
+	msg := err.Error()
+	if !strings.Contains(msg, "holder module example.com/fork/ataniq, expected module ataniq") ||
+		!strings.Contains(msg, "holder build "+other.Short()) || !strings.Contains(msg, "expected build "+exp.Short()) {
+		t.Fatalf("%q", msg)
+	}
+	// The same module: the message is as before, with no module named.
+	same := exp
+	same.Revision = revOld
+	if msg := Check(exp, &same).Error(); strings.Contains(msg, "module") {
+		t.Fatalf("%q", msg)
+	}
+	// The longest identities, with modules that differ only at their ends:
+	// within the bound, and the two cut paths still differ.
+	long := Identity{Module: "a" + strings.Repeat("m", MaxModule-2) + "a", Version: strings.Repeat("v", MaxVersion),
+		Revision: strings.Repeat("a", MaxRevision), Modified: true}
+	longOther := long
+	longOther.Module = "b" + strings.Repeat("m", MaxModule-2) + "b"
+	for _, why := range []string{WhyDiffer, WhyUnstamped} {
+		msg := (&SkewError{Expected: long, Holder: &longOther, Why: why}).Error()
+		if len(msg) > MaxErrorBytes || strings.ContainsAny(msg, "<>&") {
+			t.Errorf("%d bytes: %q", len(msg), msg)
+		}
+		i := strings.Index(msg, "holder module ")
+		j := strings.Index(msg, ", expected module ")
+		if i < 0 || j < 0 {
+			t.Fatalf("%q", msg)
+		}
+		got, want := msg[i+len("holder module "):j], msg[j+len(", expected module "):]
+		if got == want || !strings.HasPrefix(got, "b") || !strings.HasSuffix(got, "b") || !strings.Contains(got, "...") {
+			t.Errorf("%q", msg)
+		}
+	}
+	// A long version with short modules: the builds fit with the modules.
+	lv := exp
+	lv.Version = strings.Repeat("v", MaxVersion)
+	lvOther := lv
+	lvOther.Module = "example.com/x"
+	if msg := Check(lv, &lvOther).Error(); len(msg) > MaxErrorBytes || !strings.Contains(msg, "holder module example.com/x, expected module ataniq") {
+		t.Errorf("%d bytes: %q", len(msg), msg)
+	}
+	for n, want := range map[int]string{3: "abc", 9: "abc...xyz", 100: "abcdefghijklmnopqrstuvwxyz"} {
+		if got := clipMiddle("abcdefghijklmnopqrstuvwxyz", n); got != want || len(got) > n && n >= 5 {
+			t.Errorf("clipMiddle %d: %q, want %q", n, got, want)
+		}
+	}
+}
