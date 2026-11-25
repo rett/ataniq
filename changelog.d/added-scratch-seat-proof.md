@@ -46,8 +46,8 @@
   and lies not in the state folder, its `owner/`, the checkout or a
   temporary folder, by path and by identity, and a root that is not there
   yet), makes the root and every folder below it with `mkdir` of a new name
-  and writes only into folders it has just made (a root holding only
-  prepare's own mark of an earlier run is taken again), runs git in a
+  and writes only into folders it has just made (a root that is there is
+  refused, an earlier run's included), runs git in a
   cleared environment, never writes in the trial's state folder, never
   deletes and starts nothing, and `--status`
   refuses a `--state` that is not the config's `state_root` (the same device

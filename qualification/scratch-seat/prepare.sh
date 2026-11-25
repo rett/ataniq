@@ -42,11 +42,9 @@
 # the state folder, its owner/ folder, the checkout, /tmp, /var/tmp or
 # $TMPDIR), then makes ROOT with mkdir of a new name (mode 0700, only that
 # folder) and writes only into folders it has just made: a name that is
-# already there is refused, so nothing is written through an existing path
-# that could be another name of the trial's storage. The one exception is a
-# folder that holds prepare's own mark from an earlier run (.prepare-made,
-# which names the folder's own device and inode) and none of the names prepare
-# makes in it: a run that stopped right after making it. In it go only: the
+# already there is refused, an earlier run's root among them, so nothing is
+# written through an existing path that could be another name of the
+# trial's storage or a folder others can write. In it go only: the
 # scratch config scratch.json (0600), the owner
 # channel's settings owner-settings/scratch.json (the folder 0700, the file
 # 0600), the managed settings and the guard hook (a no-op the holder's marker
@@ -739,7 +737,7 @@ if [ "$MODE" = dry ]; then
   say "[dry]   --write refuses, before it makes anything: a state folder that is a link, not at its physical path or without an owner/ folder;"
   say "[dry]   anything of $KEY_STANDIN or $KEY_LIVE in the state folder; a missing binary, daemon, pasta, bubblewrap or /usr/bin/git; a root whose"
   say "[dry]   parent is missing or a link, or is or lies in the state folder, its owner/, the checkout, /tmp, /var/tmp or \$TMPDIR by path or by"
-  say "[dry]   identity; a root that is already there (unless it holds only prepare's own mark of an earlier run); and a HOME that is not a"
+  say "[dry]   identity; a root that is already there (an earlier run's included); and a HOME that is not a"
   say "[dry]   real folder. The daemon's check (--status) judges the rest."
   say "[dry]   nothing in $S is written by --dry, --write or --status"
   say ""
@@ -1121,37 +1119,15 @@ for _x in json txt; do
   done
 done
 
-# MARK is prepare's own mark in a folder it made: a file whose one line names
-# the folder's own identity, so that a copy of the mark in another folder is
-# not the mark of that folder.
-MARK=.prepare-made
-mark_line() { printf 'prepare.sh made this folder (%s)\n' "$1"; }
-
-# marked DIR succeeds when DIR is a real folder that holds prepare's mark for
-# itself.
-marked() {
-  [ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/$MARK" ] && [ ! -L "$1/$MARK" ] || return 1
-  _mid=$(id_of "$1") || return 1
-  [ "$(cat -- "$1/$MARK" 2>/dev/null)" = "$(mark_line "$_mid")" ]
-}
-
-# fresh_dir DIR WHAT makes DIR with mkdir of a new name (mode 0700) and puts
-# prepare's mark in it. A name that is already there is refused, unless it is
-# a folder of prepare's own mark that holds nothing else (a run that stopped
-# right after making it), which is taken again. It never writes through a
-# path that was there before.
+# fresh_dir DIR WHAT makes DIR with mkdir of a new name (mode 0700). A name
+# that is already there is refused, whatever it holds, an earlier run's root
+# among them: so prepare never writes beneath a folder it did not make in
+# this run, whose owner, mode and entries it could check only by its path,
+# not on a folder it holds open. A run that stopped half way leaves its root,
+# which is never deleted: prepare again with another --root.
 fresh_dir() {
-  if mkdir -m 0700 -- "$1" 2>/dev/null; then
-    _fid=$(id_of "$1") || die "$2 $1 was made but cannot be looked at"
-    (set -C && mark_line "$_fid" >"$1/$MARK") || die "the mark of $2 $1 cannot be written"
-    return 0
-  fi
-  if marked "$1"; then
-    _rest=$(find "$1" -mindepth 1 -maxdepth 1 ! -name "$MARK" -print) || die "$2 $1 cannot be listed"
-    [ -z "$_rest" ] || die "$2 $1 is an earlier run's and holds more than prepare's mark: choose a new --root"
-    return 0
-  fi
-  die "$2 $1 is already there (or cannot be made) and holds no mark of prepare's: prepare writes only into a folder it has just made; choose a new --root"
+  mkdir -m 0700 -- "$1" 2>/dev/null ||
+    die "$2 $1 is already there (or cannot be made): prepare writes only into a folder it has just made, never into one that was there, an earlier run's included; choose a new --root"
 }
 
 # The root: its parent exists and is at its physical path. By that path and
@@ -1184,12 +1160,8 @@ while :; do
   _up=${_up%/*}
   [ -n "$_up" ] || _up=/
 done
-if [ -e "$ROOT" ] && ! marked "$ROOT"; then
-  die "the root $ROOT is already there and holds no mark of prepare's: prepare makes the root new and writes only into folders it has just made; choose a new --root"
-fi
-if marked "$ROOT"; then
-  _rest=$(find "$ROOT" -mindepth 1 -maxdepth 1 ! -name "$MARK" -print) || die "the root cannot be listed: $ROOT"
-  [ -z "$_rest" ] || die "the root $ROOT is an earlier run's and holds more than prepare's mark ($(printf '%s' "$_rest" | head -n 1)): choose a new --root"
+if [ -e "$ROOT" ] || [ -L "$ROOT" ]; then
+  die "the root $ROOT is already there: prepare makes the root new and writes only into folders it has just made, never into one that was there, an earlier run's included; choose a new --root"
 fi
 
 # --write. From here a failure leaves a half-made root, which is never

@@ -279,11 +279,13 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    has just made: every folder below the root, `owner-settings/` among
    them, is made new, and no file is written over one that is there, so
    nothing is written through a path that could be another name of the
-   trial's storage. The root and `owner-settings/` hold prepare's mark,
-   `.prepare-made`, which names the folder's own device and inode; a root
-   that holds that mark and nothing else (a run that stopped right after
-   making it) is taken again, and any other root that is there is refused:
-   choose a new `ROOT`. Like the daemon's, these checks guard against
+   trial's storage. Any root that is there is refused, an earlier run's
+   too, even one that stopped right after making it: a shell cannot hold
+   the folder open while it checks its owner and mode and then writes
+   beneath it, and a folder whose mode changed since (group-writable, say)
+   could have its entries replaced, so prepare writes into no folder it did
+   not make in this run. A run that stopped half way leaves its root, which
+   prepare never deletes: choose a new `ROOT`. Like the daemon's, these checks guard against
    mistakes, not attackers: a mount you or root make of a folder within one
    of them, or after the check, is outside them. It writes, in `$ROOT`
    only:
@@ -291,7 +293,6 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    | File | What it is |
    | --- | --- |
    | `scratch.json` | The scratch config (mode 0600): `state_root` the trial's state folder, `runtime_root` `$ROOT/runtime` (the daemon makes it), `max_running` 1, and the leads below. |
-   | `.prepare-made`, `owner-settings/.prepare-made` | Prepare's mark: one line naming the folder's own device and inode. |
    | `owner-settings/scratch.json` | The owner channel's non-trial settings (the folder 0700, the file 0600), which the daemon reads with `--owner-settings`: the stand-in door, the sample project `proof-project`, the scratch root `$ROOT/owner-channel` with the drop folder in it, and a sandbox template that is never written, so that no request can be verified and no suite sandbox starts. |
    | `conf/` | The managed settings, which name a PreToolUse hook and hold the marker `guard-hook`; the hook itself, which exits 0 and guards nothing (the holder refuses a claude start without the marker, the canary kit writes the same no-op); and the replay screens of the checkout. |
    | `agent-install/` | A copy of the stand-in and of the claude file (`claude`, mode 0700). The copy is not run. |

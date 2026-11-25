@@ -605,9 +605,8 @@ func TestScratchSeatPrepareRefusesValues(t *testing.T) {
 // folder that is a link or has no owner/ folder, one with anything of this
 // sitting's leads, a missing tool, and a root whose parent is missing or
 // reached through a link, that is linked into the state folder, or that is
-// already there without prepare's own mark (empty, holding something, or
-// closed to reading): prepare writes only into a folder it has just made
-// (review finding 2). What only the daemon judges (the gate's material, the
+// already there (empty, holding something, closed to reading, or an earlier
+// run's): prepare writes only into a folder it has just made. What only the daemon judges (the gate's material, the
 // settings) is left to the daemon's check, which --status runs.
 func TestScratchSeatPrepareWriteRefuses(t *testing.T) {
 	if os.Geteuid() == 0 {
@@ -625,20 +624,9 @@ func TestScratchSeatPrepareWriteRefuses(t *testing.T) {
 	if err := os.Symlink(k.state, filepath.Join(k.dir, "into-state")); err != nil {
 		t.Fatal(err)
 	}
-	// An empty folder that is already there, and one whose mark names
-	// another folder's identity (a mark copied from it).
+	// An empty folder that is already there.
 	empty := filepath.Join(k.dir, "empty")
-	forged := filepath.Join(k.dir, "forged")
-	for _, d := range []string{empty, forged} {
-		if err := os.Mkdir(d, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var est syscall.Stat_t
-	if err := syscall.Stat(empty, &est); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(forged, ".prepare-made"), []byte(fmt.Sprintf("prepare.sh made this folder (%d:%d)\n", est.Dev, est.Ino)), 0o600); err != nil {
+	if err := os.Mkdir(empty, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	locked := filepath.Join(k.dir, "locked")
@@ -706,10 +694,9 @@ func TestScratchSeatPrepareWriteRefuses(t *testing.T) {
 		{"a parent through a link", set(base, "--root", filepath.Join(k.dir, "linked", "proof")), nil, nil, "physical path"},
 		{"a root linked into the state folder", set(base, "--root", filepath.Join(k.dir, "into-state", "proof")), nil, nil, "physical path"},
 		{"a root in TMPDIR", base, nil, []string{"TMPDIR=" + k.dir}, "physically in or around"},
-		{"a root that cannot be read", set(base, "--root", locked), nil, nil, "is already there and holds no mark of prepare's"},
-		{"a root that holds something", set(base, "--root", full), nil, nil, "is already there and holds no mark of prepare's"},
-		{"an empty root that is already there", set(base, "--root", empty), nil, nil, "is already there and holds no mark of prepare's"},
-		{"a root with a mark copied from another folder", set(base, "--root", forged), nil, nil, "is already there and holds no mark of prepare's"},
+		{"a root that cannot be read", set(base, "--root", locked), nil, nil, "is already there: prepare makes the root new"},
+		{"a root that holds something", set(base, "--root", full), nil, nil, "is already there: prepare makes the root new"},
+		{"an empty root that is already there", set(base, "--root", empty), nil, nil, "is already there: prepare makes the root new"},
 		{"a HOME through a link", base, nil, []string{"HOME=" + filepath.Join(k.dir, "linked", "home")}, "physical path"},
 		{"a HOME that is not there", base, nil, []string{"HOME=" + filepath.Join(k.dir, "no-home")}, "HOME is not a folder"},
 	}
@@ -807,18 +794,13 @@ func TestScratchSeatPrepareWriteTouchesOnlyTheRoot(t *testing.T) {
 			t.Errorf("--write made %s, which is the daemon's or the owner's to make, or is never made", rel)
 		}
 	}
-	if names, err := os.ReadDir(filepath.Join(r, "owner-settings")); err != nil || len(names) != 2 || names[0].Name() != ".prepare-made" || names[1].Name() != "scratch.json" {
-		t.Errorf("the settings folder holds more than prepare's mark and the settings: %v %v", names, err)
+	if names, err := os.ReadDir(filepath.Join(r, "owner-settings")); err != nil || len(names) != 1 || names[0].Name() != "scratch.json" {
+		t.Errorf("the settings folder holds more than the settings: %v %v", names, err)
 	}
-	// The root and the settings folder were made new and carry prepare's
-	// mark, which names each folder's own device and inode.
+	// No mark is left: an earlier run's root is refused like any other.
 	for _, d := range []string{r, filepath.Join(r, "owner-settings")} {
-		var st syscall.Stat_t
-		if err := syscall.Stat(d, &st); err != nil {
-			t.Fatal(err)
-		}
-		if got, want := string(mustRead(t, filepath.Join(d, ".prepare-made"))), fmt.Sprintf("prepare.sh made this folder (%d:%d)\n", st.Dev, st.Ino); got != want {
-			t.Errorf("the mark of %s is %q, want %q", d, got, want)
+		if _, err := os.Lstat(filepath.Join(d, ".prepare-made")); err == nil {
+			t.Errorf("%s holds a mark of prepare's", d)
 		}
 	}
 	for _, rel := range []string{"scratch.json", "owner-settings/scratch.json"} {
@@ -853,41 +835,43 @@ func TestScratchSeatPrepareWriteTouchesOnlyTheRoot(t *testing.T) {
 	if b, err := cmd.Output(); err != nil || strings.TrimSpace(string(b)) != "Sample Author <author@example.invalid>" {
 		t.Errorf("the throwaway repository: %q %v", b, err)
 	}
-	// A second --write into the same root is refused: it is prepare's, and
-	// holds more than its mark now.
-	if out, code := k.run(t, nil, k.args("--write", r, false)...); code != 1 || !strings.Contains(out, "is an earlier run's and holds more than prepare's mark") {
+	// A second --write into the same root is refused: it is there.
+	if out, code := k.run(t, nil, k.args("--write", r, false)...); code != 1 || !strings.Contains(out, "the root "+r+" is already there: prepare makes the root new") {
 		t.Errorf("a second --write: exit %d:\n%s", code, out)
 	}
 }
 
-// A root that holds only prepare's own mark, of a run that stopped right
-// after making it, is taken again (review finding 2's exception): --write
-// goes on in it and makes everything else new. The mark must name the root
-// itself: one moved to another name with its folder still names it, since
-// the identity goes with the folder.
-func TestScratchSeatPrepareWriteTakesAnEarlierRunsMarkedRoot(t *testing.T) {
+// A root that an earlier run made and left holding only prepare's old mark
+// (.prepare-made, naming the root's own device and inode) is refused like
+// any root that is there, at mode 0700 and at 0770 alike (review finding
+// 7): a shell cannot hold the folder open while it checks its owner and mode
+// and then writes beneath it, so prepare writes into no folder it did not
+// make in this run, and nothing is written in it.
+func TestScratchSeatPrepareWriteRefusesAnEarlierRunsRoot(t *testing.T) {
 	k := newScratchSeatKit(t)
-	r := filepath.Join(k.dir, "proof")
-	if err := os.Mkdir(r, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	var st syscall.Stat_t
-	if err := syscall.Stat(r, &st); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(r, ".prepare-made"), []byte(fmt.Sprintf("prepare.sh made this folder (%d:%d)\n", st.Dev, st.Ino)), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	moved := filepath.Join(k.dir, "proof-again")
-	if err := os.Rename(r, moved); err != nil {
-		t.Fatal(err)
-	}
-	out, code := k.run(t, nil, k.args("--write", moved, false)...)
-	if code != 0 || !strings.Contains(out, "making "+moved) {
-		t.Fatalf("--write into a root of prepare's own mark: exit %d:\n%s", code, out)
-	}
-	if _, err := os.Stat(filepath.Join(moved, "owner-settings", "scratch.json")); err != nil {
-		t.Errorf("the settings were not written: %v", err)
+	for _, mode := range []os.FileMode{0o700, 0o770} {
+		r := filepath.Join(k.dir, fmt.Sprintf("proof-%o", mode))
+		if err := os.Mkdir(r, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		var st syscall.Stat_t
+		if err := syscall.Stat(r, &st); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(r, ".prepare-made"), []byte(fmt.Sprintf("prepare.sh made this folder (%d:%d)\n", st.Dev, st.Ino)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(r, mode); err != nil {
+			t.Fatal(err)
+		}
+		before := scratchSeatFiles(t, r)
+		out, code := k.run(t, nil, k.args("--write", r, false)...)
+		if code != 1 || !strings.Contains(out, "the root "+r+" is already there: prepare makes the root new") || strings.Contains(out, "making ") {
+			t.Errorf("--write into an earlier run's root of mode %o: exit %d:\n%s", mode, code, out)
+		}
+		if !sameScratchSeatFiles(before, scratchSeatFiles(t, r)) {
+			t.Errorf("--write wrote in an earlier run's root of mode %o", mode)
+		}
 	}
 	k.noCalls(t)
 }
