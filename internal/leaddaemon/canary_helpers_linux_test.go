@@ -17,6 +17,7 @@ import (
 
 	"ataniq/internal/clientapi"
 	"ataniq/internal/leadcanary"
+	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/canaryroot"
 	"ataniq/internal/leadholder/wire"
 	"ataniq/internal/leadregistry"
@@ -36,6 +37,9 @@ type canaryEnv struct {
 	holder    *fakeHolder
 	running   *running
 	ids       int
+	// build, when set, is the daemon's check of the holder's build; unset
+	// it finds every holder the expected build (sameHolderBuild).
+	build *buildid.Checker
 }
 
 // noEnv is a Getenv with nothing set: the account's own defaults still count.
@@ -102,9 +106,14 @@ func newCanaryEnv(t *testing.T) *canaryEnv {
 func (c *canaryEnv) daemonConfig() Config {
 	cfg := c.env.config()
 	cfg.Clock = leadunit.SystemClock{}
+	build := c.build
+	if build == nil {
+		build = sameHolderBuild()
+	}
 	cfg.Canary = &Canary{
 		Config: c.cfg, Getenv: noEnv,
 		InjectWait: 300 * time.Millisecond, DialTimeout: 2 * time.Second,
+		HolderBuild: build,
 	}
 	return cfg
 }

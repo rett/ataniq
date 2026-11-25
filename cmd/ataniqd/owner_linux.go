@@ -168,6 +168,41 @@ type ownerFlags struct {
 	gateSet  bool
 	// trial is --trial: the phone trial (owner_trial_linux.go).
 	trial bool
+	// settings are --owner-settings and --check, which only a build with both
+	// tags registers (scratch_settings_linux.go).
+	settings settingsFlags
+}
+
+// settingsFlags are the flags of run that only a build with both tags has:
+// --owner-settings DIR, the folder the owner channel reads its settings from
+// in place of owner/ of the state folder, and --check, which checks and prints
+// what the daemon would read and exits; with --check, --keys-prefix and
+// --keys-since PREFIX check the state folder's key list alone
+// (scratch_keys_linux.go), and --expect-state DIR refuses any of them, before
+// a file of the state folder is read, unless DIR is the config's state
+// folder.
+type settingsFlags struct {
+	dir         string
+	dirSet      bool
+	check       bool
+	keysPrefix  bool
+	keysSince   string
+	sinceSet    bool
+	expectState string
+	expectSet   bool
+}
+
+// given reports whether any of the flags was given.
+func (s settingsFlags) given() bool {
+	return s.dirSet || s.check || s.keysPrefix || s.sinceSet || s.expectSet
+}
+
+// ownerSettingsNote is the line the daemon prints after the banner when the
+// owner channel's settings come from the folder of --owner-settings: the file
+// scratch.json in it (hostadapter.ScratchName) is read, and owner/scratch.json
+// of the state folder is not.
+func ownerSettingsNote(dir string) string {
+	return "owner channel: settings read from " + leaddaemon.SafeText(dir) + "/scratch.json (--owner-settings); owner/scratch.json of the state folder is not read"
 }
 
 func (o *ownerFlags) define(fs *flag.FlagSet) {
@@ -177,6 +212,9 @@ func (o *ownerFlags) define(fs *flag.FlagSet) {
 		return nil
 	})
 	fs.BoolVar(&o.trial, "trial", false, "serve the phone trial's sample cards (with --owner-channel)")
+	if scratchSeat != nil && scratchSeat.flags != nil {
+		scratchSeat.flags(fs, &o.settings)
+	}
 }
 
 // ownerServiceBuilder builds the host's side of a card in the daemon's state
@@ -186,11 +224,19 @@ func (o *ownerFlags) define(fs *flag.FlagSet) {
 // is.
 var ownerServiceBuilder func(stateDir string) (leaddaemon.OwnerService, func() error, error)
 
+// ownerBuildFrom is the host adapter's builder on settings read by load in
+// place of owner/scratch.json of the state folder, which run --owner-settings
+// uses (a build with both tags). The host adapter sets it with the builder.
+var ownerBuildFrom func(stateDir string, load scratchLoad) (leaddaemon.OwnerService, func() error, error)
+
 // ownerGuardSet is what the builder of a build brings with it: the checks of
 // the state folder and the settings that run before the daemon starts, and the
 // line the daemon prints once the service is built.
 type ownerGuardSet struct {
 	check func(stateDir string, getenv func(string) string) error
+	// checkFrom, when set, is check on the settings load reads, for run
+	// --owner-settings; a guard without it cannot take that flag.
+	checkFrom func(stateDir string, load scratchLoad, getenv func(string) string) error
 	// checkRuntime, when set, checks the runtime folder (the daemon's socket
 	// is in it) before the daemon takes a lock.
 	checkRuntime func(runtimeDir string, getenv func(string) string) error
@@ -217,6 +263,12 @@ type scratchSeatSet struct {
 	// chat gives the gate the scratch leads' chat port when the daemon runs
 	// scratch mode.
 	chat func(cfg *leaddaemon.Config, gate *leaddaemon.SeatGate)
+	// flags registers --owner-settings and --check.
+	flags func(fs *flag.FlagSet, s *settingsFlags)
+	// settings takes --owner-settings and --check, after the scratch config
+	// is read: it returns the reader of the folder's settings, or a code to
+	// end with (a refusal, or the end of --check).
+	settings func(a *app, o *ownerFlags, cfg *leaddaemon.Config) (scratchLoad, int)
 }
 
 // scratchSeat is set by a build with both tags. It is nil in a build with the
@@ -257,6 +309,10 @@ func (a *app) ownerRun(o *ownerFlags, cfg *leaddaemon.Config) (code int) {
 		return leaddaemon.ExitUsage
 	}
 	if !o.set {
+		if o.settings.given() {
+			fmt.Fprint(a.stderr, "ataniqd run: --owner-settings and --check need --owner-channel\n")
+			return leaddaemon.ExitUsage
+		}
 		if o.gateSet {
 			fmt.Fprint(a.stderr, "ataniqd run: --seat-gate needs --owner-channel\n")
 			return leaddaemon.ExitUsage
@@ -279,6 +335,29 @@ func (a *app) ownerRun(o *ownerFlags, cfg *leaddaemon.Config) (code int) {
 	if build == nil {
 		fmt.Fprint(a.stderr, "ataniqd run: --owner-channel: this build cannot build the host's side of a card yet\n")
 		return leaddaemon.ExitConfig
+	}
+	// --owner-settings (a build with both tags): the settings are read from
+	// the folder it names, which is checked first, and owner/scratch.json of
+	// the state folder is not read. --check ends here.
+	if o.settings.given() {
+		if scratchSeat == nil || scratchSeat.settings == nil {
+			fmt.Fprint(a.stderr, "ataniqd run: --owner-settings: this build has no scratch mode\n")
+			return leaddaemon.ExitUsage
+		}
+		load, code := scratchSeat.settings(a, o, cfg)
+		if code >= 0 {
+			return code
+		}
+		if guard == nil || guard.checkFrom == nil || ownerBuildFrom == nil {
+			fmt.Fprint(a.stderr, "ataniqd run: --owner-settings: this build cannot read the owner channel's settings from another folder\n")
+			return leaddaemon.ExitConfig
+		}
+		from, checkFrom := ownerBuildFrom, guard.checkFrom
+		build = func(stateDir string) (leaddaemon.OwnerService, func() error, error) { return from(stateDir, load) }
+		g := *guard
+		g.check = func(stateDir string, getenv func(string) string) error { return checkFrom(stateDir, load, getenv) }
+		g.note = ownerSettingsNote(o.settings.dir)
+		guard = &g
 	}
 	stateDir := cfg.StateDir
 	// The guards of the builder's own door come before the daemon takes a

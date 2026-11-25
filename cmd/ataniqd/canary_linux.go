@@ -14,6 +14,7 @@ import (
 	"ataniq/internal/clientapi"
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leaddaemon"
+	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadwire"
 )
 
@@ -141,9 +142,15 @@ func (a *app) canaryRun(c *canaryFlags, stateDir, runtimeDir string, cfg *leadda
 		return false, leaddaemon.ExitConfig
 	}
 	cfg.StateDir, cfg.RuntimeDir = cc.StateRoot, cc.RuntimeRoot
-	cfg.Canary = &leaddaemon.Canary{Config: cc, Getenv: a.getenv}
+	cfg.Canary = &leaddaemon.Canary{Config: cc, Getenv: a.getenv, HolderBuild: holderBuild}
 	return true, -1
 }
+
+// holderBuild is the daemon's check of a holder's build before it launches or
+// attaches to one; nil is the daemon's own build (leaddaemon's default). Only
+// a test sets it: the tests' holders are fakes, and a test binary has no VCS
+// revision to expect.
+var holderBuild *buildid.Checker
 
 // scratchRun reads the scratch config when --scratch was given and sets the
 // roots and the scratch part of cfg. --scratch excludes --canary and the root
@@ -167,7 +174,7 @@ func (a *app) scratchRun(c *canaryFlags, stateDir, runtimeDir string, cfg *leadd
 		return false, leaddaemon.ExitConfig
 	}
 	cfg.StateDir, cfg.RuntimeDir = sc.StateRoot, sc.RuntimeRoot
-	cfg.Scratch = &leaddaemon.Scratch{Config: sc, Getenv: a.getenv}
+	cfg.Scratch = &leaddaemon.Scratch{Config: sc, Getenv: a.getenv, HolderBuild: holderBuild}
 	return true, -1
 }
 

@@ -349,6 +349,35 @@ on the holder's word, and in no other way:
   and the same role** as the registry shows. A refusal (`wrong-epoch` included),
   no answer, an answer with no status and a status of another epoch or role are
   ignored: the lead stays `starting`, and nothing else changes.
+- **Which build answered.** Before it sets `ready`, the observer reads the
+  build the holder recorded in its `holder.json` for the epoch, which the
+  holder reads from its own running executable. `lead.start` checked the holder
+  executable by its path, and the unit manager looks the path up again, so a
+  holder rebuilt in between runs as another build. A holder that is not the
+  daemon's build is never shown `ready`. The observer also reads the file
+  after a question that got no usable answer: a holder of another build may
+  write its `holder.json` of the epoch and never answer. Only a file of the
+  epoch that records another build (or none) is acted on, after an answer or
+  without one: the lead is shown `degraded`, with the reason
+  `holder-version-skew`, the evidence kind `ataniq-observation` and the
+  refusal, which names both builds, as the detail, and the daemon logs that
+  the owner stops the lead and starts it again. The daemon never stops the
+  holder for its build, whether its own `lead.start` launched the epoch or it
+  adopted the lead: the unit is left running, nothing is signalled, and the
+  lead's ticket and message are refused `holder-version-skew` before the
+  holder is asked anything. That `lead.start` has already returned by then:
+  its receipt says `done`, with the state `starting`. The change is made under
+  the role's operation lock, taken as a try-lock, and only while the lead is
+  shown `starting` in that epoch, so a later epoch or a lead stopped meanwhile
+  is never changed; while a command of the role holds the lock it is tried
+  again, also after the observer's 60 s have run out, until it is made. The
+  owner's `lead.stop` is the way out, and the next `lead.start` is refused
+  `holder-version-skew` before anything changes while the executable is still
+  the other build. A file that is missing, cannot be read or is not yet the
+  epoch's confirms nothing, after an answer as without one: the lead is not
+  shown `ready` and nothing else changes, the observer logs it and reads the
+  file again at its next question, and the lead stays `starting` when the
+  observation ends.
 - **What it sets.** The shown state `ready` for that epoch, with the reason code
   `holder-ready`, the evidence kind `ataniq-observation` and the detail "the
   holder is up and the agent was started; the agent's login is not observed".
@@ -370,13 +399,28 @@ on the holder's word, and in no other way:
   from its screen, and nothing says the agent works or will answer. `ready` is
   not a claim that the lead is usable: it replaces "nothing says anything" with
   "the holder said it is up", and no more. A lead that is `ready` stays so until
-  a stop. This build adds no way from `ready` back to `starting` or to
-  `degraded`: a holder that goes away after it said it was up is not noticed
-  by this observer, and a unit that ends is found by the next reconcile when
-  the daemon starts.
-- **It does not change** what counts against `max_running` (a `starting` lead
-  and a `ready` one both count), the receipts, the command table or the
-  evidence file.
+  a stop, with one exception, below. This build adds no other way from `ready`
+  back to `starting` or to `degraded`: a holder that goes away after it said it
+  was up is not noticed by this observer, and a unit that ends is found by the
+  next reconcile when the daemon starts.
+- **A lead an earlier daemon showed `ready`.** `ready` was that daemon's word,
+  for its own build. Before a daemon serves anything, it reads again the
+  `holder.json` of every lead it adopted shown `ready`. A file of the epoch
+  that records another build than this daemon's (or none) makes the lead shown
+  `degraded`, with the reason `holder-version-skew`, the evidence kind
+  `ataniq-observation` and the refusal, which names both builds, as the
+  detail: the list never shows `ready` a holder whose ticket and message this
+  daemon refuses `holder-version-skew`. The unit is left running and its
+  holder is asked nothing; `lead.stop` and a `lead.start` with the matching
+  holder are the way out. A `degraded` state that cannot be written to the
+  registry ends the daemon's start, at the reconcile step (exit 16) and before
+  the socket is made, so no status or list shows that lead `ready`; the next
+  start checks it again. A file that is missing or cannot be read confirms
+  nothing: the lead stays `ready`, the daemon logs it, and its ticket says why
+  it is refused.
+- **It does not change** what counts against `max_running` (a `starting` lead,
+  a `ready` one and a `degraded` one all count), the receipts, the command
+  table or the evidence file.
 - **At shutdown** the daemon ends the observers and waits for them before it
   closes the registry, so a daemon stopped while a holder does not answer still
   exits 0 and promptly. When the server itself did not stop within the grace the
@@ -385,7 +429,9 @@ on the holder's word, and in no other way:
   and logged) leaves the lead as it is shown.
 
 `ready` is for scratch leads only. The canary has no observer and its lead stays
-`starting` (see [the canary slice](canary-slice.md)).
+`starting` (see [the canary slice](canary-slice.md)); a canary holder that
+started as another build is refused at its ticket and its message, and the
+owner stops it.
 
 `lead.list` shows the state and the reason together: a promoted lead's row says
 `"state":"ready"` and `"state_reason":"holder-ready"`, both from the registry's
@@ -421,10 +467,45 @@ operation; every code is a word of lower-case letters, digits and dashes.
 | Operation | Refused | Unavailable | Uncertain |
 | --- | --- | --- | --- |
 | `lead.define` | `role-busy`, `record-invalid`, `provision-incomplete`, `digest-pin`, `provision-refused`, `registry-refused` | `provision-failed` | `registry-broken`, `failed` |
-| `lead.start` | `role-busy`, `not-provisioned`, `folder-missing`, `max-running`, `role-not-defined`, `not-managed`, `preflight`, `record-folder-left`, `foreign-unit`, `unit-loaded`, `limits`, `launch-refused`, `epoch-exhausted`, `registry-refused` | `start-failed`, `previous-unit-not-gone`, `intent-pending` | `launch-uncertain`, `daemon-stopping`, `registry-check`, `registry-broken`, `failed` |
+| `lead.start` | `role-busy`, `not-provisioned`, `folder-missing`, `holder-version-skew`, `max-running`, `role-not-defined`, `not-managed`, `preflight`, `record-folder-left`, `foreign-unit`, `unit-loaded`, `limits`, `profile-not-launchable`, `launch-refused`, `epoch-exhausted`, `registry-refused` | `start-failed`, `previous-unit-not-gone`, `intent-pending` | `launch-uncertain`, `daemon-stopping`, `registry-check`, `registry-broken`, `failed` |
 | `lead.stop` | `role-busy`, `stale-epoch`, `role-not-defined`, `not-managed` | `intent-pending`, `failed` | `stop-unproven`, `daemon-stopping`, `registry-broken`, `failed` |
-| `lead.ticket` | `stale-epoch`, `not-running`, `ticket-refused` | `holder-unreachable`, `ticket-failed`, `ticket-lost`, `ticket-file` | |
-| `lead.inject` | `stale-epoch`, `inject-off`, `not-running`, `second-message`, `message-in-flight`, and the admission codes of the canary slice (`bad-id`, `body-too-long`, `empty-body` and the like) | `holder-unreachable`, and `holder-` with the holder's refusal (`disabled`, `busy`, `bad-request`; the epoch's message stays free after `disabled` and `bad-request`, and stays spent after `busy`) | |
+| `lead.ticket` | `stale-epoch`, `not-running`, `holder-version-skew`, `ticket-refused` | `holder-unreachable`, `ticket-failed`, `ticket-lost`, `ticket-file` | |
+| `lead.inject` | `stale-epoch`, `inject-off`, `not-running`, `holder-version-skew`, `second-message`, `message-in-flight`, and the admission codes of the canary slice (`bad-id`, `body-too-long`, `empty-body` and the like) | `holder-unreachable`, and `holder-` with the holder's refusal (`disabled`, `busy`, `bad-request`; the epoch's message stays free after `disabled` and `bad-request`, and stays spent after `busy`) | |
+
+`holder-version-skew` refuses a holder that is not the daemon's own build,
+before anything changes: `lead.start` reads the build of the holder executable
+of the lead's config, and `lead.ticket` and `lead.inject` the build the running
+holder recorded in its `holder.json`, before the holder is asked anything (a
+refused message is not spent). A `holder.json` of another epoch than the lead's
+current one is refused with `stale-epoch` before its build is looked at, since
+it is not the record of the holder that would be asked: most often the holder
+of a lead that is starting has not written its own yet, and the ticket or the
+message is asked again once the list shows the lead ready. A lead shown
+`starting` whose holder has written no `holder.json` at all yet (its first
+start) is refused the same way, `stale-epoch` with the text "the holder of the
+epoch has not written its state file yet: the role is still starting; try
+again in a moment", and not as another build: nothing is known of a build
+yet, and waiting is the way out. The console's leads view words `stale-epoch`
+as "the epoch changed or the lead is not ready yet; read the list and try
+again". The same build is
+the same main module path, module version, VCS revision and modified flag;
+the build tags and the Go version are not compared, so the daemon of `make scratch-seat-build`
+and the holder of `make canary-build` from one checkout are the same build. A
+build without a VCS revision is never the expected one, and a holder that
+records no build (a holder older than build identities) is refused as such. Its
+message, unlike the other codes' fixed texts, names what was found and both
+builds, as read from the binary or the record: a version, the first 12
+characters of the revision and `modified`, in a restricted character set, and
+both module paths when they differ (each cut, keeping its start and the first
+character at which the two differ, when the 256 bytes of
+the message would not hold them; a path that is the start of the other, cut
+to the same text, is followed by its length in bytes). Not
+checked are `lead.stop` and the `status` questions of the daemon's ready
+observer, which only read the holder's state: stop a skewed lead and start it
+again with the new holder. A refused start leaves the lead stopped, and a start
+again is refused again until the holder executable and the daemon are of one
+checkout: build the holder again, or restart the daemon with the build that
+matches. The console says both in one line.
 
 Every operation can also end `refused` with `daemon-broken` (the registry or the
 table cannot be written, and the daemon admits no new command until it is
@@ -1202,7 +1283,10 @@ keeps its sample leads.
    every lead's reply folder; the daemon refuses a drop folder in the state
    root. This adapter can collect requests from the drop folder and run the
    suite in the verification sandbox: the word stand-in on its door does not
-   make every host action inert.
+   make every host action inert. On a state root that keeps other settings
+   in `owner/scratch.json` (a phone trial's), the owner gives the folder of
+   the non-trial settings with `--owner-settings` instead (below), and
+   `owner/scratch.json` stays as it is.
 3. The gate's identity and the pinned seat key: `ataniqd seat-gate init
    --state-dir STATE` with the config's state root as `STATE` prints the gate's
    fingerprint, which the seat on the authority host pins, and
@@ -1233,6 +1317,121 @@ and it is keyed by a secret the daemon makes at each start and never sends, so
 its value means nothing after a restart. It only hints that the seat should
 read again: it never allows a read, which the desk checks on every one.
 
+**Settings from a folder of their own.** With `--owner-settings DIR` the
+owner channel reads its settings from `DIR/scratch.json` and not from
+`owner/scratch.json` of the state root, which is not read at all, so a phone
+trial's state folder keeps its own settings while the scratch daemon serves its
+gate identity, its pins and its paired phones. `DIR` sits beside the state
+root and the runtime root, not inside either (the runbook puts it at
+`ROOT/owner-settings`, beside `ROOT/runtime`, with the state root elsewhere):
+
+```sh
+build/scratch-seat/ataniqd run --scratch CONFIG --owner-channel --seat-gate IP:PORT --owner-settings DIR
+```
+
+The flag's name follows run's other flags (`--owner-channel` says what is
+served; `--scratch`, `--seat-gate` and `--owner-settings` name what it is
+served from), and it names a folder because the folder is what is checked and
+held: the daemon resolves `DIR` through every link and `..`, opens it with no
+link followed and opens `scratch.json` beneath that handle each time, without
+following a link, so a link planted after the check changes nothing. The
+file's bytes are read once, from the descriptor that was checked, and the
+settings are decoded from those bytes; the file is never opened by its name
+a second time. It
+refuses to start (exit 10, one line naming every rule that fails, before any
+lock and with nothing made) when `DIR` is not a private folder (mode 0700) of
+the daemon's user, or when it is, lies in or holds:
+
+- `owner/` of the state root, the trial's own settings folder ("not the
+  trial's settings folder");
+- the state root or the runtime root ("beside the state and runtime
+  folders, not inside them");
+- a path a lead's sandbox reaches: each lead's folder (home, provider config,
+  tree and the copies its sandbox binds), mirror, mailbox, published folder and
+  holder runtime folder, whether or not the lead is defined, the agent install
+  and the probe of the config, and the host paths every sandbox binds ("out of
+  every lead's reach");
+- `owner/gate`, the gate's identity and pins ("not the key list, the journal
+  or the gate identity");
+- once the settings are read, the drop folder, the mirror, the work folder or
+  the sandbox template they name ("apart from the folders the settings
+  name"): the drop folder, the mirror and the work folder are where others
+  write or run, and the template decides which command wraps the gates, as
+  the settings file does, so neither is kept with the other (the template is
+  kept out of the first three for the same reason).
+
+Each rule is decided two ways: by the resolved paths, and by the identities
+(device and inode) of the open folder and of each folder above it, which also
+catch a bind mount of a guarded folder itself given as `DIR`. The checks
+guard against mistakes (a wrong path, a link, a guarded folder given by its
+other name), not against an attacker. A mount layout the owner or root makes
+is outside them: a bind mount of a folder within a guard given as `DIR`,
+nested mounts, a mount made after the check and a mount in another mount
+namespace are not looked at. A lead cannot make a mount on the host.
+`scratch.json` must be a regular
+file of the user's, mode 0600, with one name, that is not the key list, its
+head, the journal, a file of the gate or the trial's settings file by another
+name, and that holds non-trial settings. The start then prints, after the
+STAND-IN banner, `owner channel: settings read from DIR/scratch.json
+(--owner-settings); owner/scratch.json of the state folder is not read`. The
+journal (`owner/journal.db`), the records, the list of keys and the gate's key
+and pins are the state root's all the same: the gate's identity and pins are
+read and never written, and the key list only grows by a pairing, a revocation
+or a raised sign counter. The folder is the user's own: a process of the
+owner's user, not a lead (the folder is out of every lead's reach), could still
+change the file between the two reads the daemon makes, before its locks and
+when it builds the service, and each read is checked again.
+
+`--check` with the same flags makes every check the daemon makes before it
+takes a lock and prints one line each, `pass` with what holds or `FAIL` with
+why: the folder and its four rules, the settings file and the settings, the
+folders the settings name, the scratch roots, the suite, the root marker, the
+gate's address, key and pins, and the socket paths of the daemon and of every
+lead's holder. The last of these is one the daemon's start does not make: a
+holder meets the limit of a socket address only when it starts, so the check
+is the place to find a runtime root too long for a holder. Then it lists
+what the daemon would read and open, says that `owner/scratch.json` is not
+read, and ends `check: no refusal` (exit 0) or `check: N refusal(s): the
+sitting failed preflight` (exit 10), which then names the start that would
+fail: the daemon's, or, when a holder's socket path is the one refusal, the
+later start of that lead's holder (the daemon would start). It binds, locks, makes and starts nothing; the locks and the gate's port,
+which it does not take, are the start's own refusals (exit 12, 17 and 18).
+
+`--check --keys-prefix` and `--check --keys-since LEN:SHA256` check the key
+list of the state root alone (`owner/keys.log` and its head
+`owner/keys.head`), with the journal's own checks read only
+(`ownerjournal.VerifyKeys`), on the files themselves: the folder and both
+files opened without following a link and held to the ownership, mode and
+link-count checks of the journal's opener, the records well formed, in
+sequence, on the digest chain and within the list's rules, and the head's
+count and digest exactly the list's. Nothing is created, repaired, locked or
+written, in the state root or anywhere else: a missing list or head (the
+opener would make one) and a head that lags the list (a start would make it
+right) do not pass. A pass is a snapshot of the files' identity, their
+ownership, mode and link count, their content and the head's agreement with
+the list, at the moment of the check; it does not say that the daemon's
+start will open the list. The check opens the files read only and takes no
+lock, so whether the list can be opened for writing (a read-only file
+system, say) and whether its lock is free (another daemon holds it) are
+checked only when the daemon starts. It is a guard for the owner's trial
+against his own mistakes: whoever can write the folder can write a list and
+a head that hold.
+With `--check`, `--expect-state DIR` binds the check to the trial its
+caller means: before any file of the state root is read, the daemon refuses
+(exit 10) unless DIR is, by device and inode, the state root the scratch
+config of that invocation decoded to; it applies to `--check`,
+`--keys-prefix` and `--keys-since` alike, and the attended proof's
+`prepare.sh --status` passes it to each.
+`--keys-prefix` prints one line, the list's prefix, its length in bytes and
+its SHA-256, as `LEN:SHA256`, a space and the SHA-256 of the head: both of
+the bytes the checks read from the descriptors they checked, one snapshot. `--keys-since` checks that a prefix taken earlier
+is the list's beginning, ending at a whole record, and names the type of
+each record appended since: counter records alone (a phone login whose
+passkey's sign counter rises) end `keys: holds` (exit 0); any other record,
+a changed or missing old byte and any damage end `keys: CHANGED` (exit 1).
+The attended proof takes the prefix before its sitting and checks the list
+against it after.
+
 **Reading a lead's replies.** The owner defines and starts a lead from the
 console ([the console guide](terminal-console.md)). Its chat is off, like every
 lead's whenever the daemon starts; `"inject": false` is enough for replies, and
@@ -1256,6 +1455,29 @@ control plane and the approvals in one process: any process of the owner's user
 can call `chat.set` and the `lead.*` operations on its socket, as [the
 same-user limit](#what-scratch-mode-leaves-open) says. The host setup, the pins,
 the deployment of the seat and every live run are the owner's.
+
+## The attended proof of real replies
+
+[The attended proof of real replies](scratch-seat-proof.md) is the owner's
+runbook for one sitting with this daemon on the phone trial's state folder, so
+that the trial's gate key, seat pins and paired phones are reused: first the
+stand-in lead, then, once the drop rule is in place, one real Claude lead,
+each reply read on the phone and the desktop. Without `--owner-settings` the
+daemon refuses that folder, whose `owner/scratch.json` holds the trial's
+settings (`"trial": true`); with `--owner-settings` it reads the proof's own
+settings from a folder of the proof's and leaves the trial's where they are.
+Nothing of the trial is renamed, moved, masked or swapped: the owner stops
+the trial and starts it again with his own commands, and the state folder's
+daemon lock refuses a second daemon. `qualification/scratch-seat/prepare.sh`
+writes the scratch config, the settings folder and the files they name in a
+folder of the proof's own (`--dry` reads and writes nothing of the owner's;
+`--self-test` computes only; `--write` never writes in the trial's state
+folder or starts anything; `--status` runs the daemon's `--check` and
+compares the trial's files with the digests the owner recorded, and writes
+nothing). Each sitting has leads of its own (`standin-N`, `live-N`).
+`TestScratchSeatTakesThePhoneTrialsStateFolder` in `cmd/ataniqd` proves the
+folder's way there and back in process, on the files `--write` makes, and
+shows the trial's gate key, pins, keys and settings the same bytes after it.
 
 ## Failure handling and owner recovery
 

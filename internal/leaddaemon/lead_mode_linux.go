@@ -16,6 +16,7 @@ import (
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadcanary/provision"
 	"ataniq/internal/leadcontrol"
+	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/canaryroot"
 	"ataniq/internal/leadlifecycle"
 	"ataniq/internal/leadlock"
@@ -86,6 +87,9 @@ type Scratch struct {
 	// ChatScanEvery is how often the scanner of a lead whose chat is on reads
 	// its reply folder; default [DefaultChatScanEvery].
 	ChatScanEvery time.Duration
+	// HolderBuild is the holder build the daemon expects and how it reads a
+	// holder's, as [Canary.HolderBuild]; nil is the daemon's own build.
+	HolderBuild *buildid.Checker
 
 	// chatNow is the clock of the leads' chat stores; nil means time.Now.
 	// Only a test in this package sets it, to run the settle rule ahead of
@@ -236,7 +240,11 @@ func (d *daemon) scratchSetup() (*canaryMode, error) {
 		return nil, fail(StepConfig, "scratch mode: %v", err)
 	}
 	router := newLeadRouter(msgNotALead)
-	m := &canaryMode{d: d, router: router, injectFor: s.InjectWait, dialFor: s.DialTimeout, idPrefix: idPrefixLead}
+	build, err := holderBuildCheck(s.HolderBuild)
+	if err != nil {
+		return nil, fail(StepConfig, "scratch mode: %v", err)
+	}
+	m := &canaryMode{d: d, router: router, injectFor: s.InjectWait, dialFor: s.DialTimeout, idPrefix: idPrefixLead, build: build}
 	if m.injectFor <= 0 {
 		m.injectFor = DefaultInjectWait
 	}
@@ -345,12 +353,19 @@ func (l *leadMode) closeTable() error {
 }
 
 // extension builds the extension of each lead's instance over the controller
-// and the registry, and returns the lead.* extension.
-func (l *leadMode) extension(ctl *leadlifecycle.Controller, reg *leadregistry.Registry) clientapi.Extension {
+// and the registry, and returns the lead.* extension. It fails when the check
+// of an adopted ready lead found another build and could not record it
+// (revalidateAdopted); the chat is then not bound.
+func (l *leadMode) extension(ctl *leadlifecycle.Controller, reg *leadregistry.Registry) (clientapi.Extension, error) {
 	l.ctl, l.reg = ctl, reg
 	for _, role := range l.cm.router.order {
 		in := l.cm.router.byRole[role]
 		in.ext = l.cm.newExt(in, ctl, reg)
+	}
+	// A lead an earlier daemon showed ready is checked for this daemon's
+	// build before anything is served (see lead_ready_linux.go).
+	if err := l.revalidateAdopted(); err != nil {
+		return nil, err
 	}
 	// The chat reads the registry's state of each lead, and nothing else of
 	// it; the seat's port gets the chat once it can answer.
@@ -359,7 +374,7 @@ func (l *leadMode) extension(ctl *leadlifecycle.Controller, reg *leadregistry.Re
 		l.chat.holdStopped = l.holdStopped
 		l.port.bind(l.chat)
 	}
-	return &leadExt{m: l}
+	return &leadExt{m: l}, nil
 }
 
 // holdStopped takes the role's operation lock, as a define, a start and a

@@ -1,0 +1,417 @@
+# The body of ROOT/netcheck.sh, which prepare.sh --write writes after six
+# lines of its own (the first line, a note, then SELF, PASTA, BWRAP, GATE_HOST
+# and GATE_PORT, the real values). It is never run by prepare or by an agent:
+# the owner runs it by hand while a daemon serves the gate (so that something
+# listens on the gate's address): at step e, before either lead starts, the
+# phone trial's; at step 7, once the drop rule is in place and before the live
+# lead, the proof's daemon, with the trial stopped.
+#
+# It is modelled on the canary run kit's netcheck (qualification/canary/run/
+# netcheck.sh.in). It probes one TCP connection to the gate's numeric address
+# and port three times and classifies each probe as connected, refused, or
+# filtered/timed out, or as a probe that did not run (an error):
+#   1. from this host, outside any sandbox: it must connect (the gate of the
+#      daemon that serves it answers); without a listener the next probes
+#      prove nothing;
+#   2. from the lead's network, in the shape of the sandbox profile (pasta,
+#      then bubblewrap with the read-only root, no capabilities, UID 0),
+#      started from this shell: it must time out;
+#   3. the same, started in a throwaway user unit of systemd-run with the
+#      lead unit's fixed properties, where a lead's holder starts pasta (in
+#      the user manager, not in this shell's session): it must time out too.
+#      A rule that matches the lead's processes by their unit's place in the
+#      user manager shows here and not in 2.
+# Only a timeout that the probe itself reports, after the route to the gate
+# was established, passes 2 and 3: a rule that drops (as the drop rule
+# does). curl's "could not connect" (7, no time to connect) is a reset, an
+# unreachable or prohibited answer, a local refusal or a missing route
+# alike, so it shows nothing and is a finding, never a passing refusal. A
+# probe that did not run (no curl, a curl without telnet://, a sandbox or a
+# unit that did not start, output without the probe's line) is a finding,
+# and so is a wrapper (the probe's shell, pasta and bubblewrap, or the unit)
+# that ended with a status other than 0, whatever it printed.
+# Inside the sandbox, before the probe, the route the namespace takes to the
+# gate's address is established (NETUP) by the kernel's own lookup, ip -4
+# route get (iproute2's ip, from the host's /usr, which the sandbox binds):
+# its route type, output interface and selected source address. It must be
+# a unicast route, not local (the gate's address one of the namespace's
+# own: the probe would reach the sandbox, not the gate), not a reject route
+# (unreachable, prohibit, blackhole), not on lo, not through a gateway of
+# 0.0.0.0, with a source address that is not loopback and not the gate's;
+# a lookup that fails or answers out of its form is indeterminate, and so
+# is a sandbox without ip. Without a usable route the probe is not made, the
+# line "net route=... addr=..." says so (and note=, why), and the result is
+# a probe that did not run, a finding. The
+# probe is curl with no configuration file (-q, its first argument), no proxy
+# (--noproxy '*'; the environment is cleared on this host's side, and
+# bubblewrap clears it inside) and telnet://, which sends nothing but its empty
+# standard input; it prints one line, "probe rc=N connect=T": curl's own exit
+# status and its time to connect (0.000000 when no connection was made). It
+# sends no byte to the gate (a connection is made and closed), uses no
+# credential and starts no agent. One line per probe, PASS or FINDING, then
+# INFO lines; the exit status is the number of findings, at most 100, and the
+# last line names it.
+#
+# The network shape is the holder's for a scratch lead, and a test
+# (TestScratchSeatNetcheckMatchesTheLeadsNetwork) holds it there: the pasta
+# arguments are sandboxnet.PastaArgs() (internal/leadsandbox/sandboxnet), the
+# ones the plan passes; the bubblewrap options that make the namespaces and
+# the identity are the profile's flag set for the identity a scratch lead
+# has, UID and GID 0 (provisioning names no other identity and no seccomp
+# filter); and the unit's properties are leadunit.FixedProperties(). What
+# differs, and why the probes still show whether the gate is reachable from a
+# lead: the binds (the host's /usr and a few /etc files here, the profile's
+# table there) and the program inside (sh, ip and curl here, the probe and the
+# agent there) do not change the network; the resolv.conf here is the host's
+# (its upstream list behind a systemd-resolved stub), where the holder writes
+# one it derives, and the gate is an address, so no name is looked up. The
+# throwaway unit's name is systemd-run's, not a lead unit's
+# (ataniq-lead-scratch-KEY.service): a rule that matches that name is not
+# seen by probe 3.
+#
+# Entries that run nothing, for the tests: --classify RC CONNECT,
+# --class-of TEXT, --lead-class-of TEXT and --status-class STATUS CLASS print
+# a class; --verdict HOST SHELL UNIT prints the lines and ends with the exit
+# status three classes give; --net-of GATE runs NETUP for the gate's address
+# given, with the caller's PATH (the tests put a stub ip first on it).
+# --probe-here HOST PORT runs the probe in the caller's environment, outside
+# any sandbox (the tests run it with a stub curl first on PATH and no other).
+#
+# POSIX sh. The script calls itself with --core to run the sandbox.
+SH=$(command -v sh) || SH=/bin/sh
+
+# resolv sets RESOLV, the resolv.conf the sandbox gets: the host's, or
+# resolved's upstream file when the host's is the local stub.
+resolv() {
+  RESOLV=/etc/resolv.conf
+  _stub=0
+  [ "$(readlink -f /etc/resolv.conf 2>/dev/null)" = /run/systemd/resolve/stub-resolv.conf ] && _stub=1
+  if [ "$_stub" -eq 0 ] && [ -r /etc/resolv.conf ]; then
+    _ns=$(awk '$1 == "nameserver" { print $2 }' /etc/resolv.conf)
+    [ "$_ns" = 127.0.0.53 ] && _stub=1
+  fi
+  if [ "$_stub" -eq 1 ] && [ -r /run/systemd/resolve/resolv.conf ]; then
+    RESOLV=/run/systemd/resolve/resolv.conf
+  fi
+}
+
+# core runs the command given as arguments inside pasta and bubblewrap in the
+# shape of the profile.
+core() {
+  resolv
+  _opt=
+  [ -e /etc/ssl ] && _opt="$_opt --ro-bind /etc/ssl /etc/ssl"
+  [ -e /etc/ca-certificates ] && _opt="$_opt --ro-bind /etc/ca-certificates /etc/ca-certificates"
+  [ -e /etc/nsswitch.conf ] && _opt="$_opt --ro-bind /etc/nsswitch.conf /etc/nsswitch.conf"
+  [ -e /usr/lib64 ] && _opt="$_opt --symlink usr/lib64 /lib64"
+  # shellcheck disable=SC2086  # the optional binds are split on purpose
+  "$PASTA" -f -q --config-net -t none -u none -T none -U none --no-map-gw -- \
+    "$BWRAP" --die-with-parent --unshare-all --share-net --unshare-user --uid 0 --gid 0 \
+    --cap-drop ALL --clearenv --tmpfs / --ro-bind /usr /usr \
+    --symlink usr/bin /bin --symlink usr/lib /lib $_opt \
+    --ro-bind /etc/hosts /etc/hosts \
+    --ro-bind /etc/passwd /etc/passwd --ro-bind /etc/group /etc/group \
+    --ro-bind "$RESOLV" /etc/resolv.conf \
+    --dev /dev --proc /proc --tmpfs /tmp --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp \
+    --remount-ro / -- "$@"
+}
+
+# unit runs this script's --core in a throwaway user unit with the lead
+# unit's fixed properties, waits for it and passes its output through.
+unit() {
+  systemd-run --user --wait --pipe --quiet \
+    -p Type=exec -p CollectMode=inactive-or-failed -p KillMode=control-group -p Restart=no -p TimeoutStopSec=2s \
+    -- "$SH" "$SELF" --core
+}
+
+# The probe, run by sh -c with the host and the port as $0 and $1. Its status
+# is curl's own: the status of an assignment is that of its command
+# substitution.
+# shellcheck disable=SC2016  # the inner shell expands these
+PROBE='command -v curl >/dev/null 2>&1 || { echo "probe no-curl"; exit 0; }
+t=$(curl -q -s --noproxy "*" -o /dev/null --connect-timeout 5 -m 8 -w "%{time_connect}" "telnet://$0:$1" </dev/null)
+echo "probe rc=$? connect=${t:-none}"'
+
+# NETUP, run by sh -c inside the sandbox before the probe with the gate's
+# address as $0, prints one line, "net route=IFACE addr=ADDRESS" ("none" for
+# what is not there, and note=WHY when the route is none): the interface and
+# the source address of the route the namespace takes to the gate's address,
+# as the kernel's own lookup gives them ("ip -4 route get ADDRESS": the route
+# type, the output interface and the source address the kernel selects). The
+# route is not usable, and the probe is not made, when the lookup is
+# indeterminate (no ip, a lookup that fails, as one through an unreachable,
+# prohibit or blackhole route does, or an answer not of its form:
+# note=noip, note=lookup), when its type is local, the gate's address an
+# address of the namespace itself, which the probe would reach in place of
+# the gate (note=local), or any type other than unicast (note=reject for
+# unreachable, prohibit and blackhole, note=type otherwise), when it is on lo
+# (note=lo), when it goes through a gateway of 0.0.0.0 (note=nogateway), and
+# when the source address is missing, 0.0.0.0 or a loopback address
+# (note=noaddress) or the gate's own (note=local). Nothing is inferred from
+# subnets or address lists: what the kernel answers decides. Only the first
+# line of the answer is read. ip is found on the sandbox's PATH (/usr/bin
+# and /usr/sbin of the host); --net-of runs NETUP with the caller's PATH,
+# where the tests put a stub ip.
+# shellcheck disable=SC2016  # the inner shell expands these
+NETUP='g=$0
+r=none
+a=none
+note=
+quad() {
+  case $1 in "" | *[!0-9.]* | *..* | .* | *.) return 1 ;; esac
+  case $1 in *.*.*.*.*) return 1 ;; *.*.*.*) ;; *) return 1 ;; esac
+}
+# answer WORDS reads the words of the lookup'"'"'s first line: [TYPE] ADDRESS,
+# then pairs such as dev IFACE, src ADDRESS and via GATEWAY.
+answer() {
+  [ "$#" -gt 0 ] || { note=lookup; return; }
+  t=unicast
+  if [ "$1" != "$g" ]; then
+    t=$1
+    shift
+  fi
+  [ "$#" -gt 0 ] && [ "$1" = "$g" ] || { note=lookup; return; }
+  shift
+  dev=
+  src=
+  via=
+  while [ "$#" -gt 1 ]; do
+    case $1 in
+      dev) dev=$2; shift ;;
+      src) src=$2; shift ;;
+      via) via=$2; shift ;;
+    esac
+    shift
+  done
+  case $t in
+    unicast) ;;
+    local) note=local; return ;;
+    unreachable | prohibit | blackhole) note=reject; return ;;
+    *) note=type; return ;;
+  esac
+  if [ -z "$dev" ]; then
+    note=lookup
+  elif [ "$dev" = lo ]; then
+    note=lo
+  elif [ -n "$via" ] && ! quad "$via"; then
+    note=lookup
+  elif [ "$via" = 0.0.0.0 ]; then
+    note=nogateway
+  elif ! quad "$src" || [ "$src" = 0.0.0.0 ]; then
+    note=noaddress
+  elif [ "$src" = "$g" ]; then
+    note=local
+  else
+    case $src in
+      127.*) note=noaddress ;;
+      *) r=$dev; a=$src ;;
+    esac
+  fi
+}
+if ! quad "$g"; then
+  note=gate
+elif ! command -v ip >/dev/null 2>&1; then
+  note=noip
+elif ! out=$(ip -4 route get "$g" 2>/dev/null); then
+  note=lookup
+else
+  set -f
+  # shellcheck disable=SC2086  # the words are split on purpose
+  answer ${out%%"
+"*}
+  set +f
+fi
+echo "net route=$r addr=$a${note:+ note=$note}"
+[ "$r" != none ] && [ "$a" != none ] || exit 0
+'
+
+# classify RC CONNECT prints the class of one probe: connected when a time to
+# connect above zero was measured; else refused for curl's "could not
+# connect" (7: a reset, or a rejection answered by an unreachable message)
+# and filtered for its timeout (28: nothing answered); anything else is an
+# error, a probe that showed nothing.
+classify() {
+  case $1 in '' | *[!0-9]*) echo error; return 0 ;; esac
+  case $2 in '' | *[!0-9.]* | .* | *. | *.*.*) echo error; return 0 ;; esac
+  if awk -v t="$2" 'BEGIN { exit !(t + 0 > 0) }'; then
+    echo connected
+    return 0
+  fi
+  case $1 in
+    7) echo refused ;;
+    28) echo filtered ;;
+    *) echo error ;;
+  esac
+}
+
+# class_of TEXT prints the class of the last probe line of TEXT, the output of
+# a probe; a text without a line of the probe's form is an error.
+class_of() {
+  _l=$(printf '%s\n' "$1" | awk '/^probe / { l = $0 } END { print l }')
+  case $_l in
+    'probe rc='[0-9]*' connect='*) ;;
+    *) echo error; return 0 ;;
+  esac
+  _rc=${_l#probe rc=}
+  _rc=${_rc%% *}
+  _t=${_l#probe rc="$_rc" connect=}
+  case $_t in *' '* | '') echo error; return 0 ;; esac
+  classify "$_rc" "$_t"
+}
+
+# lead_class_of TEXT prints the class of a probe of the lead's network: its
+# last "net " line must name a route and an address (NETUP), else the class
+# is nonet, a probe that did not run; without that line it is an error; then
+# the class of its probe line.
+lead_class_of() {
+  _n=$(printf '%s\n' "$1" | awk '/^net / { l = $0 } END { print l }')
+  case $_n in
+    'net route='*' addr='*) ;;
+    *) echo error; return 0 ;;
+  esac
+  case $_n in
+    *'route=none'* | *'addr=none'*) echo nonet; return 0 ;;
+  esac
+  class_of "$1"
+}
+
+FINDINGS=0
+finding() {
+  FINDINGS=$((FINDINGS + 1))
+  printf 'FINDING  %s\n' "$*"
+}
+pass() { printf 'PASS     %s\n' "$*"; }
+info() { printf 'INFO     %s\n' "$*"; }
+
+# host_line CLASS: this host must connect.
+host_line() {
+  case $1 in
+    connected) pass "this host: connected to $GATE_HOST:$GATE_PORT (a daemon's gate listens)" ;;
+    refused) finding "this host: refused at $GATE_HOST:$GATE_PORT: nothing listens; run this while a daemon serves the gate (the trial at step e, the proof's daemon at step 7), or the next probes prove nothing" ;;
+    wrapper-*) finding "this host: the probe's shell ended with exit status ${1#wrapper-}, so what it printed is not taken" ;;
+    filtered) finding "this host: no answer from $GATE_HOST:$GATE_PORT (filtered or timed out); run this while a daemon serves the gate (the trial at step e, the proof's daemon at step 7), or the next probes prove nothing" ;;
+    *) finding "this host: the probe did not run (no curl, a curl without telnet://, or another failure), so nothing was shown" ;;
+  esac
+}
+
+# status_class STATUS CLASS prints CLASS when STATUS, the exit status of the
+# probe's wrapper, is 0, and wrapper-STATUS otherwise: what a wrapper that
+# failed printed is not taken, however plausible.
+status_class() {
+  case $1 in
+    0) echo "$2" ;;
+    '' | *[!0-9]*) echo wrapper-unknown ;;
+    *) echo "wrapper-$1" ;;
+  esac
+}
+
+# lead_line LABEL CLASS: the lead's network must not connect, and only a
+# timeout shows that a rule stopped it.
+lead_line() {
+  case $2 in
+    filtered) pass "$1: filtered or timed out on the route to the gate (no connection to the gate's port was made)" ;;
+    refused) finding "$1: curl could not connect (status 7, no time to connect): a reset, an unreachable or prohibited answer, a local refusal and a missing route all read this way, so it shows nothing; only a probe that times out (a rule that drops, as the drop rule does) passes" ;;
+    connected) finding "$1: connected to the gate's port $GATE_HOST:$GATE_PORT: do not start a lead until a rule refuses it" ;;
+    nonet) finding "$1: the probe did not run: no usable route and source address to the gate's address in the sandbox (the kernel's lookup failed or was not made, or gave a reject, unreachable or blackhole route, a local route, the gate's address the sandbox's own, a route on lo, or no source address; see its net line below), and a refusal there would show nothing" ;;
+    wrapper-*) finding "$1: the probe's wrapper ended with exit status ${2#wrapper-}, so what it printed is not taken (see its output below)" ;;
+    *) finding "$1: the probe did not run, so nothing was shown (see its output below)" ;;
+  esac
+}
+
+# verdict HOST SHELL UNIT prints the lines of the three classes.
+verdict() {
+  host_line "$1"
+  lead_line "the lead's network, from this shell" "$2"
+  lead_line "the lead's network, in a user unit" "$3"
+}
+
+# finish prints the last line and ends with the number of findings.
+finish() {
+  if [ "$FINDINGS" -gt 0 ]; then
+    echo "netcheck: $FINDINGS finding(s)"
+    [ "$FINDINGS" -le 100 ] || FINDINGS=100
+    exit "$FINDINGS"
+  fi
+  echo "netcheck: no finding"
+  exit 0
+}
+
+case ${1:-} in
+  --core)
+    core /usr/bin/sh -c "$NETUP$PROBE" "$GATE_HOST" "$GATE_PORT"
+    exit
+    ;;
+  --classify)
+    [ "$#" -eq 3 ] || exit 2
+    classify "$2" "$3"
+    exit 0
+    ;;
+  --class-of)
+    [ "$#" -eq 2 ] || exit 2
+    class_of "$2"
+    exit 0
+    ;;
+  --lead-class-of)
+    [ "$#" -eq 2 ] || exit 2
+    lead_class_of "$2"
+    exit 0
+    ;;
+  --net-of)
+    [ "$#" -eq 2 ] || exit 2
+    "$SH" -c "$NETUP" "$2"
+    exit
+    ;;
+  --status-class)
+    [ "$#" -eq 3 ] || exit 2
+    status_class "$2" "$3"
+    exit 0
+    ;;
+  --verdict)
+    [ "$#" -eq 4 ] || exit 2
+    verdict "$2" "$3" "$4"
+    finish
+    ;;
+  --probe-here)
+    [ "$#" -eq 3 ] || exit 2
+    "$SH" -c "$PROBE" "$2" "$3"
+    exit
+    ;;
+  '') ;;
+  *) exit 2 ;;
+esac
+
+echo "netcheck: pasta $PASTA, bubblewrap $BWRAP, the gate $GATE_HOST:$GATE_PORT"
+# Each probe's output and the exit status of its wrapper, which must be 0.
+HRC=0
+HOSTSIDE=$(/usr/bin/env -i PATH=/usr/bin:/bin "$SH" -c "$PROBE" "$GATE_HOST" "$GATE_PORT" 2>&1) || HRC=$?
+SRC=0
+SHAPE=$("$SH" "$SELF" --core 2>&1) || SRC=$?
+URC=0
+if command -v systemd-run >/dev/null 2>&1; then
+  UNIT=$(unit 2>&1) || URC=$?
+else
+  UNIT='systemd-run is not on PATH: the probe in a user unit could not run'
+fi
+verdict "$(status_class "$HRC" "$(class_of "$HOSTSIDE")")" "$(status_class "$SRC" "$(lead_class_of "$SHAPE")")" "$(status_class "$URC" "$(lead_class_of "$UNIT")")"
+if command -v ss >/dev/null 2>&1; then
+  _l=$(ss -ltnu 2>/dev/null | awk 'NR > 1 && $5 !~ /^(127\.|\[::1\]|\[::ffff:127\.)/ { print $1, $5 }' | LC_ALL=C sort)
+  if [ -n "$_l" ]; then
+    printf '%s\n' "$_l" | while IFS= read -r _x; do info "listener on this host: $_x"; done
+  else
+    info 'no listener on a non-loopback address of this host'
+  fi
+else
+  info 'ss is not on PATH: list this host'"'"'s listeners another way'
+fi
+info "until the drop rule is in place the lead's network is open: pasta gives the sandbox this host's outbound access, to"
+info "your LAN, to the listeners above where your rules let this host reach them, and to the Internet. provider_host is a"
+info "DNS check, not a rule, and the guard hook exits 0: it guards nothing. The live lead waits for the drop rule and for"
+info "this check run again after it; write what you accept in ${SELF%/*}/evidence/notes.txt."
+if [ "$FINDINGS" -gt 0 ]; then
+  echo
+  echo "Each finding above needs a look before the sitting. What the probes printed:"
+  printf '%s\n' "$HOSTSIDE" | head -n 5 | sed 's/^/  host: /'
+  printf '%s\n' "$SHAPE" | head -n 10 | sed 's/^/  shell: /'
+  printf '%s\n' "$UNIT" | head -n 10 | sed 's/^/  unit: /'
+fi
+finish

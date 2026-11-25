@@ -227,12 +227,30 @@ func checkScratchState(stateDir string, getenv func(string) string) (defaults, c
 	return defaults, cands, state, nil
 }
 
+// scratchLoad reads the owner channel's settings: the settings file of the
+// state folder ([stateScratch]), or, in a build with both tags, the one of the
+// folder that run --owner-settings names (scratch_settings_linux.go).
+type scratchLoad func() (hostadapter.Scratch, error)
+
+// stateScratch reads the settings file of the state folder,
+// owner/scratch.json, with the strict reader of the host adapter.
+func stateScratch(stateDir string) scratchLoad {
+	return func() (hostadapter.Scratch, error) {
+		return hostadapter.LoadScratch(filepath.Join(stateDir, hostadapter.OwnerDirName, hostadapter.ScratchName))
+	}
+}
+
 // checkOwnerScratch reads the settings of the state folder and applies the
 // guards of the scratch owner channel: the settings select the stand-in door
 // (LoadScratch) and are not a phone trial's, and the roots are the scratch
 // ones.
 func checkOwnerScratch(stateDir string, getenv func(string) string) (hostadapter.Scratch, error) {
-	sc, err := hostadapter.LoadScratch(filepath.Join(stateDir, hostadapter.OwnerDirName, hostadapter.ScratchName))
+	return checkOwnerScratchFrom(stateDir, stateScratch(stateDir), getenv)
+}
+
+// checkOwnerScratchFrom is [checkOwnerScratch] on the settings load reads.
+func checkOwnerScratchFrom(stateDir string, load scratchLoad, getenv func(string) string) (hostadapter.Scratch, error) {
+	sc, err := load()
 	if err != nil {
 		return hostadapter.Scratch{}, err
 	}

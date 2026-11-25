@@ -81,10 +81,18 @@
 //
 // Both sides send [ProtocolVersion] in Hello and Welcome. Any change to an
 // attach payload that an older decoder would refuse (a new field, a new
-// required field) is a new protocol version. The control protocol has no
-// version: the daemon and the holder come from one build, and a holder that
-// cannot decode a request answers [CodeBadRequest], so a request with fields
-// it does not know writes nothing. Because the decoders are strict, a peer of
+// required field) is a new protocol version. The control frames are versioned
+// from 1 ([ControlVersion]): a request or a response carries its version in
+// the member "version", and one without it is version 1. A version 1 frame is
+// written without the member, so it is the bytes every earlier build wrote
+// and reads. There is no negotiation yet: the daemon and the holder are
+// expected to come from one build, which the daemon and ataniq-scratch check
+// against the holder's build identity before they launch or attach
+// (internal/leadholder/buildid, the refusal holder-version-skew); a frame of a
+// later version is for a peer that has said it reads it, and this package
+// refuses one. A holder that cannot
+// decode a request answers [CodeBadRequest], so a request with fields or a
+// version it does not know writes nothing. Because the decoders are strict, a peer of
 // another version may fail to decode; [HelloVersion] and [WelcomeVersion]
 // read only the version from a payload that may have unknown fields, so that a
 // holder can answer a newer client with a refused-version notice and a client

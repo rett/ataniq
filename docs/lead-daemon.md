@@ -185,7 +185,11 @@ fails, with one line on standard error:
    the registry is (see [Reconcile](#reconcile-and-what-starts-by-itself)).
    Reconcile does not run again on a timer; in scratch mode (a build with the
    `ataniq_canary` tag) a timer settles a launch that is still pending at its
-   deadline (see [the late-start window](#the-late-start-window)).
+   deadline (see [the late-start window](#the-late-start-window)). In scratch
+   mode this step then checks the build of every lead the daemon adopted
+   shown `ready`, and a lead of another build whose `degraded` state cannot
+   be written to the registry fails the step (exit 16): the daemon does not
+   serve a `ready` it knows to be wrong.
 8. **stale socket**: with both locks held, remove a socket file an earlier
    daemon left. It removes a socket owned by the caller and refuses anything
    else at that name.
@@ -211,7 +215,7 @@ completed. It writes no log file.
 | 13 | The daemon lock could not be taken for another reason. |
 | 14 | Registry: cannot be opened, corrupt, or locked by another writer. |
 | 15 | Manager: the boot identity cannot be read, or the manager or controller cannot be built. |
-| 16 | Reconcile: failed in the registry. |
+| 16 | Reconcile: failed in the registry, or (scratch mode) the `degraded` state of an adopted `ready` lead of another build could not be written. |
 | 17 | Socket: another daemon serves the runtime folder (its lock is held; refused before the registry is opened), or the socket path is too long, the folder is not usable, or the stale socket or the bind failed. |
 | 18 | The server stopped by itself. |
 | 19 | The server did not end within the shutdown grace (5 s). The registry is left open and both locks held, and all end with the process. |
@@ -911,6 +915,48 @@ JSON object per line. The first line is a header that names the format
   wider permission bits than 0600 (0700 for the folder) fail with
   `ErrInsecure`. Damage other than an unfinished last line fails with
   `ErrCorrupt` and names the line; nothing is repaired, and the daemon exits 14.
+- **Records of other builds.** Replay ignores a member of a line or of a
+  payload that this build does not know, and a member a build adds is written
+  only when it is set, so a record that does not use it is the bytes an older
+  build wrote. The tolerance is of members, not of values: a value this build
+  does not know in a member it knows (a provider, a manager, a desired or
+  shown state, an evidence kind, an outcome), a text over its bound, a
+  required member left empty and a member of another JSON type are damage, as
+  are an unknown record kind and another format version, and the journal does
+  not open (`ErrCorrupt`, exit 14). So a journal a newer build wrote opens
+  only when that build added members and nothing else. The identity of a
+  requested profile is its stored bytes: a launch intent carries the digest of
+  the profile as its define record stores it, so recorded launch digests stay
+  valid whatever members later builds add. A role whose stored profile has a
+  member this build does not know is not launched (`ErrLaunchProfile`, which a
+  start in scratch mode answers with the code `profile-not-launchable`, and
+  the canary's start with its text, both saying to define the role again)
+  until it is defined again. The refusal changes nothing: the start checks
+  the stored profile before it writes a scratch lead's instruction text and
+  before it sets the desired state, and the registry checks it again when it
+  journals the launch. So is a role whose define record repeats a
+  member anywhere in the record, the requested member itself and the
+  envelope's `payload` member included (of two payload members only the last
+  would be read), and the line's final `hash` member (an earlier `hash` is a
+  repeat), compared exactly and as encoding/json folds names (`requested` and
+  `Requested` are one member to it): no build writes one, and the typed
+  decoding would merge the occurrences while the stored bytes keep the last,
+  so the profile that was checked would not be the one launched. The record
+  replays, and is not damage. Only the requested profile is checked for a
+  member this build does not know: in every other record kind such a member is
+  dropped, and the record replays as the record this build knows. A later
+  build therefore adds to an existing record kind only a member that an older
+  build may ignore (a note, evidence, provenance); a member that restricts
+  what a reader may do (a hold, a fence, a guard) needs a new record kind or a
+  new format version, which an older build refuses as damage (see
+  `internal/leadregistry/doc.go`). `internal/leadregistry/testdata/v1-base`
+  holds a journal an older build wrote, and the tests read it back byte for
+  byte.
+- **A reserved pack reference.** The requested profile has a member `pack`
+  (a pack's name and the SHA-256 of its manifest) for the provider packs. No
+  build sets it yet: `Define` refuses a profile that names a pack, a role whose
+  record names one replays and is not launched (`ErrLaunchProfile`), and a
+  profile without one is encoded and digested as before the member existed.
 
 Format version 1 has no compatibility promise until a first deployment: a rule
 may be tightened so that a journal written by an earlier build is no longer
@@ -1227,6 +1273,27 @@ intent, with the boot identity when the manager reported one, and call `Start`
 once. It never waits for readiness, and it never sets `ready`. (In scratch
 mode a background observer sets `ready` afterwards, on the holder's word: see
 [the scratch leads guide](scratch-leads.md#ready).)
+
+**The holder's build.** In canary and scratch mode the daemon also checks,
+before the lifecycle is asked to start anything, that the holder executable of
+the config is the daemon's own build, and before it mints an attach ticket or
+sends a message that the running holder recorded that build in its
+`holder.json`, for the role's current epoch. A holder that is not is refused
+with `holder-version-skew`, with a message that names both builds, and a
+`holder.json` of another epoch with `stale-epoch`, naming both epochs; so is a
+role shown `starting` whose holder has written no `holder.json` yet, with a
+text that says it is still starting; nothing changes. In scratch mode the
+ready observer checks that `holder.json` again before it shows a lead
+`ready`, and shows a lead whose holder started as another build than the
+executable checked before the start `degraded` (`holder-version-skew`)
+instead; before it serves, the daemon reads it again for every lead it
+adopted shown `ready`, and shows one whose holder is another build
+`degraded` in the same way. The daemon never stops a holder for its build:
+the unit is left running, its ticket and message are refused, and the owner
+stops the lead and starts it again (see
+[the scratch leads guide](scratch-leads.md#ready)) (see `internal/leadholder/buildid` for what "the same build" means, and
+[the scratch leads guide](scratch-leads.md) for the receipt). A daemon whose
+own build cannot be read does not start (the config step).
 
 A reply that is lost is its own error. The caller inspects and does not start
 again. A unit with exactly this epoch and intent is adopted. Otherwise the

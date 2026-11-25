@@ -14,6 +14,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"ataniq/internal/leadholder/buildid"
 )
 
 // Exit statuses.
@@ -57,6 +59,20 @@ release-writer
          Remove the current writer.
 stop     Ask the holder to stop; stop its unit if it is still active after 4 s.
 
+start and ticket first check that the holder is the build of this command:
+the same module version, VCS revision and modified flag, read from the holder
+binary before start and from the build the running holder recorded in its
+holder.json before ticket. A holder of another build, one that records no
+build (an older holder) and one whose build cannot be read are refused with
+"refused: holder-version-skew: ...", which names both builds, and nothing is
+started or attached. Build both from one checkout. A holder.json of another
+epoch than the last one start took is refused first, with
+"refused: stale-epoch: ...", which names both epochs. After the holder has
+started, start reads its holder.json of the epoch and of this launch again,
+also when it did not answer: a holder that started as another build is
+refused. Its unit is not stopped: it is left running, and the refusal ends
+with the command that stops it. A --direct holder is ended.
+
 Exit status: 0 done, 1 failed or refused, 2 wrong usage.
 `
 
@@ -95,6 +111,32 @@ type app struct {
 	// signals, when set, replaces the real signal subscription: it returns the
 	// channel of SIGINT, SIGTERM and SIGHUP and a function that stops it.
 	signals func() (<-chan os.Signal, func())
+	// build is the holder build this command expects and how it reads a
+	// holder's; nil is this command's own build (buildid.NewChecker).
+	build *buildid.Checker
+}
+
+// checker returns the build check of the command.
+func (a *app) checker() (*buildid.Checker, error) {
+	if a.build != nil {
+		return a.build, nil
+	}
+	return buildid.NewChecker()
+}
+
+// buildRefusal checks the holder's build with check and, when it is not the
+// expected one, prints the refusal and returns the failure status; done is
+// false when the holder is the expected build.
+func (a *app) buildRefusal(check func(*buildid.Checker) error) (code int, done bool) {
+	ch, err := a.checker()
+	if err != nil {
+		return a.fail("%v", err), true
+	}
+	if err := check(ch); err != nil {
+		fmt.Fprintf(a.errout, "refused: %v\n", err)
+		return exitFail, true
+	}
+	return 0, false
 }
 
 // notifySignals subscribes to the signals that a --direct start forwards to
