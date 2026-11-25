@@ -517,7 +517,7 @@ func newNoticeRigWith(t *testing.T, wrap func(*watchDaemon) Daemon) *noticeRig {
 // parked waits until the goroutine has parked n times in all.
 func (nr *noticeRig) parked(t *testing.T, n int64) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(waitBound)
 	for nr.parks.Load() < n {
 		if time.Now().After(deadline) {
 			t.Fatalf("the notices' goroutine parked %d times, want %d", nr.parks.Load(), n)
@@ -750,7 +750,7 @@ func goroutinesIn(name string) int {
 
 func waitGoroutines(t *testing.T, name string, want int) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(waitBound)
 	for goroutinesIn(name) != want {
 		if time.Now().After(deadline) {
 			t.Fatalf("%d goroutines in %s, want %d", goroutinesIn(name), name, want)
@@ -770,7 +770,7 @@ func TestNoticeOpenStartsAndCloseStops(t *testing.T) {
 	}
 	waitGoroutines(t, "noticeLoop", 1)
 	wd.set(func(s *WatchState) { s.Waiting, s.Version = 2, "bb" })
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(waitBound)
 	for len(n.got()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
@@ -798,25 +798,55 @@ func TestNoticeOpenStartsAndCloseStops(t *testing.T) {
 	}
 }
 
+// inFlightNotifier is a notifier whose call stays in flight until its
+// context ends: it says when a call began, and the error of the context
+// that ended it.
+type inFlightNotifier struct {
+	entered chan struct{}
+	ended   chan error
+}
+
+func (f *inFlightNotifier) Notify(ctx context.Context, n int) error {
+	f.entered <- struct{}{}
+	<-ctx.Done()
+	f.ended <- ctx.Err()
+	return ctx.Err()
+}
+
+// TestNoticeCloseCancelsACallInFlight: Close cancels a call to the notifier
+// in flight, and does not wait for the call's own time limit (noticeCall).
+// The call is seen to begin before Close; its context must end cancelled,
+// not past its deadline, and within noticeCall/2, the assertion's own bound,
+// below the time limit that would end it anyway.
 func TestNoticeCloseCancelsACallInFlight(t *testing.T) {
 	r := newRig(t)
 	wd := &watchDaemon{fakeWatcher: newFakeWatcher("aa"), fakeDaemon: r.daemon}
-	n := &fakeNotifier{block: make(chan struct{})}
+	n := &inFlightNotifier{entered: make(chan struct{}, 1), ended: make(chan error, 1)}
 	x, err := Open(Config{Origin: testOrigin, RPID: testRPID, Daemon: wd, Notifier: n, ClientAddrHeader: testClientHeader})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { x.Close() })
 	wd.set(func(s *WatchState) { s.Waiting, s.Version = 1, "bb" })
-	deadline := time.Now().Add(3 * time.Second)
-	for len(n.got()) == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+	select {
+	case <-n.entered:
+	case <-time.After(waitBound):
+		t.Fatal("no call to the notifier began")
 	}
 	done := make(chan struct{})
 	go func() { x.Close(); close(done) }()
 	select {
+	case err := <-n.ended:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Close ended the call in flight with %v, want it cancelled", err)
+		}
+	case <-time.After(noticeCall / 2):
+		t.Fatal("Close did not cancel the call in flight")
+	}
+	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("Close waited on a call in flight")
+	case <-time.After(waitBound):
+		t.Fatal("Close waited after the call ended")
 	}
 	waitGoroutines(t, "noticeLoop", 0)
 }

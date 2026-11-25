@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -339,15 +340,66 @@ func TestChatStateWords(t *testing.T) {
 
 // ---- the daemon ----------------------------------------------------------------
 
-// newChatEnv is a scratch daemon's world with the seat's port and a fast
-// scanner.
+// chatClockLead is how far ahead of the kernel's change times the chat tests'
+// clock runs: the settle age and a margin, as leadchat's own tests run theirs.
+// A reply a test writes is then settled at once, and a check that a reply is
+// left alone (a lead that is off, a scan held at its admission) is left alone
+// for a reason other than its age.
+const chatClockLead = leadchat.SettleAge + time.Second
+
+// chatTestClock is the clock of the chat stores in the tests: the real clock
+// chatClockLead ahead.
+func chatTestClock() time.Time { return time.Now().Add(chatClockLead) }
+
+// newChatEnv is a scratch daemon's world with the seat's port, a fast scanner
+// and the stores on chatTestClock, so that a reply settles at once. A test
+// that wants the daemon's own clock, whose replies settle only once the kernel's
+// change time is SettleAge old, uses newChatEnvRealClock.
 func newChatEnv(t *testing.T) (*leadEnv, *LeadChat) {
+	t.Helper()
+	l, port := newChatEnvRealClock(t)
+	l.scratch.chatNow = chatTestClock
+	return l, port
+}
+
+// newChatEnvRealClock is newChatEnv with the daemon's own clock (the stores use
+// time.Now), as in a running daemon.
+func newChatEnvRealClock(t *testing.T) (*leadEnv, *LeadChat) {
 	t.Helper()
 	l := newLeadEnv(t)
 	port := NewLeadChat()
 	l.scratch.Chat = port
 	l.scratch.ChatScanEvery = 50 * time.Millisecond
 	return l, port
+}
+
+// requireTestClock fails unless the desk's stores run on chatTestClock: the
+// check that makes a "left alone" sleep prove what it claims, because a reply
+// that waits only for its age would be left alone by the real clock too.
+func requireTestClock(t *testing.T, port *LeadChat) {
+	t.Helper()
+	d := deskOf(t, port)
+	if d.now == nil {
+		t.Fatal("the chat stores run on the real clock: a reply left alone proves nothing about the rule under test")
+	}
+	// The desk holds the fixture's clock itself, which runs chatClockLead
+	// ahead by its definition: no sample of the real clock, which a host
+	// that pauses between two samples would make look behind.
+	if reflect.ValueOf(d.now).Pointer() != reflect.ValueOf(chatTestClock).Pointer() {
+		t.Fatal("the chat stores do not run on chatTestClock")
+	}
+	if chatClockLead <= leadchat.SettleAge {
+		t.Fatalf("chatTestClock runs %v ahead, not past the settle age %v", chatClockLead, leadchat.SettleAge)
+	}
+}
+
+// requireRealClock fails unless the desk's stores run on the daemon's own
+// clock, which the daemon always passes (nil).
+func requireRealClock(t *testing.T, port *LeadChat) {
+	t.Helper()
+	if d := deskOf(t, port); d.now != nil {
+		t.Fatal("the chat stores run on a test clock")
+	}
 }
 
 func (l *leadEnv) chatSet(key, chat string) (leadwire.ChatLead, error) {
@@ -394,6 +446,11 @@ func (l *leadEnv) outboxOf(key string) string {
 // reply writes a reply as a lead does: under a dot-name, then renamed.
 func reply(t *testing.T, outbox, name, text string) {
 	t.Helper()
+	// A name the scan refuses would be left alone whatever the rule under
+	// test says, and a check that a reply is left alone would prove nothing.
+	if !leadchat.ValidReplyName(name) {
+		t.Fatalf("%q is not a name a scan takes", name)
+	}
 	tmp := filepath.Join(outbox, "."+name+".tmp")
 	if err := os.WriteFile(tmp, []byte(text), 0o600); err != nil {
 		t.Fatal(err)
@@ -509,6 +566,11 @@ func TestChatListReadOffCycles(t *testing.T) {
 	}
 
 	// Off: at once, the row is bare, a read is chat-off, the entries are gone.
+	d := deskOf(t, port)
+	scanner := workerNow(d, "alpha")
+	if scanner == nil {
+		t.Fatal("alpha is read and has no scanner")
+	}
 	off := l.mustChatSet("alpha", leadwire.ChatOff)
 	if off.Chat != leadwire.ChatOff || off.Entries != 0 || off.Head != page.Head {
 		t.Fatalf("the row after off: %+v", off)
@@ -519,11 +581,17 @@ func TestChatListReadOffCycles(t *testing.T) {
 	if _, err := seatRead(port, "alpha", cursor); gateCode(err) != ownerwire.CodeChatOff {
 		t.Fatalf("a read after off: %v", err)
 	}
-	// While off, a reply is not taken.
+	// While off, a reply is not taken. The stores' clock is past the reply's
+	// settle age, so it is the switch that leaves it, not its age; the
+	// scanner alpha had has ended, it has none, and a scan of it is refused.
+	requireTestClock(t, port)
 	reply(t, out, "0002-while-off.txt", "written while off")
-	time.Sleep(300 * time.Millisecond)
+	requireOffLeadLeftAlone(t, d, "alpha", scanner)
 	if _, err := os.Lstat(filepath.Join(out, "0002-while-off.txt")); err != nil {
 		t.Fatalf("a reply was taken while off: %v", err)
+	}
+	if r := l.chatRow("alpha"); r.Head != page.Head || r.Entries != 0 {
+		t.Fatalf("a reply written while off moved the row: %+v", r)
 	}
 
 	// Read again: a new conversation, and the old cursor is reset.
@@ -579,11 +647,14 @@ func TestChatSetRefusals(t *testing.T) {
 }
 
 // A restart of the daemon returns every lead to off: the desk's row, the
-// seat's, and the store, which dropped what the earlier run held.
+// seat's, and the store, which dropped what the earlier run held. It runs on
+// the daemon's own clock, as the one case of the chat tests that takes a
+// reply by the kernel's change time alone, so it waits out the settle age.
 func TestChatRestartReturnsEveryLeadToOff(t *testing.T) {
-	l, port := newChatEnv(t)
+	l, port := newChatEnvRealClock(t)
 	l.start()
 	l.up("alpha", submitted)
+	requireRealClock(t, port)
 	l.mustChatSet("alpha", leadwire.ChatRead)
 	reply(t, l.outboxOf("alpha"), "0001-a.txt", "a reply")
 	waitFor(t, 15*time.Second, "the reply is taken", func() bool { return l.chatRow("alpha").Entries == 2 })
@@ -743,6 +814,44 @@ func (l *leadEnv) fillQuarantine(key string) {
 		if err := os.WriteFile(name, []byte("set aside"), 0o600); err != nil {
 			l.t.Fatal(err)
 		}
+	}
+}
+
+// chatWatchdog bounds the chat tests' waits for something that must happen:
+// a passing run never waits it out, so it fails a test and proves nothing.
+const chatWatchdog = 30 * time.Second
+
+// workerNow is the lead's scanner, under the lead's lock; nil when it has
+// none.
+func workerNow(d *chatDesk, key string) *chatWorker {
+	cl := d.byKey[key]
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	return cl.worker
+}
+
+// requireOffLeadLeftAlone checks, without waiting for a scanner's turn, that
+// nothing takes a reply of the lead key, which is off: the scanner it had
+// before its turn-off (prev, nil when it had none) has ended, it has no
+// scanner now, and a scan of it, driven here as a scanner runs one, is
+// refused at its admission. The caller then sees a reply written before
+// this check left alone, in the reply folder, the head and the broadcast,
+// by the rule under test and not by a scanner that had no turn yet.
+func requireOffLeadLeftAlone(t *testing.T, d *chatDesk, key string, prev *chatWorker) {
+	t.Helper()
+	if prev != nil {
+		select {
+		case <-prev.done:
+		case <-time.After(chatWatchdog):
+			t.Fatalf("the scanner %s had before its turn-off did not end", key)
+		}
+	}
+	if w := workerNow(d, key); w != nil {
+		t.Fatalf("the off lead %s has a scanner, of generation %d", key, w.gen)
+	}
+	var failing bool
+	if d.scanOnce(d.byKey[key], &failing) {
+		t.Fatalf("a scan of the off lead %s was admitted", key)
 	}
 }
 

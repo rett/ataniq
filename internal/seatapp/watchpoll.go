@@ -238,11 +238,15 @@ func (a *app) watchPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
-	hold := time.NewTimer(a.watchHold)
-	defer hold.Stop()
+	timer := a.watchTimer
+	if timer == nil {
+		timer = realNoticeTimer
+	}
+	hold, stopHold := timer(a.watchHold)
+	defer stopHold()
 	select {
 	case <-ch:
-	case <-hold.C:
+	case <-hold:
 	case <-kick:
 		// A fourth tab took this poll's place: say so, so that this page
 		// waits out a hold's length rather than taking the place back at

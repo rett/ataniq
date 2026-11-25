@@ -1,11 +1,17 @@
 package tests
 
 import (
+	"debug/elf"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -17,23 +23,191 @@ import (
 // tests here run the scripts with the binaries of the tagged build and the
 // default --bin, the build/canary of the checkout the scripts lie in.
 
-// canaryRealBuild builds the tagged binaries the prepare and the preflight
-// really run into dir: ataniq-canary (profile-digest, check-inputs), the
-// stand-in and the probe (copied), and ataniq-intake (init). The builds are
-// cached by the Go build cache after the first.
-func canaryRealBuild(t *testing.T, dir string) {
+// canaryRealBinaries are the tagged binaries the prepare and the preflight
+// really run: ataniq-canary (profile-digest, check-inputs), the stand-in and
+// the probe (copied), which are static, and ataniq-intake (init).
+var canaryRealBinaries = []struct {
+	name   string
+	static bool
+}{{"ataniq-canary", false}, {"ataniq-canary-standin", true}, {"ataniq-probe", true}, {"ataniq-intake", false}}
+
+// canaryRealBuilt holds the originals of canaryRealBinaries: built once per
+// test process, on first use, so that a test that needs none of them builds
+// nothing, into a folder of their own that TestMain removes. A failed build is
+// kept and fails every test that asks.
+var canaryRealBuilt struct {
+	sync.Mutex
+	done bool
+	dir  string
+	err  error
+}
+
+// canaryRealOriginals returns the folder of the originals, building them on
+// the first call.
+func canaryRealOriginals(t *testing.T) string {
 	t.Helper()
-	for name, static := range map[string]bool{"ataniq-canary": false, "ataniq-canary-standin": true, "ataniq-probe": true, "ataniq-intake": false} {
-		os.Remove(filepath.Join(dir, name)) // the harness's stub
-		cmd := exec.Command(canaryGoTool(t), "build", "-tags", canaryTag, "-trimpath", "-buildvcs=false", "-o", filepath.Join(dir, name), "./cmd/"+name)
-		cmd.Dir = root(t)
+	canaryRealBuilt.Lock()
+	defer canaryRealBuilt.Unlock()
+	if !canaryRealBuilt.done {
+		tool, repo := canaryGoTool(t), root(t)
+		canaryRealBuilt.dir, canaryRealBuilt.err = canaryBuildReal(tool, repo)
+		canaryRealBuilt.done = true
+	}
+	if canaryRealBuilt.err != nil {
+		t.Fatal(canaryRealBuilt.err)
+	}
+	return canaryRealBuilt.dir
+}
+
+// canaryBuildReal builds canaryRealBinaries with the selected Go into a new
+// temporary folder, with the tag, -trimpath and no VCS stamp, and the static
+// ones with cgo off. It returns the folder even when a build fails, so that
+// TestMain removes it.
+func canaryBuildReal(tool, repo string) (string, error) {
+	dir, err := os.MkdirTemp("", "ataniq-runkit-bin-")
+	if err != nil {
+		return "", err
+	}
+	for _, b := range canaryRealBinaries {
+		cmd := exec.Command(tool, "build", "-tags", canaryTag, "-trimpath", "-buildvcs=false", "-o", filepath.Join(dir, b.name), "./cmd/"+b.name)
+		cmd.Dir = repo
 		cmd.Env = canaryGoEnv()
-		if static {
+		if b.static {
 			cmd.Env = append(cmd.Env, "CGO_ENABLED=0")
 		}
 		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("building %s: %v\n%s", name, err, out)
+			return dir, fmt.Errorf("building %s: %v\n%s", b.name, err, out)
 		}
+	}
+	return dir, nil
+}
+
+// canaryRealCleanup removes the originals, if they were built. TestMain calls
+// it after the tests.
+func canaryRealCleanup() {
+	canaryRealBuilt.Lock()
+	defer canaryRealBuilt.Unlock()
+	if canaryRealBuilt.dir != "" {
+		os.RemoveAll(canaryRealBuilt.dir)
+	}
+}
+
+// canaryRealBuild puts a copy of each of the originals into dir, in place of
+// the harness's stub. A copy, never a link: a test overwrites its ataniq-canary
+// with a failing stub, which must reach no other fixture. Each copy has the
+// mode of the original and a time of its own.
+func canaryRealBuild(t *testing.T, dir string) {
+	t.Helper()
+	originals := canaryRealOriginals(t)
+	for _, b := range canaryRealBinaries {
+		if err := canaryCopyBinary(filepath.Join(originals, b.name), filepath.Join(dir, b.name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// canaryCopyBinary copies src to a new file dst with the mode of src, after
+// removing what dst was.
+func canaryCopyBinary(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	fi, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(dst); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fi.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	// The umask may have taken bits off.
+	return os.Chmod(dst, fi.Mode().Perm())
+}
+
+// Each fixture gets copies of the originals, not links: a change to one copy
+// reaches neither the original nor another fixture. A copy has the mode and
+// the bytes of its original and a time of its own, and the stand-in and the
+// probe are static, with no program interpreter.
+func TestCanaryRunKitRealBinariesAreCopies(t *testing.T) {
+	originals := canaryRealOriginals(t)
+	a, b := t.TempDir(), t.TempDir()
+	// A stub in place, as the harness leaves it.
+	if err := os.WriteFile(filepath.Join(a, "ataniq-canary"), []byte("#!/bin/sh\nexit 97\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	canaryRealBuild(t, a)
+	past := time.Now().Add(-time.Hour)
+	for _, bin := range canaryRealBinaries {
+		if err := os.Chtimes(filepath.Join(a, bin.name), past, past); err != nil {
+			t.Fatal(err)
+		}
+	}
+	canaryRealBuild(t, b)
+	for _, bin := range canaryRealBinaries {
+		orig, ca, cb := filepath.Join(originals, bin.name), filepath.Join(a, bin.name), filepath.Join(b, bin.name)
+		fo, err := os.Stat(orig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fo.Mode().Perm()&0o100 == 0 {
+			t.Errorf("%s: the original is not executable: %v", bin.name, fo.Mode())
+		}
+		want, err := os.ReadFile(orig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range []string{ca, cb} {
+			fc, err := os.Stat(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if os.SameFile(fo, fc) {
+				t.Errorf("%s is the original, not a copy", c)
+			}
+			if fc.Mode() != fo.Mode() {
+				t.Errorf("%s has mode %v, the original %v", c, fc.Mode(), fo.Mode())
+			}
+			if got, err := os.ReadFile(c); err != nil || string(got) != string(want) {
+				t.Errorf("%s is not the bytes of the original: %v", c, err)
+			}
+		}
+		fa, _ := os.Stat(ca)
+		fb, _ := os.Stat(cb)
+		if os.SameFile(fa, fb) || !fa.ModTime().Equal(past) || fb.ModTime().Equal(past) {
+			t.Errorf("%s: the copies share a file or a time: %v %v", bin.name, fa.ModTime(), fb.ModTime())
+		}
+		if bin.static {
+			f, err := elf.Open(orig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, prog := range f.Progs {
+				if prog.Type == elf.PT_INTERP {
+					t.Errorf("%s is not static: it names a program interpreter", bin.name)
+				}
+			}
+			f.Close()
+		}
+	}
+	// The failing stub one test writes over its copy stays in that copy.
+	canaryWrite(t, a, "ataniq-canary", "#!/bin/sh\nexit 1\n")
+	if got, _ := os.ReadFile(filepath.Join(b, "ataniq-canary")); strings.HasPrefix(string(got), "#!") {
+		t.Error("a stub written over one copy reached another fixture")
+	}
+	if got, _ := os.ReadFile(filepath.Join(originals, "ataniq-canary")); strings.HasPrefix(string(got), "#!") {
+		t.Error("a stub written over one copy reached the original")
 	}
 }
 
