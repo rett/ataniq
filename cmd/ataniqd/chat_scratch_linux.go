@@ -81,7 +81,9 @@ with the seat gate together:
                     handle without following a link and must be a private
                     regular file with one name that is not the key list,
                     the journal, a file of the gate or the trial's settings,
-                    and not a phone trial's. The start prints
+                    and not a phone trial's; its bytes are read once, from
+                    the descriptor that was checked, and decoded from those
+                    bytes. The start prints
                     "owner channel: settings read from DIR/scratch.json
                     (--owner-settings)".
   --check           with --owner-settings: make every check the daemon makes

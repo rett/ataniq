@@ -29,8 +29,10 @@
   a gate file or the trial's settings, or holds a trial's settings, or
   settings whose drop folder, mirror, work folder or sandbox template the
   folder is, lies in or holds; the
-  folder is opened by its handle with no link followed and the file read
-  beneath it, so a link planted after the check changes nothing.
+  folder is opened by its handle with no link followed and the file opened
+  beneath it, so a link planted after the check changes nothing, and the
+  settings are decoded from the bytes read from the descriptor that was
+  checked, never from a second open by name.
   `--check` with the same flags prints every check the daemon makes before
   its locks (also the root marker, the gate's key and pins and the socket
   paths of the daemon and the leads' holders), pass or FAIL with the

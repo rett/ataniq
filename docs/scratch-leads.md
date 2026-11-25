@@ -1252,8 +1252,11 @@ The flag's name follows run's other flags (`--owner-channel` says what is
 served; `--scratch`, `--seat-gate` and `--owner-settings` name what it is
 served from), and it names a folder because the folder is what is checked and
 held: the daemon resolves `DIR` through every link and `..`, opens it with no
-link followed and reads `scratch.json` beneath that handle each time, without
-following a link, so a link planted after the check changes nothing. It
+link followed and opens `scratch.json` beneath that handle each time, without
+following a link, so a link planted after the check changes nothing. The
+file's bytes are read once, from the descriptor that was checked, and the
+settings are decoded from those bytes; the file is never opened by its name
+a second time. It
 refuses to start (exit 10, one line naming every rule that fails, before any
 lock and with nothing made) when `DIR` is not a private folder (mode 0700) of
 the daemon's user, or when it is, lies in or holds:

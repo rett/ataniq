@@ -508,6 +508,60 @@ func TestOwnerSettingsALinkPlantedAfterTheCheckChangesNothing(t *testing.T) {
 	if code != leaddaemon.ExitConfig || !strings.Contains(out, "FAIL  the settings file: "+w.settings+"/scratch.json changed while it was read") {
 		t.Fatalf("a file replaced after it was checked: exit %d:\n%s", code, out)
 	}
+
+	// The bytes decoded are the checked descriptor's (review finding 6): a
+	// replacement put in place by name after the check is never read. Its
+	// text is not JSON, so a reader that opened the file by its name again
+	// would refuse it as not valid; the descriptor's own bytes are the
+	// proof's settings, which decode, and the file is then refused because
+	// its name no longer names the file that was read.
+	w = newSettingsWorld(t)
+	file = filepath.Join(w.settings, "scratch.json")
+	plant(t, "file", func() {
+		if err := os.WriteFile(file+".new", []byte("not the settings that were checked"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(file+".new", file); err != nil {
+			t.Fatal(err)
+		}
+	})
+	code, out, _ = w.run(t, w.runArgs(w.settings, "--check")...)
+	if code != leaddaemon.ExitConfig || !strings.Contains(out, "FAIL  the settings file: "+w.settings+"/scratch.json changed while it was read") ||
+		strings.Contains(out, "not valid") {
+		t.Fatalf("a replacement that is not JSON, put in place after the check: exit %d:\n%s", code, out)
+	}
+}
+
+// readSettings decodes the bytes it read from the descriptor it checked, and
+// those alone: with the name taken away after the check (the file unlinked,
+// no other file in its place), the settings still decode from the open
+// descriptor, and the refusal is that the name no longer names the file, not
+// that there is no file to read.
+func TestOwnerSettingsReadsTheCheckedDescriptor(t *testing.T) {
+	w := newSettingsWorld(t)
+	d, err := openSettingsDir(w.settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.f.Close()
+	p := settingsPlace{dir: w.settings, state: w.state, runtime: w.runtime}
+	sc, _, err := d.readSettings(p.secretFiles())
+	if err != nil || sc.Project != "proof-project" {
+		t.Fatalf("the settings as they are: %+v, %v", sc, err)
+	}
+	old := ownerSettingsHook
+	t.Cleanup(func() { ownerSettingsHook = old })
+	ownerSettingsHook = func(stage string) {
+		if stage == "file" {
+			if err := os.Remove(filepath.Join(w.settings, settingsName)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	_, _, err = d.readSettings(p.secretFiles())
+	if err == nil || !strings.Contains(err.Error(), "changed while it was read") {
+		t.Fatalf("the settings file unlinked after its check: %v, want \"changed while it was read\"", err)
+	}
 }
 
 // --check on a world the daemon would start on: every line passes, it names

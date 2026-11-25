@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -66,9 +67,11 @@ import (
 // on the host. The file scratch.json is opened beneath the folder's handle
 // without following a link and refused when it is not a regular private file
 // of the user with one name or is the key list, the journal, a file of the
-// gate or the trial's settings file. A link planted after the check changes
-// nothing: the folder is the one open, and the file is read beneath its
-// handle with O_NOFOLLOW and compared with what was checked after it is read. What stays outside the check: the folder is the
+// gate or the trial's settings file. Its bytes are read once, from the
+// descriptor that was checked, and decoded from those bytes; nothing opens it
+// by its name again. A link planted after the check changes nothing: the
+// folder is the one open, and the file is opened beneath its handle with
+// O_NOFOLLOW and compared with what was checked after it is read. What stays outside the check: the folder is the
 // user's own, so a process of the user's (not a lead's: the folder is out of
 // every lead's reach) could still change the file between two reads; the
 // daemon reads it twice, before its locks and when it builds the service, and
@@ -78,7 +81,7 @@ import (
 const settingsName = hostadapter.ScratchName
 
 // maxSettingsBytes is the largest settings file, the host adapter's bound.
-const maxSettingsBytes = 64 << 10
+const maxSettingsBytes = hostadapter.MaxScratchBytes
 
 // maxUnixSocketPath is the longest path a Unix socket address holds, the
 // bound of package clientapi.
@@ -369,9 +372,11 @@ type settingsFile struct {
 }
 
 // readSettings opens scratch.json beneath the folder's handle without
-// following a link, checks it, reads it with the host adapter's strict reader
-// and checks that what was read is the file that was checked. It refuses trial
-// settings.
+// following a link, checks it, reads its bytes once from the descriptor that
+// was checked and decodes those bytes with the host adapter's strict reader
+// (hostadapter.ReadScratch), then checks that the file is still the one that
+// was checked. Nothing opens the file by its name a second time, so the
+// bytes decoded are the bytes of the file checked. It refuses trial settings.
 func (d *settingsDir) readSettings(secrets []settingsGuard) (hostadapter.Scratch, settingsFile, error) {
 	var none hostadapter.Scratch
 	name := d.given + "/" + settingsName
@@ -384,7 +389,8 @@ func (d *settingsDir) readSettings(secrets []settingsGuard) (hostadapter.Scratch
 	case err != nil:
 		return none, settingsFile{}, fmt.Errorf("%s cannot be opened: %v", name, err)
 	}
-	defer unix.Close(fd)
+	f := os.NewFile(uintptr(fd), name)
+	defer f.Close()
 	var sf settingsFile
 	if err := unix.Fstat(fd, &sf.st); err != nil {
 		return none, sf, err
@@ -410,19 +416,21 @@ func (d *settingsDir) readSettings(secrets []settingsGuard) (hostadapter.Scratch
 	if ownerSettingsHook != nil {
 		ownerSettingsHook("file")
 	}
-	// The host adapter's strict reader, on the file beneath the folder's
-	// handle: /proc/self/fd/N names the open folder itself, whatever its
-	// path names now, and the reader opens the last name without following
-	// a link.
-	via := "/proc/self/fd/" + strconv.Itoa(int(d.f.Fd())) + "/" + settingsName
-	sc, err := hostadapter.LoadScratch(via)
+	// The host adapter's strict reader, on the bytes of the descriptor that
+	// was checked: the file is read once, from its start, and never opened
+	// again by a name.
+	sc, err := hostadapter.ReadScratch(io.NewSectionReader(f, 0, maxSettingsBytes+1))
 	if err != nil {
-		return none, sf, errors.New(strings.ReplaceAll(err.Error(), via, name))
+		return none, sf, fmt.Errorf("%s: %v", name, err)
 	}
 	var after unix.Stat_t
 	if err := unix.Fstat(fd, &after); err != nil {
 		return none, sf, err
 	}
+	// The name still names the file that was read (/proc/self/fd/N is the
+	// open folder itself, whatever its path names now), and the file did not
+	// change while it was read.
+	via := "/proc/self/fd/" + strconv.Itoa(int(d.f.Fd())) + "/" + settingsName
 	var now unix.Stat_t
 	if err := unix.Lstat(via, &now); err != nil || idOfStat(&now) != id || after.Mtim != sf.st.Mtim ||
 		after.Ctim != sf.st.Ctim || after.Size != sf.st.Size {
