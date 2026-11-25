@@ -85,6 +85,10 @@ func TestLaunchExtraEnv(t *testing.T) {
 	check(false)
 	env = map[string]string{"SAMPLE_TOKEN": "example"}
 	check(false)
+	env = map[string]string{"SAMPLE": "a\u0085b"}
+	check(false)
+	env["SAMPLE"] = "a\u2028b"
+	check(true)
 
 	d := pack.Declaration{Manifest: packtest.Alpha.Manifest(), Sandbox: map[string]pack.Sandbox{
 		"1.0": {Launch: &pack.Launch{Argv: []string{"run"}, Env: map[string]string{"SAMPLE": "on"}}},
