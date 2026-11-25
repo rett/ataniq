@@ -356,27 +356,28 @@ on the holder's word, and in no other way:
   holder rebuilt in between runs as another build. A holder that is not the
   daemon's build is never shown `ready`. The observer also reads the file
   after a question that got no usable answer: a holder of another build may
-  write its `holder.json` of the epoch and never answer, and a file of the
-  epoch that records another build (or none) is acted on as an answer would
-  be; a file that is missing or cannot be read says nothing without an
-  answer. When this daemon's own `lead.start` launched the epoch, the observer
-  stops the lead as `lead.stop` does (under the role's operation lock, taken as
-  a try-lock, and only while the lead is shown `starting` in that epoch, so a
-  later epoch is never stopped), logs why and writes a `stop` line in the
-  lead's evidence whose detail is the `holder-version-skew` refusal. That
-  `lead.start` has already returned by then: its receipt says `done`, with the
-  state `starting`; the stop is the daemon's own later act. The stop has a
-  deadline of its own, 30 s, not what is left of the observer's 60 s, so a
-  holder that answers at the end of the observation is still stopped whole.
-  A stop that is not proven is not tried again; it is shown: the lifecycle
-  leaves the lead `unknown` (`stop-unproven`), and a lead it left in another
-  state is shown `degraded`, with the reason `skew-stop-unproven` and the
-  refusal in the detail, until the owner's `lead.stop`. The next `lead.start` is
-  refused `holder-version-skew` before anything changes while the executable
-  is still the other build. A lead the daemon adopted at its start is left
-  `starting` and is not stopped, and its ticket and message are refused
-  `holder-version-skew`. A `holder.json` that is not yet the epoch's is asked
-  again, as a holder that does not answer is.
+  write its `holder.json` of the epoch and never answer. Only a file of the
+  epoch that records another build (or none) is acted on, after an answer or
+  without one: the lead is shown `degraded`, with the reason
+  `holder-version-skew`, the evidence kind `ataniq-observation` and the
+  refusal, which names both builds, as the detail, and the daemon logs that
+  the owner stops the lead and starts it again. The daemon never stops the
+  holder for its build, whether its own `lead.start` launched the epoch or it
+  adopted the lead: the unit is left running, nothing is signalled, and the
+  lead's ticket and message are refused `holder-version-skew` before the
+  holder is asked anything. That `lead.start` has already returned by then:
+  its receipt says `done`, with the state `starting`. The change is made under
+  the role's operation lock, taken as a try-lock, and only while the lead is
+  shown `starting` in that epoch, so a later epoch or a lead stopped meanwhile
+  is never changed; while a command of the role holds the lock it is tried
+  again, also after the observer's 60 s have run out, until it is made. The
+  owner's `lead.stop` is the way out, and the next `lead.start` is refused
+  `holder-version-skew` before anything changes while the executable is still
+  the other build. A file that is missing, cannot be read or is not yet the
+  epoch's confirms nothing, after an answer as without one: the lead is not
+  shown `ready` and nothing else changes, the observer logs it and reads the
+  file again at its next question, and the lead stays `starting` when the
+  observation ends.
 - **What it sets.** The shown state `ready` for that epoch, with the reason code
   `holder-ready`, the evidence kind `ataniq-observation` and the detail "the
   holder is up and the agent was started; the agent's login is not observed".
@@ -414,10 +415,9 @@ on the holder's word, and in no other way:
   holder are the way out. A file that is missing or cannot be read confirms
   nothing: the lead stays `ready`, the daemon logs it, and its ticket says why
   it is refused.
-- **It does not change** what counts against `max_running` (a `starting` lead
-  and a `ready` one both count), the receipts, the command table or the
-  evidence file, but for the `stop` line of a holder that started as another
-  build (above).
+- **It does not change** what counts against `max_running` (a `starting` lead,
+  a `ready` one and a `degraded` one all count), the receipts, the command
+  table or the evidence file.
 - **At shutdown** the daemon ends the observers and waits for them before it
   closes the registry, so a daemon stopped while a holder does not answer still
   exits 0 and promptly. When the server itself did not stop within the grace the

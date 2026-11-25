@@ -26,19 +26,18 @@
   and refuses the start `holder-version-skew` when it records another build;
   a unit is never stopped by it: it is left running and the refusal names
   `systemctl --user stop` with the unit (a `--direct` holder, its own child,
-  is ended as after any failed start). In the daemon's scratch mode the start is not
-  refused: `lead.start` has already returned a `done` receipt with the state
+  is ended as after any failed start). In the daemon's scratch mode the
+  start is not refused: `lead.start` has already returned a `done` receipt with the state
   `starting` when the ready observer reads the file, after the holder answers
   its status or, when it does not, after each question. A lead whose file
-  records another build is never shown `ready`; when this daemon launched it,
-  the daemon then stops it on its own, with a deadline of its own, and writes
-  the stop in the lead's evidence; a stop that is not proven leaves the lead
-  `unknown` (`stop-unproven`) or `degraded` with the reason
-  `skew-stop-unproven`, for the owner's `lead.stop`, and the next `lead.start`
-  is refused `holder-version-skew` while the executable is the other build. A
-  lead the daemon adopted is left `starting`, not stopped; the canary's holder
-  is refused at its ticket and message. A lead an earlier daemon showed
-  `ready` is checked again before the new daemon serves: one whose
-  `holder.json` records another build than the new daemon's is shown
-  `degraded` with the reason `holder-version-skew`, never `ready`, and its
-  unit is left running for the owner to stop.
+  records another build is never shown `ready`: it is shown `degraded` with
+  the reason `holder-version-skew`, whether this daemon launched it or
+  adopted it, and a file that is missing or cannot be read changes nothing
+  and is read again. A lead an earlier daemon showed `ready` is checked again
+  before the new daemon serves: one whose `holder.json` records another build
+  than the new daemon's is shown `degraded` the same way, never `ready`. The
+  daemon never stops a holder for its build: the unit is left running, its
+  ticket and message are refused, and the owner stops the lead and starts it
+  again; the next `lead.start` is refused `holder-version-skew` while the
+  executable is the other build. The canary's holder is refused at its ticket
+  and message.

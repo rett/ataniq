@@ -79,9 +79,6 @@ type Scratch struct {
 	// ReadyBackoff is the first wait between two of its questions; default
 	// [DefaultReadyBackoff].
 	ReadyBackoff time.Duration
-	// SkewStopWithin bounds the observer's stop of a holder of another build
-	// that this daemon launched; default [DefaultSkewStopWithin].
-	SkewStopWithin time.Duration
 	// Chat, when not nil, is the seat's chat port that this mode binds to
 	// its leads' chat once their stores are open (chat_port_linux.go): until
 	// then, and after the daemon stops, it answers chat-busy. Nil leaves the
@@ -139,11 +136,6 @@ type leadRole struct {
 	// daemon forgets it, and the row then reads the answer from the role's
 	// last receipt when that is the message's (see leadMode.deliveryOf).
 	delivery deliveryMemo
-	// launched is the epoch this daemon's own lead.start launched last, 0 for
-	// none; it is read and written under the operation lock. The ready
-	// observer stops the holder of that epoch when it is not the expected
-	// build (see leadMode.stopSkewed), and leaves one it adopted alone.
-	launched uint64
 }
 
 // deliveryMemo is the holder's three words about a message, for the epoch it
@@ -191,12 +183,11 @@ type leadMode struct {
 	roles      map[leadrole.Role]*leadRole
 	maxRunning int
 
-	// readyWithin, readyBackoff and skewStopWithin are the observer's bounds
-	// (see lead_ready_linux.go); ready is its observers.
-	readyWithin    time.Duration
-	readyBackoff   time.Duration
-	skewStopWithin time.Duration
-	ready          readyObservers
+	// readyWithin and readyBackoff are the observer's bounds (see
+	// lead_ready_linux.go); ready is its observers.
+	readyWithin  time.Duration
+	readyBackoff time.Duration
+	ready        readyObservers
 	// settle is the timers that settle a launch intent that a start left
 	// pending when its late-start window ends (see lead_settle_linux.go).
 	settle settlers
@@ -263,7 +254,7 @@ func (d *daemon) scratchSetup() (*canaryMode, error) {
 	lm := &leadMode{
 		cm: m, d: d, cfg: s.Config, getenv: getenv, provisionT: s.ProvisionTimeout,
 		roles: make(map[leadrole.Role]*leadRole, len(leads)), maxRunning: s.Config.MaxRunning,
-		readyWithin: s.ReadyWithin, readyBackoff: s.ReadyBackoff, skewStopWithin: s.SkewStopWithin,
+		readyWithin: s.ReadyWithin, readyBackoff: s.ReadyBackoff,
 	}
 	if lm.provisionT <= 0 {
 		lm.provisionT = DefaultProvisionTimeout

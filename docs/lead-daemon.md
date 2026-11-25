@@ -1280,10 +1280,13 @@ with `holder-version-skew`, with a message that names both builds, and a
 role shown `starting` whose holder has written no `holder.json` yet, with a
 text that says it is still starting; nothing changes. In scratch mode the
 ready observer checks that `holder.json` again before it shows a lead
-`ready`, and stops a lead whose holder started as another build than the
-executable checked before the start; before it serves, the daemon reads it
-again for every lead it adopted shown `ready`, and shows one whose holder is
-another build `degraded` (`holder-version-skew`), its unit left running (see
+`ready`, and shows a lead whose holder started as another build than the
+executable checked before the start `degraded` (`holder-version-skew`)
+instead; before it serves, the daemon reads it again for every lead it
+adopted shown `ready`, and shows one whose holder is another build
+`degraded` in the same way. The daemon never stops a holder for its build:
+the unit is left running, its ticket and message are refused, and the owner
+stops the lead and starts it again (see
 [the scratch leads guide](scratch-leads.md#ready)) (see `internal/leadholder/buildid` for what "the same build" means, and
 [the scratch leads guide](scratch-leads.md) for the receipt). A daemon whose
 own build cannot be read does not start (the config step).

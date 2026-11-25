@@ -401,12 +401,10 @@ var stateWords = map[[2]string]string{
 	// its window: the daemon settles it when the window ends.
 	{"unknown", reasonLaunchUnsettled}: unsettledWords,
 	{"unknown", reasonLaunchReplyLost}: unsettledWords,
-	// A holder that started as another build than the one checked before the
-	// start, which the daemon could not prove stopped: the owner stops it.
-	{"degraded", "skew-stop-unproven"}: "the holder is another build and its stop is not proven; stop the lead",
-	// A lead an earlier daemon showed ready whose running holder is not this
-	// daemon's build: its unit is left running, and its ticket and message are
-	// refused until it runs the daemon's build.
+	// A lead whose running holder is not the daemon's build: one that
+	// started as another build than the one checked before the start, or one
+	// an earlier daemon showed ready. Its unit is left running, and its ticket
+	// and message are refused until it runs the daemon's build.
 	{"degraded", "holder-version-skew"}: "the running holder is not the daemon's build: stop the lead, then start it again",
 }
 
