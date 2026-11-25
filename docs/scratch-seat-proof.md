@@ -156,8 +156,11 @@ they show:
 The byte comparison holds because no phone logs in during the test. In the
 sitting, a login on the phone with a credential whose sign counter rises
 appends a counter record to the key journal (`keys.log`, `keys.head`); a
-passkey of the platform's keeps its counter at 0 and appends nothing. Step 13
-compares the bytes, and a difference there is written down and looked at.
+passkey of the platform's keeps its counter at 0 and appends nothing. A
+digest alone cannot tell that record from a pairing, a revocation or the
+head catching up with the list, so step g also keeps a private copy of
+`keys.log`, and step 13 checks that the copy is a byte prefix of the list and
+names the kind of each record appended to it.
 
 The tests of the flag (`cmd/ataniqd/scratch_settings_linux_test.go`) hold its
 refusals, each with `--check` (the line of its rule says `FAIL` and why) and
@@ -181,9 +184,9 @@ subfolder, a bind into a lead's folder, btrfs subvolumes and escaped spaces). `T
 tables. `tests/scratch_seat_prepare_test.go` holds the script: `--dry` and
 `--self-test` read and write nothing, `--write` writes in the root only and
 refuses what it can judge, `--status` runs the daemon's check with exactly
-the flags of step 2 and `--check` and compares the trial's digests, and no
-line of the script deletes, moves, links or masks anything or runs
-`systemctl`.
+the flags of step 2 and `--check`, compares the trial's digests and names
+what was appended to the key list since step g, and no line of the script
+deletes, moves, links or masks anything or runs `systemctl`.
 
 What none of it shows: the real unit and its stop and start, the holder,
 sandbox and stand-in, the paste, claude and its login, the seat on the
@@ -360,6 +363,7 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    $D seat-gate pins --state-dir "$S"
    journalctl --user --unit "$TRIAL_UNIT" -I | grep 'key fingerprint' | tail -n 1
    (cd "$S/owner" && sha256sum -- gate/key.pem gate/cert.pem gate/seat-pins keys.log keys.head scratch.json) >"$ROOT/evidence/trial-before.sha256"
+   cp -- "$S/owner/keys.log" "$ROOT/keys-before.log"
    ```
 
    `--status` runs the daemon's own check, `$D run --scratch "$CONFIG"
@@ -387,8 +391,10 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    and the gate's port, which the check does not take, are left to the start.
    The pins line, the trial's fingerprint line of its current run, and the
    digests of the trial's gate key, certificate, pins, key list and settings
-   are the record that step 13 compares with. Nothing of the trial is changed
-   by any of it.
+   are the record that step 13 compares with. The copy of the key list,
+   `$ROOT/keys-before.log`, is private and not evidence (it holds the paired
+   credentials' public keys): step 13 tells from it what was appended to the
+   list. Nothing of the trial is changed by any of it.
 
 ## The sitting
 
@@ -632,10 +638,22 @@ it, the sitting has no live lead: go on with step 11.
     to step g. `--status` makes the same comparison after the daemon's check
     and ends `status: the trial's gate key, certificate, pins, key list and
     settings are the same bytes as recorded`. A `FAILED` line is written in
-    `$ROOT/evidence/notes.txt` and looked at before the trial starts: a key
-    list that grew by a counter record after a phone login is explained by
-    that login (see [What was proved in process](#what-was-proved-in-process));
-    any other change is a finding.
+    `$ROOT/evidence/notes.txt` and looked at before the trial starts.
+    `keys.log` and `keys.head` may differ, and `--status` says why: the copy
+    of step g must be the list of step g (its recorded digest) and a byte
+    prefix of the list now, and each record appended is named by its kind,
+    `status:   keys.log is the list of step g with N record(s) appended:
+    counter ...`. Counter records alone are a phone login with a passkey
+    whose sign counter rises (see [What was proved in
+    process](#what-was-proved-in-process)): `--status` passes them and ends
+    `status: the trial's gate key, certificate, pins and settings are the
+    same bytes as recorded ..., and the key list holds the records of step g
+    unchanged`. `keys.head` alone changed, with `keys.log` the same bytes, is
+    the head catching up with the list (a daemon makes it right at open), and
+    passes too. Any other kind (`added`: a pairing; `revoked`: a revocation;
+    `rejected`: a refused pairing; `unreadable`: not a record), an old byte
+    of the list changed, a missing copy or a copy that is not the list of
+    step g is `status: CHANGED`, a finding.
 14. **OWNER ONLY (C): start the trial again**, by your own command, the one
     you started it with:
 
@@ -716,7 +734,8 @@ and `leads/scratch-standin-N-lead/` hold the provider's config and login
 `holder/final.json` and `holder/final.json.previous`, which keep the last
 screen the holder showed even with `record_screens` off: it can hold a reply,
 a prompt or a login code. `chat/` holds the stored replies while a chat is
-on. `$ROOT/version-home.*` is the claude copy's home of step c. Keep them where
+on. `$ROOT/version-home.*` is the claude copy's home of step c, and
+`$ROOT/keys-before.log` the copy of the trial's key list of step g. Keep them where
 they are and share none of them; never archive the state folder, or the
 proof's root, as evidence.
 

@@ -61,7 +61,13 @@
 # through; then, when ROOT/evidence/trial-before.sha256 is there (the owner
 # records it at step g), it compares the trial's gate key, certificate, pins,
 # key list and settings with it (sha256sum -c) and says whether they are the
-# same bytes. It writes nothing.
+# same bytes. When the key list or its head differs, it tells why from the
+# private copy ROOT/keys-before.log the owner makes at step g: the copy must
+# be the list of step g (its recorded digest) and a byte prefix of the list
+# now, and the kind of each record appended is named; counter records alone
+# (a phone login) pass, any other record, a changed old byte or a missing copy
+# is CHANGED, and a head that changed while the list did not is the head
+# catching up. It writes nothing.
 set -eu
 umask 077
 
@@ -234,7 +240,59 @@ set_paths() {
   OC=$ROOT/owner-channel
   EVIDENCE=$ROOT/evidence
   BEFORE=$EVIDENCE/trial-before.sha256
+  # The private copy of the trial's key list at step g, beside the evidence
+  # and not in it: step 13 tells from it what was appended.
+  KEYS_BEFORE=$ROOT/keys-before.log
   OWNER=$S/owner
+}
+
+# key_kinds reads records of the key list (owner/keys.log), one per line, on
+# its input and prints the type of each: added (a pairing), revoked (a
+# revocation), rejected (a refused pairing) or counter (a raised sign
+# counter), or "unreadable" for a line that is not a record of the list: 64
+# hex digits, a space and the record's canonical JSON, whose names are sorted,
+# so "type" follows "seq". It reads no file.
+key_kinds() {
+  LC_ALL=C sed -n -e 's/^[0-9a-f]\{64\} {.*"seq":[0-9][0-9]*,"type":"\([a-z][a-z]*\)"[,}].*$/\1/p' -e t -e 's/.*/unreadable/p'
+}
+
+# keys_verdict KIND... prints what the records appended to the key list since
+# step g are: "same" for none, "counter" when each is a counter record (a
+# phone login with a passkey whose sign counter rises, which the sitting
+# expects), else "other" (a pairing, a revocation, a refused pairing or a
+# line that is not a record: a finding unless the owner made it).
+keys_verdict() {
+  if [ "$#" -eq 0 ]; then
+    echo same
+    return 0
+  fi
+  for _x; do
+    if [ "$_x" != counter ]; then
+      echo other
+      return 0
+    fi
+  done
+  echo counter
+}
+
+# keys_since COPY NOW prints the kinds of the records NOW holds after the
+# bytes of COPY, one per line (nothing when it holds no more), and fails with
+# 1 when COPY is not a byte prefix of NOW (a record was changed or removed),
+# or 2 when a file cannot be read. A last record without its newline is
+# "unreadable".
+keys_since() {
+  _sz=$(wc -c <"$1") || return 2
+  _now=$(wc -c <"$2") || return 2
+  _sz=$((_sz + 0))
+  _now=$((_now + 0))
+  [ "$_now" -ge "$_sz" ] || return 1
+  cmp -s -n "$_sz" -- "$1" "$2" || return 1
+  [ "$_now" -gt "$_sz" ] || return 0
+  if [ "$(tail -c 1 -- "$2" | wc -l)" -ne 1 ]; then
+    echo unreadable
+    return 0
+  fi
+  tail -c +"$((_sz + 1))" -- "$2" | key_kinds
 }
 set_keys() {
   SITTING=$1
@@ -373,6 +431,7 @@ EOF
      $DAEMON seat-gate pins --state-dir $S
      journalctl --user --unit "\$TRIAL_UNIT" -I | grep 'key fingerprint' | tail -n 1
      (cd $OWNER && sha256sum -- $TRIAL_FILES) >$BEFORE
+     cp -- $OWNER/keys.log $KEYS_BEFORE   (a private copy, not evidence: step 13 shows what was appended to it)
 Switch from the trial to the proof:
   1. OWNER ONLY: systemctl --user stop -- "\$TRIAL_UNIT"
      then: systemctl --user show -p ActiveState -- "\$TRIAL_UNIT"   (inactive; nothing is masked)
@@ -424,7 +483,7 @@ EOF
      $_c list --config $CONFIG >>$EVIDENCE/chat-list.jsonl   ($KEY_STANDIN is off now)
      OWNER ONLY: Ctrl+C in A again (exit status 0); systemctl --user list-units --all -- $_units   (0 units)
  13. (cd $OWNER && sha256sum -c -- $BEFORE)   (every line OK: the trial's gate key, pins, keys and settings are the same bytes)
-     sh $PREP --status $_vals   (the same comparison, and the daemon's check)
+     sh $PREP --status $_vals   (the daemon's check, the same comparison, and the kind of each record appended to keys.log since g)
  14. OWNER ONLY: start the trial again with your own command (systemctl --user start -- "\$TRIAL_UNIT" for a unit file, or your systemd-run)
      journalctl --user --unit "\$TRIAL_UNIT" -I | grep 'key fingerprint' | tail -n 1   (this new invocation only; the fingerprint of g)
      The phone shows the trial's samples again.
@@ -473,6 +532,28 @@ self_check() {
   done
   case $_s in *'"trial"'* | */srv/sample/trial-state*) _fail 'the settings name the trial or the state folder' ;; esac
   _n=$((_n + 1))
+  # The kind of each record appended to the key list, read from sample lines
+  # in the list's own form (a header, a blank line and lines that are not
+  # records are unreadable), and the verdict of each set of kinds: counter
+  # records alone are a phone login, anything else a finding.
+  _h=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  _at='"at":"2026-11-20T14:00:00Z"'
+  _recs=$(printf '%s\n' \
+    "$_h {$_at,\"counter\":5,\"id\":\"585cf66cd7e1ac88\",\"seq\":2,\"type\":\"counter\"}" \
+    "$_h {$_at,\"counter\":0,\"credential_id\":\"Y2Nj\",\"id\":\"585cf66cd7e1ac88\",\"kind\":\"platform-passkey\",\"public_key\":\"aw==\",\"seq\":3,\"type\":\"added\",\"words\":\"acorn bridge\"}" \
+    "$_h {$_at,\"id\":\"585cf66cd7e1ac88\",\"seq\":4,\"type\":\"revoked\"}" \
+    "$_h {$_at,\"id\":\"585cf66cd7e1ac88\",\"seq\":5,\"type\":\"rejected\",\"words\":\"acorn bridge\"}" \
+    'ataniq-ownerkeys 1' '' "$_h {\"seq\":6}" "0123 {\"seq\":7,\"type\":\"counter\"}" | key_kinds)
+  [ "$_recs" = "$(printf '%s\n' counter added revoked rejected unreadable unreadable unreadable unreadable)" ] ||
+    _fail "the kinds of the sample key records are: $(printf '%s' "$_recs" | tr '\n' ' ')"
+  _n=$((_n + 8))
+  for _c in 'same:' 'counter:counter' 'counter:counter counter' 'other:counter added' 'other:revoked' 'other:rejected counter' 'other:unreadable'; do
+    _w=${_c%%:*}
+    _k=${_c#*:}
+    # shellcheck disable=SC2086  # one kind per word
+    [ "$(keys_verdict $_k)" = "$_w" ] || _fail "the verdict of the appended records ($_k) is not $_w"
+    _n=$((_n + 1))
+  done
   _nl='
 '
   # The name of the make target that builds the daemon of both tags, made
@@ -486,13 +567,16 @@ self_check() {
       *) _fail 'the steps do not check, stop the trial, run the daemon on the settings folder, compare and start the trial, in order' ;;
     esac
     case $_o in *'scratch-init '*'--status '*) ;; *) _fail 'the steps do not make the root marker before the daemon'"'"'s check' ;; esac
+    case $_o in *'sha256sum -- '*'cp -- /srv/sample/trial-state/owner/keys.log /srv/sample/proof/keys-before.log '*'systemctl --user stop'*'sha256sum -c'*'--status '*'appended to keys.log'*'systemctl --user start'*) ;;
+      *) _fail 'the steps do not copy the key list at g, before the trial stops, and tell what was appended to it at 13' ;;
+    esac
     case $_o in *'TRIAL_UNIT'*) ;; *) _fail 'the steps do not name the unit' ;; esac
     case $_o in *'KEY'*) _fail 'the steps name a lead KEY' ;; esac
     case $_o in *'swap'* | *'mask --'* | *'unmask'* | *'record-trial'* | *'trial-restart'*) _fail 'the steps still swap, mask or record the trial' ;; esac
     case $_o in *'live-7'*) [ -n "$_m" ] || _fail 'the steps name a lead that is not configured' ;; esac
     case $_o in *'claude --version'*) [ -n "$_m" ] || _fail 'the steps run claude without a live lead' ;; esac
     case $_o in *'drop rule'*'d on live-7'*) ;; *) [ -z "$_m" ] || _fail 'the live lead does not wait for the drop rule' ;; esac
-    _n=$((_n + 8))
+    _n=$((_n + 9))
     _rest=$_o$_nl
     while [ -n "$_rest" ]; do
       _l=${_rest%%"$_nl"*}
@@ -717,6 +801,77 @@ keys_fresh() {
   done
 }
 
+# status_failed sets RC to 1 unless the daemon's check already failed.
+status_failed() { [ "$RC" -ne 0 ] || RC=1; }
+
+# status_changed OUT judges what sha256sum -c printed (OUT) when a file of
+# the trial is not the bytes recorded at step g. The gate's key, certificate
+# and pins and the settings must be the same bytes. The key list may only
+# have grown: its copy of step g (KEYS_BEFORE, whose digest must be the one
+# recorded) must be a byte prefix of it, and the kind of each record
+# appended is named; counter records alone are a phone login, anything else
+# is CHANGED. keys.head changed with keys.log the same bytes is the head
+# catching up with the list, which a daemon does at open.
+status_changed() {
+  _others=ok
+  for _f in gate/key.pem gate/cert.pem gate/seat-pins scratch.json; do
+    printf '%s\n' "$1" | grep -qxF -e "$_f: OK" || _others=changed
+  done
+  _klog=changed
+  _khead=changed
+  if printf '%s\n' "$1" | grep -qxF -e 'keys.log: OK'; then _klog=ok; fi
+  if printf '%s\n' "$1" | grep -qxF -e 'keys.head: OK'; then _khead=ok; fi
+  if [ "$_others" != ok ]; then
+    say "status: CHANGED: a file of the trial other than the key list is not the bytes recorded in $BEFORE (the lines above name it)"
+    status_failed
+  fi
+  if [ "$_klog$_khead" = okok ]; then return 0; fi
+  if [ -L "$KEYS_BEFORE" ] || [ ! -f "$KEYS_BEFORE" ]; then
+    say "status: CHANGED: the key list or its head is not the bytes recorded, and there is no copy $KEYS_BEFORE of step g to tell what was appended"
+    status_failed
+    return 0
+  fi
+  _want=$(sed -n 's/^\([0-9a-f]\{64\}\)  keys\.log$/\1/p' "$BEFORE")
+  _have=$(sha256sum <"$KEYS_BEFORE" | cut -c1-64)
+  if [ -z "$_want" ] || [ "$_want" != "$_have" ]; then
+    say "status: CHANGED: the key list is not the bytes recorded, and $KEYS_BEFORE is not the keys.log of step g (its digest is not the one recorded), so what was appended cannot be told"
+    status_failed
+    return 0
+  fi
+  _rc=0
+  _kinds=$(keys_since "$KEYS_BEFORE" "$OWNER/keys.log") || _rc=$?
+  if [ "$_rc" -ne 0 ]; then
+    if [ "$_rc" -eq 1 ]; then
+      say "status: CHANGED: keys.log is not the list of step g with records appended: its copy $KEYS_BEFORE is not a byte prefix of it (a record was changed or removed)"
+    else
+      say "status: CHANGED: keys.log or its copy $KEYS_BEFORE cannot be read"
+    fi
+    status_failed
+    return 0
+  fi
+  # shellcheck disable=SC2086  # one kind per word
+  _v=$(keys_verdict $_kinds)
+  _n=$(printf '%s\n' "$_kinds" | grep -c .) || :
+  _list=$(printf '%s\n' "$_kinds" | tr '\n' ' ')
+  case $_v in
+    same)
+      say "status:   keys.log is the same bytes as at step g; only keys.head changed: the head caught up with the list (a daemon makes it right at open when the list holds records the head did not count yet, after a crash between its two writes); no record was appended"
+      ;;
+    counter)
+      say "status:   keys.log is the list of step g with $_n record(s) appended: ${_list% }"
+      say "status:   only counter records were appended: a phone login with a passkey whose sign counter rises; write it in $EVIDENCE/notes.txt"
+      ;;
+    *)
+      say "status:   keys.log is the list of step g with $_n record(s) appended: ${_list% }"
+      say "status: CHANGED: a record that is not a counter was appended to the key list (added: a pairing; revoked: a revocation; rejected: a refused pairing; unreadable: not a record): a finding unless you made it during the sitting"
+      status_failed
+      ;;
+  esac
+  if [ "$_others" = ok ] && [ "$_v" != other ]; then
+    say "status: the trial's gate key, certificate, pins and settings are the same bytes as recorded in $BEFORE, and the key list holds the records of step g unchanged (the lines above say what was appended after them)"
+  fi
+}
+
 # --status: the daemon's own check on the files --write made, then the
 # trial's files against the digests the owner recorded. It writes nothing.
 if [ "$MODE" = status ]; then
@@ -740,8 +895,7 @@ if [ "$MODE" = status ]; then
     say "status: the trial's gate key, certificate, pins, key list and settings are the same bytes as recorded in $BEFORE"
   else
     printf '%s\n' "$_out" | sed 's/^/status:   /'
-    say "status: CHANGED: a file of the trial is not the bytes recorded in $BEFORE (the lines above name it)"
-    [ "$RC" -ne 0 ] || RC=1
+    status_changed "$_out"
   fi
   exit "$RC"
 fi

@@ -396,6 +396,8 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root string, live bool) {
 		"scratch-init --config " + root + "/scratch.json",
 		"--status" + prep + "   (the daemon's check: it must end \"check: no refusal\")",
 		"(cd " + state + "/owner && sha256sum -- gate/key.pem gate/cert.pem gate/seat-pins keys.log keys.head scratch.json) >" + root + "/evidence/trial-before.sha256",
+		"cp -- " + state + "/owner/keys.log " + root + "/keys-before.log   (a private copy, not evidence: step 13 shows what was appended to it)",
+		"--status" + prep + "   (the daemon's check, the same comparison, and the kind of each record appended to keys.log since g)",
 		"OWNER ONLY: systemctl --user stop -- \"$TRIAL_UNIT\"",
 		"(inactive; nothing is masked)",
 		"sh -c 'trap : INT; \"$@\" 2>&1; echo \"ataniqd: exit status $?\"' sh ",
@@ -432,10 +434,10 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root string, live bool) {
 	if live && !strings.Contains(out, "chat set live-3 off") || !live && !strings.Contains(out, "chat set standin-3 off") {
 		t.Errorf("the off step, live %v:\n%s", live, out)
 	}
-	order := []string{"scratch-init", "--status", "sha256sum --", "systemctl --user stop", "--owner-settings " + root + "/owner-settings |",
-		"d on standin-3", "sha256sum -c", "start the trial again"}
+	order := []string{"scratch-init", "--status", "sha256sum --", "/keys-before.log", "systemctl --user stop", "--owner-settings " + root + "/owner-settings |",
+		"d on standin-3", "sha256sum -c", "appended to keys.log since g", "start the trial again"}
 	if live {
-		order = append(order[:6], append([]string{"The drop rule", "d on live-3"}, order[6:]...)...)
+		order = append(order[:7], append([]string{"The drop rule", "d on live-3"}, order[7:]...)...)
 	}
 	for i := 1; i < len(order); i++ {
 		if strings.Index(out, order[i-1]) > strings.Index(out, order[i]) {
@@ -865,7 +867,7 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, code = k.run(t, nil, status...)
-	if code != 1 || !strings.Contains(out, "status:   gate/seat-pins: FAILED") || !strings.Contains(out, "status: CHANGED: a file of the trial is not the bytes recorded") {
+	if code != 1 || !strings.Contains(out, "status:   gate/seat-pins: FAILED") || !strings.Contains(out, "status: CHANGED: a file of the trial other than the key list is not the bytes recorded") {
 		t.Fatalf("--status with a changed pin file: exit %d:\n%s", code, out)
 	}
 	stub(10)
@@ -875,6 +877,87 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 	if err := os.WriteFile(pins, old, 0o600); err != nil {
 		t.Fatal(err)
 	}
+
+	// The key list may only grow (review finding 4). With the private copy
+	// of step g, --status checks that the copy is a byte prefix of the list
+	// and names the kind of each record appended: counter records alone are
+	// a phone login and pass; a pairing, a revocation, a refused pairing or
+	// a line that is not a record is CHANGED; so is a list whose old bytes
+	// changed, or a list that changed with no copy, or a copy that is not
+	// the file of step g. A head that changed while the list did not is the
+	// head catching up, and passes.
+	stub(0)
+	keys, head := filepath.Join(k.state, "owner", "keys.log"), filepath.Join(k.state, "owner", "keys.head")
+	oldKeys, oldHead := mustRead(t, keys), mustRead(t, head)
+	copyKeys := filepath.Join(r, "keys-before.log")
+	hex := strings.Repeat("0123456789abcdef", 4)
+	rec := func(seq int, typ, more string) string {
+		return hex + ` {"at":"2026-11-20T14:00:00Z",` + more + `"id":"585cf66cd7e1ac88","seq":` + strconv.Itoa(seq) + `,"type":"` + typ + `"}` + "\n"
+	}
+	set := func(keysBody, headBody string) {
+		t.Helper()
+		if err := os.WriteFile(keys, []byte(keysBody), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(head, []byte(headBody), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	status4 := func(name string, wantCode int, wants ...string) {
+		t.Helper()
+		out, code := k.run(t, nil, status...)
+		if code != wantCode {
+			t.Errorf("%s: exit %d, want %d:\n%s", name, code, wantCode, out)
+		}
+		for _, w := range wants {
+			if !strings.Contains(out, w) {
+				t.Errorf("%s does not say %q:\n%s", name, w, out)
+			}
+		}
+	}
+	set(string(oldKeys)+rec(2, "counter", `"counter":5,`), "sample head 2\n")
+	status4("a counter record without the copy", 1, "status:   keys.log: FAILED", "status: CHANGED: the key list or its head is not the bytes recorded, and there is no copy "+copyKeys+" of step g")
+	if err := os.WriteFile(copyKeys, []byte("not the list of step g\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status4("a copy that is not the list of step g", 1, "status: CHANGED: the key list is not the bytes recorded, and "+copyKeys+" is not the keys.log of step g")
+	if err := os.WriteFile(copyKeys, oldKeys, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status4("a counter record", 0, "status:   keys.log is the list of step g with 1 record(s) appended: counter",
+		"status:   only counter records were appended: a phone login with a passkey whose sign counter rises",
+		"status: the trial's gate key, certificate, pins and settings are the same bytes as recorded in "+r+"/evidence/trial-before.sha256, and the key list holds the records of step g unchanged")
+	set(string(oldKeys)+rec(2, "counter", `"counter":5,`)+rec(3, "counter", `"counter":6,`), "sample head 3\n")
+	status4("two counter records", 0, "with 2 record(s) appended: counter counter", "only counter records were appended")
+	for _, c := range []struct{ name, body, appended string }{
+		{"a pairing", rec(2, "counter", `"counter":5,`) + rec(3, "added", `"credential_id":"Y2Nj","kind":"platform-passkey","public_key":"aw==",`), "2 record(s) appended: counter added"},
+		{"a revocation", rec(2, "revoked", ""), "1 record(s) appended: revoked"},
+		{"a refused pairing", rec(2, "rejected", ""), "1 record(s) appended: rejected"},
+		{"a line that is not a record", "not a record\n", "1 record(s) appended: unreadable"},
+		{"a record cut short", strings.TrimSuffix(rec(2, "counter", `"counter":5,`), "\n"), "1 record(s) appended: unreadable"},
+	} {
+		set(string(oldKeys)+c.body, "sample head 2\n")
+		status4(c.name, 1, "status:   keys.log is the list of step g with "+c.appended, "status: CHANGED: a record that is not a counter was appended to the key list")
+	}
+	changed := append([]byte("S"), oldKeys[1:]...)
+	set(string(changed)+rec(2, "counter", `"counter":5,`), "sample head 2\n")
+	status4("a list whose old bytes changed", 1, "status: CHANGED: keys.log is not the list of step g with records appended: its copy "+copyKeys+" is not a byte prefix of it")
+	set(string(oldKeys[:len(oldKeys)-1]), string(oldHead))
+	status4("a list cut short", 1, "is not a byte prefix of it")
+	set(string(oldKeys), "sample head caught up\n")
+	status4("a head that caught up", 0, "status:   keys.head: FAILED", "status:   keys.log is the same bytes as at step g; only keys.head changed: the head caught up with the list",
+		"and the key list holds the records of step g unchanged")
+	set(string(oldKeys)+rec(2, "counter", `"counter":5,`), "sample head 2\n")
+	if err := os.WriteFile(pins, append(old, []byte(strings.Repeat("cd", 32)+"\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status4("a counter record and a changed pin file", 1, "status:   gate/seat-pins: FAILED",
+		"status: CHANGED: a file of the trial other than the key list is not the bytes recorded", "only counter records were appended")
+	if err := os.WriteFile(pins, old, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	set(string(oldKeys), string(oldHead))
+	os.Remove(copyKeys)
 	os.Remove(args)
 	os.Remove(filepath.Join(r, "evidence", "trial-before.sha256"))
 	if !sameScratchSeatFiles(beforeState, scratchSeatFiles(t, k.state)) || !sameScratchSeatFiles(beforeRoot, scratchSeatFiles(t, r)) {
