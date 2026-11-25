@@ -222,6 +222,20 @@ func TestHookDeclaration(t *testing.T) {
 	}
 }
 
+func TestHookTimeoutRange(t *testing.T) {
+	for _, tc := range []struct {
+		ms    string
+		valid bool
+	}{
+		{"0", false}, {"1", true}, {"3600000", true}, {"3600001", false},
+	} {
+		rows := strings.Replace(hookRows, `"timeout_ms":100`, `"timeout_ms":`+tc.ms, 1)
+		if err := decodeHookRows(rows); (err == nil) != tc.valid {
+			t.Errorf("timeout_ms %s: %v", tc.ms, err)
+		}
+	}
+}
+
 func decodeHookRows(rows string) error {
 	_, err := pack.DecodeDeclaration(map[string][]byte{pack.ManifestPath: []byte(rootDocument), pack.HooksPath: buildDocument(rows)}, sampleLayout())
 	return err
