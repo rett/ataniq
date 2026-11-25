@@ -93,18 +93,6 @@ func TestTR29ModelBoundary(t *testing.T) {
 			}
 		}
 	}
-	checkWrite := func(name string, lhs ast.Expr) {
-		ast.Inspect(lhs, func(n ast.Node) bool {
-			id, ok := n.(*ast.Ident)
-			if !ok {
-				return true
-			}
-			if obj, global := globals[id.Name]; global && (id.Obj == nil || id.Obj == obj) {
-				t.Fatal("write to package variable", name, id.Name)
-			}
-			return true
-		})
-	}
 	for _, name := range files {
 		f := model[name]
 		if f == nil {
@@ -154,19 +142,66 @@ func TestTR29ModelBoundary(t *testing.T) {
 				if id, ok := x.X.(*ast.Ident); ok && timeNames[id.Name] && slices.Contains([]string{"Now", "Since", "Until", "After", "Sleep"}, x.Sel.Name) {
 					t.Fatal("clock", name, x.Sel.Name)
 				}
-			case *ast.AssignStmt:
-				for _, lhs := range x.Lhs {
-					checkWrite(name, lhs)
-				}
-			case *ast.IncDecStmt:
-				checkWrite(name, x.X)
-			case *ast.UnaryExpr:
-				if x.Op == token.AND {
-					checkWrite(name, x.X)
+			}
+			checkModelWrite(n, globals, func(id string) { t.Fatal("write to package variable", name, id) })
+			return true
+		})
+	}
+}
+
+func checkModelWrite(n ast.Node, globals map[string]*ast.Object, report func(string)) {
+	check := func(lhs ast.Expr) {
+		ast.Inspect(lhs, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok {
+				if obj, global := globals[id.Name]; global && (id.Obj == nil || id.Obj == obj) {
+					report(id.Name)
 				}
 			}
 			return true
 		})
+	}
+	switch x := n.(type) {
+	case *ast.AssignStmt:
+		for _, lhs := range x.Lhs {
+			check(lhs)
+		}
+	case *ast.RangeStmt:
+		if x.Tok == token.ASSIGN {
+			check(x.Key)
+			if x.Value != nil {
+				check(x.Value)
+			}
+		}
+	case *ast.IncDecStmt:
+		check(x.X)
+	case *ast.UnaryExpr:
+		if x.Op == token.AND {
+			check(x.X)
+		}
+	}
+}
+
+func TestTR29RangeWrites(t *testing.T) {
+	f, err := parser.ParseFile(token.NewFileSet(), "", `package model
+var key, value int
+func inspect(rows []int) {
+	for key = range rows {}
+	for _, value = range rows {}
+	for key, value = range rows {}
+	for key, value := range rows { _, _ = key, value }
+	for range rows {}
+}`, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	globals := map[string]*ast.Object{"key": f.Scope.Lookup("key"), "value": f.Scope.Lookup("value")}
+	var writes []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		checkModelWrite(n, globals, func(id string) { writes = append(writes, id) })
+		return true
+	})
+	if !slices.Equal(writes, []string{"key", "value", "key", "value"}) {
+		t.Fatal("package variables assigned by range:", writes)
 	}
 }
 func checkPackClosure(t *testing.T) {
