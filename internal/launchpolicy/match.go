@@ -309,19 +309,30 @@ func (p *Policy) fileEntries(s Snapshot, w ExpectedFile, row *fileRow, entries [
 		return invalid
 	}
 	for _, e := range entries {
-		if !validPath(e.Path) || !scalar(e.Type) {
+		if !validPath(e.Path) {
 			return invalid
 		}
 	}
 	ordered := slices.Clone(entries)
 	slices.SortFunc(ordered, func(a, b Entry) int { return comparePath(a.Path, b.Path) })
 	haveName := false
-	requiredCount := 0
+	remaining := row.Required
 	for i, e := range ordered {
-		if i > 0 && comparePath(ordered[i-1].Path, e.Path) == 0 {
+		if !scalar(e.Type) || i > 0 && comparePath(ordered[i-1].Path, e.Path) == 0 {
 			return invalid
 		}
+		needed := false
+		if len(remaining) > 0 {
+			order := comparePath(remaining[0].Path, e.Path)
+			if order < 0 {
+				return invalid
+			}
+			needed = order == 0
+		}
 		if w.Definition {
+			if !haveName && comparePath([]Comp{"name"}, e.Path) < 0 {
+				return invalid
+			}
 			if len(e.Path) == 0 {
 				return "agent-key-refused"
 			}
@@ -336,18 +347,17 @@ func (p *Policy) fileEntries(s Snapshot, w ExpectedFile, row *fileRow, entries [
 				haveName = true
 			}
 		}
-		n, needed := slices.BinarySearchFunc(row.Required, e.Path, func(k requirement, path []Comp) int { return comparePath(k.Path, path) })
 		if needed {
-			k := row.Required[n]
+			k := remaining[0]
 			if k.Type != e.Type || *k.Text != e.Text {
 				return invalid
 			}
-			requiredCount++
+			remaining = remaining[1:]
 		} else if _, allowed := slices.BinarySearchFunc(row.Allowed, e.Path, comparePath); !allowed {
 			return invalid
 		}
 	}
-	if requiredCount != len(row.Required) || w.Definition && !haveName {
+	if len(remaining) != 0 || w.Definition && !haveName {
 		return invalid
 	}
 	return ""

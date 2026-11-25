@@ -70,6 +70,32 @@ func TestT52FirstFile(t *testing.T) {
 	line(t, JudgeFiles(x.p, x.s, f.inv, f.files), "file-refused", "2", "file[a-settings]")
 }
 
+func TestFirstFaultInAgentPaths(t *testing.T) {
+	for _, tc := range []struct {
+		missing []Comp
+		bad     []Comp
+		code    string
+	}{
+		{[]Comp{"name"}, []Comp{"zzz"}, "file-refused"},
+		{[]Comp{"name"}, []Comp{"aaa"}, "agent-key-refused"},
+		{nil, []Comp{"zzz"}, "file-refused"}, // name is required even when only allowed by the row
+		{[]Comp{0}, []Comp{"0"}, "file-refused"},
+		{[]Comp{"0"}, []Comp{0}, "agent-key-refused"},
+	} {
+		x := baseline(t, "BC")
+		if tc.missing != nil {
+			x.policy(t, func(d obj) {
+				r := row(d["files"], "path_role", "agent")
+				r["allowed"] = []any{}
+				r["required"] = []any{obj{"path": tc.missing, "type": "string", "text": "reviewer"}}
+			})
+		}
+		f := cleanFiles()
+		f.files[1].Entries = []Entry{{tc.bad, "string", "unused"}}
+		line(t, JudgeFiles(x.p, x.s, f.inv, f.files), tc.code, "2", "file[b-agent]")
+	}
+}
+
 func TestUniqueInventoryRolesAndDefinition(t *testing.T) {
 	x := baseline(t, "BC")
 	f := cleanFiles()
