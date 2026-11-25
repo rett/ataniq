@@ -88,6 +88,16 @@ type ServerConfig struct {
 	// network use the real clock.
 	Now func() time.Time
 
+	// AcceptFailed, when not nil, is called when the listener fails to
+	// accept a connection and Serve has accepted one since its last failure,
+	// or none since it started: once at the start of each streak of failures,
+	// which Serve retries until one succeeds. It is not told the error. It runs
+	// in the accept loop, so it must return quickly.
+	AcceptFailed func()
+
+	// acceptWait, for tests, is given the backoff before the next accept after
+	// a failure and returns the wait to take instead.
+	acceptWait func(time.Duration) time.Duration
 	// hsWatch, for tests, runs as the watcher of a handshake starts, and what
 	// it returns as the watcher ends.
 	hsWatch func() func()
@@ -172,10 +182,14 @@ func (s *server) releaseHandler() {
 // hello, then requests; see the package documentation for the rules. At most
 // cfg.MaxConns connections are open at once: another is closed as it arrives.
 //
-// When ctx is done Serve stops accepting, lets the requests in flight finish
-// and be answered for up to cfg.ShutdownGrace, closes every connection and
-// returns nil once all are gone. If the listener fails otherwise Serve shuts
-// down in the same way and returns the error.
+// When ln fails to accept, as it does when descriptors or memory run out,
+// Serve waits and tries again: 5 ms after the first failure, doubling to at
+// most 1 s, and from 5 ms again after the next connection it accepts
+// (cfg.AcceptFailed is told of the first failure of each such streak). So it
+// ends only when ctx is done or ln is closed: it then stops accepting, lets
+// the requests in flight finish and be answered for up to cfg.ShutdownGrace,
+// closes every connection and returns nil once all are gone. Serve returns an
+// error only for a configuration it refuses, before it accepts anything.
 func Serve(ctx context.Context, ln net.Listener, cfg ServerConfig, h Handler) error {
 	if cfg.TLS == nil || h == nil {
 		ln.Close()
@@ -204,27 +218,50 @@ func Serve(ctx context.Context, ln net.Listener, cfg ServerConfig, h Handler) er
 		}
 	}()
 
-	var failure error
-	for {
-		c, err := ln.Accept()
-		if err != nil {
-			if ctx.Err() == nil && !errors.Is(err, net.ErrClosed) {
-				var ne net.Error
-				if errors.As(err, &ne) && ne.Timeout() {
-					time.Sleep(50 * time.Millisecond)
-					continue
-				}
-				failure = errors.New("seatgate: the listener failed")
-			}
-			break
-		}
-		s.admit(c)
-	}
+	s.acceptLoop(ctx, ln)
 	begin()
 	close(stop)
 	<-watcher
 	s.wg.Wait()
-	return failure
+	return nil
+}
+
+// acceptLoop admits the connections of ln until ctx is done or ln is closed.
+// Any other failure to accept is retried after a backoff, with no list of the
+// errors that are worth it: a listener that keeps failing would otherwise end
+// the server for good, and nothing starts it again.
+func (s *server) acceptLoop(ctx context.Context, ln net.Listener) {
+	var delay time.Duration
+	for {
+		c, err := ln.Accept()
+		if err == nil {
+			delay = 0
+			s.admit(c)
+			continue
+		}
+		if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+			return
+		}
+		if delay == 0 {
+			delay = 5 * time.Millisecond
+			if f := s.cfg.AcceptFailed; f != nil {
+				f()
+			}
+		} else if delay *= 2; delay > time.Second {
+			delay = time.Second
+		}
+		wait := delay
+		if f := s.cfg.acceptWait; f != nil {
+			wait = f(delay)
+		}
+		t := time.NewTimer(wait)
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			t.Stop()
+			return
+		}
+	}
 }
 
 // admit starts serving c, or closes it if the server is full.

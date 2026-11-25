@@ -390,6 +390,11 @@ func (g *SeatGate) Start(svc gatehost.Port) (stop func(), err error) {
 	cfg := seatgate.ServerConfig{
 		TLS:  seatgate.ServerTLS(g.Identity, append([]string(nil), g.Pins...)),
 		Caps: h.Caps(),
+		// The server retries a failed accept until one succeeds; this line
+		// says when a streak of failures starts, so that a lasting one shows.
+		AcceptFailed: func() {
+			g.logf("seat gate: accepting a connection failed; retrying until one succeeds")
+		},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	ended := make(chan struct{})
