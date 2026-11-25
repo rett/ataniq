@@ -15,9 +15,10 @@ const rid = "r731905"
 const modeToken = "--mode={permission_mode}"
 
 type trial struct {
-	p *Policy
-	l pack.Launch
-	s Snapshot
+	p    *Policy
+	help []byte
+	l    pack.Launch
+	s    Snapshot
 }
 type request struct {
 	Provider, Version, Model, Effort, PermissionMode, AccessMode string
@@ -47,7 +48,8 @@ func (x *trial) bind(t *testing.T) {
 }
 func baseline(t *testing.T, name string) trial {
 	t.Helper()
-	x := trial{p: decode(t, alphaPolicy)}
+	x := trial{help: packtest.AlphaHelp()}
+	x.p = decode(t, packtest.AlphaPolicy(), x.help)
 	x.s = Snapshot{Pack: packtest.Alpha.Name(), Version: "1.0", Role: "demo/lead", Transport: pack.Terminal, Mode: "m-plan", Recognizer: "plan", ProfileDigest: "d1"}
 	x.l = pack.Launch{Argv: []string{"alpha-cli", modeToken, "--model={model}", "--effort={effort}", "--agent={agent}", "--resume={resume}"},
 		Env: map[string]string{"ALPHA_HOME": "/h"}, Grammars: map[pack.Slot]string{pack.ModelSlot: "^[a-z][a-z0-9.-]{0,31}$", pack.EffortSlot: "^(low|high)$"},
@@ -65,7 +67,8 @@ func baseline(t *testing.T, name string) trial {
 		x.s.Recognizer = ""
 	}
 	if name == "BQ" {
-		x.p = decode(t, betaPolicy)
+		x.help = packtest.BetaHelp()
+		x.p = decode(t, packtest.BetaPolicy(), x.help)
 		x.s.Pack = packtest.Beta.Name()
 		x.s.Mode = "q-quiet"
 		x.s.Agent = ""
@@ -78,7 +81,7 @@ func baseline(t *testing.T, name string) trial {
 func (x *trial) policy(t *testing.T, mutate func(obj)) {
 	d := tree(t, Canonical(x.p))
 	mutate(d)
-	x.p = decode(t, wire(t, d))
+	x.p = decode(t, wire(t, d), x.help)
 }
 func (x trial) expand(t *testing.T) Spec {
 	t.Helper()
@@ -135,7 +138,7 @@ func TestT38aPositionsAfterOmission(t *testing.T) {
 		effort["slot"] = "effort"
 		effort["after_separator_index"] = 1
 		addForm(d, effort)
-		d["slots"].(obj)["effort"] = tree(t, alphaPolicy)["slots"].(obj)["effort"]
+		d["slots"].(obj)["effort"] = tree(t, packtest.AlphaPolicy())["slots"].(obj)["effort"]
 	})
 	x.l.Argv = append(x.l.Argv, "{effort}")
 	if got := x.expand(t).Argv; !slices.Equal(got, []string{"beta-cli", "--mode=q-quiet", "--", "m-x"}) {

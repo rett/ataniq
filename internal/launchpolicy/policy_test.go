@@ -3,27 +3,14 @@ package launchpolicy
 import (
 	"bytes"
 	"crypto/sha256"
-	_ "embed"
 	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
 	"testing"
+
+	"ataniq/internal/pack/packtest"
 )
-
-// These are literal wire documents. No test derives expected bytes from Policy.
-//
-//go:embed testdata/alpha.golden
-var alphaPolicy []byte
-
-//go:embed testdata/beta.golden
-var betaPolicy []byte
-
-//go:embed testdata/tiny.golden
-var tinyPolicy []byte
-
-const fixtureHelp = "-m,--mode=<v>   select a mode\n"
-const tinyPolicySHA256 = "b81e8a914ebf362aaab2d49676714172840f27538e6200f43875d6e94b905ad7"
 
 type obj = map[string]any
 
@@ -35,9 +22,9 @@ func wire(t *testing.T, v any) []byte {
 	}
 	return b
 }
-func decode(t *testing.T, data []byte) *Policy {
+func decode(t *testing.T, data, help []byte) *Policy {
 	t.Helper()
-	p, err := Decode(data, []byte(fixtureHelp))
+	p, err := Decode(data, help)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,16 +64,17 @@ func fixed(d obj, token string) obj {
 }
 
 func TestT3StrictDocument(t *testing.T) {
+	alpha := packtest.AlphaPolicy()
 	for _, b := range [][]byte{
-		append(bytes.Clone(alphaPolicy), ' '), append(bytes.Clone(alphaPolicy), '\n'),
-		bytes.Replace(alphaPolicy, []byte(`"schema":`), []byte(`"other":true,"schema":`), 1),
-		bytes.Replace(alphaPolicy, []byte(`"schema":`), []byte(`"schema":"x","schema":`), 1),
-		bytes.Replace(alphaPolicy, []byte(`"from":1`), []byte(`"from":null`), 1),
+		append(bytes.Clone(alpha), ' '), append(bytes.Clone(alpha), '\n'),
+		bytes.Replace(alpha, []byte(`"schema":`), []byte(`"other":true,"schema":`), 1),
+		bytes.Replace(alpha, []byte(`"schema":`), []byte(`"schema":"x","schema":`), 1),
+		bytes.Replace(alpha, []byte(`"from":1`), []byte(`"from":null`), 1),
 		bytes.Repeat([]byte(" "), 65<<10),
-		bytes.Replace(alphaPolicy, []byte(`"version":"1.0"`), []byte(`"version":"a/b"`), 1),
-		bytes.Replace(alphaPolicy, []byte(`"id":"agent"`), []byte(`"id":"z"`), 1),
+		bytes.Replace(alpha, []byte(`"version":"1.0"`), []byte(`"version":"a/b"`), 1),
+		bytes.Replace(alpha, []byte(`"id":"agent"`), []byte(`"id":"z"`), 1),
 	} {
-		if _, err := Decode(b, []byte(fixtureHelp)); err == nil {
+		if _, err := Decode(b, packtest.AlphaHelp()); err == nil {
 			t.Fatal("accepted malformed document")
 		}
 	}
@@ -119,7 +107,7 @@ func TestT4FormReservations(t *testing.T) {
 	beta := map[string]mutation{
 		"no separator": func(d obj) { dropForm(d, "sep") },
 		"positional collision": func(d obj) {
-			d["slots"].(obj)["effort"] = tree(t, alphaPolicy)["slots"].(obj)["effort"]
+			d["slots"].(obj)["effort"] = tree(t, packtest.AlphaPolicy())["slots"].(obj)["effort"]
 			f := fixed(d, "")
 			delete(f, "token")
 			f["shape"] = "positional"
@@ -138,14 +126,17 @@ func TestT4FormReservations(t *testing.T) {
 		"positional resume":  func(d obj) { formRow(d, "model")["slot"] = "resume" },
 	}
 	for _, test := range []struct {
-		b     []byte
-		cases map[string]mutation
-	}{{alphaPolicy, alpha}, {betaPolicy, beta}} {
+		b, help []byte
+		cases   map[string]mutation
+	}{
+		{packtest.AlphaPolicy(), packtest.AlphaHelp(), alpha},
+		{packtest.BetaPolicy(), packtest.BetaHelp(), beta},
+	} {
 		for name, mutate := range test.cases {
 			t.Run(name, func(t *testing.T) {
 				d := tree(t, test.b)
 				mutate(d)
-				if _, err := Decode(wire(t, d), []byte(fixtureHelp)); err == nil {
+				if _, err := Decode(wire(t, d), test.help); err == nil {
 					t.Fatal("accepted invalid form")
 				}
 			})
@@ -172,39 +163,45 @@ func TestT5EvidenceAndGrammars(t *testing.T) {
 	cases["terminal profiles"] = func(d obj) { modeRow(d, "m-ask")["vector"].(obj)["terminal"].(obj)["profiles"] = []string{"d1"} }
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
-			d := tree(t, alphaPolicy)
+			d := tree(t, packtest.AlphaPolicy())
 			mutate(d)
-			if _, err := Decode(wire(t, d), []byte(fixtureHelp)); err == nil {
+			if _, err := Decode(wire(t, d), packtest.AlphaHelp()); err == nil {
 				t.Fatal("accepted invalid policy")
 			}
 		})
 	}
-	if _, err := Decode(alphaPolicy, []byte(fixtureHelp+".")); err == nil {
+	if _, err := Decode(packtest.AlphaPolicy(), append(packtest.AlphaHelp(), '.')); err == nil {
 		t.Fatal("accepted changed fixture")
 	}
 }
 func TestT6Canonical(t *testing.T) {
 	// Tiny is the literal golden for a second version of the same pack.
-	for _, gold := range [][]byte{alphaPolicy, betaPolicy, tinyPolicy} {
+	for _, fixture := range []struct{ gold, help []byte }{
+		{packtest.AlphaPolicy(), packtest.AlphaHelp()},
+		{packtest.BetaPolicy(), packtest.BetaHelp()},
+		{packtest.TinyPolicy(), packtest.AlphaHelp()},
+	} {
 		var spaced bytes.Buffer
-		if err := json.Indent(&spaced, gold, "", "  "); err != nil {
+		if err := json.Indent(&spaced, fixture.gold, "", "  "); err != nil {
 			t.Fatal(err)
 		}
-		p := decode(t, spaced.Bytes())
-		if !bytes.Equal(Canonical(p), gold) {
+		p := decode(t, spaced.Bytes(), fixture.help)
+		if !bytes.Equal(Canonical(p), fixture.gold) {
 			t.Fatalf("wrong canonical bytes:\n%s", Canonical(p))
 		}
-		if decode(t, Canonical(p)).Digest() != p.Digest() {
+		if decode(t, Canonical(p), fixture.help).Digest() != p.Digest() {
 			t.Fatal("round trip changed digest")
 		}
 	}
-	if decode(t, tinyPolicy).Digest() != tinyPolicySHA256 || decode(t, tinyPolicy).Digest() == decode(t, alphaPolicy).Digest() {
+	tinyDigest := decode(t, packtest.TinyPolicy(), packtest.AlphaHelp()).Digest()
+	alphaDigest := decode(t, packtest.AlphaPolicy(), packtest.AlphaHelp()).Digest()
+	if tinyDigest != packtest.TinyPolicySHA256 || tinyDigest == alphaDigest {
 		t.Fatal("digest vector or version binding differs")
 	}
 	// A pending locator is legal only on an unrecorded policy. Its canonical
 	// encoding therefore needs a second vector distinct from the observation.
-	pending := unrecorded(t, tinyPolicy)
-	p := decode(t, pending)
+	pending := unrecorded(t, packtest.TinyPolicy())
+	p := decode(t, pending, packtest.AlphaHelp())
 	if !bytes.Contains(Canonical(p), []byte(`"evidence":{"source":"pending"}`)) {
 		t.Fatal("pending locator encoding")
 	}
@@ -217,14 +214,14 @@ func TestT5ProtocolProfileRequiresItsOwnSitting(t *testing.T) {
 	ask := first
 	ask.Mode = "m-ask"
 	records := map[ProtocolExercise]string{first: "quiet-first", ask: "ask-first"}
-	p := decode(t, alphaPolicy)
+	p := decode(t, packtest.AlphaPolicy(), packtest.AlphaHelp())
 	if err := p.CheckProtocolSittings(records); err != nil {
 		t.Fatal(err)
 	}
 
-	d := tree(t, alphaPolicy)
+	d := tree(t, packtest.AlphaPolicy())
 	modeRow(d, "m-quiet")["vector"].(obj)["protocol"].(obj)["profiles"] = []string{"d1", "d2"}
-	p = decode(t, wire(t, d))
+	p = decode(t, wire(t, d), packtest.AlphaHelp())
 	if err := p.CheckProtocolSittings(records); err == nil {
 		t.Fatal("qualified an appended profile without a sitting")
 	}
@@ -276,9 +273,9 @@ func TestOptionalMembersRejectNull(t *testing.T) {
 		func(d obj) { formRow(d, "bin")["separator"] = nil },
 		func(d obj) { d["files"].([]any)[1].(obj)["allowed"] = []any{nil} },
 	} {
-		d := tree(t, alphaPolicy)
+		d := tree(t, packtest.AlphaPolicy())
 		mutate(d)
-		if _, err := Decode(wire(t, d), []byte(fixtureHelp)); err == nil {
+		if _, err := Decode(wire(t, d), packtest.AlphaHelp()); err == nil {
 			t.Fatal("accepted null member")
 		}
 	}
@@ -292,9 +289,9 @@ func TestOptionalMemberPresence(t *testing.T) {
 		func(d obj) { formRow(d, "bin")["evidence"].(obj)["scope"] = "" },
 		func(d obj) { modeRow(d, "q-plan")["recognizer"] = "" },
 	} {
-		d := tree(t, betaPolicy)
+		d := tree(t, packtest.BetaPolicy())
 		change(d)
-		if _, err := Decode(wire(t, d), []byte(fixtureHelp)); err == nil {
+		if _, err := Decode(wire(t, d), packtest.BetaHelp()); err == nil {
 			t.Fatal("accepted an inapplicable empty field")
 		}
 	}
@@ -302,13 +299,13 @@ func TestOptionalMemberPresence(t *testing.T) {
 
 func TestCanonicalSizeBound(t *testing.T) {
 	// A short JSON escape occupies two input bytes but six canonical bytes.
-	d := tree(t, alphaPolicy)
+	d := tree(t, packtest.AlphaPolicy())
 	formRow(d, "bin")["evidence"].(obj)["ref"] = strings.Repeat("\n", 12000)
 	raw := wire(t, d)
 	if len(raw) > 64<<10 {
 		t.Fatal("fixture already exceeds the input bound")
 	}
-	if _, err := Decode(raw, []byte(fixtureHelp)); err == nil {
+	if _, err := Decode(raw, packtest.AlphaHelp()); err == nil {
 		t.Fatal("canonical encoding cannot be decoded within the bound")
 	}
 }
@@ -340,7 +337,8 @@ func TestHelpDefinitionEvidence(t *testing.T) {
 func TestGroupedHelpLocator(t *testing.T) {
 	const help = "-m <mode>, --mode=<mode>  choose mode\n--[no-]quiet  suppress output\n"
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(help)))
-	raw := bytes.ReplaceAll(alphaPolicy, []byte(fmt.Sprintf("%x", sha256.Sum256([]byte(fixtureHelp)))), []byte(hash))
+	alphaHash := fmt.Sprintf("%x", sha256.Sum256(packtest.AlphaHelp()))
+	raw := bytes.ReplaceAll(packtest.AlphaPolicy(), []byte(alphaHash), []byte(hash))
 	for _, tc := range []struct {
 		token string
 		valid bool
