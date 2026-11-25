@@ -139,18 +139,6 @@
     "permission_mode": {
       "values": [
         {
-          "name": "never",
-          "class": "no-prompt",
-          "recognizer": "never",
-          "basis": "documented",
-          "evidence": {
-            "source": "pending"
-          },
-          "vector": {
-            "terminal": "pending"
-          }
-        },
-        {
           "name": "on-request",
           "class": "bypass",
           "recognizer": "on-request",

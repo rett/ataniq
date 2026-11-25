@@ -472,7 +472,7 @@ func TestHelpModeClasses(t *testing.T) {
 	// Reviewed against the permission option's choices and behavior in each capture.
 	want := map[pack.Name]map[string]pack.ModeClass{
 		"claude": {"acceptEdits": pack.Bypass, "auto": pack.Bypass, "bypassPermissions": pack.Bypass, "dontAsk": pack.Bypass, "manual": pack.Bypass, "plan": pack.Bypass},
-		"codex":  {"never": pack.NoPrompt, "on-request": pack.Bypass},
+		"codex":  {"on-request": pack.Bypass},
 	}
 	for _, b := range builds {
 		raw, _, p := b.load(t)
@@ -567,7 +567,7 @@ func baseline(t *testing.T, b build) launchCase {
 		x.l.Grammars[pack.EffortSlot] = "^(low|medium|high|xhigh|max)$"
 	} else {
 		x.prefix, x.strict, x.refused = "--ask-for-approval=", "--strict-config", "--dangerously-bypass-approvals-and-sandbox"
-		x.s.Mode, x.s.Recognizer = "never", "never"
+		x.s.Mode, x.s.Recognizer = "on-request", "on-request"
 	}
 	x.l.Argv = []string{string(b.name), x.prefix + "{permission_mode}", "--model={model}"}
 	if b.name == "claude" {
@@ -646,18 +646,9 @@ func TestRealTerminalModes(t *testing.T) {
 						bad.l.PermissionModes = []pack.PermissionMode{{Name: m.Name, Lead: true}}
 						line(t, bad.judge(spec), "selection-outside-policy", 0, "policy")
 					}
-					if b.name == "codex" && role == "demo/coord/f1" && m.Name == "never" {
-						v, r := lp.Judge(x.p, x.l, x.s, spec, intent)
-						line(t, r, "", 0, "")
-						line(t, x.recheck(t, spec), "", 0, "")
-						if v.Class != pack.NoPrompt || v.Recognizer != "never" || v.PolicyDigest != x.p.Digest() {
-							t.Fatal(v)
-						}
-					} else {
-						line(t, x.recheck(t, spec), "mode-class-refused", 2, "argv[1]", m.Name)
-						if role == "demo/coord/f1" {
-							line(t, x.judge(spec), "mode-class-refused", 2, "argv[1]", m.Name)
-						}
+					line(t, x.recheck(t, spec), "mode-class-refused", 2, "argv[1]", m.Name)
+					if role == "demo/coord/f1" {
+						line(t, x.judge(spec), "mode-class-refused", 2, "argv[1]", m.Name)
 					}
 				}
 			}
@@ -672,7 +663,7 @@ func TestRealTemplates(t *testing.T) {
 			spec := x.expand(t)
 			bin, mode := string(b.name), x.prefix+"{permission_mode}"
 			literal := x.prefix + x.s.Mode
-			other := "on-request"
+			other := "never"
 			if b.name == "claude" {
 				other = "plan"
 			}
@@ -811,11 +802,7 @@ func TestRealExpandedValues(t *testing.T) {
 				// Model first so a passing grammar reaches the real mode gate.
 				y.l.Argv = slices.Clone(x.l.Argv)
 				y.l.Argv[1], y.l.Argv[2] = y.l.Argv[2], y.l.Argv[1]
-				if b.name == "claude" {
-					line(t, y.judge(y.expand(t)), "mode-class-refused", 2, "argv[2]", y.s.Mode)
-				} else {
-					line(t, y.judge(y.expand(t)), "", 0, "")
-				}
+				line(t, y.judge(y.expand(t)), "mode-class-refused", 2, "argv[2]", y.s.Mode)
 			}
 			line(t, x.recheck(t, beforeMode("--model=Gpt")), "value-grammar", 2, "argv[1]", "Gpt")
 			if b.name == "claude" {
@@ -955,21 +942,11 @@ func TestRealAuthenticatedRequest(t *testing.T) {
 					line(t, y.judge(spec), "transport-not-admitted", 0, "snapshot")
 				}
 			}
-			// T29/62: turning just the terminal vector pending never permits a launch.
-			d, help = synthetic(t, b)
-			for i := range d.Slots.Permission.Values {
-				m := &d.Slots.Permission.Values[i]
-				if m.Name == x.s.Mode {
-					m.Vector["terminal"] = json.RawMessage(`"pending"`)
-				}
-			}
-			y = x
+			// T29/62: exercise the pending-vector check after the class check.
+			y, d, help = testOnlyMode(t, x)
+			d.Slots.Permission.Values[len(d.Slots.Permission.Values)-1].Vector["terminal"] = json.RawMessage(`"pending"`)
 			y.p = decoded(t, d, help)
-			if b.name == "codex" {
-				line(t, y.judge(spec), "mode-vector-pending", 2, "argv[1]", x.s.Mode)
-			} else {
-				line(t, y.judge(spec), "mode-class-refused", 2, "argv[1]", x.s.Mode)
-			}
+			line(t, y.judge(y.expand(t)), "mode-vector-pending", 2, "argv[1]", y.s.Mode)
 			// An observation cannot be rebound to another build or transport.
 			d, help = synthetic(t, b)
 			m := &d.Slots.Permission.Values[0]
@@ -997,10 +974,29 @@ func TestRealAuthenticatedRequest(t *testing.T) {
 	}
 }
 
-// Codex's explicitly requested coordinator mode is the real policy with a
-// passing stage-2 baseline. Stage 3 can therefore compare independent values.
+// testOnlyMode adds a separately named coordinator mode to a recorded test copy.
+// It makes later matcher gates reachable without reclassifying any provider mode.
+func testOnlyMode(t *testing.T, x launchCase) (launchCase, document, []byte) {
+	t.Helper()
+	d, help := synthetic(t, x.b)
+	const name = "test-only"
+	m := mode{Name: name, Class: pack.NoPrompt, Recognizer: name, Basis: "documented",
+		Evidence: locator{Source: "doc", Ref: "stand-in/test-only"},
+		Vector: map[string]json.RawMessage{"terminal": wire(t, map[string]any{
+			"fixture_sha256": d.Fixture.SHA, "build": x.b.version, "transport": "terminal",
+			"value": name, "sitting": "synthetic", "profiles": []string{},
+		})},
+	}
+	d.Slots.Permission.Values = append(d.Slots.Permission.Values, m)
+	x.p = decoded(t, d, help)
+	x.l.PermissionModes = append(slices.Clone(x.l.PermissionModes), pack.PermissionMode{Name: name})
+	x.s.Mode, x.s.Recognizer = name, name
+	x.bind(t)
+	return x, d, help
+}
+
 func TestRealExpectedSpec(t *testing.T) {
-	x := baseline(t, builds[1])
+	x, d, h := testOnlyMode(t, baseline(t, builds[1]))
 	x.s.Model = "o3"
 	x.bind(t)
 	spec := x.expand(t)
@@ -1051,7 +1047,6 @@ func TestRealExpectedSpec(t *testing.T) {
 		s.ProfileDigest = y.s.ProfileDigest
 		line(t, y.recheck(t, s), "expected-unplaceable", 3, "slot["+slot+"]")
 	}
-	d, h := synthetic(t, x.b)
 	d.Forms = slices.DeleteFunc(d.Forms, func(f form) bool { return f.Slot == "model" })
 	y = x
 	y.p = decoded(t, d, h)
@@ -1059,7 +1054,7 @@ func TestRealExpectedSpec(t *testing.T) {
 	s.Argv = slices.Clone(spec.Argv[:2])
 	line(t, y.recheck(t, s), "expected-unplaceable", 3, "slot[model]")
 	// T39: evaluate the valid substituted spec before comparing it with
-	// the authenticated request. The request names a different real mode.
+	// the authenticated request. The request names the real requirements mode.
 	y = x
 	y.s.Mode = "on-request"
 	y.s.Recognizer = "on-request"
@@ -1274,4 +1269,34 @@ func TestRealPolicyFiles(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Renderer view of the pinned requirements.toml, specified independently of the policy.
+func codexRequirements() []lp.Entry {
+	return []lp.Entry{
+		{Path: []lp.Comp{"allow_managed_hooks_only"}, Type: "bool", Text: "true"},
+		{Path: []lp.Comp{"allowed_approval_policies", 0}, Type: "string", Text: "on-request"},
+		{Path: []lp.Comp{"allowed_approvals_reviewers", 0}, Type: "string", Text: "user"},
+		{Path: []lp.Comp{"features", "hooks"}, Type: "bool", Text: "true"},
+	}
+}
+
+func TestCodexRequirementsAndMode(t *testing.T) {
+	x := baseline(t, builds[1])
+	hash := digest([]byte("stand-in requirements"))
+	inv := lp.Inventory{{PathRole: "provider-policy", Dest: "requirements.toml"}}
+	files := []lp.FileView{{PathRole: "provider-policy", Dest: "requirements.toml", Entries: codexRequirements(), BytesSHA256: hash, InstalledSHA256: hash}}
+	line(t, lp.JudgeFiles(x.p, x.s, inv, files), "", 0, "")
+	for _, role := range []string{"demo/coord/f1", "demo/lead"} {
+		x.s.Role = role
+		x.s.Mode, x.s.Recognizer = "never", "never"
+		x.bind(t)
+		spec := x.expand(t)
+		line(t, x.recheck(t, spec), "value-unadmitted", 2, "argv[1]", "never")
+		if role == "demo/coord/f1" {
+			line(t, x.judge(spec), "value-unadmitted", 2, "argv[1]", "never")
+		}
+	}
+	files[0].Entries = append(files[0].Entries, lp.Entry{Path: []lp.Comp{"allowed_approval_policies", 1}, Type: "string", Text: "never"})
+	line(t, lp.JudgeFiles(x.p, x.s, inv, files), "file-refused", 2, "file[requirements.toml]")
 }
