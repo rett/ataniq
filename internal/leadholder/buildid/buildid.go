@@ -430,10 +430,11 @@ type Record struct {
 
 // ReadRecord reads the state file of the holder whose state folder is dir. The
 // file must be a regular file (not a link), of at most [MaxRecordBytes] bytes,
-// holding a JSON object. Only "epoch" and "build" are read; every other member
-// is left alone. A build member that is present must be a valid identity; when
-// it is not, the error matches [ErrRecordBuild] and the Record still carries
-// the epoch.
+// holding a JSON object (a top-level null, an array or any other value is not
+// one, and is not a file of epoch 0). Only "epoch" and "build" are read; every
+// other member is left alone. A build member that is present must be a valid
+// identity; when it is not, the error matches [ErrRecordBuild] and the Record
+// still carries the epoch.
 func ReadRecord(dir string) (Record, error) {
 	f, err := os.OpenFile(filepath.Join(dir, RecordFileName), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
 	if err != nil {
@@ -458,7 +459,10 @@ func ReadRecord(dir string) (Record, error) {
 		Epoch uint64          `json:"epoch"`
 		Build json.RawMessage `json:"build"`
 	}
-	if err := json.Unmarshal(data, &raw); err != nil {
+	// A top-level null decodes into the struct without an error and would
+	// read as epoch 0: the file must be an object, its first byte after JSON
+	// white space an opening brace.
+	if t := bytes.TrimLeft(data, " \t\r\n"); len(t) == 0 || t[0] != '{' || json.Unmarshal(data, &raw) != nil {
 		return Record{}, errors.New("the state file is not a JSON object of a holder")
 	}
 	rec := Record{Epoch: raw.Epoch}

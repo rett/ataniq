@@ -278,6 +278,32 @@ func TestReadRecord(t *testing.T) {
 			t.Errorf("%s: accepted", name)
 		}
 	}
+	// A file that is not an object is not a holder's, whatever it holds.
+	for name, content := range map[string]string{
+		"a top-level null":  "null",
+		"a null with space": " \n null \n",
+		"a number":          "3",
+		"a string":          `"x"`,
+		"an empty file":     "",
+	} {
+		if rec, err := ReadRecord(writeRecord(t, content)); err == nil || errors.Is(err, ErrRecordBuild) || rec.Epoch != 0 {
+			t.Errorf("%s: %+v %v", name, rec, err)
+		}
+	}
+	// A top-level null holds no holder object: an attach of epoch 3 is
+	// refused as a state file that cannot be read, not as one of epoch 0,
+	// which would say that the holder has not written its file yet. An
+	// object with space before it is read.
+	for _, content := range []string{"null", "  null\n"} {
+		var se *SkewError
+		err := (&Checker{Expected: b}).BeforeAttach(writeRecord(t, content), 3)
+		if !errors.As(err, &se) || se.Why != WhyUnreadable || errors.Is(err, ErrOtherEpoch) {
+			t.Errorf("%q: %v", content, err)
+		}
+	}
+	if rec, err := ReadRecord(writeRecord(t, " \t\r\n"+newRecord(b))); err != nil || rec.Epoch != 3 || rec.Build == nil {
+		t.Errorf("an object after white space: %+v %v", rec, err)
+	}
 	// A link in the place of the file is refused, and so is a folder.
 	dir := t.TempDir()
 	target := writeRecord(t, newRecord(b))
