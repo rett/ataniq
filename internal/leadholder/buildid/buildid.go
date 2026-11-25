@@ -472,13 +472,18 @@ type Record struct {
 	// Build is the identity the holder recorded; nil when the file has none,
 	// as a holder older than build identities writes it.
 	Build *Identity
+	// LaunchIntent is the launch intent the holder was started with; empty
+	// when the file has none or it is not a JSON string. Only
+	// [Checker.BeforeAttachLaunch] compares it.
+	LaunchIntent string
 }
 
 // ReadRecord reads the state file of the holder whose state folder is dir. The
 // file must be a regular file (not a link), of at most [MaxRecordBytes] bytes,
 // holding a JSON object (a top-level null, an array or any other value is not
-// one, and is not a file of epoch 0). Only "epoch" and "build" are read; every
-// other member is left alone. A build member that is present must be a valid
+// one, and is not a file of epoch 0). Only "epoch", "build" and
+// "launch_intent" are read; every other member is left alone, and a launch
+// intent that is not a JSON string is read as none. A build member that is present must be a valid
 // identity; when it is not, the error matches [ErrRecordBuild] and the Record
 // still carries the epoch.
 func ReadRecord(dir string) (Record, error) {
@@ -502,8 +507,9 @@ func ReadRecord(dir string) (Record, error) {
 		return Record{}, fmt.Errorf("the state file is longer than %d bytes", MaxRecordBytes)
 	}
 	var raw struct {
-		Epoch uint64          `json:"epoch"`
-		Build json.RawMessage `json:"build"`
+		Epoch        uint64          `json:"epoch"`
+		Build        json.RawMessage `json:"build"`
+		LaunchIntent json.RawMessage `json:"launch_intent"`
 	}
 	// A top-level null decodes into the struct without an error and would
 	// read as epoch 0: the file must be an object, its first byte after JSON
@@ -512,6 +518,9 @@ func ReadRecord(dir string) (Record, error) {
 		return Record{}, errors.New("the state file is not a JSON object of a holder")
 	}
 	rec := Record{Epoch: raw.Epoch}
+	if len(raw.LaunchIntent) > 0 && raw.LaunchIntent[0] == '"' {
+		_ = json.Unmarshal(raw.LaunchIntent, &rec.LaunchIntent)
+	}
 	if len(raw.Build) == 0 || bytes.Equal(raw.Build, []byte("null")) {
 		return rec, nil
 	}
@@ -561,10 +570,18 @@ var ErrOtherEpoch = errors.New(EpochReason)
 type EpochError struct {
 	// Want is the epoch to be attached; Got is the epoch of the state file.
 	Want, Got uint64
+	// OtherLaunch is set when the file is of the epoch but of another launch
+	// ([Checker.BeforeAttachLaunch]): an earlier launch of the epoch, whose
+	// epoch was given back, left it.
+	OtherLaunch bool
 }
 
 // Error names the reason and both epochs, in printable ASCII.
 func (e *EpochError) Error() string {
+	if e.OtherLaunch {
+		return fmt.Sprintf("%s: the holder's state file of epoch %d is of another launch: the holder of this launch has not written it yet, or is not running",
+			EpochReason, e.Want)
+	}
 	return fmt.Sprintf("%s: the holder's state file is of epoch %d, not of epoch %d: the holder of the epoch has not written it yet, or is not running",
 		EpochReason, e.Got, e.Want)
 }
@@ -607,6 +624,23 @@ func (c *Checker) BeforeLaunch(path string) error {
 // [ErrSkew] (a *SkewError): a holder that records no identity is named as
 // such, and a state file that is missing or cannot be read is refused too.
 func (c *Checker) BeforeAttach(stateDir string, epoch uint64) error {
+	return c.attach(stateDir, epoch, nil)
+}
+
+// BeforeAttachLaunch is [Checker.BeforeAttach] for the launcher that started
+// the holder of the epoch with the launch intent intent: a state file of the
+// epoch that names another launch intent (or none) is refused after the
+// epoch, with an *EpochError whose OtherLaunch is set, that matches
+// [ErrOtherEpoch] and is not [Confirmed]. A launcher that gives an epoch back
+// after a launch that failed can give it to the next launch, and the file the
+// failed launch's holder left is then of the epoch but not the record of the
+// holder that was started.
+func (c *Checker) BeforeAttachLaunch(stateDir string, epoch uint64, intent string) error {
+	return c.attach(stateDir, epoch, &intent)
+}
+
+// attach is BeforeAttach, and with intent not nil BeforeAttachLaunch.
+func (c *Checker) attach(stateDir string, epoch uint64, intent *string) error {
 	read := c.Record
 	if read == nil {
 		read = func(dir string, _ uint64) (Record, error) { return ReadRecord(dir) }
@@ -623,6 +657,9 @@ func (c *Checker) BeforeAttach(stateDir string, epoch uint64) error {
 	// the holder that would be asked, whether it is valid or not.
 	if rec.Epoch != epoch {
 		return &EpochError{Want: epoch, Got: rec.Epoch}
+	}
+	if intent != nil && rec.LaunchIntent != *intent {
+		return &EpochError{Want: epoch, Got: rec.Epoch, OtherLaunch: true}
 	}
 	if err != nil {
 		return &SkewError{Expected: c.Expected, Why: WhyUnreadable, Cause: err}

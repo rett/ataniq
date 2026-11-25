@@ -417,6 +417,56 @@ func TestBeforeAttachComparesTheEpoch(t *testing.T) {
 	}
 }
 
+// TestBeforeAttachLaunchComparesTheLaunchIntent: the launcher that gave the
+// holder its launch intent takes only a state file of the epoch that names
+// it as the record of that holder. A file of the epoch that names another
+// intent, or none, is refused stale-epoch as of another launch, whatever
+// build it records, and confirms nothing; the epoch is still compared first.
+func TestBeforeAttachLaunchComparesTheLaunchIntent(t *testing.T) {
+	b := build(revNew, false)
+	ch := &Checker{Expected: b}
+	other := build(revOld, false)
+	withIntent := func(id Identity, intent string) string {
+		return strings.Replace(newRecord(id), `"epoch":3,`, `"epoch":3,"launch_intent":"`+intent+`",`, 1)
+	}
+	if rec, err := ReadRecord(writeRecord(t, withIntent(b, "abc"))); err != nil || rec.LaunchIntent != "abc" {
+		t.Fatalf("%+v %v", rec, err)
+	}
+	if rec, err := ReadRecord(writeRecord(t, `{"epoch":3,"launch_intent":7}`)); err != nil || rec.LaunchIntent != "" {
+		t.Fatalf("a launch intent of a number: %+v %v", rec, err)
+	}
+	if err := ch.BeforeAttachLaunch(writeRecord(t, withIntent(b, "abc")), 3, "abc"); err != nil {
+		t.Fatalf("this launch's file: %v", err)
+	}
+	var se *SkewError
+	if err := ch.BeforeAttachLaunch(writeRecord(t, withIntent(other, "abc")), 3, "abc"); !Confirmed(err) || !errors.As(err, &se) || se.Why != WhyDiffer {
+		t.Fatalf("this launch's file of another build: %v", err)
+	}
+	for name, content := range map[string]string{
+		"another intent, the expected build": withIntent(b, "old"),
+		"another intent, another build":      withIntent(other, "old"),
+		"no intent, another build":           newRecord(other),
+	} {
+		err := ch.BeforeAttachLaunch(writeRecord(t, content), 3, "abc")
+		var ee *EpochError
+		if !errors.As(err, &ee) || !ee.OtherLaunch || !errors.Is(err, ErrOtherEpoch) || errors.Is(err, ErrSkew) || Confirmed(err) {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if msg := err.Error(); !strings.HasPrefix(msg, EpochReason+": the holder's state file of epoch 3 is of another launch") || len(msg) > 256 {
+			t.Fatalf("%s: %q", name, msg)
+		}
+		// BeforeAttach does not look at the intent.
+		if err := ch.BeforeAttach(writeRecord(t, content), 3); errors.Is(err, ErrOtherEpoch) {
+			t.Fatalf("%s: BeforeAttach %v", name, err)
+		}
+	}
+	if err := ch.BeforeAttachLaunch(writeRecord(t, withIntent(b, "old")), 4, "abc"); !errors.Is(err, ErrOtherEpoch) {
+		t.Fatalf("another epoch: %v", err)
+	} else if ee := (*EpochError)(nil); errors.As(err, &ee) && ee.OtherLaunch {
+		t.Fatalf("another epoch is called another launch: %v", err)
+	}
+}
+
 // TestStaleFileTakesPriorityOverItsBuild: a state file of another epoch is
 // refused stale-epoch also when its build member is not one this reader
 // takes (the reviewer's case, a provenance member it does not know, and a

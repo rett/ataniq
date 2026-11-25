@@ -20,10 +20,13 @@
   `holder-version-skew`. A holder that starts as another build than the one
   checked before the start (its executable replaced in between, which the
   start looks up again) records that build in the `holder.json` it writes
-  from its own running executable. `ataniq-scratch start` reads that file
-  before it reports the holder started, also when the holder did not answer
-  its status in time, and stops a holder of another build and refuses the
-  start `holder-version-skew`. In the daemon's scratch mode the start is not
+  from its own running executable. `ataniq-scratch start` reads that file,
+  of the epoch and of the launch intent it gave the holder, before it reports
+  the holder started, also when the holder did not answer its status in time,
+  and refuses the start `holder-version-skew` when it records another build;
+  a unit is never stopped by it: it is left running and the refusal names
+  `systemctl --user stop` with the unit (a `--direct` holder, its own child,
+  is ended as after any failed start). In the daemon's scratch mode the start is not
   refused: `lead.start` has already returned a `done` receipt with the state
   `starting` when the ready observer reads the file, after the holder answers
   its status or, when it does not, after each question. A lead whose file

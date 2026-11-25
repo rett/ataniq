@@ -68,8 +68,10 @@ build (an older holder) and one whose build cannot be read are refused with
 started or attached. Build both from one checkout. A holder.json of another
 epoch than the last one start took is refused first, with
 "refused: stale-epoch: ...", which names both epochs. After the holder has
-started, start reads its holder.json again, also when it did not answer: a
-holder that started as another build is stopped and the start refused.
+started, start reads its holder.json of the epoch and of this launch again,
+also when it did not answer: a holder that started as another build is
+refused. Its unit is not stopped: it is left running, and the refusal ends
+with the command that stops it. A --direct holder is ended.
 
 Exit status: 0 done, 1 failed or refused, 2 wrong usage.
 `

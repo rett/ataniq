@@ -110,16 +110,26 @@ a holder that is not the build of `ataniq-scratch` itself, with
 start changes nothing. `start` reads the build from the holder binary before it takes an epoch, and
 again, once the holder has answered, from the `holder.json` the holder wrote
 from its own running executable: the binary may have been replaced between
-the first check and the start, which looks the path up again. A holder that
-does not answer within the wait is checked the same way when its
-`holder.json` of the epoch is there: a file that records another build (or
-none) refuses the start as below, with "(it did not answer within ...)" in
-the reason, and a file that is missing or cannot be read leaves the start to
-fail as a holder that did not answer. A holder that
-started as another build is stopped (with `--direct` it is ended and the
-epoch is given back; in unit mode its unit is stopped with `systemctl --user
-stop` and the epoch is kept), `start` prints the refusal and why, and it
-exits 1 without saying that anything started. `ticket` reads the build the
+the first check and the start, which looks the path up again. Only a
+`holder.json` of this start is its holder's record: one of the epoch and of
+the launch intent `start` gave the holder (a start that failed gives its
+epoch back, and the next start takes it again with an intent of its own, so
+the file an earlier holder left can be of the epoch). A holder that does not
+answer within the wait is checked the same way when its `holder.json` of this
+start is there: a file that records another build (or none) refuses the start
+as below, with "(it did not answer within ...)" in the reason, and a file
+that is missing, cannot be read or is of another launch leaves the start to
+fail as a holder that did not answer. A holder that answered and started as
+another build is refused, and one whose `holder.json` of this start is
+missing or cannot be read is not counted started either ("the build it
+started as cannot be confirmed"). `start` prints the refusal and why and
+exits 1 without saying that anything started. In unit mode the unit is never
+stopped by `start`: it is left running, the epoch is kept, and the refusal
+ends with the command that stops it (`stop it with: systemctl --user stop
+ataniq-scratch-NAME`; `ataniq-scratch stop NAME` stops it too). With
+`--direct` the holder is this command's own child, which no unit holds: it is
+ended, as after any start that fails, and the epoch is given back.
+`ticket` reads the build the
 running holder recorded in its `holder.json` before it asks the holder
 anything. A `holder.json` of another epoch than the
 last one `start` took is refused first, with `refused: stale-epoch: ...`, which
