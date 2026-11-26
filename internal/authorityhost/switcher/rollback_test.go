@@ -137,11 +137,8 @@ func TestWitnessStopExitFiveIsSpecific(t *testing.T) {
 
 func TestWitnessRollbackProvesDeparture(t *testing.T) {
 	const unit = "ataniq-witness.service"
-	for _, legacy := range []bool{false, true} {
-		name := "recorded"
-		if legacy {
-			name = "installed link"
-		}
+	for _, name := range []string{"recorded", "installed link", "legacy-partial-links", "legacy-intact-tree"} {
+		legacy := name != "recorded"
 		t.Run(name, func(t *testing.T) {
 			e := newEnv(t)
 			e.release(rel1, "s")
@@ -150,6 +147,7 @@ func TestWitnessRollbackProvesDeparture(t *testing.T) {
 			}
 			dir := e.release(rel2, "s")
 			e.write(filepath.Join(dir, "etc/systemd/system", unit), "[Service]\n", 0644)
+			e.write(filepath.Join(dir, "etc/systemd/system/ataniq-seat.service"), "[Service]\n", 0644)
 			e.withLists(rel2, "start-witness", "health-witness", "systemctl stop "+unit)
 			if e.switchTo(rel2) != ExitOK {
 				t.Fatal(e.last)
@@ -170,12 +168,23 @@ func TestWitnessRollbackProvesDeparture(t *testing.T) {
 				if err := os.MkdirAll(filepath.Dir(link), 0755); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Symlink("/opt/authority-host/current/etc/systemd/system/"+unit, link); err != nil {
+				if name == "legacy-partial-links" {
+					link = filepath.Join(filepath.Dir(link), "ataniq-seat.service")
+				}
+				if err := os.Symlink("/opt/authority-host/current/etc/systemd/system/"+filepath.Base(link), link); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if err := os.RemoveAll(dir); err != nil {
-				t.Fatal(err)
+			// Set the original import aside so repair can restore its provenance.
+			removed := dir
+			if name == "legacy-partial-links" {
+				removed = filepath.Join(dir, "etc/systemd/system", unit)
+			}
+			original := filepath.Join(t.TempDir(), "original")
+			if name != "legacy-intact-tree" {
+				if err := os.Rename(removed, original); err != nil {
+					t.Fatal(err)
+				}
 			}
 			host := filepath.Join(e.root, PolicyDir, HostStopList)
 			e.write(host, "systemctl stop ataniq-witnes.service\n", 0644)
@@ -200,6 +209,45 @@ func TestWitnessRollbackProvesDeparture(t *testing.T) {
 				return Output{Stdout: []byte("inactive\n")}, &RunError{Status: 3}
 			}
 			e.runner.reset()
+			if legacy {
+				for range 2 {
+					code := e.rollBack("previous")
+					if _, held := e.inhibited(); code != ExitFailed || !held || e.runner.called("reload-units") != 0 ||
+						!strings.Contains(e.last, "missing service inventory") || !strings.Contains(e.last, "recover --services-stopped") {
+						t.Fatalf("missing inventory: exit %d, inhibited %t, queried %t\n%s", code, held, queried, e.last)
+					}
+					if j, ok := e.journal(); !ok || j.OldUnits != nil {
+						t.Fatalf("inferred inventory: %+v", j)
+					}
+				}
+				if name != "legacy-intact-tree" {
+					if e.recover(RecoverOptions{ServicesStopped: true}) != ExitFailed {
+						t.Fatal("recovered from an absent release")
+					}
+					if name == "legacy-partial-links" {
+						// The hashes match, but this replacement was never imported.
+						e.write(removed, "[Service]\n", 0644)
+						if e.recover(RecoverOptions{ServicesStopped: true}) != ExitFailed || !strings.Contains(e.last, CodeProvenanceMismatch) {
+							t.Fatal(e.last)
+						}
+					}
+					if err := os.Rename(original, removed); err != nil {
+						t.Fatal(err)
+					}
+				}
+				active = false // the owner stops the service by hand
+				if e.recover(RecoverOptions{ServicesStopped: true}) != ExitOK {
+					t.Fatal(e.last)
+				}
+				if _, held := e.inhibited(); !held {
+					t.Fatal("recording names cleared the inhibit")
+				}
+				// If the service returns, the recorded name must still be checked.
+				active, queried = true, false
+				if err := os.RemoveAll(dir); err != nil {
+					t.Fatal(err)
+				}
+			}
 			code := e.rollBack("previous")
 			if _, held := e.inhibited(); code != ExitFailed || !held || !queried || !strings.Contains(e.last, unit) || e.runner.called("reload-units") != 0 {
 				t.Fatalf("active departure: exit %d, held %v, queried %v", code, held, queried)

@@ -566,6 +566,10 @@ are stopped and decisions stay inhibited, see step 4).
    Before decisions resume, services unique to the departed release are
    checked again. A failure names the unit and leaves the journal retryable.
    Correct the host stop list or manager failure and repeat the request.
+   A missing service inventory in legacy `deploy.json` also holds the
+   inhibit, even if unit links survive. Stop the decision services by hand,
+   make the original imported release available and run
+   `ah-switch recover --services-stopped` before retrying.
 7. **health**: the commands of `share/health.cmd` run in order until one
    round in which every one of them exits 0, a new round every 2 seconds.
    The 60 seconds are one deadline for the whole check: each command gets at
@@ -1220,6 +1224,14 @@ command was not needed). It runs nothing, and records that statement with
 the time in `detail`, with `services_stopped: true`. Use it only once every
 decision service is really stopped. It leaves the decision inhibit (see
 "The decision inhibit"); `inhibit-clear` removes that.
+
+When a departure is waiting for a missing inventory, the same owner command
+checks the original tree against its hashes and import record and writes
+the service names into the open journal. The import record binds the file
+paths, contents and inodes. If that tree cannot be verified, recovery
+fails with the inhibit held. After recording the names, repeat the switch
+or rollback. It must observe the recorded services inactive or absent
+before reloading the target.
 
 ### deploy.json
 

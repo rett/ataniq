@@ -450,9 +450,6 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	}
 	t.j.CandidateUnits = rel.units
 	t.j.OldUnits = a.rec.CurrentUnits
-	if a.fallback != nil {
-		t.j.OldUnits = a.fallback.units
-	}
 	if rollback {
 		t.j.Direction = DirRollback
 	}

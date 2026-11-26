@@ -155,7 +155,8 @@ type RecoverOptions struct {
 	Counter    uint64
 	SetCounter bool
 	// ServicesStopped is the owner's statement that the decision services
-	// are stopped, which settles a transaction whose stop commands failed.
+	// are stopped. It settles a terminal stop failure or re-records a
+	// missing inventory from the original import for a departure retry.
 	ServicesStopped bool
 	// PackageState, with SetPackageState, is the owner's statement of the
 	// snapshot the host's packages are at, which settles an unknown
@@ -177,7 +178,9 @@ type RecoverOptions struct {
 //   - --services-stopped settles a transaction that stays in its stopping
 //     phase because a stop command failed: the owner states that the
 //     decision services are stopped, and that statement is recorded, with
-//     the time, instead of the stops being run again.
+//     the time, instead of the stops being run again. During a departure
+//     blocked on a missing inventory, it records names from the original
+//     import and leaves the checks for the retry.
 //   - --package-state SNAPSHOT settles an unknown package state: the owner
 //     states which end of the package step that did not finish the host is
 //     at, and that statement is recorded with the time. A journal is
@@ -296,6 +299,19 @@ func (s *Switcher) recoverStopped(ctx context.Context) int {
 		s.printf("recover: FAILED: %s; look at %s by hand", describe(err), q(filepath.Join(s.stateDir(), JournalFile)))
 		return ExitFailed
 	}
+	// The same owner statement can repair a legacy departure. Record only
+	// the exact tree the import authenticated. A retry must still observe
+	// its services inactive before reloading anything or lifting the inhibit.
+	if ok && (j.Phase == PhaseActivating || j.Phase == PhaseRestoring || j.Phase == PhaseDone && journalHealthy(j)) {
+		id, units := j.departing(j.Phase == PhaseRestoring || j.Result == ResultRolledBack)
+		if id != "" && *units == nil {
+			if err := s.recoverInventory(&j, id, units); err != nil {
+				s.printf("recover: FAILED: %s; decisions stay inhibited", describe(err))
+				return ExitFailed
+			}
+			return ExitOK
+		}
+	}
 	if !ok || j.Phase != PhaseStopping {
 		s.printf("recover: FAILED: no transaction is stopping the decision services; nothing to recover")
 		return ExitFailed
@@ -321,6 +337,40 @@ func (s *Switcher) recoverStopped(ctx context.Context) int {
 	_ = code
 	s.printf("recover: the decision services are recorded as stopped by the owner")
 	return ExitOK
+}
+
+// recoverInventory records only names. The root-owned import record binds the
+// complete paths, inodes and hashes. No release list or verifier runs here.
+func (s *Switcher) recoverInventory(j *journal, name string, units *[]string) error {
+	mismatch, err := s.staleJournal(*j)
+	if err != nil {
+		return err
+	}
+	if mismatch != nil {
+		return mismatch
+	}
+	id, err := ParseID(name)
+	if err != nil {
+		return err
+	}
+	rel, err := s.openStoredTree(id)
+	if err != nil {
+		return err
+	}
+	defer rel.Close()
+	if err := s.checkProvenance(rel); err != nil {
+		return err
+	}
+	if s.cfg.Dry {
+		s.printf("recover: would record the service inventory of %s; decisions stay inhibited", name)
+		return nil
+	}
+	*units = rel.units
+	if err := s.writeJournal(*j); err != nil {
+		return err
+	}
+	s.printf("recover: recorded the service inventory of %s; decisions stay inhibited. Retry the switch or rollback", name)
+	return nil
 }
 
 // recoverDiscard sets aside the journal of the transaction id, which must
