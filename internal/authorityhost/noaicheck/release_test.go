@@ -30,6 +30,7 @@ func TestRunPhase(t *testing.T) {
 	env := func(p, n string) Hit { return Hit{Kind: KindEnv, Path: p, Detail: n} }
 	releaseHits := []Hit{
 		env(rel+"/etc/systemd/app.service", "OPENAI_API_KEY"),
+		{Kind: KindIncomplete, Path: rel + "/etc/systemd/off.service", Detail: "release-symlink"},
 		{Kind: KindIncomplete, Path: PathEnvFile, Detail: "/etc/app/missing"},
 		env(rel+"/etc/caddy/Caddyfile", "ANTHROPIC_API_KEY"),
 		env("/etc/app/env", "CODEX_HOME"),
@@ -72,7 +73,8 @@ func TestRunPhase(t *testing.T) {
 // complete.
 func TestRunPhasePrePolicy(t *testing.T) {
 	f := cleanFixture(t)
-	f.file(releaseDir+"/etc/systemd/app.service", "[Service]\nExecStart=/usr/bin/app\n")
+	f.exe(releaseDir + "/bin/app")
+	f.file(releaseDir+"/etc/systemd/app.service", "[Service]\nExecStart=/"+releaseDir+"/bin/app\n")
 	l := testLists()
 	l.PackagesAllow = []string{"bash"}
 	l.NFTDigest = NFTDigest([]byte("x"))
@@ -102,7 +104,8 @@ func TestRunPhasePrePolicy(t *testing.T) {
 // use is still incomplete.
 func TestRunPhasePrePackages(t *testing.T) {
 	plant := func(f *fixture) {
-		f.file(releaseDir+"/etc/systemd/app.service", "[Service]\nExecStart=/usr/bin/app\n")
+		f.exe(releaseDir + "/bin/app")
+		f.file(releaseDir+"/etc/systemd/app.service", "[Service]\nExecStart=/"+releaseDir+"/bin/app\n")
 		f.file("var/lib/pacman/local/oldlib-1-1/desc", "%NAME%\noldlib\n")
 	}
 	lists := func() *Lists {
@@ -180,7 +183,8 @@ func TestCheckReleaseMergesUnits(t *testing.T) {
 		{"a later drop-in resets an earlier one's", func(f *fixture) {
 			f.file(drop+"10-old.conf", "[Service]\nEnvironmentFile=/etc/app/missing\n")
 			f.file(drop+"20-new.conf", "[Service]\nEnvironmentFile=\n")
-			f.file(unit, "[Service]\nExecStart=/usr/bin/app\n")
+			f.exe(releaseDir + "/bin/app")
+			f.file(unit, "[Service]\nExecStart=/"+releaseDir+"/bin/app\n")
 		}, nil},
 		{"a user unit's drop-in resets it", func(f *fixture) {
 			f.file(releaseDir+"/etc/systemd/user/u.service", "[Service]\nEnvironmentFile=/etc/app/missing\n")

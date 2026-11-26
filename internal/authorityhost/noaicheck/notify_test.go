@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -52,8 +53,10 @@ func TestShippedNotifierUnitPassesTheReleaseScan(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := cleanFixture(t)
-			f.file(releaseDir+"/etc/systemd/system/ataniq-seat.service", string(seat))
-			f.file(releaseDir+"/etc/systemd/system/ataniq-seat-notify.service", string(notifier))
+			f.exe(releaseDir + "/bin/ataniq-seat")
+			f.file(releaseDir+"/etc/systemd/system/ataniq-seat.service", strings.ReplaceAll(string(seat), "{release}", "/"+releaseDir))
+			f.exe(releaseDir + "/bin/ataniq-seat-notify")
+			f.file(releaseDir+"/etc/systemd/system/ataniq-seat-notify.service", strings.ReplaceAll(string(notifier), "{release}", "/"+releaseDir))
 			f.file(releaseDir+"/etc/caddy/Caddyfile", string(caddyfile))
 			f.file("etc/authority-host/seat/site.caddy", seatSite)
 			if tc.seatEnv != "" {

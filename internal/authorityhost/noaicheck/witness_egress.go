@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io/fs"
 	"net/netip"
+	"path"
+	"path/filepath"
 	"strings"
 )
 
@@ -23,23 +25,34 @@ func WitnessHomeAddress(endpoint string) (netip.Addr, bool) {
 	return a, true
 }
 
-// WitnessEgressAddress reads the unit's owner-local .conf files beneath root.
-// A zero address with no error means there is no drop-in.
-func WitnessEgressAddress(root string) (netip.Addr, error) {
+// WitnessEgressAddress checks drop-ins and, on a running host, the manager's
+// grants. Offline preflight may precede the first installation of the unit.
+func WitnessEgressAddress(root string, requireLoaded bool) (netip.Addr, error) {
 	t, err := openTree(root)
 	if err != nil {
 		return netip.Addr{}, err
 	}
 	defer t.close()
-	return t.witnessEgressAddress()
+	return t.witnessEgressAddress(filepath.Clean(root) == "/", true, requireLoaded)
 }
 
-func (t *tree) witnessEgressAddress() (netip.Addr, error) {
-	var address netip.Addr
+// singleAddress accepts only a single host address, optionally with its full
+// prefix length. A zero address is reserved for an absent grant.
+func singleAddress(value string) (netip.Addr, bool) {
+	if a, err := netip.ParseAddr(value); err == nil {
+		return a, true
+	}
+	p, err := netip.ParsePrefix(value)
+	return p.Addr(), err == nil && p.Bits() == p.Addr().BitLen()
+}
+
+// scanWitnessDropIns adds the grant in this directory to the host policy.
+// Settings in separate files can accumulate or reset one another.
+func (t *tree) scanWitnessDropIns(dir string, address *netip.Addr) (bool, error) {
 	var problem error
 	found := false
-	_, _, err := t.walk(witnessDropIns, 1, func(e *wentry) bool {
-		if !strings.HasSuffix(e.name, ".conf") || problem != nil {
+	_, _, err := t.walk(dir, 1, func(e *wentry) bool {
+		if problem != nil || !strings.HasSuffix(e.name, ".conf") {
 			return false
 		}
 		found = true
@@ -49,48 +62,60 @@ func (t *tree) witnessEgressAddress() (netip.Addr, error) {
 			return false
 		}
 		settings, ok := witnessSettings(string(data))
-		for key, values := range settings {
-			if key != "[Service]IPAddressAllow" || len(values) != 1 || address.IsValid() {
-				ok = false
-				break
-			}
-			value := values[0]
-			a, err := netip.ParseAddr(value)
-			if err != nil {
-				p, err := netip.ParsePrefix(value)
-				if err != nil || p.Bits() != p.Addr().BitLen() {
-					ok = false
-					break
-				}
-				a = p.Addr()
-			}
-			address = a
+		if ok && len(settings) == 0 {
+			return false
 		}
-		if !ok {
+		values := settings["[Service]IPAddressAllow"]
+		if !ok || len(settings) != 1 || len(values) != 1 || address.IsValid() {
+			problem = errWitnessEgress
+			return false
+		}
+		if *address, ok = singleAddress(values[0]); !ok {
 			problem = errWitnessEgress
 		}
 		return false
 	}, func(_ string, err error) { problem = err })
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return netip.Addr{}, err
+		return found, err
 	}
-	if problem != nil {
-		return netip.Addr{}, problem
+	return found, problem
+}
+
+func (t *tree) witnessEgressAddress(liveRoot, expected, requireLoaded bool) (netip.Addr, error) {
+	var address netip.Addr
+	found := false
+	for _, scope := range []string{"ataniq-witness.service.d", "ataniq-.service.d", "service.d"} {
+		if scope != "ataniq-witness.service.d" && !expected && !found {
+			break
+		}
+		for _, d := range systemDirs {
+			hasConfig, err := t.scanWitnessDropIns(path.Join(d.rel, scope), &address)
+			if err != nil {
+				return netip.Addr{}, err
+			}
+			found = found || hasConfig
+		}
 	}
 	if found && !address.IsValid() {
 		return netip.Addr{}, errWitnessEgress
 	}
+	if liveRoot && (expected || address.IsValid()) {
+		if err := t.checkEffectiveEgress(address, requireLoaded); err != nil {
+			return netip.Addr{}, err
+		}
+	}
 	return address, nil
 }
 
-func (c *Checker) checkWitnessEgress() {
-	address, err := c.t.witnessEgressAddress()
+func (c *Checker) checkWitnessEgress(requireLoaded bool) {
+	expected := c.witnessExpected()
+	address, err := c.t.witnessEgressAddress(c.rootAbs == "/", expected, requireLoaded)
 	if err != nil {
 		c.hit(KindUnit, show(witnessDropIns), "witness-egress")
 		return
 	}
 	if !address.IsValid() {
-		if c.witnessExpected() {
+		if expected {
 			c.note("witness egress drop-in missing: home unreachable")
 		}
 		return

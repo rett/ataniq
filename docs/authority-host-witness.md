@@ -20,7 +20,10 @@ reporting storage failure, an unclean end or interrupted publication also exits
 1. The switch's ordinary decision inhibit allows status to succeed. Local
 root needs its own pinned TLS key to administer the witness. The socket's
 parent must be a service-owned 0700 directory. Keep that directory, state,
-seed, guard and both TLS directories at disjoint paths. Before startup,
+seed and both TLS directories separate from each other and from the fixed switch
+guard directory, `/var/lib/authority-host`. Remove the former `guard` key
+from existing configurations. Preflight requires a readable guard directory
+even when the switch has inhibited decisions. Before startup,
 `check` verifies the socket path fits in 107 bytes, its private parent is
 writable and the name is free. It leaves the socket untouched. A bind can
 still fail at startup. Both cases report `owner socket already present or unusable`.
@@ -65,9 +68,14 @@ IPv6. Use the canonical address spelling and decimal port without leading
 zeros. Use a unicast destination outside loopback and link-local space.
 IPv4-mapped IPv6 addresses and zones are refused. Only the firewall restricts
 the TCP port. The host no-AI check and witness `check` read the owner’s unit
-drop-ins and compare their single `IPAddressAllow` to the configured address.
-After reload, inspect `systemctl show ataniq-witness.service -p IPAddressAllow`
-to confirm the effective setting. The owner verifies the live
+drop-ins across the system manager’s unit search path, including
+`ataniq-witness.service.d`, `ataniq-.service.d` and `service.d`. Together
+these files may set one `IPAddressAllow` matching the home address. On a
+running systemd host both checks query the loaded unit with
+`systemctl show -p IPAddressAllow,IPAddressDeny ataniq-witness.service`.
+Its deny list must cover all IPv4 and IPv6 addresses, and its allow list must
+match the files on disk. After changing a drop-in, run
+`systemctl daemon-reload` before checking it. The owner verifies the live
 rules, their order and counters, then records the reviewed ruleset digest
 with the release baseline. No DNS allowance is needed.
 
@@ -109,7 +117,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 sh scripts/go-tool.sh build -trimpath -o b
    owner and the home. The verified seat binary's `gate-init --identity DIR`
    produces the supported `cert.pem` and `key.pem` format. Run it under the
    account that will use each key. Direct its fingerprint output to the
-   owner's protected pairing record. Use new 0700 folders and 0600 keys.
+   owner's protected pairing record. Use new 0700 folders and 0600 keys. Both TLS directories must deny
+   writes by group and others, including when the sticky bit is set.
    The local owner's key and directory belong to root. Use separate keys
    from the seat, gate, notifier and deploy tools.
 5. Exchange pins over an independent authenticated channel. At the witness
@@ -150,7 +159,6 @@ store, incarnation and authority identifiers. Encode the nonzero activation epoc
   },
   "state": "/var/lib/ataniq-witness/store",
   "seed": "/var/lib/ataniq-witness/seed",
-  "guard": "/var/lib/authority-host",
   "socket": "/run/ataniq-witness/owner.sock",
   "service_tls": "/var/lib/ataniq-witness/tls",
   "owner_tls": "/etc/authority-host/witness/owner-tls",
@@ -184,7 +192,8 @@ ln -s /opt/authority-host/current/etc/systemd/system/ataniq-witness.service /etc
 
 Activate the signed release with the existing switch procedure. Leave the
 unit disabled in systemd. The switch's validator checks the unit and its
-link, then its reload list starts the unit under the decision inhibit.
+exact link target under `/opt/authority-host/current`, even on the first
+switch while the link dangles. Its reload list starts the unit under the decision inhibit.
 The health command verifies signed local status even if the home is
 offline. Without the egress drop-in the service can pass this local health
 check while the unit denies all IP traffic. The host no-AI check reports
@@ -246,8 +255,23 @@ request ID to bypass an unresolved mutation.
 
 3. From a second local root terminal, run `WITNESS status --config CONFIG`.
    Compare its verified head, reason and counts with the independent record.
-   After repairing storage and reconciling evidence, keep home admission
-   independently suspended. In the owner's root session run `ah-switch status`.
+   If signed status reports `interrupted publication`, preserve the staged
+   files and keep home admission closed. `acknowledge` always refuses staged publication.
+   Stop the attended recovery process and keep the regular unit stopped.
+   After identifying exactly one staged journal and its staged or
+   already-published index, run `WITNESS complete-publication --config CONFIG`
+   offline as the witness account. It verifies the pinned signed genesis and
+   exact index, publishes the pair, then reopens and verifies the published
+   names. Run `check`, start the verified unit and compare fresh signed status
+   with the independent record before resuming admission. This completes the
+   interrupted-publication procedure. An ambiguous pair, torn frame, corrupt
+   receipt, missing partner or legacy format needs preservation and owner
+   reconciliation before fresh provisioning. A second `init` cannot repair
+   an existing store.
+
+4. For a storage error or unclean process end, repair storage and reconcile
+   the evidence. Keep home admission independently suspended. In the owner's
+   root session run `ah-switch status`.
    If a transaction is open, including a journal held in the inhibit, end the
    attended witness process before running `ah-switch recover`. Recovery can
    reload services. Follow the switch's recovery procedure until the transaction
@@ -265,15 +289,6 @@ request ID to bypass an unresolved mutation.
    to retry. Recovery mode remains service-inhibited after acknowledgement.
    End the recovery process cleanly, start the verified unit and check status
    again before restoring home admission.
-4. If status reports `interrupted publication`, preserve the staged files.
-   Stop recovery and, after identifying exactly one staged journal and its
-   staged or already-published index, run
-   `WITNESS complete-publication --config CONFIG` as the witness account.
-   It verifies the pinned signed genesis and exact index, publishes the pair
-   and reopens and verifies the published names. Run `check` and start the
-   unit. An ambiguous pair, torn frame, corrupt receipt, missing partner or
-   legacy format needs preservation and owner reconciliation before fresh
-   provisioning. A second `init` cannot repair an existing store.
 
 ## Backup, restore and rollback
 
@@ -307,8 +322,9 @@ recorded epoch. A new epoch fences future requests. It cannot reconstruct
 the missing interval. [Durable storage contract](../internal/checkpoint/durable/doc.go)
 
 For a software rollback use the signed switch procedure
-`ah-switch --rollback-to previous`. The departing decision service is in
-its release stop list. A target that carries the witness restarts its own
+`ah-switch --rollback-to previous`. The switch runs the host stop list and the departing
+release’s stop list before reloading the target. If a stop fails, decisions
+stay inhibited. Correct the cause and retry the rollback. A target that carries the witness restarts its own
 binary against the existing store. Verify storage-format compatibility,
 pins, epoch and signed status before resuming admission. Back to a release
 without the witness, confirm it is stopped and remove its line from the

@@ -1,0 +1,5 @@
+#!/bin/sh
+# Check the link text even before current exists. The sentinel preserves
+# trailing newlines in a wrong target across shell command substitution.
+target=$(readlink -n -- "$1" && printf '.') || exit 1
+test "$target" = /opt/authority-host/current/etc/systemd/system/ataniq-witness.service.

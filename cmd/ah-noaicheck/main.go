@@ -39,8 +39,8 @@ const usage = `usage: ah-noaicheck [--phase pre|post|full] [--root DIR] [--relea
        ah-noaicheck ports [--root DIR] [--release DIR] [--require-policy] [--json]
        ah-noaicheck nft-digest FILE
 
-The authority host's no-AI check. It reads only: it writes nothing and runs
-no program. It prints one line per hit ("HIT kind path [detail]"), a "NOTE"
+The authority host's no-AI check. It reads the host and release. On a live systemd
+witness host it also reads effective address grants with systemctl show. It prints one line per hit ("HIT kind path [detail]"), a "NOTE"
 line for what is not a hit (a policy that is not enforced, a masked unit, a
 deferred source), "RUN complete" or "RUN incomplete",
 and a final "ok" or "FAILED n hit(s)"; it never prints a file's content or

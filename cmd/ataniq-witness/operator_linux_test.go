@@ -36,11 +36,11 @@ func TestWitnessProvisionFromOperatorGuide(t *testing.T) {
 	}
 	var c config
 	must(t, seatgate.DecodeStrict([]byte(example), &c))
-	if c.Guard != "/var/lib/authority-host" || c.State != "/var/lib/ataniq-witness/store" || c.Socket != "/run/ataniq-witness/owner.sock" {
-		t.Fatalf("guide paths do not match the service: %s %s %s", c.Guard, c.State, c.Socket)
+	if c.State != "/var/lib/ataniq-witness/store" || c.Socket != "/run/ataniq-witness/owner.sock" {
+		t.Fatalf("guide paths do not match the service: %s %s", c.State, c.Socket)
 	}
 	f, path := fixture(t)
-	c.Guard, c.State, c.Seed, c.Socket = f.Guard, f.State, f.Seed, f.Socket
+	c.State, c.Seed, c.Socket = f.State, f.Seed, f.Socket
 	c.ServiceTLS, c.OwnerTLS = f.ServiceTLS, f.OwnerTLS
 	c.ServicePin, c.OwnerPin, c.HomePin = f.ServicePin, f.OwnerPin, f.HomePin
 	c.SigningKey, c.HomeKey = f.SigningKey, f.HomeKey
@@ -128,7 +128,7 @@ func TestWitnessAttendedEnrollment(t *testing.T) {
 
 	server, err := link.NewServer(id, store.Pin, link.Remote{Network: "unix", Address: hl.Addr().String(), ServerPin: c.HomePin}, c.Slot)
 	must(t, err)
-	g := &guardedWitness{Witness: w, dir: c.Guard, turn: make(chan struct{}, 1)}
+	g := &guardedWitness{Witness: w, dir: filepath.Join(filepath.Dir(path), guardDirectory), turn: make(chan struct{}, 1)}
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	done := make(chan error, 1)
 	go func() { done <- serve(ctx, server, g, ol, c.OwnerPin, uint32(os.Geteuid())) }()
@@ -154,7 +154,7 @@ func TestWitnessAttendedEnrollment(t *testing.T) {
 	q := cp.ReadRequest{Slot: c.Slot, Challenge: cp.ID{2}}
 	v, err := cl.Read(ctx, q)
 	must(t, err)
-	must(t, os.WriteFile(filepath.Join(c.Guard, "decisions.inhibit"), nil, 0600))
+	must(t, os.WriteFile(filepath.Join(g.dir, "decisions.inhibit"), nil, 0600))
 	q.Challenge = cp.ID{3}
 	inhibited, err := cl.Read(ctx, q)
 	if !errors.Is(err, cp.ErrUnavailable) || !errors.Is(cp.VerifyView(store.Pin, q, inhibited), cp.ErrUnavailable) {
@@ -164,7 +164,7 @@ func TestWitnessAttendedEnrollment(t *testing.T) {
 	if _, err = admin.Retire(ctx, retire); !errors.Is(err, cp.ErrUnavailable) {
 		t.Fatal(err)
 	}
-	must(t, os.Remove(filepath.Join(c.Guard, "decisions.inhibit")))
+	must(t, os.Remove(filepath.Join(g.dir, "decisions.inhibit")))
 	_, err = admin.Retire(ctx, retire)
 	must(t, err)
 	q.Challenge = cp.ID{5}
@@ -186,7 +186,7 @@ func TestWitnessRecoveryGuide(t *testing.T) {
 	if !ok {
 		t.Fatal("missing backup procedure")
 	}
-	for _, step := range []string{"ah-switch status", "ah-switch recover", "ah-switch inhibit-clear --asked", "decisions: not inhibited", "WITNESS acknowledge --config CONFIG"} {
+	for _, step := range []string{"WITNESS status --config CONFIG", "interrupted publication", "`acknowledge` always refuses staged publication", "WITNESS complete-publication --config CONFIG", "ah-switch status", "ah-switch recover", "ah-switch inhibit-clear --asked", "decisions: not inhibited", "WITNESS acknowledge --config CONFIG"} {
 		var found bool
 		_, recovery, found = strings.Cut(recovery, step)
 		if !found {

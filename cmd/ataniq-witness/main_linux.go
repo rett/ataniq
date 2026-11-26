@@ -10,9 +10,11 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"ataniq/internal/authorityhost/decisionguard"
 	"ataniq/internal/authorityhost/noaicheck"
 	cp "ataniq/internal/checkpoint"
 	"ataniq/internal/checkpoint/durable"
@@ -84,8 +86,13 @@ func execute(ctx context.Context, hostRoot, op, path string, out io.Writer) (ret
 			return err
 		}
 	}
+	guardDir := filepath.Join(hostRoot, guardDirectory)
 	if op == "check" || op == "run" {
-		address, err := noaicheck.WitnessEgressAddress(hostRoot)
+		var guardErr *decisionguard.Error
+		if err := decisionguard.Check(guardDir); err != nil && !(errors.As(err, &guardErr) && guardErr.Code == decisionguard.CodeInhibited) {
+			return errFiles
+		}
+		address, err := noaicheck.WitnessEgressAddress(hostRoot, op == "run")
 		want, _ := noaicheck.WitnessHomeAddress(c.Home)
 		if err != nil || address.IsValid() && address != want {
 			return errEgress
@@ -133,7 +140,7 @@ func execute(ctx context.Context, hostRoot, op, path string, out io.Writer) (ret
 	if err != nil {
 		return errSocket
 	}
-	g := &guardedWitness{Witness: w, dir: c.Guard, recoveryOnly: recoveryOnly, turn: make(chan struct{}, 1)}
+	g := &guardedWitness{Witness: w, dir: guardDir, recoveryOnly: recoveryOnly, turn: make(chan struct{}, 1)}
 	return serve(ctx, server, g, ln, c.OwnerPin, ownerUID)
 }
 

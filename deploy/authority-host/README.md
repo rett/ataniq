@@ -1403,9 +1403,9 @@ What the switch does not do, so that nobody relies on it:
 library only, shipped in every release. The switch runs the new release's
 copy (see "The switch"). This tree ships no timer and no service unit for
 it: a recurring run is a separate planned item, so today the check runs
-when the switch runs it or when someone runs it by hand. It reads only:
-it writes nothing, opens no network connection and runs no program; the
-processes and listening sockets are read from `/proc`. It is meant to run
+when the switch runs it or when someone runs it by hand. It reads processes and listening sockets from `/proc`. On a live systemd
+witness host, it also queries the system manager for effective witness address
+grants with `systemctl show`. Checks under a fixture root read files only. It is meant to run
 as root, which can read every folder it looks into.
 
 ```
@@ -1463,10 +1463,11 @@ their place is a read error, not a wait.
   with `--require-policy` an empty `packages.allow` is a hit in every
   phase. The release's own files are those of the folder `--release`
   names:
+  - a symlink anywhere in the candidate tree is `HIT incomplete PATH release-symlink`.
   - every file beneath its `etc/systemd` is read as a unit or drop-in,
-    with the rules of an installed unit (below): its `Environment=`,
-    `PassEnvironment=` and `EnvironmentFile=` names, a link to
-    `/dev/null` is a mask and is not read, and every file an
+    for its `Environment=`, `PassEnvironment=` and `EnvironmentFile=` names.
+    Each service or socket execution directive must invoke a shipped binary
+    by a canonical absolute executable path. Every file an
     `EnvironmentFile=` names is read on the host (a required one that is
     missing is `HIT incomplete env-file`). A unit file and the drop-ins
     of its drop-in folder beside it (`app.service` and
@@ -2040,6 +2041,11 @@ It checks, in this order, all of them (a pass is no finding):
    - No file under `etc/systemd` still holds `{release}` (`unit-placeholder`):
      the builder replaces it, so one left is a folder made or changed by
      hand, whose unit systemd would run with the words as they are.
+   - In every service and socket command, including pre-start, post-start,
+     reload and stop commands, the executable word must literally name an
+     executable file of this release’s `bin/` under the release path or
+     `/opt/authority-host/current`. Both release checks refuse shell prefixes,
+     relative paths, path aliases, and `$` or `%` expansion in that word.
    - A static release has no unit that starts a program: no file under
      `etc/systemd`, a drop-in included, with a `[Service]` section and an
      `ExecStart=` line. Any other release has at least one (a *decision
