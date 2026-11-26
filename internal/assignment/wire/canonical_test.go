@@ -39,7 +39,7 @@ func TestProjection(t *testing.T) {
 	p := sample()
 	p.ProjectID = "<a>\u2028\\u2028😀"
 	p.Revision = "18446744073709551615"
-	for _, sig := range []string{"", "example\narmor"} {
+	for _, sig := range []string{"", "ZXhhbXBsZQ"} {
 		p.Signature = sig
 		body, err := Marshal(p)
 		if err != nil {

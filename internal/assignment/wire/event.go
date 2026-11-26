@@ -71,6 +71,9 @@ func Marshal(p assignment.PublicEnvelope) ([]byte, error) {
 	}
 	e := assignment.Event{Public: p, Signature: p.Signature}
 	if p.Signature != "" {
+		if _, err := decodeSignature(p.Signature); err != nil {
+			return nil, err
+		}
 		return e.SignedPublicBytes()
 	}
 	message, err := e.SigningBytes()

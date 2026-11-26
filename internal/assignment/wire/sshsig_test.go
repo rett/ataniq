@@ -124,6 +124,16 @@ func TestLedgerAdapters(t *testing.T) {
 	if err := v.Verify(h, message, sig); err != nil {
 		t.Fatal(err)
 	}
+	for _, alt := range []string{sig[:20] + "\n" + sig[20:], sig + "\r\n", sig + "=", want} {
+		if v.Verify(h, message, alt) == nil {
+			t.Fatal("verified alternate signature spelling")
+		}
+		p.Signature = alt
+		if _, err := Marshal(p); err == nil {
+			t.Fatal("marshaled alternate signature spelling")
+		}
+	}
+	p.Signature = ""
 	for _, bad := range [][]byte{body, append([]byte(domain), message...), bytes.Replace(message, []byte("home\""), []byte("else\""), 1),
 		bytes.Replace(message, []byte(p.KeyID), []byte("new"), 1), bytes.Replace(message, []byte(":"), []byte(": "), 1)} {
 		if _, err := s.Sign(h, bad); err == nil || v.Verify(h, bad, sig) == nil {
