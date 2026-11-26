@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"ataniq/internal/assignment"
 	cp "ataniq/internal/checkpoint"
@@ -156,6 +157,7 @@ func TestSyncFailureStopsServing(t *testing.T) {
 	}
 	w.journal = nil // closed by fault injection
 	must(t, w.Close())
+	requirePoison(t, c)
 	again := reopen(t, c)
 	original, err := again.Administration().Settle(t.Context(), 1, q.Slot, q.ID)
 	must(t, err)
@@ -236,6 +238,7 @@ func TestJournalStorageFaults(t *testing.T) {
 				t.Fatal("poisoned handle acknowledged", err)
 			}
 			must(t, w.Close())
+			requirePoison(t, c)
 			if site == 0 {
 				if _, err := Open(c); !errors.Is(err, ErrTorn) {
 					t.Fatal("accepted partial frame", err)
@@ -622,4 +625,34 @@ func TestHomePinAndOwnerAllowance(t *testing.T) {
 	must(t, err)
 	_, err = w.Administration().Retire(t.Context(), cp.Retirement{Mutation: cp.Mutation{Expected: v.Current, ID: cp.ID{10}}, DispositionDigest: v.Current.Head.Digest})
 	must(t, err)
+}
+
+func requirePoison(t *testing.T, c Config) {
+	t.Helper()
+	if w, err := Open(c); err == nil {
+		w.Close()
+		t.Fatal("Open served after reported I/O error")
+	} else if !errors.Is(err, ErrPoisoned) {
+		t.Fatal("missing typed storage refusal", err)
+	}
+	must(t, os.Remove(filepath.Join(c.Directory, "poisoned")))
+}
+
+func TestOpenRewritesTails(t *testing.T) {
+	c := config(t, testKey("rewrite"))
+	w := create(t, c)
+	must(t, w.Close())
+	stale := time.Unix(946684800, 0)
+	for _, name := range []string{journalName, lockName} {
+		path := filepath.Join(c.Directory, name)
+		must(t, os.Chtimes(path, stale, stale))
+	}
+	reopen(t, c)
+	for _, name := range []string{journalName, lockName} {
+		info, err := os.Stat(filepath.Join(c.Directory, name))
+		must(t, err)
+		if info.ModTime().Equal(stale) {
+			t.Errorf("Open did not rewrite %s", name)
+		}
+	}
 }

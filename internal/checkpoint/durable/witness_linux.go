@@ -23,6 +23,7 @@ type StorageError string
 func (e StorageError) Error() string { return "durable witness: " + string(e) }
 
 const (
+	ErrPoisoned StorageError = "storage error requires owner check"
 	ErrUnsafe   StorageError = "unsafe path, ownership or permissions"
 	ErrLocked   StorageError = "already locked"
 	ErrIdentity StorageError = "identity or signing key mismatch"
@@ -146,12 +147,6 @@ func start(c Config, create bool) (*Witness, error) {
 	if w.limit == 0 {
 		w.limit = maxReceipts
 	}
-	var probe [32]byte
-	rand.Read(probe[:])
-	sig, err := w.SignDisposition(context.Background(), probe, "startup-probe")
-	if err != nil || !cp.VerifyDisposition(c.Pin, id.Epoch, probe, "startup-probe", sig) {
-		return nil, ErrIdentity
-	}
 	w.dir, err = directory(c.Directory, true)
 	if err != nil {
 		return nil, err
@@ -188,10 +183,18 @@ func start(c Config, create bool) (*Witness, error) {
 		}
 		_, err = w.commit(record{Seq: 1, Identity: &id, HomeKeyID: homeID, Op: "create"}, change{})
 	} else {
-		err = w.replay(homeID)
+		if err = w.checkPoison(); err == nil {
+			err = w.replay(homeID)
+		}
 	}
 	if err != nil {
 		return nil, err
+	}
+	var probe [32]byte
+	rand.Read(probe[:])
+	sig, err := w.SignDisposition(context.Background(), probe, "startup-probe")
+	if err != nil || !cp.VerifyDisposition(c.Pin, id.Epoch, probe, "startup-probe", sig) {
+		return nil, ErrIdentity
 	}
 	ok = true
 	return w, nil
@@ -213,6 +216,8 @@ func (w *Witness) Close() error {
 		if err = w.lockFile.Sync(); err == nil {
 			err = syscall.Unlinkat(int(w.dir.Fd()), recoveryName)
 			// A lost unlink after a crash conservatively requires acknowledgement again.
+		} else {
+			err = w.poison(err)
 		}
 	}
 	for _, f := range []*os.File{w.lockFile, w.dir} {

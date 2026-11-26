@@ -12,7 +12,30 @@ import (
 
 const journalName = "journal.v1"
 const lockName = "witness.lock"
+const poisonName = "poisoned"
 const recoveryName = "recovery.pending"
+
+// A device reporting a writeback error may also fail to persist this marker.
+// Open therefore proves the tail again even when there is no marker.
+func (w *Witness) poison(cause error) error {
+	w.stopped = true
+	marker, err := openFile(w.dir, poisonName, syscall.O_RDWR|syscall.O_CREAT|syscall.O_EXCL)
+	if err == nil {
+		err = errors.Join(marker.Sync(), marker.Close(), w.dir.Sync())
+	}
+	return errors.Join(cause, err)
+}
+
+func (w *Witness) checkPoison() error {
+	marker, err := openFile(w.dir, poisonName, syscall.O_RDONLY)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return errors.Join(ErrPoisoned, marker.Close())
+}
 
 // Persist the marker before any journal write or replay sync. A failed device
 // may be unable to record that it failed. The lock serializes marker ownership.
@@ -29,10 +52,10 @@ func (w *Witness) arm() error {
 		return err
 	}
 	if err := errors.Join(marker.Sync(), marker.Close()); err != nil {
-		return err
+		return w.poison(err)
 	}
 	if err := w.dir.Sync(); err != nil {
-		return err
+		return w.poison(err)
 	}
 	w.armed = true
 	return nil

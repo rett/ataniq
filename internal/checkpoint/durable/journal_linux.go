@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"syscall"
 
 	cp "ataniq/internal/checkpoint"
 )
@@ -99,8 +101,7 @@ func (w *Witness) commit(r record, c change) (cp.Receipt, error) {
 	if err != nil {
 		// A short write, sync error or lost acknowledgement can leave a complete
 		// transition on disk. No subsequent call may attest to the old index.
-		w.stopped = true
-		return cp.Receipt{}, errors.Join(cp.ErrUnknownOutcome, err)
+		return cp.Receipt{}, errors.Join(cp.ErrUnknownOutcome, w.poison(err))
 	}
 	w.seq, w.previous = r.Seq, digest
 	reply := w.apply(r, c, ack)
@@ -184,11 +185,43 @@ func readEntry(in io.Reader, digest [32]byte) ([]byte, error) {
 	return sig, readPart(in, sig, false)
 }
 
+// Rewrite the exact bytes replay validated. O_APPEND would defeat pwrite's
+// offset on Linux. Keep the original index descriptor and its flock open.
+func (w *Witness) rewriteTail(name string, tail []byte) error {
+	f, err := openFile(w.dir, name, syscall.O_RDWR)
+	if err != nil {
+		return err
+	}
+	size, err := f.Stat()
+	if err == nil && len(tail) > 0 {
+		_, err = f.WriteAt(tail, size.Size()-int64(len(tail)))
+	}
+	return errors.Join(err, f.Close())
+}
+
+func (w *Witness) proveTail(frame, entry []byte) error {
+	if err := w.arm(); err != nil {
+		return err
+	}
+	if err := w.rewriteTail(journalName, frame); err != nil {
+		return w.poison(err)
+	}
+	if err := w.rewriteTail(lockName, entry); err != nil {
+		return w.poison(err)
+	}
+	for _, f := range []*os.File{w.journal, w.lockFile, w.dir} {
+		if err := w.syncFile(f); err != nil {
+			return w.poison(err)
+		}
+	}
+	return nil
+}
+
 func (w *Witness) replay(homeID string) error {
 	frames, entries := bufio.NewReader(w.journal), bufio.NewReader(w.lockFile)
+	var frame, entry bytes.Buffer
 	for {
-		r, digest, err := decode(frames, w.pin)
-		if err == io.EOF {
+		if _, err := frames.Peek(1); err == io.EOF {
 			if w.seq == 0 {
 				return ErrTorn
 			}
@@ -198,18 +231,10 @@ func (w *Witness) replay(homeID string) error {
 				}
 				return ErrTorn
 			}
-			// A process crash can leave complete unsynced entries in the page cache.
-			if err := w.arm(); err != nil {
-				return err
-			}
-			if err := w.syncFile(w.journal); err != nil {
-				return err
-			}
-			if err := w.syncFile(w.lockFile); err != nil {
-				return err
-			}
-			return w.syncFile(w.dir)
+			return w.proveTail(frame.Bytes(), entry.Bytes())
 		}
+		frame.Reset()
+		r, digest, err := decode(io.TeeReader(frames, &frame), w.pin)
 		if err != nil {
 			return fmt.Errorf("frame %d: %w", w.seq+1, err)
 		}
@@ -233,7 +258,11 @@ func (w *Witness) replay(homeID string) error {
 				return errors.Join(ErrCorrupt, err)
 			}
 		}
-		sig, err := readEntry(entries, digest)
+		var sig []byte
+		if _, err = entries.Peek(1); err == nil {
+			entry.Reset()
+			sig, err = readEntry(io.TeeReader(entries, &entry), digest)
+		}
 		if err == io.EOF {
 			// Only one complete, unacknowledged transition may be pending. Inspect
 			// the entire suffix before writing anything, including its first byte.
@@ -243,13 +272,16 @@ func (w *Witness) replay(homeID string) error {
 				}
 				return ErrCorrupt
 			}
-			if err = w.arm(); err != nil {
-				return err
-			}
-			if err = w.syncJournal(); err != nil {
+			if err = w.proveTail(frame.Bytes(), entry.Bytes()); err != nil {
 				return err
 			}
 			sig, err = w.finish(r, c, digest)
+			if err != nil {
+				return w.poison(err)
+			}
+			w.apply(r, c, sig)
+			w.seq, w.previous = r.Seq, digest
+			return nil
 		}
 		if err != nil {
 			return err

@@ -32,11 +32,12 @@
 // Open and Create start inhibited and without home grants. The service supplies
 // current grants and explicitly enables mutations after checking its guard.
 // Before journal I/O the witness durably creates recovery.pending. A clean close
-// removes it. A reported commit storage error poisons the handle and leaves the
-// marker in place. Process death also leaves the marker. On Open, successful
-// replay can recover exact receipts, but every new transition stays inhibited
-// until the local owner calls Administration().AcknowledgeStorageError after
-// investigating the failure. The service guard still applies. Closing or
-// reopening an unacknowledged store preserves the marker. Torn or corrupt
-// evidence still prevents Open and cannot be cleared by acknowledgement.
+// removes it. Process death leaves this marker. After recovery every new
+// transition stays inhibited until Administration().AcknowledgeStorageError.
+// A reported write or sync error stops service and creates and syncs a second
+// marker, poisoned, on a best-effort basis. Open refuses while it exists.
+// An I/O error on this directory requires the owner's check and repair before
+// removing poisoned and reopening. On every Open, replay rewrites the last
+// validated frame and index entry in place and syncs both files and the directory
+// before signing or serving. Torn or corrupt evidence still prevents Open.
 package durable
