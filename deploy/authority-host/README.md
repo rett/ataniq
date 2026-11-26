@@ -2583,8 +2583,8 @@ no way out to the network but the gate: a notice never decides, and what
 the notifier reaches does not widen what the seat reaches.
 
 The owner approved outbound access to Apple's push service for this unit,
-and for nothing else. It is the host's one outbound path besides the
-gate's: the unit's `IPAddressDeny=any` stays, and the owner's drop-in
+and for nothing else. In the seat-and-notifier release this adds one
+outbound path alongside the gate's. The unit's `IPAddressDeny=any` stays, and the owner's drop-in
 (setup step 4) allows the resolver and the push service's range and no
 other address. The host's firewall keeps it to TCP port 443 there (the
 owner's rule, below).
@@ -2888,3 +2888,21 @@ to a subscription only from the key it was made for: to replace the key,
 stop the notifier, move `vapid.pem` and `subscriptions.json` aside, run
 `vapid-init` again on the same path, start the notifier and subscribe
 again.
+
+## The witness
+
+The optional `ataniq-witness.service` records the enrolled home's checkpoint
+and current writer fence. It polls one home over pinned TLS. The only listener
+is a private Unix socket for local root with the owner's separate TLS key.
+The seat, notifier and deploy accounts need no access to it.
+
+On the development host, add `witness/.` to the composed seat-and-notifier
+source **before** filling the baseline, and include the Linux witness binary
+in the signed release. The overlay adds validation, restart, signed status
+and stop commands. The owner links the unit through `current`. Only the
+switch starts it at activation and boot. The persistent directory belongs to
+the witness account and survives a software rollback.
+
+Installation is the owner's step. The procedure covers provisioning both
+peers, the firewall, first activation, loss of service, storage recovery,
+backup limitations and retiring a home. [Witness operator procedure](../../docs/authority-host-witness.md)
