@@ -82,7 +82,11 @@ func (w *Witness) commit(r record, c change) (cp.Receipt, error) {
 	if err = w.after("before-append"); err != nil {
 		return cp.Receipt{}, errors.Join(cp.ErrUnavailable, err)
 	}
-	if _, err = w.journal.Write(frame); err == nil {
+	n, err := w.writeFrame(frame)
+	if n != len(frame) && err == nil {
+		err = io.ErrShortWrite
+	}
+	if err == nil {
 		err = w.after("appended")
 	}
 	if err == nil {
@@ -107,13 +111,13 @@ func (w *Witness) commit(r record, c change) (cp.Receipt, error) {
 }
 
 func (w *Witness) syncJournal() error {
-	if err := w.journal.Sync(); err != nil {
+	if err := w.syncFile(w.journal); err != nil {
 		return err
 	}
 	if err := w.after("journal-synced"); err != nil {
 		return err
 	}
-	if err := w.dir.Sync(); err != nil {
+	if err := w.syncFile(w.dir); err != nil {
 		return err
 	}
 	return w.after("directory-synced")
@@ -145,13 +149,13 @@ func (w *Witness) finish(r record, c change, digest [32]byte) ([]byte, error) {
 	if err := w.after("receipt-appended"); err != nil {
 		return nil, err
 	}
-	if err := w.lockFile.Sync(); err != nil {
+	if err := w.syncFile(w.lockFile); err != nil {
 		return nil, err
 	}
 	if err := w.after("receipt-synced"); err != nil {
 		return nil, err
 	}
-	if err := w.dir.Sync(); err != nil {
+	if err := w.syncFile(w.dir); err != nil {
 		return nil, err
 	}
 	return sig, w.after("receipt-directory-synced")
@@ -195,13 +199,16 @@ func (w *Witness) replay(homeID string) error {
 				return ErrTorn
 			}
 			// A process crash can leave complete unsynced entries in the page cache.
-			if err := w.journal.Sync(); err != nil {
+			if err := w.arm(); err != nil {
 				return err
 			}
-			if err := w.lockFile.Sync(); err != nil {
+			if err := w.syncFile(w.journal); err != nil {
 				return err
 			}
-			return w.dir.Sync()
+			if err := w.syncFile(w.lockFile); err != nil {
+				return err
+			}
+			return w.syncFile(w.dir)
 		}
 		if err != nil {
 			return fmt.Errorf("frame %d: %w", w.seq+1, err)
@@ -235,6 +242,9 @@ func (w *Witness) replay(homeID string) error {
 					return err
 				}
 				return ErrCorrupt
+			}
+			if err = w.arm(); err != nil {
+				return err
 			}
 			if err = w.syncJournal(); err != nil {
 				return err

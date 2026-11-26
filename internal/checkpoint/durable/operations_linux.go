@@ -14,7 +14,22 @@ import (
 
 type admin struct{ w *Witness }
 
-func (w *Witness) Administration() cp.Administration { return admin{w} }
+// Administration is the local owner capability. Acknowledgement requires a
+// successfully reopened store. The home and network link have no such operation.
+type Administration interface {
+	cp.Administration
+	AcknowledgeStorageError(context.Context) error
+}
+
+func (w *Witness) Administration() Administration { return admin{w} }
+func (a admin) AcknowledgeStorageError(ctx context.Context) error {
+	if err := a.w.enter(ctx); err != nil {
+		return err
+	}
+	defer a.w.unlock()
+	a.w.recoveryRequired = false
+	return nil
+}
 func (a admin) Enroll(ctx context.Context, q cp.Enrollment) (cp.Receipt, error) {
 	b, err := q.Body("")
 	if err != nil {
@@ -174,7 +189,7 @@ func (w *Witness) prepare(r record, replay bool) (change, cp.Receipt, error) {
 	limit := w.limit
 	if replay {
 		limit = maxReceipts
-	} else if w.inhibited {
+	} else if w.inhibited || w.recoveryRequired {
 		return c, empty, cp.ErrUnavailable
 	}
 	switch {

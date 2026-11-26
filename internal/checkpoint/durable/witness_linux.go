@@ -92,6 +92,9 @@ type Witness struct {
 	history                    map[item]accepted // a zero receipt denotes a permanent Settle fence
 	grants                     map[cp.Slot]bool
 	fault                      func(string) error
+	writeFrame                 func([]byte) (int, error)
+	syncFile                   func(*os.File) error
+	armed, recoveryRequired    bool
 }
 
 // Create exclusively initializes both files. A failed creation leaves its
@@ -134,6 +137,7 @@ func start(c Config, create bool) (*Witness, error) {
 		limit:       c.ReceiptLimit,
 		inhibited:   true,
 		sign:        func(b []byte) ([]byte, error) { return cp.Sign(cp.WitnessNamespace, key, b) },
+		syncFile:    (*os.File).Sync,
 		signRecord:  func(b []byte) []byte { return ed25519.Sign(key, b) },
 		slots:       make(map[cp.Slot]*enrollment),
 		history:     make(map[item]accepted),
@@ -155,6 +159,7 @@ func start(c Config, create bool) (*Witness, error) {
 	ok := false
 	defer func() {
 		if !ok {
+			w.stopped = true // Leave any recovery marker in place after a failed start.
 			w.Close()
 		}
 	}()
@@ -176,7 +181,11 @@ func start(c Config, create bool) (*Witness, error) {
 	if err != nil {
 		return nil, err
 	}
+	w.writeFrame = w.journal.Write
 	if create {
+		if err = w.arm(); err != nil {
+			return nil, err
+		}
 		_, err = w.commit(record{Seq: 1, Identity: &id, HomeKeyID: homeID, Op: "create"}, change{})
 	} else {
 		err = w.replay(homeID)
@@ -193,15 +202,27 @@ func (w *Witness) Close() error {
 		return nil
 	}
 	defer w.unlock()
+	clean := w.armed && !w.stopped && !w.recoveryRequired
 	w.stopped = true
 	var err error
-	for _, f := range []*os.File{w.journal, w.lockFile, w.dir} {
+	if w.journal != nil {
+		err = w.journal.Close()
+	}
+	if clean && err == nil {
+		// Finish index writeback under its exclusive lock before signalling a clean close.
+		if err = w.lockFile.Sync(); err == nil {
+			err = syscall.Unlinkat(int(w.dir.Fd()), recoveryName)
+			// A lost unlink after a crash conservatively requires acknowledgement again.
+		}
+	}
+	for _, f := range []*os.File{w.lockFile, w.dir} {
 		if f != nil {
 			err = errors.Join(err, f.Close())
 		}
 	}
 	w.dir, w.lockFile, w.journal = nil, nil, nil
-	w.sign, w.signRecord = nil, nil
+	w.armed = false
+	w.sign, w.signRecord, w.writeFrame = nil, nil, nil
 	return err
 }
 func (w *Witness) WitnessEpoch() uint64 { return w.identity.Epoch }

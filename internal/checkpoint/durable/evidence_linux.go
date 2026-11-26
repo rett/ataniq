@@ -97,7 +97,7 @@ func (w *Witness) read(q cp.ReadRequest) (cp.View, error) {
 		}
 	}
 	guard := "ready"
-	if w.inhibited {
+	if w.inhibited || w.recoveryRequired {
 		guard = "inhibited"
 	}
 	b, err := canonical(map[string]any{"schema": 1, "operation": "read", "audience": q.Slot.Authority, "key_id": w.keyID,

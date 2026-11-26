@@ -109,6 +109,7 @@ func TestProcessCrashBoundaries(t *testing.T) {
 			child(t, c, stage, 79)
 			recovered := reopen(t, c)
 			q := fixtureEnrollment(t, recovered)
+			must(t, recovered.Administration().AcknowledgeStorageError(t.Context()))
 			found, err := recovered.HasReceipt(t.Context(), q.Slot, q.ID)
 			must(t, err)
 			if found != (stage != "before-append") {
@@ -156,8 +157,109 @@ func TestSyncFailureStopsServing(t *testing.T) {
 	w.journal = nil // closed by fault injection
 	must(t, w.Close())
 	again := reopen(t, c)
-	_, err = again.Administration().Settle(t.Context(), 1, q.Slot, q.ID)
+	original, err := again.Administration().Settle(t.Context(), 1, q.Slot, q.ID)
 	must(t, err)
+	for i := 0; i < 2; i++ {
+		again.Inhibit(false)
+		_, err = again.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{9})
+		if !errors.Is(err, cp.ErrUnavailable) {
+			t.Fatalf("ordinary guard cleared storage inhibition: %v", err)
+		}
+		saved, err := again.Administration().Settle(t.Context(), 1, q.Slot, q.ID)
+		must(t, err)
+		if !bytes.Equal(saved.Signature, original.Signature) || !bytes.Equal(saved.Body, original.Body) {
+			t.Fatal("inhibition changed receipt")
+		}
+		must(t, again.Close())
+		again = reopen(t, c)
+	}
+	// Acknowledgement clears only storage inhibition. The startup guard remains.
+	must(t, again.Administration().AcknowledgeStorageError(t.Context()))
+	_, err = again.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{9})
+	if !errors.Is(err, cp.ErrUnavailable) {
+		t.Fatal("acknowledgement bypassed service guard", err)
+	}
+	again.Inhibit(false)
+	_, err = again.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{9})
+	if !errors.Is(err, cp.ErrNotApplied) {
+		t.Fatal("owner acknowledgement did not restore admission", err)
+	}
+	must(t, again.Close())
+	again = reopen(t, c)
+	again.Inhibit(false)
+	_, err = again.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{10})
+	if !errors.Is(err, cp.ErrNotApplied) {
+		t.Fatal("clean restart lost acknowledgement", err)
+	}
+}
+
+func TestJournalStorageFaults(t *testing.T) {
+	for site, name := range []string{"partial write", "journal sync", "journal directory sync", "index sync", "index directory sync"} {
+		t.Run(name, func(t *testing.T) {
+			c := config(t, testKey("storage faults"))
+			w := create(t, c)
+			q := fixtureEnrollment(t, w)
+			expected := syscall.EIO
+			var partial []byte
+			path := filepath.Join(c.Directory, journalName)
+			before := readFile(t, path)
+			if site == 0 {
+				expected = syscall.ENOSPC
+				w.writeFrame = func(frame []byte) (int, error) {
+					partial = bytes.Clone(frame[:len(frame)/2])
+					n, err := w.journal.Write(partial)
+					must(t, err)
+					return n, syscall.ENOSPC
+				}
+			} else {
+				files := []*os.File{w.journal, w.dir, w.lockFile, w.dir}
+				calls := 0
+				w.syncFile = func(f *os.File) error {
+					if f != files[calls] {
+						t.Fatalf("unexpected sync at site %d", calls+1)
+					}
+					calls++
+					if calls == site {
+						return syscall.EIO
+					}
+					return f.Sync()
+				}
+			}
+			r, err := w.Administration().Enroll(t.Context(), q)
+			if !errors.Is(err, expected) || !errors.Is(err, cp.ErrUnknownOutcome) || r.Body != nil || r.Signature != nil {
+				t.Fatalf("storage failure returned receipt or wrong outcome: %+v, %v", r, err)
+			}
+			if _, err := w.SignDisposition(t.Context(), [32]byte{}, "granted"); !errors.Is(err, cp.ErrUnavailable) {
+				t.Fatal("poisoned signer available", err)
+			}
+			if err := w.Administration().AcknowledgeStorageError(t.Context()); !errors.Is(err, cp.ErrUnavailable) {
+				t.Fatal("poisoned handle acknowledged", err)
+			}
+			must(t, w.Close())
+			if site == 0 {
+				if _, err := Open(c); !errors.Is(err, ErrTorn) {
+					t.Fatal("accepted partial frame", err)
+				}
+				if !bytes.Equal(readFile(t, path), append(before, partial...)) {
+					t.Fatal("partial write evidence changed")
+				}
+				return
+			}
+			next := reopen(t, c)
+			next.Inhibit(false)
+			historical, err := next.Administration().Settle(t.Context(), 1, q.Slot, q.ID)
+			must(t, err)
+			ack, err := cp.VerifyReceipt(c.Pin, historical)
+			must(t, err)
+			if ack.State.JournalSequence != 2 {
+				t.Fatal("replay changed receipt position")
+			}
+			_, err = next.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{3})
+			if !errors.Is(err, cp.ErrUnavailable) {
+				t.Fatal("new transition after storage error", err)
+			}
+		})
+	}
 }
 
 func TestRefuseDamagedFiles(t *testing.T) {
