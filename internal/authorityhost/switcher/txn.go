@@ -259,10 +259,8 @@ func (s *Switcher) activate(ctx context.Context, t *txn) error {
 	if err := s.ensureLink("current", "releases/"+t.j.ID); err != nil {
 		return failf(CodeLinkFailed, "current: %s", q(err.Error()))
 	}
-	if !t.forward() {
-		if err := s.stopDeparting(ctx, t, false); err != nil {
-			return err
-		}
+	if err := s.stopDeparting(ctx, t, false); err != nil {
+		return err
 	}
 	t.j.CandidateUnits = cand.units
 	if err := s.reload(ctx, cand.reloads); err != nil {
@@ -404,7 +402,7 @@ func (s *Switcher) restore(ctx context.Context, t *txn) error {
 }
 
 // Only systemctl stop of a single named unit gives exit 5 this meaning.
-func (s *Switcher) unitAlreadyStopped(argv []string, err error) bool {
+func (s *Switcher) unitNotLoaded(argv []string, err error) bool {
 	if len(argv) != 3 || argv[1] != "stop" || strings.HasPrefix(argv[2], "-") {
 		return false
 	}
@@ -422,7 +420,7 @@ func (s *Switcher) runStops(ctx context.Context, list string, cmds [][]string) [
 	var failures []string
 	for _, c := range cmds {
 		if _, err := s.cfg.Runner.Run(ctx, Command{Argv: c, Timeout: ReloadTimeout}); err != nil {
-			if s.unitAlreadyStopped(c, err) {
+			if s.unitNotLoaded(c, err) {
 				s.printf("stop: manager reported unit not loaded: %s", qargv(c))
 				continue
 			}
@@ -438,9 +436,8 @@ func (s *Switcher) runStops(ctx context.Context, list string, cmds [][]string) [
 // stop is the stopping phase: the host's own stop list runs, then the stop
 // lists of the transaction's release and of the old release, each one
 // that can be verified (the host's list is what does not depend on that).
-// Only when every stop succeeds or finds its unit unloaded is the transaction
-// done; otherwise it stays in this phase, the command
-// fails, and the next one runs the stops again.
+// Both inventories must be observed inactive or absent. On failure the
+// journal stays here and the next command repeats the stops and checks.
 func (s *Switcher) stop(ctx context.Context, t *txn) error {
 	var failures []string
 	run := func(list string, cmds [][]string) {
@@ -450,15 +447,26 @@ func (s *Switcher) stop(ctx context.Context, t *txn) error {
 	// already, before anything that could fail: see hostStopsFirst).
 	s.hostStopsFirst(ctx)
 	failures = append(failures, s.hostStopsFailures...)
-	if cand, err := s.candidate(ctx, t); err == nil {
+	cand, err := s.candidate(ctx, t)
+	if err == nil {
 		run(t.j.ID, cand.stops)
 	} else {
 		s.printf("stop: the stop list of %s is not run: it cannot be verified (%s)", t.j.ID, describe(err))
 	}
-	if fb, err := s.fallback(ctx, t); err == nil {
+	fb, err := s.fallback(ctx, t)
+	if err == nil {
 		run(fb.id.Name, fb.stops)
 	} else if !errors.Is(err, errNoFallback) {
 		s.printf("stop: the stop list of the earlier release is not run: it cannot be verified (%s)", describe(err))
+	}
+	if err := s.confirmStopped(ctx, t, t.j.ID, cand, &t.j.CandidateUnits); err != nil {
+		failures = append(failures, describe(err))
+	}
+	if t.j.OldCurrent != "" {
+		old, _ := s.targetID(t.j.OldCurrent)
+		if err := s.confirmStopped(ctx, t, old.Name, fb, &t.j.OldUnits); err != nil {
+			failures = append(failures, describe(err))
+		}
 	}
 	if err := s.crash(CrashStopped); err != nil {
 		return err
@@ -468,7 +476,7 @@ func (s *Switcher) stop(ctx context.Context, t *txn) error {
 		if err := s.save(t); err != nil {
 			return err
 		}
-		return failf(CodeStopFailed, "%d stop command(s) failed, so the decision services may still run (%s); run the command again once the cause is fixed, or ah-switch recover --services-stopped once they are stopped by hand", len(failures), joinFailures(failures))
+		return failf(CodeStopFailed, "%d stop failure(s), so the decision services may still run (%s); run the command again once the cause is fixed, or ah-switch recover --services-stopped once they are stopped by hand", len(failures), joinFailures(failures))
 	}
 	t.j.Stopped = true
 	t.j.StopFailures = ""
@@ -520,10 +528,8 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 		return unresolved("current cannot be read", err)
 	}
 	if t.requalify && t.healthy() && !t.j.RequalifyFailed {
-		if !t.forward() || t.j.Result == ResultRolledBack {
-			if err := s.stopDeparting(ctx, t, t.j.Result == ResultRolledBack); err != nil {
-				return unresolved("departure stops before requalification", err)
-			}
+		if err := s.stopDeparting(ctx, t, t.j.Result == ResultRolledBack); err != nil {
+			return unresolved("departure stops before requalification", err)
 		}
 		if err := s.requalifyCurrent(ctx, t, cur, curOK); err != nil {
 			if errors.Is(err, errCrashed) {
@@ -534,7 +540,7 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 	}
 	// A reload may start shared units from the qualified target. Every
 	// departing-only unit must still be inactive when decisions resume.
-	if t.healthy() && !t.j.RequalifyFailed && (!t.forward() || t.j.Result == ResultRolledBack) {
+	if t.healthy() && !t.j.RequalifyFailed {
 		departed, current := t.j.OldUnits, t.j.CandidateUnits
 		if t.j.Result == ResultRolledBack {
 			departed, current = current, departed

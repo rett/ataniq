@@ -335,6 +335,12 @@ Before rolling back across the change that pinned the guard directory, edit
 key before switching to the older witness. Remove it before switching back
 to the binary with the pinned guard.
 
+For an upgrade or downgrade, keep the seat, notifier and witness stops
+in the host list. This includes `systemctl stop ataniq-seat-notify.service`
+when departing an older release whose own list omitted the notifier.
+Use the updated host switch helper throughout rollback and recovery. Older
+helpers use a strict JSON reader and cannot read the new inventory fields.
+
 For a software rollback use the signed switch procedure
 `ah-switch --rollback-to previous`. The switch runs the host stop list before reloading the target.
 It also runs the departing release’s stop list when that release still verifies. If a stop fails, decisions

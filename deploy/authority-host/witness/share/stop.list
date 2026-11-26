@@ -3,5 +3,6 @@
 # healthy release is left and for the release a switch goes back from (see
 # ../README.md, "Layout"). The static status page stays.
 systemctl stop ataniq-seat.service
+systemctl stop ataniq-seat-notify.service
 # Stop the witness along with the other decision services.
 systemctl stop ataniq-witness.service

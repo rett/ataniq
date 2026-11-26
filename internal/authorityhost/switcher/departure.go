@@ -121,25 +121,40 @@ func (s *Switcher) stopDeparting(ctx context.Context, t *txn, restoring bool) er
 	} else {
 		failures = append(failures, s.runStops(ctx, id, rel.stops)...)
 	}
-	if *names == nil {
-		if rel != nil {
-			*names = rel.units
-		} else {
-			units, err := s.installedUnits(id)
-			if err != nil {
-				return failf(CodeStopFailed, "cannot identify services of %s: %s; decisions stay inhibited", id, q(err.Error()))
-			}
-			*names = units
-		}
-		if err := s.save(t); err != nil {
-			return err
-		}
-	}
-	if err := s.checkInactive(ctx, *names, nil); err != nil {
+	if err := s.confirmStopped(ctx, t, id, rel, names); err != nil {
 		return err
 	}
 	if len(failures) > 0 {
 		return failf(CodeStopFailed, "departure stops failed (%s); decisions stay inhibited", joinFailures(failures))
 	}
 	return nil
+}
+
+// confirmStopped also serves the terminal stopping phase, which runs all
+// executable stop lists before checking either release.
+func (s *Switcher) confirmStopped(ctx context.Context, t *txn, id string, rel *release, names *[]string) error {
+	if *names == nil {
+		if rel != nil {
+			*names = rel.units
+		} else {
+			rec, _, err := s.readRecord()
+			if err != nil {
+				return err
+			}
+			if rec.CurrentID == id {
+				*names = rec.CurrentUnits
+			}
+			if *names == nil {
+				units, err := s.installedUnits(id)
+				if err != nil {
+					return failf(CodeStopFailed, "cannot identify services of %s: %s; decisions stay inhibited", id, q(err.Error()))
+				}
+				*names = units
+			}
+		}
+		if err := s.save(t); err != nil {
+			return err
+		}
+	}
+	return s.checkInactive(ctx, *names, nil)
 }

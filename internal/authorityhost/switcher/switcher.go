@@ -577,6 +577,9 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 			s.step(6, "would point previous at %s", q(a.oldTarget))
 		}
 		s.step(6, "would point current at %s (a new link renamed over it)", q(newTarget))
+		if a.oldExists {
+			s.step(6, "would run the host stop list and any verified departing stop list, then require each departing service to be inactive or absent")
+		}
 		for _, r := range rel.reloads {
 			s.step(6, "would reload: %s", qargv(r))
 		}

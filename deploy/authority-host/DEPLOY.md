@@ -657,6 +657,8 @@ Apple's push service for this unit, and nothing else.
    resolver and the push range (`IPAddressAllow=203.0.113.53` and
    `IPAddressAllow=198.51.100.0/24` in place of the real values); the unit's
    link, `ln -s /opt/authority-host/current/etc/systemd/system/ataniq-seat-notify.service /etc/systemd/system/ataniq-seat-notify.service`;
+   add `systemctl stop ataniq-seat-notify.service` to the host
+   `/etc/authority-host/stop.list`, retaining the seat stop. Set
    the line `SEAT_NOTIFY_ARGS=--notify-socket /run/seat-notify/notify.sock` in
    `/etc/authority-host/seat/seat.env`; and your firewall's rule that keeps
    the user `seat-notify` to the resolver and to TCP port 443 of the push
@@ -686,12 +688,11 @@ Apple's push service for this unit, and nothing else.
    means the notifier is exiting at its start and being restarted every 5
    seconds, whatever the switch said (see the table below, and
    [the README](README.md#a-notifier-that-cannot-start)). Then acknowledge the outcome as in
-   step 5. The host's own stop list is not changed: the notifier decides
-   nothing.
+   step 5.
 
 To roll back, take step 6 of the first deploy (`ack`, then `--rollback-to
-previous`). A release without the notifier leaves it running from the earlier
-release's binary until `systemctl stop ataniq-seat-notify.service`; see
+previous`). A target without the notifier can resume decisions only after
+the switch confirms its departure with systemd. See
 [the README](README.md#rollback-1). If the notifier is down, nothing breaks but
 the notices.
 

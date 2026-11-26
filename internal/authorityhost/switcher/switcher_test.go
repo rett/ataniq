@@ -79,6 +79,7 @@ func TestCleanSwitch(t *testing.T) {
 		preCall(filepath.Join(dir, NoAICheckProgram), e.root, dir),
 		"validate-units verify " + dir + "/etc/systemd/app.service",
 		"validate-rules -c",
+		"stop-all", "stop-app", "systemctl is-active -- app.service",
 		"reload-units",
 		"health-probe http://127.0.0.1/healthz",
 		"nft list ruleset",
@@ -816,7 +817,7 @@ func TestPackageStepBeforeCheck(t *testing.T) {
 			t.Fatal(code)
 		}
 		e.runner.hook = nil
-		if got := order(e); got != "ah-noaicheck ah-pkgstep ah-noaicheck stop-all stop-app stop-app" {
+		if got := order(e); got != "ah-noaicheck ah-pkgstep ah-noaicheck stop-all stop-app stop-app systemctl systemctl" {
 			t.Errorf("order: %v", got)
 		}
 		e.unchanged("releases/"+rel2, "noaicheck")
@@ -1416,7 +1417,7 @@ func TestPostCheckFailureGoesBack(t *testing.T) {
 	e.links(rel2, rel1)
 	// The pre and post checks of rel3, and the post check of rel2 once it
 	// is back.
-	e.ran(map[string]int{"ah-noaicheck": 3, "reload-units": 2, "stop-app": 1})
+	e.ran(map[string]int{"ah-noaicheck": 3, "reload-units": 2, "stop-app": 2})
 	if want := postCall(filepath.Join(e.relDir(rel2), NoAICheckProgram), e.root, e.relDir(rel2)); e.runner.calls[len(e.runner.calls)-1] != want {
 		t.Errorf("the last command %q, want %q", e.runner.calls[len(e.runner.calls)-1], want)
 	}

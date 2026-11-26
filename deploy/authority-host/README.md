@@ -557,8 +557,15 @@ are stopped and decisions stay inhibited, see step 4).
    target of `current`, and a new link `current.new` is made and renamed
    over `current`, so there is never a moment without `current`; each
    rename is followed by a sync of the folder. Then the journal says
-   `activating`, and each command of `share/reload.list` runs, within 30
-   seconds each.
+   `activating`. When replacing a release in either direction, the host stop
+   list runs first, then the departing release's stop list if it verifies.
+   The switch asks systemd about every service file shipped by the departing
+   release, including units shared with the target and instances of shipped
+   templates. A unit must be inactive or absent before the target's
+   `share/reload.list` runs. Each reload has a 30-second deadline.
+   Before decisions resume, services unique to the departed release are
+   checked again. A failure names the unit and leaves the journal retryable.
+   Correct the host stop list or manager failure and repeat the request.
 7. **health**: the commands of `share/health.cmd` run in order until one
    round in which every one of them exits 0, a new round every 2 seconds.
    The 60 seconds are one deadline for the whole check: each command gets at
@@ -645,8 +652,8 @@ command runs the stops again first (see below).
 
 The host's stop list is the owner's, never part of a release: one command
 per line, in the format of the release lists, at least one command, and
-owned and checked like the switch policy. It must stop every decision
-service of any release (for example `systemctl stop ataniq-seat.service`).
+owned and checked like the switch policy. Include every service shipped by
+releases on this host (for example `systemctl stop ataniq-seat.service`).
 A switch or rollback is refused while it is missing, empty, not
 trusted or refused (see below), and `status` says so.
 
@@ -666,10 +673,8 @@ A refused list would otherwise block the recovery it exists for, so it is
 reported loudly and does not stop the rest: the command prints
 `reconcile: FAILED: the host's stop list cannot be used`, a journal in any
 phase (not only `stopping`) is resumed, and the steps that need the host's
-list (the stopping phase, going back when the new release's own stop list
-does not verify) fail with `stop-list-refused` in their detail, so that
-a transaction that needed it stays in `stopping` with the failure, while
-the stop lists of the releases that verify run. Only new work is refused,
+list (departure or the stopping phase) remain retryable with decisions
+inhibited while the stop lists of the releases that verify run. Only new work is refused,
 with exit 1, once that resume has run.
 
 While a journal says `stopping`, every switch, rollback and `recover`
@@ -1308,7 +1313,7 @@ see its messages. The text of a broken state file is not repeated either.
 | `decisions.inhibit` there after a failure | Decision-capable services may run but refuse every decision; a later healthy switch or `inhibit-clear --asked WORDS` removes it |
 | Crash or power loss between the two steps of a healthy end (the journal renamed over `decisions.inhibit`, the inhibit not removed yet) | Decisions are still refused; `inhibit-clear` and `ack` refuse it; the next command writes `txn.json` back from it and settles it as a journal in `done` (next row) |
 | Reboot or crash after a healthy release was decided (`done`) and before it was settled | The next command runs the reload list, health check and post-activation no-AI check of `current` again before removing the inhibit; when any fails, the host's stop list runs, decisions stay inhibited, the outcome stays owed with `requalify_failed`, and that command and every retry of the same request exit 1 until `ack --txn ID --asked WORDS` |
-| A stop command fails | `result: unresolved`, exit 1; the journal stays in `stopping`; every later command runs the stops again and does nothing else until they pass, or `recover --services-stopped` |
+| A stop command fails during the terminal stopping phase | `result: unresolved`, exit 1; the journal stays in `stopping`; every later command runs the stops again and does nothing else until they pass, or `recover --services-stopped` |
 | A link folder cannot be synced | `result: unresolved`, exit 1; the journal stays; nothing is recorded as done until the next command syncs it |
 | `--rollback-to` when `previous` points at a missing release | Refused at counter (`no-previous`) |
 | Crash or power loss during the switch | `current` points at a whole release, the old or the new one, and the journal is there; the next command resumes its phase (see "The journal and recover") |
@@ -2564,8 +2569,8 @@ ataniq-seat.service`): for the release a switch goes back from, and when
 no healthy release is left. The host's own `/etc/authority-host/stop.list`
 must stop every decision service of any release, so once the first switch
 to the seat's release ended `ok`, replace its line `/usr/bin/true` with
-`systemctl stop ataniq-seat.service`. Use a separate stop command for each unit. The switch counts exit 5
-from `systemctl stop UNIT` as already stopped. While the seat is stopped, decisions are not made at all;
+`systemctl stop ataniq-seat.service`. Use a separate stop command for each unit. After a stop reports exit 5,
+the switch still checks the canonical service names with systemd. While the seat is stopped, decisions are not made at all;
 the static status page stays.
 
 ### Rollback
@@ -2607,10 +2612,10 @@ key for the push service; it is no key of any model's provider.
 
 The notifier's part of the release source is `notify/`, laid over this
 folder and then over the seat's part (`seat/`): it holds only `etc/` and
-`share/`, and adds the unit and replaces two of the seat's lists. It is
+`share/`, and adds the unit and replaces three of the seat's lists. It is
 not usable without the seat's part, since its lists are the seat's with
 the notifier's lines added (a test holds them to that). The Caddyfile, the
-stop list, the health commands and the no-AI check's lists are the seat's
+health commands and the no-AI check's lists are the seat's
 and this folder's.
 
 - `etc/systemd/system/ataniq-seat-notify.service`: the service. It runs
@@ -2649,15 +2654,10 @@ and this folder's.
   `systemctl restart ataniq-seat-notify.service` added before the seat's own
   restart, so the notifier's socket is there when the seat starts.
 
-`stop.list` is not changed: the stop lists stop the decision services, and
-the notifier decides nothing. `ah-release check` asks every unit that starts
-a program to be stopped in `stop.list`, and excuses this one unit, by its
-name, from that (and from counting as the decision service a release that is
-not static must have), but only while every `ExecStart` of the unit and of
-its drop-ins runs the release's `bin/ataniq-seat-notify` and no other binary
-of the release: a unit of that name that runs another binary (the seat's, say)
-is stopped like any other, so the name cannot hide a decision service. It
-asks it a validator and a restart like any other.
+- `share/stop.list` stops both the seat and the notifier. The release
+  checker requires a stop for each shipped service. The notifier alone
+  still cannot satisfy a release's requirement for a decision service.
+
 `units.allow` and `ports.allow` are not changed either: the unit is never
 enabled, and it listens on no TCP port. The seat's unit gets one optional
 word, `$SEAT_NOTIFY_ARGS`, which is nothing unless the owner's `seat.env`
@@ -2790,7 +2790,10 @@ repository.
    It dangles until `current` is a release that has the notifier, and
    systemd passes over it meanwhile. Without it the validator
    `test -L /etc/systemd/system/ataniq-seat-notify.service` stops the
-   switch before anything changes.
+   switch before anything changes. Add `systemctl stop ataniq-seat-notify.service`
+   to `/etc/authority-host/stop.list` before activation. On an existing
+   deployment add it before the next switch or rollback, so the notifier can
+   be stopped even if the departing release omitted it.
 6. Tell the seat where the socket is: add
    `SEAT_NOTIFY_ARGS=--notify-socket /run/seat-notify/notify.sock` to
    `/etc/authority-host/seat/seat.env`. The seat reads it when it starts, at
@@ -2885,10 +2888,8 @@ them.
 ### Rollback
 
 `ah-switch --rollback-to previous` goes back as for any release. Back to a
-seat release without the notifier, the notifier keeps running from the
-earlier release's binary, which stays in `releases/`, until it is stopped by
-hand (`systemctl stop ataniq-seat-notify.service`); the earlier seat unit
-has no `$SEAT_NOTIFY_ARGS`, so that seat tells it nothing. To stop notices
+seat release without the notifier, the switch confirms the notifier is inactive
+or absent before releasing the decision inhibit. To stop notices
 without a rollback, stop the notifier, or remove the `SEAT_NOTIFY_ARGS` line
 from `seat.env` and restart the seat. The notifier's state, the key and the
 subscriptions in `/var/lib/seat-notify`, is not touched by any switch. A new

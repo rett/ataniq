@@ -171,8 +171,8 @@ func TestCrashAndResume(t *testing.T) {
 	// health check does: the new release's services stopped, the old
 	// release reloaded and checked.
 	putBack := want{rel2, rel1, ResultRolledBack, "interrupted", "ok", false, with(map[string]int{"stop-all": 1, "stop-app": 1, "reload-old": 1, "health-old": 1})}
-	completed := want{rel3, rel2, ResultOK, "", "", false, with(map[string]int{"reload-units": 1, "health-probe": 1})}
-	recorded := want{rel3, rel2, ResultOK, "", "", false, with(map[string]int{"reload-units": 1, "health-probe": 1})}
+	completed := want{rel3, rel2, ResultOK, "", "", false, with(map[string]int{"stop-all": 1, "stop-old": 1, "reload-units": 1, "health-probe": 1})}
+	recorded := want{rel3, rel2, ResultOK, "", "", false, with(map[string]int{"stop-all": 1, "stop-old": 1, "reload-units": 1, "health-probe": 1})}
 	restored := want{rel2, rel1, ResultRolledBack, "health", "ok", false, with(map[string]int{"stop-all": 1, "stop-app": 1, "reload-old": 1, "health-old": 1})}
 	restoredRecorded := restored
 	stopped := want{rel2, rel1, ResultFailedRecovery, "health", "failed", true, with(map[string]int{"stop-all": 1, "stop-app": 1, "stop-old": 1})}
@@ -313,7 +313,7 @@ func TestCrashDoneRunsThePostCheckAgain(t *testing.T) {
 				t.Errorf("record: %+v", rec)
 			}
 			if tc.pass {
-				if got := strings.Join(order, " "); got != "reload-units health-probe nft post-check" {
+				if got := strings.Join(order, " "); got != "stop-all stop-old systemctl reload-units health-probe nft post-check" {
 					t.Errorf("the resume ran %s, want the reload list, the health check and the post-activation check of %s", got, rel3)
 				}
 				if _, ok := e.inhibited(); ok {
@@ -324,7 +324,7 @@ func TestCrashDoneRunsThePostCheckAgain(t *testing.T) {
 				}
 				return
 			}
-			if got := strings.Join(order, " "); got != "reload-units health-probe nft post-check stop-all" {
+			if got := strings.Join(order, " "); got != "stop-all stop-old systemctl reload-units health-probe nft post-check stop-all" {
 				t.Errorf("the resume ran %s", got)
 			}
 			in, ok := e.inhibited()
@@ -463,8 +463,8 @@ func TestRequalifyUnverifiableStillStops(t *testing.T) {
 		t.Fatalf("recover: exit %d\n%s", code, e.last)
 	}
 	e.noJournal()
-	if n := e.runner.called("stop-all"); n != 1 {
-		t.Errorf("the host's stop list ran %d times, want 1; commands: %v", n, e.runner.calls)
+	if n := e.runner.called("stop-all"); n != 2 {
+		t.Errorf("the host's stop list ran %d times, want 2; commands: %v", n, e.runner.calls)
 	}
 	if n := e.runner.called("reload-units"); n != 0 {
 		t.Errorf("a release that does not verify was reloaded")
@@ -742,7 +742,7 @@ func TestRestorePreviousFailing(t *testing.T) {
 	}
 	// stop-app: going back first stops rel3's services, then the
 	// stopping phase runs every list.
-	e.ran(map[string]int{"reload-old": 0, "stop-all": 2, "stop-app": 2, "stop-old": 1})
+	e.ran(map[string]int{"reload-old": 0, "stop-all": 3, "stop-app": 2, "stop-old": 2})
 	e.noJournal()
 }
 

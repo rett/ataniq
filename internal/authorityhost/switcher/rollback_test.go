@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -257,5 +258,109 @@ func TestReleaseDepartureTemplateInstances(t *testing.T) {
 		if !queried || (err != nil) != strings.Contains(states, "\nactive\n") {
 			t.Errorf("states %q: queried %v, err %v", states, queried, err)
 		}
+	}
+}
+
+func TestWitnessForwardDeparture(t *testing.T) {
+	const unit = "ataniq-witness.service"
+	for _, failure := range []string{"ignored stop", "restarted during reload", "interrupted settlement"} {
+		t.Run(failure, func(t *testing.T) {
+			e := newEnv(t)
+			dir := e.release(rel1, "s")
+			e.write(filepath.Join(dir, "etc/systemd/system", unit), "[Service]\n", 0644)
+			e.withLists(rel1, "start-witness", "health-witness", "release-stop")
+			if e.switchTo(rel1) != ExitOK {
+				t.Fatal(e.last)
+			}
+			e.release(rel2, "s")
+			e.hostList("systemctl stop " + unit + "\n")
+			active, fixed := true, false
+			var sequence []string
+			e.runner.gate = func(argv []string) error {
+				switch strings.Join(argv, " ") {
+				case "systemctl stop " + unit:
+					sequence = append(sequence, "host")
+					if failure != "ignored stop" || fixed {
+						active = false
+					}
+				case "release-stop":
+					sequence = append(sequence, "release")
+				case "reload-units":
+					sequence = append(sequence, "reload")
+					if failure == "restarted during reload" && !fixed {
+						active = true
+					}
+				}
+				return nil
+			}
+			e.runner.unitState = func(name string) (Output, error) {
+				if name == unit {
+					sequence = append(sequence, "query")
+					if active {
+						return Output{Stdout: []byte("active\n")}, nil
+					}
+				}
+				return Output{Stdout: []byte("inactive\n")}, &RunError{Status: 3}
+			}
+			if failure == "interrupted settlement" {
+				e.crashAt(CrashJournalMoved, false, rel2)
+				active = true
+				// The manager accepts a stop request but the service survives.
+				e.runner.gate = func([]string) error { return nil }
+			}
+			if code := e.switchTo(rel2); code != ExitFailed {
+				t.Fatalf("exit %d, witness active %v, calls %v", code, active, sequence)
+			}
+			if _, held := e.inhibited(); !held || !strings.Contains(e.last, unit) {
+				t.Fatal(e.last)
+			}
+			if failure != "interrupted settlement" && !strings.HasPrefix(strings.Join(sequence, " "), "host release query") {
+				t.Fatalf("departure order %v", sequence)
+			}
+			if failure == "ignored stop" && slices.Contains(sequence, "reload") {
+				t.Fatal("reloaded with old witness active")
+			}
+			fixed = true
+			if failure == "interrupted settlement" {
+				e.runner.gate = func(a []string) error {
+					if strings.Join(a, " ") == "systemctl stop "+unit {
+						active = false
+					}
+					return nil
+				}
+			}
+			if e.switchTo(rel2) != ExitOK || active {
+				t.Fatal(e.last)
+			}
+			if _, held := e.inhibited(); held {
+				t.Fatal("qualified target still inhibited")
+			}
+		})
+	}
+}
+
+func TestWitnessEmergencyStopExitFiveNeedsObservation(t *testing.T) {
+	e := newEnv(t)
+	dir := e.release(rel1, "s")
+	e.write(filepath.Join(dir, "etc/systemd/system/ataniq-witness.service"), "[Service]\n", 0644)
+	e.withLists(rel1, "reload-units", "health-probe", "systemctl stop ataniq-witnes.service")
+	e.runner.fail["health-probe"] = -1
+	e.runner.gate = func(a []string) error {
+		if a[0] == "systemctl" && a[1] == "stop" {
+			return &RunError{Status: 5}
+		}
+		return nil
+	}
+	e.runner.unitState = func(name string) (Output, error) {
+		if name == "ataniq-witness.service" {
+			return Output{Stdout: []byte("active\n")}, nil
+		}
+		return Output{Stdout: []byte("inactive\n")}, &RunError{Status: 3}
+	}
+	if e.switchTo(rel1) != ExitFailed {
+		t.Fatal(e.last)
+	}
+	if j, ok := e.journal(); !ok || j.Phase != PhaseStopping || !strings.Contains(j.StopFailures, "ataniq-witness.service") {
+		t.Fatalf("no retryable stop: %+v", j)
 	}
 }

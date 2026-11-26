@@ -39,8 +39,8 @@ func notifyOptions(t *testing.T, src string) Options {
 }
 
 // TestNotifyTreeIsAnOverlay: the notifier's part holds only etc/ and share/,
-// and adds the unit and replaces the two lists that name units (validators
-// and reload); it leaves the stop list, the health commands and the Caddyfile
+// and adds the unit and replaces the validator, reload and stop lists;
+// it leaves the health commands and the Caddyfile
 // to the seat's part, and adds nothing to the no-AI check's lists.
 func TestNotifyTreeIsAnOverlay(t *testing.T) {
 	entries, err := os.ReadDir(notifyTree)
@@ -65,7 +65,7 @@ func TestNotifyTreeIsAnOverlay(t *testing.T) {
 	sort.Strings(files)
 	want := []string{
 		"etc/systemd/system/ataniq-seat-notify.service",
-		"share/reload.list", "share/validators.list",
+		"share/reload.list", "share/stop.list", "share/validators.list",
 	}
 	if !reflect.DeepEqual(files, want) {
 		t.Errorf("the notifier's part:\n%s", strings.Join(files, "\n"))
@@ -74,7 +74,7 @@ func TestNotifyTreeIsAnOverlay(t *testing.T) {
 
 // TestNotifyReleaseBuildsAndChecks: the release made from the base tree with
 // both parts over it passes ah-release check (the notifier's unit needs its
-// validator and its restart, and no stop), runs the binary of its own
+// validator, restart and stop), runs the binary of its own
 // release, is not static, and the switch's dry run accepts it. The seat's
 // unit is covered as before.
 func TestNotifyReleaseBuildsAndChecks(t *testing.T) {
@@ -94,9 +94,9 @@ func TestNotifyReleaseBuildsAndChecks(t *testing.T) {
 	if strings.Contains(string(mustRead(t, filepath.Join(dir, "MANIFEST"))), "components") {
 		t.Error("the release is static")
 	}
-	// The stop list is the seat's alone.
-	if got := string(mustRead(t, filepath.Join(dir, "share/stop.list"))); strings.Contains(got, "notify") {
-		t.Errorf("the stop list names the notifier:\n%s", got)
+	// The stop list must cover both services before the next release starts.
+	if got := string(mustRead(t, filepath.Join(dir, "share/stop.list"))); !strings.Contains(got, "\nsystemctl stop ataniq-seat-notify.service\n") {
+		t.Errorf("missing notifier stop:\n%s", got)
 	}
 
 	root := t.TempDir()
@@ -143,7 +143,7 @@ func TestNotifyCoverage(t *testing.T) {
 		}, want: []string{"decision-exec: etc/systemd/system/ataniq-seat-notify.service"}},
 		{name: "the seat still has to be stopped", mutate: func(t *testing.T, s string) {
 			set(t, s, "share/stop.list", "# none\n")
-		}, want: []string{"list-empty: share/stop.list", "stop-missing: ataniq-seat"}},
+		}, want: []string{"list-empty: share/stop.list", "stop-missing: ataniq-seat", "stop-missing: ataniq-seat-notify"}},
 		{name: "a unit that is not the notifier's is still stopped", mutate: func(t *testing.T, s string) {
 			unit, _ := os.ReadFile(filepath.Join(s, "etc/systemd/system/ataniq-seat-notify.service"))
 			set(t, s, "etc/systemd/system/ataniq-seat-notify-two.service", string(unit))
@@ -151,12 +151,15 @@ func TestNotifyCoverage(t *testing.T) {
 			replace(t, s, "share/reload.list", "systemctl restart caddy", "systemctl restart ataniq-seat-notify-two.service\nsystemctl restart caddy")
 		}, want: []string{"stop-missing: ataniq-seat-notify-two"}},
 		{name: "a unit of the notifier's name that runs the seat's binary is stopped", mutate: func(t *testing.T, s string) {
+			set(t, s, "share/stop.list", "systemctl stop ataniq-seat.service\n")
 			replace(t, s, "etc/systemd/system/ataniq-seat-notify.service", "{release}/bin/ataniq-seat-notify", "{release}/bin/ataniq-seat")
 		}, want: []string{"stop-missing: ataniq-seat-notify"}},
 		{name: "a drop-in of the notifier's name that runs another binary is stopped", mutate: func(t *testing.T, s string) {
+			set(t, s, "share/stop.list", "systemctl stop ataniq-seat.service\n")
 			set(t, s, "etc/systemd/system/ataniq-seat-notify.service.d/10-x.conf", "[Service]\nExecStart=\nExecStart={release}/bin/ataniq-seat run\n")
 		}, want: []string{"stop-missing: ataniq-seat-notify"}},
 		{name: "a second ExecStart of the notifier's unit that runs another binary is stopped", mutate: func(t *testing.T, s string) {
+			set(t, s, "share/stop.list", "systemctl stop ataniq-seat.service\n")
 			replace(t, s, "etc/systemd/system/ataniq-seat-notify.service", "\nRestart=on-failure", "\nExecStart={release}/bin/ataniq-seat\nRestart=on-failure")
 		}, want: []string{"stop-missing: ataniq-seat-notify"}},
 		{name: "the notifier alone is no decision service", mutate: func(t *testing.T, s string) {
@@ -164,7 +167,7 @@ func TestNotifyCoverage(t *testing.T) {
 			replace(t, s, "share/validators.list", "systemd-analyze verify {release}/etc/systemd/system/ataniq-seat.service\n", "")
 			replace(t, s, "share/reload.list", "systemctl restart ataniq-seat.service\n", "")
 			set(t, s, "share/stop.list", "systemctl stop caddy\n")
-		}, want: []string{"no-decision-service"}},
+		}, want: []string{"no-decision-service", "stop-missing: ataniq-seat-notify"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
