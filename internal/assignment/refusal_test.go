@@ -76,7 +76,7 @@ func TestAuthorizationAndPhaseRefusals(t *testing.T) {
 		{"new authorization on open", 10, Open, func(c *Command) { c.Authorization = "other" }, ErrEvidence},
 		{"hold too short", 11, HoldStarted, func(c *Command) { c.EarliestRetirement-- }, ErrEvidence},
 		{"hold would wrap", 11, HoldStarted, func(c *Command) { c.HoldStart = ^uint64(0) - 2 }, ErrEvidence},
-		{"unverified hold", 11, HoldReviewed, func(c *Command) { c.Evidence[0].Subject = "unrecorded-preservation" }, ErrPhase},
+		{"hold missing", 11, HoldReviewed, func(c *Command) { c.Evidence[0].Subject = sha256Hex([]byte("preservation")) }, ErrPhase},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := forward(t, tc.n)
@@ -217,4 +217,13 @@ func TestManagedLaunchIdentityPair(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestHoldReviewedEvidence(t *testing.T) {
+	s := forward(t, len(forwardSteps))
+	s.steps(t, "T", []step{{kind: HoldStarted}})
+	c := next(s.ledger, key, HoldReviewed, "T", "")
+	c.Evidence[0].Subject = sha256Hex([]byte("different preservation proof"))
+	refused(t, s.ledger, c, ErrEvidence)
+	s.accept(t, next(s.ledger, key, HoldReviewed, "T", ""))
 }
