@@ -35,7 +35,11 @@ func FuzzReadDecoder(f *testing.F) {
 	slot := cp.Slot{Witness: "witness", Authority: "authority", Store: "store"}
 	for _, op := range []string{"connect", "read", "settle"} {
 		q := cp.ReadRequest{Slot: slot, Challenge: cp.ID{1}, ReceiptID: cp.ID{2}}
-		body, err := readBody(q, "witness-key", op)
+		var epoch uint64
+		if op == "settle" {
+			epoch = 1
+		}
+		body, err := readBody(q, "witness-key", op, epoch)
 		if err != nil {
 			f.Fatal(err)
 		}
@@ -45,11 +49,11 @@ func FuzzReadDecoder(f *testing.F) {
 		if len(b) > cp.MaxFrame || len(op) > 16 {
 			return
 		}
-		q, err := parseRead(b, "witness-key", op)
+		q, epoch, err := parseRead(b, "witness-key", op)
 		if err != nil {
 			return
 		}
-		exact, err := readBody(q, "witness-key", op)
+		exact, err := readBody(q, "witness-key", op, epoch)
 		if err != nil || !bytes.Equal(exact, b) {
 			t.Fatal("ambiguous read request")
 		}

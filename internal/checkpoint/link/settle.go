@@ -43,9 +43,12 @@ func (q *requestQueue) resolve(id cp.ID, digest string) {
 	}
 }
 
-func (c *client) Settle(ctx context.Context, slot cp.Slot, id cp.ID) (cp.Receipt, error) {
+func (c *client) Settle(ctx context.Context, epoch uint64, slot cp.Slot, id cp.ID) (cp.Receipt, error) {
 	if slot != c.slot {
 		return cp.Receipt{}, &cp.Reason{Kind: cp.Unauthorized}
+	}
+	if epoch != c.Epoch {
+		return cp.Receipt{}, cp.ErrStale
 	}
 	q := cp.ReadRequest{Slot: slot, ReceiptID: id}
 	rand.Read(q.Challenge[:])
@@ -55,10 +58,13 @@ func (c *client) Settle(ctx context.Context, slot cp.Slot, id cp.ID) (cp.Receipt
 	}
 	return c.settle(ctx, q, m)
 }
-func (c *owner) Settle(ctx context.Context, slot cp.Slot, id cp.ID) (cp.Receipt, error) {
+func (c *owner) Settle(ctx context.Context, epoch uint64, slot cp.Slot, id cp.ID) (cp.Receipt, error) {
+	if epoch != c.Epoch {
+		return cp.Receipt{}, cp.ErrStale
+	}
 	q := cp.ReadRequest{Slot: slot, ReceiptID: id}
 	rand.Read(q.Challenge[:])
-	b, err := readBody(q, c.wid, "settle")
+	b, err := readBody(q, c.wid, "settle", epoch)
 	if err != nil {
 		return cp.Receipt{}, err
 	}

@@ -88,9 +88,10 @@ type View struct {
 type Settler interface {
 	// Settle atomically returns the original receipt (including historical
 	// receipts) or records a permanent tombstone and returns ErrNotApplied.
+	// The expected epoch must match under the commit lock before either action.
 	// Durable implementations must persist the fence before answering and
 	// consult it in the same transaction as every mutation commit.
-	Settle(context.Context, Slot, ID) (Receipt, error)
+	Settle(context.Context, uint64, Slot, ID) (Receipt, error)
 }
 
 // Client is scoped to a single authorized slot and signs with its configured

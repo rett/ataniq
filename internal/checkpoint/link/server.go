@@ -30,7 +30,7 @@ type WitnessEvidence interface {
 // exact body and both signatures under the witness's mutation contract.
 type Witness interface {
 	WitnessEvidence
-	SettleHome(context.Context, cp.Slot, cp.ID, ed25519.PublicKey) (cp.Receipt, error)
+	SettleHome(context.Context, uint64, cp.Slot, cp.ID, ed25519.PublicKey) (cp.Receipt, error)
 	CheckHome(context.Context, cp.Slot, ed25519.PublicKey) error
 	ReadHome(context.Context, cp.ReadRequest, ed25519.PublicKey) (cp.View, error)
 	RawSubmit(context.Context, cp.Slot, ed25519.PublicKey, string, []byte, []byte, []byte) (cp.Receipt, error)
@@ -207,7 +207,7 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, e
 		if ownerOp != (a != nil) {
 			return nil, cp.ErrRefused
 		}
-		q, err := parseRead(f[0], s.witnessKeyID, operation[m.Kind])
+		q, epoch, err := parseRead(f[0], s.witnessKeyID, operation[m.Kind])
 		if err != nil {
 			return nil, err
 		}
@@ -238,9 +238,9 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, e
 		if m.Kind == frame.Settle || m.Kind == frame.OwnerSettle {
 			var r cp.Receipt
 			if w != nil {
-				r, err = w.SettleHome(ctx, q.Slot, q.ReceiptID, f[1])
+				r, err = w.SettleHome(ctx, epoch, q.Slot, q.ReceiptID, f[1])
 			} else {
-				r, err = a.Settle(ctx, q.Slot, q.ReceiptID)
+				r, err = a.Settle(ctx, epoch, q.Slot, q.ReceiptID)
 			}
 			if err != nil {
 				return nil, err

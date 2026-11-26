@@ -69,7 +69,7 @@ func TestSettleFencesContinuingWork(t *testing.T) {
 					t.Fatalf("admitted conflicting mutation: %v", err)
 				}
 			}
-			_, err = replacement.Settle(t.Context(), f.slot, first.ID)
+			_, err = replacement.Settle(t.Context(), 1, f.slot, first.ID)
 			if !errors.Is(err, cp.ErrNotApplied) {
 				t.Fatal(err)
 			}
@@ -79,11 +79,38 @@ func TestSettleFencesContinuingWork(t *testing.T) {
 			}
 			receipt, err := replacement.Claim(t.Context(), second)
 			must(t, err)
-			settled, err := c.Settle(t.Context(), f.slot, second.ID)
+			settled, err := c.Settle(t.Context(), 1, f.slot, second.ID)
 			must(t, err)
 			if cp.ReceiptDigest(receipt) != cp.ReceiptDigest(settled) {
 				t.Fatal("settlement changed receipt")
 			}
 		})
+	}
+}
+
+func TestStaleOwnerCannotFenceNewEpoch(t *testing.T) {
+	f := newFixture(t, "witness")
+	k := key(t)
+	var err error
+	f.w, err = cp.NewMemory(f.slot.Witness, 2, k)
+	must(t, err)
+	f.pin = public(k)
+	f.s, err = NewServer(f.id, f.pin, f.s.home, f.slot)
+	must(t, err)
+	must(t, f.w.Grant(f.slot, public(f.home), true))
+	state := f.enroll(t, f.w.Administration())
+	ownerID := identity(t, "owner")
+	stale := f.endpoint(testOwner(t, f.s, f.w, f.w.Administration(), ownerID.Fingerprint()))
+	a, err := stale.Administration(ownerID)
+	must(t, err)
+	id := cp.ID{2}
+	if _, err = a.Settle(t.Context(), 1, f.slot, id); !errors.Is(err, cp.ErrUnknownOutcome) {
+		t.Fatalf("stale owner received %v", err)
+	}
+	c, err := f.w.Connect(f.slot, f.home, f.session, f.pin)
+	must(t, err)
+	_, err = c.Claim(t.Context(), cp.Claim{Mutation: cp.Mutation{ID: id, Expected: state}, NewSessionPublicKey: public(f.session)})
+	if err != nil {
+		t.Fatalf("epoch-2 claim after epoch-1 settlement: %v", err)
 	}
 }

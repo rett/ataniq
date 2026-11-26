@@ -13,11 +13,11 @@ type faultySettlement struct {
 	forget bool
 }
 
-func (a faultySettlement) Settle(ctx context.Context, s cp.Slot, id cp.ID) (cp.Receipt, error) {
+func (a faultySettlement) Settle(ctx context.Context, epoch uint64, s cp.Slot, id cp.ID) (cp.Receipt, error) {
 	if a.forget {
 		return cp.Receipt{}, cp.ErrNotApplied
 	}
-	r, err := a.Administration.Settle(ctx, s, id)
+	r, err := a.Administration.Settle(ctx, epoch, s, id)
 	if err == nil {
 		r = cp.Receipt{}
 	}

@@ -380,7 +380,11 @@ func (c *client) Read(ctx context.Context, q cp.ReadRequest) (cp.View, error) {
 }
 
 func (c *client) signedRead(kind frame.Kind, q cp.ReadRequest) (frame.Message, error) {
-	b, err := readBody(q, c.wid, operation[kind])
+	var epoch uint64
+	if kind == frame.Settle {
+		epoch = c.Epoch
+	}
+	b, err := readBody(q, c.wid, operation[kind], epoch)
 	if err != nil {
 		return frame.Message{}, err
 	}
@@ -391,7 +395,7 @@ func (c *client) signedRead(kind frame.Kind, q cp.ReadRequest) (frame.Message, e
 	return frame.New(kind, b, c.keys.home, sig), nil
 }
 func (c *owner) Read(ctx context.Context, q cp.ReadRequest) (cp.View, error) {
-	b, err := readBody(q, c.wid, "read")
+	b, err := readBody(q, c.wid, "read", 0)
 	if err != nil {
 		return cp.View{}, err
 	}
