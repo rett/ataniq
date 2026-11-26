@@ -33,11 +33,12 @@ const (
 	Idle                        // no home request waiting
 	Settle                      // signed reconciliation request from home
 	OwnerSettle                 // reconciliation request from owner
+	PendingRead                 // signed home lookup of the retained mutation
 )
 
 var arity = [...]int{
 	Read: 3, OwnerRead: 1, Claim: 5, Advance: 5, Enroll: 2, Release: 1, Retire: 1,
-	Receipt: 2, View: 1, Fresh: 2, Prior: 2, Failure: 2, Connect: 3, Granted: 1, Poll: 0, Idle: 0, Settle: 3, OwnerSettle: 1,
+	Receipt: 2, View: 1, Fresh: 2, Prior: 2, Failure: 2, Connect: 3, Granted: 1, Poll: 0, Idle: 0, Settle: 3, OwnerSettle: 1, PendingRead: 3,
 }
 var ErrProtocol = errors.New("checkpoint link: invalid frame")
 

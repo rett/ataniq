@@ -27,6 +27,9 @@ func (s *Server) Poll(ctx context.Context, w Witness) error {
 		return &ConfigError{"poll loop already running"}
 	}
 	defer s.polling.Store(false)
+	if err := s.checkEvidence(ctx, w); err != nil {
+		return err
+	}
 	if home.Network == "" {
 		home.Network = "tcp"
 	}
@@ -34,7 +37,9 @@ func (s *Server) Poll(ctx context.Context, w Witness) error {
 		home.DialContext = (&net.Dialer{}).DialContext
 	}
 	t := transport{Remote: home, tls: clientTLS(home.ServerPin, s.id)}
-	delay := 25 * time.Millisecond
+	const initialDelay = 25 * time.Millisecond
+	delay := initialDelay
+	var previousFailure bool
 	for ctx.Err() == nil {
 		worked, err := s.pollOnce(ctx, t, w)
 		capDelay := time.Second
@@ -45,8 +50,11 @@ func (s *Server) Poll(ctx context.Context, w Witness) error {
 			delay = max(delay, time.Second)
 			capDelay = 30 * time.Second
 		}
+		if err == nil && (previousFailure || worked) {
+			delay = initialDelay
+		}
+		previousFailure = err != nil
 		if worked && err == nil {
-			delay = 25 * time.Millisecond
 			continue
 		}
 		select {
@@ -86,6 +94,17 @@ func (s *Server) pollOnce(parent context.Context, t transport, w Witness) (bool,
 	}
 	if m.Kind == frame.Idle {
 		return false, nil
+	}
+	// A slow ordinary backend call must yield the serial poller in time
+	// for a waiting recovery exchange. Bound both the backend and its I/O.
+	if m.Kind != frame.Settle && m.Kind != frame.PendingRead {
+		ctx, done := context.WithTimeout(ctx, 2*time.Second)
+		defer done()
+		deadline, _ := ctx.Deadline()
+		if err := raw.SetDeadline(deadline); err != nil {
+			return true, err
+		}
+		return true, s.reply(ctx, conn, w, nil, w, m)
 	}
 	return true, s.reply(ctx, conn, w, nil, w, m)
 }

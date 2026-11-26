@@ -25,19 +25,20 @@ func validSlot(s cp.Slot) bool {
 // Checkpoint already defines the signed read *reply*. The home signs this
 // distinct request, binding both IDs, the exact slot and the witness key.
 type readRecord struct {
-	Schema     int     `json:"schema"`
-	Operation  string  `json:"operation"`
-	WitnessKey string  `json:"witness_key_id"`
-	Slot       cp.Slot `json:"slot"`
-	Challenge  string  `json:"challenge"`
-	ReceiptID  string  `json:"receipt_id"`
+	ExpectedEpoch uint64  `json:"expected_epoch,string,omitempty"`
+	Schema        int     `json:"schema"`
+	Operation     string  `json:"operation"`
+	WitnessKey    string  `json:"witness_key_id"`
+	Slot          cp.Slot `json:"slot"`
+	Challenge     string  `json:"challenge"`
+	ReceiptID     string  `json:"receipt_id"`
 }
 
-func readBody(q cp.ReadRequest, wid, op string) ([]byte, error) {
-	if !validSlot(q.Slot) || q.Challenge == (cp.ID{}) {
+func readBody(q cp.ReadRequest, wid, op string, epoch uint64) ([]byte, error) {
+	if (op == "settle") != (epoch != 0) || !validSlot(q.Slot) || q.Challenge == (cp.ID{}) {
 		return nil, &cp.Reason{Kind: cp.InvalidRequest}
 	}
-	b, err := json.Marshal(readRecord{1, op, wid, q.Slot, hex.EncodeToString(q.Challenge[:]), hex.EncodeToString(q.ReceiptID[:])})
+	b, err := json.Marshal(readRecord{epoch, 1, op, wid, q.Slot, hex.EncodeToString(q.Challenge[:]), hex.EncodeToString(q.ReceiptID[:])})
 	if err != nil {
 		return nil, err
 	}
@@ -79,27 +80,27 @@ func decodeJSON(b []byte, dst any) bool {
 	return json.Unmarshal(b, dst) == nil
 }
 
-func parseRead(b []byte, wid, op string) (cp.ReadRequest, error) {
+func parseRead(b []byte, wid, op string) (cp.ReadRequest, uint64, error) {
 	var r readRecord
 	var q cp.ReadRequest
 	if !decodeJSON(b, &r) || len(r.Challenge) != 64 || len(r.ReceiptID) != 64 {
-		return q, frame.ErrProtocol
+		return q, 0, frame.ErrProtocol
 	}
 	q.Slot = r.Slot
 	if _, err := hex.Decode(q.Challenge[:], []byte(r.Challenge)); err != nil {
-		return q, frame.ErrProtocol
+		return q, 0, frame.ErrProtocol
 	}
 	if _, err := hex.Decode(q.ReceiptID[:], []byte(r.ReceiptID)); err != nil {
-		return q, frame.ErrProtocol
+		return q, 0, frame.ErrProtocol
 	}
-	exact, err := readBody(q, r.WitnessKey, op)
+	exact, err := readBody(q, r.WitnessKey, op, r.ExpectedEpoch)
 	if err != nil || !bytes.Equal(exact, b) {
-		return q, frame.ErrProtocol
+		return q, 0, frame.ErrProtocol
 	}
 	if r.WitnessKey != wid {
-		return q, &cp.Reason{Kind: cp.Unauthorized}
+		return q, 0, &cp.Reason{Kind: cp.Unauthorized}
 	}
-	return q, nil
+	return q, r.ExpectedEpoch, nil
 }
 
 // Send only contract error codes. An unclassified backend error may have
@@ -142,7 +143,7 @@ func decodeError(b []byte) error {
 }
 
 var operation = [...]string{
-	frame.Settle: "settle", frame.OwnerSettle: "settle", frame.Connect: "connect", frame.Read: "read", frame.OwnerRead: "read",
+	frame.Settle: "settle", frame.OwnerSettle: "settle", frame.Connect: "connect", frame.Read: "read", frame.PendingRead: "pending_read", frame.OwnerRead: "read",
 	frame.Claim: "claim", frame.Advance: "advance", frame.Enroll: "enroll",
 	frame.Release: "release", frame.Retire: "retire",
 }

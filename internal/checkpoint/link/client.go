@@ -372,7 +372,11 @@ func (c *client) Read(ctx context.Context, q cp.ReadRequest) (cp.View, error) {
 	if q.Slot != c.slot {
 		return cp.View{}, &cp.Reason{Kind: cp.Unauthorized}
 	}
-	m, err := c.signedRead(frame.Read, q)
+	kind := frame.Read
+	if pending, ok := c.queue.pendingMutation(); ok && pending.ID == q.ReceiptID {
+		kind = frame.PendingRead
+	}
+	m, err := c.signedRead(kind, q)
 	if err != nil {
 		return cp.View{}, err
 	}
@@ -380,7 +384,11 @@ func (c *client) Read(ctx context.Context, q cp.ReadRequest) (cp.View, error) {
 }
 
 func (c *client) signedRead(kind frame.Kind, q cp.ReadRequest) (frame.Message, error) {
-	b, err := readBody(q, c.wid, operation[kind])
+	var epoch uint64
+	if kind == frame.Settle {
+		epoch = c.Epoch
+	}
+	b, err := readBody(q, c.wid, operation[kind], epoch)
 	if err != nil {
 		return frame.Message{}, err
 	}
@@ -391,7 +399,7 @@ func (c *client) signedRead(kind frame.Kind, q cp.ReadRequest) (frame.Message, e
 	return frame.New(kind, b, c.keys.home, sig), nil
 }
 func (c *owner) Read(ctx context.Context, q cp.ReadRequest) (cp.View, error) {
-	b, err := readBody(q, c.wid, "read")
+	b, err := readBody(q, c.wid, "read", 0)
 	if err != nil {
 		return cp.View{}, err
 	}
@@ -465,7 +473,7 @@ func (t transport) rawSubmit(ctx context.Context, k frame.Kind, slot cp.Slot, ho
 	default:
 		return cp.Receipt{}, cp.ErrRefused
 	}
-	retry, err := t.queue.begin(mutationRef{id, cp.RequestDigest(b)})
+	retry, err := t.queue.begin(PendingMutation{id, cp.RequestDigest(b)})
 	if err != nil {
 		return cp.Receipt{}, err
 	}

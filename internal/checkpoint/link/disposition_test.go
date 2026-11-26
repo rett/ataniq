@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
+	"net"
 	"sync/atomic"
 	"testing"
 
@@ -12,10 +13,14 @@ import (
 
 type dispositionFixture struct {
 	memoryWitness
-	fault atomic.Int32
+	fault       atomic.Int32
+	grantSigner *cp.Memory
 }
 
 func (w *dispositionFixture) SignDisposition(ctx context.Context, digest [32]byte, result string) ([]byte, error) {
+	if result == "granted" && w.grantSigner != nil {
+		return w.grantSigner.SignDisposition(ctx, digest, result)
+	}
 	switch w.fault.Load() {
 	case 1:
 		digest[0] ^= 1
@@ -42,7 +47,7 @@ func TestDispositionEvidence(t *testing.T) {
 			other, err := cp.NewMemory("witness", 1, key(t))
 			must(t, err)
 			must(t, other.Grant(f.slot, public(f.home), true))
-			stop := startPolling(t, f.s, r, memoryWitness{other})
+			stop := startPolling(t, f.s, r, &dispositionFixture{memoryWitness: memoryWitness{f.w}, grantSigner: other})
 			if c, err := e.Connect(t.Context(), f.slot, f.home, f.session); err == nil || c != nil {
 				t.Fatal("grant from wrong backend signer accepted")
 			}
@@ -70,5 +75,30 @@ func TestDispositionEvidence(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestStartupRejectsWrongBackendPin(t *testing.T) {
+	f := newFixture(t, "witness")
+	other, err := cp.NewMemory("witness", 1, key(t))
+	must(t, err)
+	w := memoryWitness{other}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	dials := 0
+	f.s.home.DialContext = func(context.Context, string, string) (net.Conn, error) {
+		dials++
+		cancel()
+		return nil, cp.ErrRefused
+	}
+	var cfg *ConfigError
+	err = f.s.Poll(ctx, w)
+	if !errors.As(err, &cfg) || dials != 0 {
+		t.Errorf("wrong poll signer: dials=%d err=%v", dials, err)
+	}
+	l := &failingAccept{failures: []error{net.ErrClosed}}
+	err = f.s.serveOwner(l, f.w.Administration(), w, f.id.Fingerprint(), nil)
+	if !errors.As(err, &cfg) || len(l.failures) != 1 {
+		t.Errorf("wrong owner evidence: remaining accepts=%d err=%v", len(l.failures), err)
 	}
 }

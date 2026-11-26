@@ -6,22 +6,22 @@ import (
 	"crypto/ed25519"
 )
 
-func (a admin) Settle(ctx context.Context, slot Slot, id ID) (Receipt, error) {
+func (a admin) Settle(ctx context.Context, epoch uint64, slot Slot, id ID) (Receipt, error) {
 	a.w.mu.Lock()
 	defer a.w.mu.Unlock()
-	return a.w.settle(ctx, slot, id)
+	return a.w.settle(ctx, epoch, slot, id)
 }
 
-func (c *client) Settle(ctx context.Context, slot Slot, id ID) (Receipt, error) {
+func (c *client) Settle(ctx context.Context, epoch uint64, slot Slot, id ID) (Receipt, error) {
 	if slot != c.slot {
 		return Receipt{}, &Reason{Kind: Unauthorized}
 	}
-	return c.w.SettleHome(ctx, slot, id, c.home.public)
+	return c.w.SettleHome(ctx, epoch, slot, id, c.home.public)
 }
 
 // SettleHome requires a live write grant because fencing an ID changes what
 // may commit. Authentication and disposition share the commit lock.
-func (w *Memory) SettleHome(ctx context.Context, slot Slot, id ID, home ed25519.PublicKey) (Receipt, error) {
+func (w *Memory) SettleHome(ctx context.Context, epoch uint64, slot Slot, id ID, home ed25519.PublicKey) (Receipt, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	g, ok := w.grants[slot]
@@ -31,12 +31,15 @@ func (w *Memory) SettleHome(ctx context.Context, slot Slot, id ID, home ed25519.
 	if e := w.slots[slot]; e != nil && !bytes.Equal(e.home, home) {
 		return Receipt{}, &Reason{Kind: Unauthorized}
 	}
-	return w.settle(ctx, slot, id)
+	return w.settle(ctx, epoch, slot, id)
 }
 
-func (w *Memory) settle(ctx context.Context, slot Slot, id ID) (Receipt, error) {
+func (w *Memory) settle(ctx context.Context, epoch uint64, slot Slot, id ID) (Receipt, error) {
 	if ctx.Err() != nil {
 		return Receipt{}, ErrUnavailable
+	}
+	if epoch != w.epoch {
+		return Receipt{}, ErrStale
 	}
 	if !slot.valid() || slot.Witness != w.witness || id == (ID{}) {
 		return Receipt{}, &Reason{Kind: InvalidRequest}

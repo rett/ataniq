@@ -2,8 +2,10 @@ package link
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"net"
+	"slices"
 	"testing"
 	"time"
 
@@ -94,7 +96,7 @@ func TestOneOutstandingMutationPerEnrollment(t *testing.T) {
 	read := make(chan error, 1)
 	go func() { _, err := q.exchange(ctx, frame.Read, nil, true); read <- err }()
 	select {
-	case call := <-q.calls:
+	case call := <-q.recoveryCalls:
 		call.result <- callResult{}
 	case <-ctx.Done():
 		t.Fatal("recovery read was not admitted")
@@ -107,7 +109,7 @@ func TestOneOutstandingMutationPerEnrollment(t *testing.T) {
 func TestPollShutdownCancelsGrant(t *testing.T) {
 	f := newFixture(t, "witness")
 	e, r := f.listener(t)
-	w := blockedGrant{entered: make(chan struct{})}
+	w := blockedGrant{Witness: memoryWitness{f.w}, entered: make(chan struct{})}
 	stop := startPolling(t, f.s, r, w)
 	result := make(chan error, 1)
 	go func() { _, err := e.Connect(t.Context(), f.slot, f.home, f.session); result <- err }()
@@ -133,5 +135,80 @@ func TestPermanentPollConfigurationError(t *testing.T) {
 		if !errors.As(err, &config) {
 			t.Fatalf("invalid configuration: %v", err)
 		}
+	}
+}
+
+type slowCurrentRead struct {
+	memoryWitness
+	entered chan struct{}
+}
+
+func (w slowCurrentRead) ReadHome(ctx context.Context, q cp.ReadRequest, key ed25519.PublicKey) (cp.View, error) {
+	if q.ReceiptID == (cp.ID{}) {
+		close(w.entered)
+		<-ctx.Done()
+		return cp.View{}, ctx.Err()
+	}
+	return w.Memory.ReadHome(ctx, q, key)
+}
+func TestRecoveryBehindSlowOrdinaryRead(t *testing.T) {
+	f := newFixture(t, "witness")
+	e, r := f.listener(t)
+	w := slowCurrentRead{memoryWitness{f.w}, make(chan struct{})}
+	startPolling(t, f.s, r, w)
+	f.enroll(t, f.w.Administration())
+	c, err := e.Connect(t.Context(), f.slot, f.home, f.session)
+	must(t, err)
+	go c.Read(t.Context(), cp.ReadRequest{Slot: f.slot, Challenge: cp.ID{1}})
+	<-w.entered
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	defer cancel()
+	_, err = c.Settle(ctx, 1, f.slot, cp.ID{2})
+	if !errors.Is(err, cp.ErrNotApplied) {
+		t.Fatalf("settlement behind blocked ordinary read: %v", err)
+	}
+}
+
+func TestNextPollServesRecoveryFirst(t *testing.T) {
+	q := requestQueue{calls: make(chan pendingCall, 1), recoveryCalls: make(chan pendingCall, 1)}
+	q.calls <- pendingCall{kind: frame.Connect}
+	q.recoveryCalls <- pendingCall{kind: frame.Settle}
+	for _, kind := range []frame.Kind{frame.Settle, frame.Connect} {
+		call, ready := q.nextCall()
+		if !ready || call.kind != kind {
+			t.Fatalf("next poll got %v, want %v", call.kind, kind)
+		}
+	}
+}
+
+func TestIdlePollAfterRefusalsResetsDelay(t *testing.T) {
+	f := newFixture(t, "witness")
+	_, r := f.listener(t)
+	dial := r.DialContext
+	attempt := 0
+	r.DialContext = func(ctx context.Context, n, a string) (net.Conn, error) {
+		attempt++
+		if attempt <= 5 {
+			return nil, cp.ErrRefused
+		}
+		return dial(ctx, n, a)
+	}
+	f.s.home = r
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var delays []time.Duration
+	f.s.pollDelay = func(d time.Duration) time.Duration {
+		delays = append(delays, d)
+		if len(delays) == 7 {
+			cancel()
+		}
+		return 0
+	}
+	if err := f.s.Poll(ctx, memoryWitness{f.w}); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 25 * time.Millisecond, 50 * time.Millisecond}
+	if !slices.Equal(delays, want) {
+		t.Fatalf("refusal and idle delays: %v", delays)
 	}
 }

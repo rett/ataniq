@@ -18,6 +18,9 @@ func dispositionBody(epoch uint64, digest [32]byte, result string) []byte {
 	return append(b, result...)
 }
 
+// WitnessEpoch is the immutable epoch used by this backend's disposition signer.
+func (w *Memory) WitnessEpoch() uint64 { return w.epoch }
+
 func (w *Memory) SignDisposition(ctx context.Context, digest [32]byte, result string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

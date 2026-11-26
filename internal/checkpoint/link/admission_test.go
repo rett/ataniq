@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -213,4 +214,40 @@ func TestConfiguredSourcesHaveReservedSlots(t *testing.T) {
 		t.Fatal("reserved capacity unavailable")
 	}
 	release()
+}
+
+type tcpPeer struct {
+	net.Conn
+	addr *net.TCPAddr
+}
+
+func (c tcpPeer) RemoteAddr() net.Addr { return c.addr }
+func TestTrustSourceNormalization(t *testing.T) {
+	f := newFixture(t, "witness")
+	id := identity(t, "home")
+	cert := seatgate.ServerTLS(f.id, nil).Certificates[0].Certificate[0]
+	for _, cidr := range []string{"0.0.0.0/0", "::/0", "::ffff:0:0/96", "::ffff:192.0.2.0/95"} {
+		_, err := NewEndpoint(id, cert, f.pin, 1, f.slot, TrustSources{netip.MustParsePrefix(cidr)})
+		var config *ConfigError
+		if !errors.As(err, &config) {
+			t.Errorf("accepted unbounded or ambiguous source %s", cidr)
+		}
+	}
+	for _, tc := range []struct{ cidr, peer string }{
+		{"::ffff:192.0.2.123/120", "192.0.2.7"},
+		{"fe80::/64", "fe80::2%eth0"},
+	} {
+		e, err := NewEndpoint(id, cert, f.pin, 1, f.slot, TrustSources{netip.MustParsePrefix(tc.cidr)})
+		must(t, err)
+		admit := homeAdmission(e.trust)
+		for _, ip := range []string{"192.0.3.1", "192.0.3.1", "192.0.3.2", "192.0.3.2"} {
+			if admit(sourceConn{source: net.ParseIP(ip)}) == nil {
+				t.Fatal("ordinary setup")
+			}
+		}
+		addr := net.TCPAddrFromAddrPort(netip.AddrPortFrom(netip.MustParseAddr(tc.peer), 1))
+		if admit(tcpPeer{addr: addr}) == nil {
+			t.Errorf("%s missed reserved %s", tc.peer, tc.cidr)
+		}
+	}
 }

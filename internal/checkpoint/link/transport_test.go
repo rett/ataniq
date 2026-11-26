@@ -205,7 +205,7 @@ func TestReadAuthenticationAndOwnerIsolation(t *testing.T) {
 	m, err := home.signedRead(frame.Read, q)
 	must(t, err)
 	q.ReceiptID = cp.ID{1}
-	m.Fields[0], err = readBody(q, home.wid, "read")
+	m.Fields[0], err = readBody(q, home.wid, "read", 0)
 	must(t, err)
 	_, err = home.exchange(t.Context(), m)
 	if !errors.Is(err, cp.ErrRefused) {

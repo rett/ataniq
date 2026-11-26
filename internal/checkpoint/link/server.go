@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
@@ -23,6 +24,7 @@ import (
 // WitnessEvidence belongs to the same backend as the operations it serves.
 type WitnessEvidence interface {
 	cp.DispositionSigner
+	WitnessEpoch() uint64
 	HasReceipt(context.Context, cp.Slot, cp.ID) (bool, error)
 }
 
@@ -30,7 +32,7 @@ type WitnessEvidence interface {
 // exact body and both signatures under the witness's mutation contract.
 type Witness interface {
 	WitnessEvidence
-	SettleHome(context.Context, cp.Slot, cp.ID, ed25519.PublicKey) (cp.Receipt, error)
+	SettleHome(context.Context, uint64, cp.Slot, cp.ID, ed25519.PublicKey) (cp.Receipt, error)
 	CheckHome(context.Context, cp.Slot, ed25519.PublicKey) error
 	ReadHome(context.Context, cp.ReadRequest, ed25519.PublicKey) (cp.View, error)
 	RawSubmit(context.Context, cp.Slot, ed25519.PublicKey, string, []byte, []byte, []byte) (cp.Receipt, error)
@@ -76,6 +78,25 @@ func NewServer(id seatgate.Identity, witnessPin ed25519.PublicKey, home Remote, 
 	}, nil
 }
 
+// Probe the live signer before accepting work. A fresh challenge and a
+// distinct result keep probe signatures separate from request dispositions.
+func (s *Server) checkEvidence(ctx context.Context, evidence WitnessEvidence) error {
+	ctx, cancel := context.WithTimeout(ctx, handshakeTimeout)
+	defer cancel()
+	const probe = "startup-probe"
+	var digest [32]byte
+	rand.Read(digest[:])
+	epoch := evidence.WitnessEpoch()
+	sig, err := evidence.SignDisposition(ctx, digest, probe)
+	if err != nil {
+		return err
+	}
+	if epoch == 0 || !cp.VerifyDisposition(s.witnessPin, epoch, digest, probe, sig) {
+		return &ConfigError{"backend disposition signer does not match witness pin and epoch"}
+	}
+	return nil
+}
+
 // ServeOwner is a separate owner endpoint. Supply a private local listener
 // and an independently provisioned client-certificate SPKI pin. Enrollment,
 // release, retirement and owner reads exist only on this authenticated endpoint.
@@ -90,6 +111,9 @@ func (s *Server) serveOwner(l net.Listener, a cp.Administration, evidence Witnes
 		return cp.ErrRefused
 	}
 	defer s.ownerServing.Store(false)
+	if err := s.checkEvidence(context.Background(), evidence); err != nil {
+		return err
+	}
 	return serveListener(l, serverTLS(s.id, ownerPin), s.ownerCapacity, s.timeout, admit, func(ctx context.Context, conn *tls.Conn, m frame.Message) {
 		_ = s.reply(ctx, conn, nil, a, evidence, m)
 	})
@@ -202,12 +226,12 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, e
 	var receipt cp.Receipt
 	var err error
 	switch m.Kind {
-	case frame.Connect, frame.Read, frame.OwnerRead, frame.Settle, frame.OwnerSettle:
+	case frame.Connect, frame.Read, frame.PendingRead, frame.OwnerRead, frame.Settle, frame.OwnerSettle:
 		ownerOp := m.Kind == frame.OwnerRead || m.Kind == frame.OwnerSettle
 		if ownerOp != (a != nil) {
 			return nil, cp.ErrRefused
 		}
-		q, err := parseRead(f[0], s.witnessKeyID, operation[m.Kind])
+		q, epoch, err := parseRead(f[0], s.witnessKeyID, operation[m.Kind])
 		if err != nil {
 			return nil, err
 		}
@@ -215,14 +239,14 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, e
 			return nil, cp.ErrRefused
 		}
 		pool := ordinary
+		if m.Kind == frame.Settle || m.Kind == frame.OwnerSettle || m.Kind == frame.PendingRead {
+			if q.ReceiptID == (cp.ID{}) {
+				return nil, frame.ErrProtocol
+			}
+			pool = reconcile
+		}
 		if (m.Kind == frame.Read || m.Kind == frame.OwnerRead) && q.ReceiptID != (cp.ID{}) {
-			found, err := evidence.HasReceipt(ctx, q.Slot, q.ReceiptID)
-			if err != nil {
-				return nil, err
-			}
-			if found {
-				pool = recoveryReads
-			}
+			pool = receiptIndex
 		}
 		if !s.limits.allow(w == nil, pool) {
 			return nil, cp.ErrUnavailable
@@ -232,15 +256,28 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, e
 				return nil, err
 			}
 		}
+		if pool == receiptIndex {
+			found, err := evidence.HasReceipt(ctx, q.Slot, q.ReceiptID)
+			if err != nil {
+				return nil, err
+			}
+			pool = ordinary
+			if found {
+				pool = recoveryReads
+			}
+			if !s.limits.allow(w == nil, pool) {
+				return nil, cp.ErrUnavailable
+			}
+		}
 		if m.Kind == frame.Connect {
 			return []frame.Message{frame.New(frame.Granted)}, nil
 		}
 		if m.Kind == frame.Settle || m.Kind == frame.OwnerSettle {
 			var r cp.Receipt
 			if w != nil {
-				r, err = w.SettleHome(ctx, q.Slot, q.ReceiptID, f[1])
+				r, err = w.SettleHome(ctx, epoch, q.Slot, q.ReceiptID, f[1])
 			} else {
-				r, err = a.Settle(ctx, q.Slot, q.ReceiptID)
+				r, err = a.Settle(ctx, epoch, q.Slot, q.ReceiptID)
 			}
 			if err != nil {
 				return nil, err
