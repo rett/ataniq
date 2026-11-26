@@ -1,0 +1,268 @@
+package enrollment
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+)
+
+const ledgerName = "events.v1.jsonl"
+const stageName = "advance.pending"
+
+// FileRoot names an existing, owner-protected directory under trusted
+// ancestors. Every component is opened without following symlinks. Flock on
+// the directory serializes cooperating enrollments, writers and starters.
+type FileRoot struct {
+	Path string
+}
+
+const directoryFlags = syscall.O_RDONLY | syscall.O_DIRECTORY | syscall.O_NOFOLLOW | syscall.O_CLOEXEC
+
+func (root FileRoot) Lock(fault Fault) (LockedLedger, error) {
+	path, err := filepath.Abs(root.Path)
+	if err != nil || root.Path == "" {
+		return nil, refuse(Insecure, err)
+	}
+	fd, err := syscall.Open("/", directoryFlags, 0)
+	if err != nil {
+		return nil, refuse(Insecure, err)
+	}
+	for _, name := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' }) {
+		next, err := syscall.Openat(fd, name, directoryFlags, 0)
+		_ = syscall.Close(fd)
+		if err != nil {
+			return nil, refuse(Insecure, err)
+		}
+		fd = next
+	}
+	dir := os.NewFile(uintptr(fd), path)
+	st, err := inspect(dir, true)
+	if err != nil {
+		_ = dir.Close()
+		return nil, err
+	}
+	if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = dir.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, refuse(Occupied, err)
+		}
+		return nil, refuse(Insecure, err)
+	}
+	return &fileLedger{dir: dir, identity: Identity{RootDevice: uint64(st.Dev), RootInode: st.Ino}, fault: fault}, nil
+}
+
+type fileLedger struct {
+	dir, ledger *os.File
+	identity    Identity
+	size        int64
+	changed     syscall.Timespec
+	fault       Fault
+}
+
+func inspect(f *os.File, directory bool) (syscall.Stat_t, error) {
+	var st syscall.Stat_t
+	if err := syscall.Fstat(int(f.Fd()), &st); err != nil {
+		return st, refuse(Insecure, err)
+	}
+	want := uint32(syscall.S_IFREG | 0600)
+	if directory {
+		want = syscall.S_IFDIR | 0700
+	}
+	if st.Mode != want || int(st.Uid) != os.Geteuid() || (!directory && st.Nlink != 1) {
+		return st, refuse(Insecure, fmt.Errorf("unexpected owner, mode or link count on %s", f.Name()))
+	}
+	return st, nil
+}
+
+func (f *fileLedger) open(name string, flags int) (*os.File, syscall.Stat_t, error) {
+	var st syscall.Stat_t
+	fd, err := syscall.Openat(int(f.dir.Fd()), name, flags|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0600)
+	if err != nil {
+		return nil, st, err
+	}
+	file := os.NewFile(uintptr(fd), name)
+	st, err = inspect(file, false)
+	if err != nil {
+		_ = file.Close()
+		return nil, st, err
+	}
+	return file, st, nil
+}
+
+func (f *fileLedger) persist(file *os.File, data []byte, op string) error {
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	if err := after(f.fault, op+".written"); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := after(f.fault, op+".file-synced"); err != nil {
+		return err
+	}
+	if err := f.dir.Sync(); err != nil {
+		return err
+	}
+	return after(f.fault, op+".dir-synced")
+}
+
+func (f *fileLedger) create(name string, data []byte, op string) (syscall.Stat_t, error) {
+	file, st, err := f.open(name, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL)
+	if err != nil {
+		return st, err
+	}
+	err = after(f.fault, op+".created")
+	if err == nil {
+		err = f.persist(file, data, op)
+	}
+	return st, errors.Join(err, file.Close())
+}
+
+func (f *fileLedger) Create(header []byte) (Identity, error) {
+	if names, err := f.dir.Readdirnames(1); err != io.EOF || len(names) != 0 {
+		if err != nil {
+			return Identity{}, err
+		}
+		return Identity{}, errors.New("enrollment requires an empty root")
+	}
+	st, err := f.create(ledgerName, header, "header")
+	if err != nil {
+		return Identity{}, err
+	}
+	f.identity.LedgerDevice, f.identity.LedgerInode = uint64(st.Dev), st.Ino
+	return f.identity, nil
+}
+
+func (f *fileLedger) Ledger() (io.Reader, Identity, error) {
+	file, st, err := f.open(ledgerName, syscall.O_RDONLY)
+	if errors.Is(err, os.ErrNotExist) {
+		// A scratch registry is never a candidate for automatic conversion.
+		legacy, _, e := f.open("registry.jsonl", syscall.O_RDONLY)
+		if e == nil {
+			_ = legacy.Close()
+			return nil, Identity{}, refuse(Legacy, nil)
+		}
+		return nil, Identity{}, refuse(MissingHeader, err)
+	}
+	if err != nil {
+		return nil, Identity{}, refuse(Insecure, err)
+	}
+	if f.ledger != nil {
+		_ = f.ledger.Close()
+	}
+	f.ledger = file
+	f.size, f.changed = st.Size, st.Ctim
+	f.identity.LedgerDevice, f.identity.LedgerInode = uint64(st.Dev), st.Ino
+	return file, f.identity, nil
+}
+
+// Check the name as well as the open descriptor across calls to the witness.
+func (f *fileLedger) Check() error {
+	dir, err := inspect(f.dir, true)
+	if err != nil {
+		return err
+	}
+	var named syscall.Stat_t
+	if err := syscall.Lstat(f.dir.Name(), &named); err != nil {
+		return refuse(Insecure, err)
+	}
+	if dir.Dev != named.Dev || dir.Ino != named.Ino {
+		return refuse(IdentityMismatch, nil)
+	}
+	file, st, err := f.open(ledgerName, syscall.O_RDONLY)
+	if err != nil {
+		return refuse(Insecure, err)
+	}
+	defer func() { _ = file.Close() }()
+	return f.checkLedger(st)
+}
+
+func (f *fileLedger) checkLedger(st syscall.Stat_t) error {
+	if uint64(st.Dev) != f.identity.LedgerDevice || st.Ino != f.identity.LedgerInode || st.Size != f.size || st.Ctim != f.changed {
+		return refuse(IdentityMismatch, nil)
+	}
+	return nil
+}
+
+// The base64-encoded record and checkpoint intent each have a 64 KiB limit.
+// Include both encodings, the signature, key and JSON framing.
+const stageLimit = 192 << 10
+
+func (f *fileLedger) Stage() ([]byte, error) {
+	file, st, err := f.open(stageName, syscall.O_RDONLY)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, refuse(Interrupted, err)
+	}
+	defer func() { _ = file.Close() }()
+	if st.Size > stageLimit {
+		return nil, refuse(Interrupted, errors.New("oversize staged advance"))
+	}
+	b, err := io.ReadAll(io.LimitReader(file, stageLimit+1))
+	if err != nil || int64(len(b)) != st.Size {
+		return nil, refuse(Interrupted, err)
+	}
+	return b, nil
+}
+
+func (f *fileLedger) SaveStage(b []byte) error {
+	_, err := f.create(stageName, b, "stage")
+	return err
+}
+
+func (f *fileLedger) Append(b []byte) error {
+	file, st, err := f.open(ledgerName, syscall.O_APPEND|syscall.O_WRONLY)
+	if err != nil {
+		return err
+	}
+	if err := f.checkLedger(st); err != nil {
+		_ = file.Close()
+		return err
+	}
+	err = f.persist(file, b, "append")
+	if err == nil {
+		st, err = inspect(file, false)
+		f.size += int64(len(b))
+		f.changed = st.Ctim
+		if err == nil {
+			err = f.checkLedger(st)
+		}
+	}
+	return errors.Join(err, file.Close())
+}
+
+func (f *fileLedger) Sync() error {
+	if err := f.ledger.Sync(); err != nil {
+		return err
+	}
+	return f.dir.Sync()
+}
+
+func (f *fileLedger) ClearStage() error {
+	if err := syscall.Unlinkat(int(f.dir.Fd()), stageName); err != nil {
+		return err
+	}
+	if err := after(f.fault, "stage.removed"); err != nil {
+		return err
+	}
+	if err := f.dir.Sync(); err != nil {
+		return err
+	}
+	return after(f.fault, "stage.removal-synced")
+}
+
+func (f *fileLedger) Close() error {
+	var err error
+	if f.ledger != nil {
+		err = f.ledger.Close()
+	}
+	return errors.Join(err, f.dir.Close())
+}
