@@ -4,6 +4,7 @@ import (
 	"errors"
 	"maps"
 	"math"
+	"reflect"
 	"slices"
 )
 
@@ -26,9 +27,11 @@ type Checkpoint struct {
 // Signer and Verifier belong to the authenticated adapter. Its verifier must
 // use the independently enrolled key for the supplied header.
 type Signer interface {
-	Sign(Header, Event) (string, error)
+	Sign(Header, []byte) (string, error)
 }
-type Verifier interface{ Verify(Header, Event) error }
+type Verifier interface {
+	Verify(Header, []byte, string) error
+}
 
 type transferKey struct {
 	key Key
@@ -139,6 +142,14 @@ func decideNew(l Ledger, c Command, digest string) (change, error) {
 	if err != nil {
 		return change{}, err
 	}
+	if c.Kind == Seed || c.Kind == Commit {
+		r.CommitRevision = r.Head.Revision
+	}
+	projected := tr
+	if tr.ID != r.LastTransferID {
+		projected = l.transfers[transferKey{key, r.LastTransferID}]
+	}
+	e.Public = project(l.header, l.rows[key], r, projected, e)
 	return change{e, r, tr}, nil
 }
 
@@ -198,9 +209,14 @@ func apply(l Ledger, e Event, privateIndexes bool) (Ledger, error) {
 	if err != nil {
 		return l, err
 	}
-	if ch.event.Result != e.Result {
+	if ch.event.Result != e.Result || !reflect.DeepEqual(ch.event.Public, e.Public) {
 		return l, ErrChain
 	}
+	signed, err := e.SignedPublicBytes()
+	if err != nil {
+		return l, err
+	}
+	ch.row.PublicDigest = sha256Hex(signed)
 	switch e.Command.Kind {
 	case Reserve:
 		ch.transfer.ReservationEventID = e.Result.EventID

@@ -1,7 +1,11 @@
 package assignment
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"reflect"
 	"slices"
@@ -14,12 +18,12 @@ var errSignature = errors.New("test signature mismatch")
 
 type testKey struct{}
 
-func (testKey) Sign(h Header, e Event) (string, error) {
-	return h.KeyID + "/" + e.Result.EventID, nil
+func (testKey) Sign(h Header, b []byte) (string, error) {
+	return h.KeyID + "/" + sha256Hex(b), nil
 }
-func (k testKey) Verify(h Header, e Event) error {
-	want, _ := k.Sign(h, e)
-	if e.Signature != want {
+func (k testKey) Verify(h Header, b []byte, sig string) error {
+	want, _ := k.Sign(h, b)
+	if sig != want {
 		return errSignature
 	}
 	return nil
@@ -111,7 +115,11 @@ func (s *trace) accept(t *testing.T, c Command) Event {
 	if err != nil || e == nil || e.Result != result {
 		t.Fatalf("decide %s: %v, %+v", c.Kind, err, result)
 	}
-	e.Signature, err = (testKey{}).Sign(header, *e)
+	b, err := e.SigningBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Signature, err = (testKey{}).Sign(header, b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,6 +320,7 @@ func TestReviewHistoricalHold(t *testing.T) {
 	}
 	got, _ := l.Row(key)
 	row.Head.Revision++
+	row.PublicDigest = got.PublicDigest
 	u, _ := l.Transfer(key, "U")
 	reviewed, _ := l.Transfer(key, "T")
 	held.Hold.Review = c.Evidence[0]
@@ -340,6 +349,51 @@ func TestUnsignedDecisionCannotAdvanceCheckpoint(t *testing.T) {
 		t.Fatal("unsigned disposition")
 	}
 	if _, err = Replay(header, append(s.events, *e), testKey{}); !errors.Is(err, ErrChain) {
+		t.Fatal(err)
+	}
+}
+
+func TestSignerHasStandalonePerRowProjection(t *testing.T) {
+	s := forward(t, 10)
+	pred := s.events[len(s.events)-1]
+	other := key
+	other.Project = "second"
+	s.accept(t, next(s.ledger, other, Seed, "elsewhere", ""))
+	open := s.accept(t, next(s.ledger, key, Open, "T", ""))
+	type publicBytes interface {
+		SigningBytes() ([]byte, error)
+		SignedPublicBytes() ([]byte, error)
+	}
+	prior, ok := any(pred).(publicBytes)
+	if !ok {
+		t.Fatal("accepted event lacks the signed public projection")
+	}
+	b, err := prior.SignedPublicBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPrev := fmt.Sprintf("%x", sha256.Sum256(b))
+	signing, err := any(open).(publicBytes).SigningBytes()
+	prefix := []byte("ataniq.assignment.event.v1\x00")
+	if err != nil || !bytes.HasPrefix(signing, prefix) {
+		t.Fatal("missing signing domain", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(signing[len(prefix):], &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["previous_public_digest"] != wantPrev || doc["commit_revision"] != "12" || doc["event_id"] != open.Result.EventID || doc["admission"] != true || doc["generation"] != "2" || doc["key_id"] != header.KeyID || doc["alg"] != "Ed25519" {
+		t.Fatal(doc)
+	}
+	executing, ok := doc["executing_instance"].(map[string]any)
+	if !ok || executing["store"] != managed.Store || executing["incarnation"] != managed.Incarnation {
+		t.Fatal(doc)
+	}
+	if _, exists := doc["signature"]; exists {
+		t.Fatal("signature in signing input")
+	}
+	l, err := Replay(header, s.events, testKey{})
+	if err != nil || !reflect.DeepEqual(l, s.ledger) {
 		t.Fatal(err)
 	}
 }

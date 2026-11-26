@@ -88,8 +88,10 @@ type Head struct {
 }
 
 type Row struct {
-	Head   Head
-	Holder Binding
+	Head           Head
+	CommitRevision uint64
+	PublicDigest   string
+	Holder         Binding
 	// LastTransferID also identifies the record after its active ID clears.
 	LastTransferID string
 	// Previous is the binding displaced by the most recent commit.
@@ -166,4 +168,5 @@ type Event struct {
 	Command                     Command
 	Result                      Result
 	Signature                   string
+	Public                      PublicEnvelope
 }
