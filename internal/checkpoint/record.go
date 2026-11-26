@@ -13,7 +13,11 @@ import (
 	"ataniq/internal/assignment/wire"
 )
 
-const maxFrame = 16 << 10
+// Advance repeats at most 16 variable identifiers: audience (1), slot (3),
+// ledger header (4), expected head (4), successor (4). JSON marshaling may
+// escape each byte as six ASCII bytes before canonicalization. Reserve 2 KiB
+// for member names, punctuation, fingerprints, digests and full-width counters.
+const maxFrame = 16*6*assignment.MaxReferenceBytes + 2048
 const maxDepth = 8
 
 func textOK(s string) bool {
@@ -37,7 +41,7 @@ func digestOK(s string) bool {
 // Canonicalize handles JSON syntax, duplicate members and Unicode validation.
 func canonical(raw []byte) ([]byte, error) {
 	if len(raw) > maxFrame {
-		return nil, ErrRefused
+		return nil, &Reason{Kind: InvalidRequest}
 	}
 	depth := 0
 	quoted, escaped := false, false
@@ -59,7 +63,7 @@ func canonical(raw []byte) ([]byte, error) {
 		case '{', '[':
 			depth++
 			if depth > maxDepth {
-				return nil, ErrRefused
+				return nil, &Reason{Kind: InvalidRequest}
 			}
 		case '}', ']':
 			depth--
@@ -67,14 +71,14 @@ func canonical(raw []byte) ([]byte, error) {
 	}
 	b, err := wire.Canonicalize(raw)
 	if err != nil {
-		return nil, ErrRefused
+		return nil, &Reason{Kind: InvalidRequest}
 	}
 	return b, nil
 }
 func encode(value any) ([]byte, error) {
 	raw, err := json.Marshal(value)
 	if err != nil {
-		return nil, ErrRefused
+		return nil, &Reason{Kind: InvalidRequest}
 	}
 	return canonical(raw)
 }
@@ -84,11 +88,11 @@ func encode(value any) ([]byte, error) {
 func decode(raw []byte, value any) error {
 	b, err := canonical(raw)
 	if err != nil || !bytes.Equal(raw, b) || json.Unmarshal(b, value) != nil {
-		return ErrRefused
+		return &Reason{Kind: InvalidRequest}
 	}
 	rebuilt, err := encode(value)
 	if err != nil || !bytes.Equal(raw, rebuilt) {
-		return ErrRefused
+		return &Reason{Kind: InvalidRequest}
 	}
 	return nil
 }
@@ -152,7 +156,7 @@ type enrollRecord struct {
 
 func enrollmentBody(e Enrollment, keyID string) ([]byte, error) {
 	if !e.Slot.valid() || e.ID == (ID{}) || len(e.HeaderBytes) > maxFrame || len(e.HomePublicKey) != ed25519.PublicKeySize {
-		return nil, ErrRefused
+		return nil, &Reason{Kind: InvalidRequest}
 	}
 	return encode(enrollRecord{recordHeader{1, "enroll", e.Slot.Witness, keyID}, idString(e.ID), e.Slot, base64.RawURLEncoding.EncodeToString(e.HeaderBytes), base64.RawURLEncoding.EncodeToString(e.HomePublicKey)})
 }
@@ -161,7 +165,7 @@ func enrollmentBody(e Enrollment, keyID string) ([]byte, error) {
 // submit alongside the independently configured pin.
 func ProveEnrollment(key ed25519.PrivateKey, e Enrollment) ([]byte, error) {
 	if !validPrivate(key) || !bytes.Equal(e.HomePublicKey, key.Public().(ed25519.PublicKey)) {
-		return nil, ErrRefused
+		return nil, &Reason{Kind: InvalidRequest}
 	}
 	id, err := KeyID(e.HomePublicKey)
 	if err != nil {
@@ -185,69 +189,31 @@ type mutationRecord struct {
 
 func mutationBody(op, keyID string, m Mutation, session []byte, next *assignment.Checkpoint, disposition string) ([]byte, error) {
 	if m.ID == (ID{}) || !validState(m.Expected) {
-		return nil, ErrRefused
+		return nil, &Reason{Kind: InvalidRequest}
 	}
 	r := mutationRecord{recordHeader: recordHeader{1, op, m.Expected.Slot.Witness, keyID}, ID: idString(m.ID), Expected: recordState(m.Expected)}
 	switch op {
 	case "claim":
 		if len(session) != ed25519.PublicKeySize {
-			return nil, ErrRefused
+			return nil, &Reason{Kind: InvalidRequest}
 		}
 		r.SessionPublicKey = base64.RawURLEncoding.EncodeToString(session)
 	case "advance":
 		if next == nil || !textOK(next.Authority) || !textOK(next.Incarnation) || !textOK(next.Store) || !textOK(next.LedgerID) || !digestOK(next.Digest) {
-			return nil, ErrRefused
+			return nil, &Reason{Kind: InvalidRequest}
 		}
 		h := head(*next)
 		r.Next = &h
 	case "retire":
 		if !digestOK(disposition) {
-			return nil, ErrRefused
+			return nil, &Reason{Kind: InvalidRequest}
 		}
 		r.DispositionDigest = disposition
 	case "release":
 	default:
-		return nil, ErrRefused
+		return nil, &Reason{Kind: InvalidRequest}
 	}
 	return encode(r)
-}
-
-type homeMutation struct {
-	mutation Mutation
-	session  ed25519.PublicKey
-	next     assignment.Checkpoint
-}
-
-func parseHomeMutation(op string, body []byte) (homeMutation, error) {
-	var r mutationRecord
-	if decode(body, &r) != nil || r.Schema != 1 || r.Operation != op || r.KeyID != r.Expected.HomeKeyID ||
-		r.Audience != r.Expected.Slot.Witness || !digestOK(r.ID) || r.DispositionDigest != "" {
-		return homeMutation{}, ErrRefused
-	}
-	var request homeMutation
-	if _, err := hex.Decode(request.mutation.ID[:], []byte(r.ID)); err != nil {
-		return homeMutation{}, ErrRefused
-	}
-	request.mutation.Expected = r.Expected.state()
-	if request.mutation.ID == (ID{}) || !validState(request.mutation.Expected) {
-		return homeMutation{}, ErrRefused
-	}
-	switch op {
-	case "claim":
-		raw, err := base64.RawURLEncoding.Strict().DecodeString(r.SessionPublicKey)
-		if err != nil || len(raw) != ed25519.PublicKeySize || base64.RawURLEncoding.EncodeToString(raw) != r.SessionPublicKey || r.Next != nil {
-			return homeMutation{}, ErrRefused
-		}
-		request.session = raw
-	case "advance":
-		if r.Next == nil || r.SessionPublicKey != "" || !digestOK(r.Next.Digest) {
-			return homeMutation{}, ErrRefused
-		}
-		request.next = assignment.Checkpoint(*r.Next)
-	default:
-		return homeMutation{}, ErrRefused
-	}
-	return request, nil
 }
 
 // AdvanceBody is the saved intent signed by both the home and its session.
@@ -285,7 +251,7 @@ type readRecord struct {
 
 func readBody(keyID string, q ReadRequest, v View, guard string) ([]byte, error) {
 	if q.Challenge == (ID{}) || q.Slot != v.Current.Slot || !validState(v.Current) {
-		return nil, ErrRefused
+		return nil, &Reason{Kind: InvalidRequest}
 	}
 	r := readRecord{recordHeader: recordHeader{1, "read", q.Slot.Authority, keyID}, Challenge: idString(q.Challenge), Guard: guard, Current: recordState(v.Current)}
 	if q.ReceiptID != (ID{}) {
@@ -294,7 +260,7 @@ func readBody(keyID string, q ReadRequest, v View, guard string) ([]byte, error)
 			r.PriorDigest = ReceiptDigest(*v.Prior)
 		}
 	} else if v.Prior != nil {
-		return nil, ErrRefused
+		return nil, &Reason{Kind: InvalidRequest}
 	}
 	return encode(r)
 }
@@ -320,26 +286,26 @@ func verifyReceipt(pin ed25519.PublicKey, keyID string, r Receipt) (Acknowledgem
 	var a ackRecord
 	if decode(r.Body, &a) != nil || !witnessProfile.verify(pin, r.Body, r.Signature) || a.Schema != 1 || a.KeyID != keyID ||
 		a.Audience != a.Result.Slot.Authority || !digestOK(a.ID) || !digestOK(a.RequestDigest) {
-		return Acknowledgement{}, ErrRefused
+		return Acknowledgement{}, &Reason{Kind: InvalidRequest}
 	}
 	switch a.Operation {
 	case "enroll", "claim", "advance", "release", "retire":
 	default:
-		return Acknowledgement{}, ErrRefused
+		return Acknowledgement{}, &Reason{Kind: InvalidRequest}
 	}
 	var id ID
 	if _, err := hex.Decode(id[:], []byte(a.ID)); err != nil {
-		return Acknowledgement{}, ErrRefused
+		return Acknowledgement{}, &Reason{Kind: InvalidRequest}
 	}
 	prior := a.Result.LastReceiptDigest
 	if id == (ID{}) || (a.Operation == "enroll" && (prior != "" || a.Result.Revision != 1)) ||
 		(a.Operation != "enroll" && !digestOK(prior)) {
-		return Acknowledgement{}, ErrRefused
+		return Acknowledgement{}, &Reason{Kind: InvalidRequest}
 	}
 	state := a.Result.state()
 	state.LastReceiptDigest = ReceiptDigest(r)
 	if !validState(state) {
-		return Acknowledgement{}, ErrRefused
+		return Acknowledgement{}, &Reason{Kind: InvalidRequest}
 	}
 	return Acknowledgement{a.Operation, id, a.RequestDigest, prior, state}, nil
 }
@@ -355,12 +321,12 @@ func VerifyView(pin ed25519.PublicKey, q ReadRequest, v View) error {
 }
 func verifyView(pin ed25519.PublicKey, keyID string, q ReadRequest, v View) error {
 	if len(v.Fresh.Body) > maxFrame || !witnessProfile.verify(pin, v.Fresh.Body, v.Fresh.Signature) {
-		return ErrRefused
+		return &Reason{Kind: InvalidRequest}
 	}
 	if v.Prior != nil {
 		a, err := verifyReceipt(pin, keyID, *v.Prior)
 		if err != nil || a.ID != q.ReceiptID || a.State.Slot != q.Slot {
-			return ErrRefused
+			return &Reason{Kind: InvalidRequest}
 		}
 	}
 	for _, guard := range []string{"ready", "inhibited"} {
@@ -372,7 +338,7 @@ func verifyView(pin ed25519.PublicKey, keyID string, q ReadRequest, v View) erro
 			return nil
 		}
 	}
-	return ErrRefused
+	return &Reason{Kind: InvalidRequest}
 }
 
 func idString(id ID) string { return hex.EncodeToString(id[:]) }

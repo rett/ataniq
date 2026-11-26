@@ -30,6 +30,9 @@ type Harness struct {
 	Revoke          func(cp.Slot)
 	LoseNextReply   func()
 	SetReceiptLimit func(uint64)
+	// TransformNextReply alters one successful claim or advance response after
+	// the witness produces it and before the client verifies it.
+	TransformNextReply func(func(cp.Receipt) cp.Receipt)
 }
 
 type Factory func(*testing.T, ed25519.PrivateKey) Harness
@@ -84,6 +87,14 @@ func want(t *testing.T, err, errorValue error) {
 	t.Helper()
 	if !errors.Is(err, errorValue) {
 		t.Fatalf("got %v, want %v", err, errorValue)
+	}
+}
+func wantReason(t *testing.T, err, category error, kind cp.ReasonKind) {
+	t.Helper()
+	want(t, err, category)
+	var r *cp.Reason
+	if !errors.As(err, &r) || r.Kind != kind {
+		t.Fatalf("got %v, want reason %s", err, kind)
 	}
 }
 func same(a, b cp.Receipt) bool {
@@ -142,6 +153,48 @@ func (f fixture) reconnect(t *testing.T, h home, session ed25519.PrivateKey) hom
 // The factory must provision a separate directory for each call, including
 // calls with identical keys used to model independent restores.
 func Run(t *testing.T, newWitness Factory) {
+	for _, op := range []string{"release", "retire"} {
+		t.Run("stale owner "+op, func(t *testing.T) { ownerCAS(t, newWitness, op) })
+	}
+	for _, field := range []string{"release", "retire", "ledger", "incarnation", "key"} {
+		t.Run("tombstone "+field, func(t *testing.T) { tombstone(t, newWitness, field) })
+	}
+	for _, op := range []string{"enroll", "release", "retire"} {
+		t.Run("conflicting "+op, func(t *testing.T) { conflictingOwnerID(t, newWitness, op) })
+	}
+	for _, op := range []string{"claim", "advance"} {
+		for _, field := range []string{"operation", "id", "request_digest", "predecessor", "head", "fence", "session", "epoch", "replay", "signer"} {
+			t.Run("lying "+op+" "+field, func(t *testing.T) { lyingReply(t, newWitness, op, field) })
+		}
+	}
+	t.Run("owner read after revocation", func(t *testing.T) {
+		f := start(t, newWitness)
+		h := f.home(t, "west", "s", "one", true)
+		s := f.claim(t, h, f.enroll(t, h), "claim")
+		f.Revoke(h.slot)
+		q := cp.ReadRequest{Slot: h.slot, Challenge: id("owner"), ReceiptID: h.e.ID}
+		v, err := f.Admin.Read(f.ctx, q)
+		check(t, err)
+		check(t, cp.VerifyView(f.pin, q, v))
+		if v.Current != s || v.Prior == nil {
+			t.Fatal("owner could not form Expected")
+		}
+		_, err = f.Admin.Release(f.ctx, mutation(v.Current, "release"))
+		check(t, err)
+		q.Challenge = id("released")
+		v, err = f.Admin.Read(f.ctx, q)
+		check(t, err)
+		check(t, cp.VerifyView(f.pin, q, v))
+		_, err = f.Admin.Retire(f.ctx, cp.Retirement{Mutation: mutation(v.Current, "retire"), DispositionDigest: digest("d")})
+		check(t, err)
+		q.Challenge = id("tombstone")
+		v, err = f.Admin.Read(f.ctx, q)
+		check(t, err)
+		check(t, cp.VerifyView(f.pin, q, v))
+		if v.Current.Status != cp.Retired || v.Current.Head != s.Head || v.Prior == nil {
+			t.Fatal("owner lost retired evidence")
+		}
+	})
 	t.Run("enrollment", func(t *testing.T) {
 		f := start(t, newWitness)
 		h := f.home(t, "west", "shared", "one", true)
@@ -194,7 +247,7 @@ func Run(t *testing.T, newWitness Factory) {
 		_, err = f.Admin.Retire(f.ctx, cp.Retirement{Mutation: mutation(v.Current, "retire"), DispositionDigest: digest("disposed")})
 		check(t, err)
 		_, err = f.Admin.Enroll(f.ctx, h.e)
-		want(t, err, cp.ErrRetired)
+		want(t, err, cp.ErrStale)
 		f.enroll(t, replacement)
 	})
 	t.Run("two homes and live grants", func(t *testing.T) {
@@ -233,13 +286,38 @@ func Run(t *testing.T, newWitness Factory) {
 		_, err = a.c.Advance(f.ctx, advance(sa, "revoked"))
 		want(t, err, cp.ErrRefused)
 		_, err = a.c.Read(f.ctx, cp.ReadRequest{Slot: a.slot, Challenge: id("revoked")})
-		want(t, err, cp.ErrRefused)
+		wantReason(t, err, cp.ErrRefused, cp.Unauthorized)
 		_, err = f.Admin.Retire(f.ctx, cp.Retirement{Mutation: mutation(sa, "lost key"), DispositionDigest: digest("fenced")})
 		check(t, err)
 		if f.state(t, b, "still online").Head.Sequence != 1 {
 			t.Fatal("foreign grant affected east")
 		}
 	})
+	for _, op := range []string{"release", "retire"} {
+		t.Run("capacity owner "+op, func(t *testing.T) {
+			f := start(t, newWitness)
+			h := f.home(t, "west", "s", "one", true)
+			s := f.claim(t, h, f.enroll(t, h), "claim")
+			f.SetReceiptLimit(2)
+			_, err := h.c.Advance(f.ctx, advance(s, "full"))
+			want(t, err, cp.ErrUnavailable)
+			m := mutation(s, "owner")
+			var r cp.Receipt
+			status := cp.Active
+			if op == "release" {
+				r, err = f.Admin.Release(f.ctx, m)
+			} else {
+				status = cp.Retired
+				r, err = f.Admin.Retire(f.ctx, cp.Retirement{Mutation: m, DispositionDigest: digest("dispose")})
+			}
+			check(t, err)
+			a, err := cp.VerifyReceipt(f.pin, r)
+			check(t, err)
+			if a.State.Fence != s.Fence+1 || a.State.SessionKeyID != "" || a.State.Status != status || a.State != f.state(t, h, "fenced") {
+				t.Fatal("wrong fencing receipt")
+			}
+		})
+	}
 	t.Run("capacity preserves recovery", func(t *testing.T) {
 		f := start(t, newWitness)
 		h := f.home(t, "west", "s", "one", true)
@@ -263,6 +341,78 @@ func Run(t *testing.T, newWitness Factory) {
 		want(t, err, cp.ErrUnavailable)
 		if f.state(t, h, "still recoverable") != v.Current {
 			t.Fatal("capacity refusal changed state")
+		}
+	})
+	t.Run("inhibited retry", func(t *testing.T) {
+		f := start(t, newWitness)
+		h := f.home(t, "west", "s", "one", true)
+		s := f.claim(t, h, f.enroll(t, h), "claim")
+		q := advance(s, "first")
+		f.LoseNextReply()
+		_, err := h.c.Advance(f.ctx, q)
+		want(t, err, cp.ErrUnknownOutcome)
+		f.Inhibit(true)
+		r, err := h.c.Advance(f.ctx, q)
+		check(t, err)
+		a, err := cp.VerifyReceipt(f.pin, r)
+		check(t, err)
+		if a.ID != q.ID || a.State.Head != q.Next {
+			t.Fatal("retry lost committed advance")
+		}
+		next := advance(a.State, "second")
+		_, err = h.c.Advance(f.ctx, next)
+		want(t, err, cp.ErrUnavailable)
+		f.Inhibit(false)
+		_, err = h.c.Advance(f.ctx, next)
+		check(t, err)
+		f.Inhibit(true)
+		_, err = h.c.Advance(f.ctx, q)
+		want(t, err, cp.ErrStale)
+	})
+	t.Run("historical head", func(t *testing.T) {
+		f := start(t, newWitness)
+		h := f.home(t, "west", "s", "one", true)
+		s := f.claim(t, h, f.enroll(t, h), "claim")
+		first := advance(s, "first")
+		r, err := h.c.Advance(f.ctx, first)
+		check(t, err)
+		a, err := cp.VerifyReceipt(f.pin, r)
+		check(t, err)
+		later, err := h.c.Advance(f.ctx, advance(a.State, "second"))
+		check(t, err)
+		b, err := cp.VerifyReceipt(f.pin, later)
+		check(t, err)
+		_, err = h.c.Advance(f.ctx, first)
+		want(t, err, cp.ErrStale)
+		first.Next.Digest = digest("different")
+		_, err = h.c.Advance(f.ctx, first)
+		want(t, err, cp.ErrStale)
+		q := cp.ReadRequest{Slot: h.slot, Challenge: id("historical challenge"), ReceiptID: first.ID}
+		v, err := h.c.Read(f.ctx, q)
+		check(t, err)
+		if v.Current != b.State {
+			t.Fatal("historical lookup changed the current head")
+		}
+		check(t, cp.VerifyView(f.pin, q, v))
+		if v.Prior == nil || !same(*v.Prior, r) {
+			t.Fatal("missing historical receipt")
+		}
+	})
+	t.Run("replacement retry", func(t *testing.T) {
+		f := start(t, newWitness)
+		h := f.home(t, "west", "s", "one", true)
+		s := f.claim(t, h, f.enroll(t, h), "claim")
+		q := advance(s, "saved advance")
+		_, err := h.c.Advance(f.ctx, q)
+		check(t, err)
+		_, err = f.Admin.Release(f.ctx, mutation(f.state(t, h, "before release"), "release"))
+		check(t, err)
+		replacement := f.reconnect(t, h, key("replacement"))
+		current := f.claim(t, replacement, f.state(t, h, "released"), "replace")
+		_, err = replacement.c.Advance(f.ctx, q)
+		want(t, err, cp.ErrStale)
+		if f.state(t, replacement, "after retry") != current {
+			t.Fatal("retry changed replacement state")
 		}
 	})
 	t.Run("exact predecessor", func(t *testing.T) { exactPredecessor(t, start(t, newWitness)) })
@@ -325,7 +475,7 @@ func exactPredecessor(t *testing.T, f fixture) {
 			old := s
 			alter(&old)
 			_, err := h.c.Advance(f.ctx, advance(old, "cas"))
-			if err != cp.ErrRefused && err != cp.ErrStale {
+			if !errors.Is(err, cp.ErrRefused) && !errors.Is(err, cp.ErrStale) {
 				t.Fatal("wrong CAS result", err)
 			}
 		})
@@ -431,7 +581,7 @@ func recovery(t *testing.T, f fixture) {
 	conflict := q
 	conflict.Next.Digest = digest("conflict")
 	_, err = h.c.Advance(f.ctx, conflict)
-	want(t, err, cp.ErrStale)
+	wantReason(t, err, cp.ErrStale, cp.MutationConflict)
 	conflict.ID = id("divergence")
 	_, err = h.c.Advance(f.ctx, conflict)
 	want(t, err, cp.ErrStale)
@@ -547,7 +697,7 @@ func interleave(t *testing.T, factory Factory) {
 					}
 				}
 				if err != nil {
-					if err != cp.ErrStale && err != cp.ErrRefused && err != cp.ErrRetired {
+					if !errors.Is(err, cp.ErrStale) && !errors.Is(err, cp.ErrRefused) && !errors.Is(err, cp.ErrRetired) {
 						t.Fatal(err)
 					}
 					continue
