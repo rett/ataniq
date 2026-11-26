@@ -265,6 +265,23 @@ func Run(t *testing.T, newWitness Factory) {
 			t.Fatal("capacity refusal changed state")
 		}
 	})
+	t.Run("replacement retry", func(t *testing.T) {
+		f := start(t, newWitness)
+		h := f.home(t, "west", "s", "one", true)
+		s := f.claim(t, h, f.enroll(t, h), "claim")
+		q := advance(s, "saved advance")
+		_, err := h.c.Advance(f.ctx, q)
+		check(t, err)
+		_, err = f.Admin.Release(f.ctx, mutation(f.state(t, h, "before release"), "release"))
+		check(t, err)
+		replacement := f.reconnect(t, h, key("replacement"))
+		current := f.claim(t, replacement, f.state(t, h, "released"), "replace")
+		_, err = replacement.c.Advance(f.ctx, q)
+		want(t, err, cp.ErrStale)
+		if f.state(t, replacement, "after retry") != current {
+			t.Fatal("retry changed replacement state")
+		}
+	})
 	t.Run("exact predecessor", func(t *testing.T) { exactPredecessor(t, start(t, newWitness)) })
 	t.Run("partition and session replacement", func(t *testing.T) { recovery(t, start(t, newWitness)) })
 	t.Run("independent restore", func(t *testing.T) { restore(t, newWitness) })
