@@ -13,6 +13,16 @@ func lyingReply(t *testing.T, factory Factory, op, field string) {
 	s := f.enroll(t, h)
 	if op == "advance" {
 		s = f.claim(t, h, s, "claim")
+	} else if field == "home" {
+		// Genesis binds the header digest. Use a later head so the lie can
+		// change just the home identity and remain a well-formed state.
+		s = f.claim(t, h, s, "initial claim")
+		_, err := h.c.Advance(f.ctx, advance(s, "first frame"))
+		check(t, err)
+		_, err = f.Admin.Release(f.ctx, mutation(f.state(t, h, "advanced"), "release"))
+		check(t, err)
+		h = f.reconnect(t, h, key("next session"))
+		s = f.state(t, h, "ready to claim")
 	}
 	read := cp.ReadRequest{Slot: h.slot, Challenge: id("before reply fault"), ReceiptID: h.e.ID}
 	before, err := h.c.Read(f.ctx, read)
@@ -48,6 +58,15 @@ func lyingReply(t *testing.T, factory Factory, op, field string) {
 			result["session_key_id"] = s.HomeKeyID
 		case "epoch":
 			result["epoch"] = "2"
+		case "revision":
+			result["revision"] = "100"
+		case "home":
+			other, err := cp.KeyID(pub(key("another home")))
+			check(t, err)
+			result["home_key_id"] = other
+			result["header"].(map[string]any)["key_id"] = other
+		case "witness_slot":
+			result["slot"].(map[string]any)["witness"] = "another witness"
 		case "signer":
 			signer = key("another witness")
 		}
