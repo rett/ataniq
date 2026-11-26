@@ -248,11 +248,15 @@ func classifyFrameError(err error, prefix []byte, frames, entries *bufio.Reader)
 	return ErrTorn
 }
 
-func (w *Witness) replay(homeID string) error {
-	frames, entries := bufio.NewReader(w.journal), bufio.NewReader(w.lockFile)
+func (w *Witness) replay(homeID string, journal, index io.Reader) error {
+	frames, entries := bufio.NewReader(journal), bufio.NewReader(index)
 	var frame, entry bytes.Buffer
 	for {
-		if _, err := frames.Peek(1); err == io.EOF {
+		_, err := frames.Peek(1)
+		if err != nil && err != io.EOF {
+			return err
+		}
+		if err == io.EOF {
 			if _, err := entries.Peek(1); err != io.EOF {
 				if err != nil {
 					return err

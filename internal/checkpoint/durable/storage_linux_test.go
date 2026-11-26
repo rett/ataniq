@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"ataniq/internal/assignment"
@@ -846,4 +848,26 @@ func TestConcurrentOpenDuringCreate(t *testing.T) {
 	must(t, err)
 	must(t, w.Close())
 	reopen(t, c)
+}
+
+func TestReplayReadErrorBetweenFrames(t *testing.T) {
+	c := config(t, testKey("read error"))
+	w := create(t, c)
+	q := fixtureEnrollment(t, w)
+	path := filepath.Join(c.Directory, journalName)
+	genesis := len(readFile(t, path))
+	_, err := w.Administration().Enroll(t.Context(), q)
+	must(t, err)
+	frames := readFile(t, path)
+	// The first underlying read supplies exactly genesis. Lookahead then
+	// sees one transient error before the reader can continue with Enroll.
+	input := io.MultiReader(iotest.TimeoutReader(bytes.NewReader(frames[:genesis])), bytes.NewReader(frames[genesis:]))
+	entries := bytes.NewReader(readFile(t, filepath.Join(c.Directory, lockName)))
+	fresh := &Witness{dir: w.dir, journal: w.journal, lockFile: w.lockFile, pin: w.pin, homePin: w.homePin, keyID: w.keyID, identity: w.identity,
+		slots: make(map[cp.Slot]*enrollment), history: make(map[item]accepted), syncFile: (*os.File).Sync}
+	homeID, err := cp.KeyID(c.HomePin)
+	must(t, err)
+	if err = fresh.replay(homeID, input, entries); !errors.Is(err, iotest.ErrTimeout) {
+		t.Fatalf("replay lost read error: %v", err)
+	}
 }

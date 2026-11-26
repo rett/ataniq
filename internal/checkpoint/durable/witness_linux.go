@@ -187,7 +187,7 @@ func start(c Config, create bool) (*Witness, error) {
 		}
 		_, err = w.commit(record{Seq: 1, Identity: &id, HomeKeyID: homeID, Op: "create"}, change{})
 	} else {
-		err = w.replay(homeID)
+		err = w.replay(homeID, w.journal, w.lockFile)
 	}
 	if err != nil {
 		return nil, err
