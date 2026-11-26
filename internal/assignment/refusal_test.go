@@ -175,3 +175,30 @@ func TestHoldReviewedEvidence(t *testing.T) {
 	refused(t, s.ledger, c, ErrEvidence)
 	s.accept(t, next(s.ledger, key, HoldReviewed, "T", ""))
 }
+
+func TestRollbackFromClosedCommitWithFreshOwnerAuthorization(t *testing.T) {
+	s := forward(t, 8)
+	committed := s.events[len(s.events)-1]
+	reverse := next(s.ledger, key, RollbackFreeze, "U", "")
+	reverse.Authorization = ""
+	refused(t, s.ledger, reverse, ErrInvalid)
+	reverse.Authorization = "owner approval for U"
+	wrong := reverse
+	wrong.Candidate.Incarnation += "-replacement"
+	refused(t, s.ledger, wrong, ErrPhase)
+	s.accept(t, reverse)
+	home, err := recoverAt(s.events, s.ledger.Checkpoint())
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := home.Transfer(key, "U")
+	if u.Original != committed.Result.Head || u.Authorization != reverse.Authorization || u.Candidate != legacy {
+		t.Fatal(u)
+	}
+	if prior, ok := Lookup(home, key, "T", ""); !ok || prior != committed.Result {
+		t.Fatal(prior)
+	}
+	assertHolder(t, home, managed, 2, false)
+	s.steps(t, "U", forwardSteps[1:])
+	assertHolder(t, s.ledger, legacy, 3, true)
+}

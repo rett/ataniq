@@ -102,7 +102,14 @@ func reduce(r Row, t Transfer, c Command, digest string, prior Evidence) (Row, T
 			}
 			r.Head.Phase = PhaseFrozen
 		case RollbackFreeze:
-			if (!old.Phase.open() && old.Phase != PhaseCommittedClosed) || c.Candidate != r.Previous {
+			// The verified owner authorization names this new transfer. A
+			// closed commit can be reversed before the successor confirms.
+			switch old.Phase {
+			case PhaseCommittedClosed, PhaseConfirmed, PhaseAborted:
+			default:
+				return r, t, ErrPhase
+			}
+			if c.Candidate != r.Previous {
 				return r, t, ErrPhase
 			}
 			r.Head.Phase = PhaseFrozen
