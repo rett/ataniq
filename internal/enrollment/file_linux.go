@@ -12,6 +12,7 @@ import (
 
 const ledgerName = "events.v1.jsonl"
 const stageName = "advance.pending"
+const receiptName = "advance.receipt"
 
 // FileRoot names an existing, owner-protected directory under trusted
 // ancestors. Every component is opened without following symlinks. Flock on
@@ -243,8 +244,10 @@ func (f *fileLedger) checkLedger(st syscall.Stat_t) error {
 // Include both encodings, the signature, key and JSON framing.
 const stageLimit = 192 << 10
 
-func (f *fileLedger) Stage() ([]byte, error) {
-	file, st, err := f.open(stageName, syscall.O_RDONLY)
+func (f *fileLedger) receipt() ([]byte, error) { return f.readOptional(receiptName) }
+func (f *fileLedger) Stage() ([]byte, error)   { return f.readOptional(stageName) }
+func (f *fileLedger) readOptional(name string) ([]byte, error) {
+	file, st, err := f.open(name, syscall.O_RDONLY)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -253,7 +256,7 @@ func (f *fileLedger) Stage() ([]byte, error) {
 	}
 	defer func() { _ = file.Close() }()
 	if st.Size > stageLimit {
-		return nil, refuse(Interrupted, errors.New("oversize staged advance"))
+		return nil, refuse(Interrupted, fmt.Errorf("oversize %s", name))
 	}
 	b, err := io.ReadAll(io.LimitReader(file, stageLimit+1))
 	if err != nil || int64(len(b)) != st.Size {
@@ -296,6 +299,33 @@ func (f *fileLedger) Sync() error {
 		return err
 	}
 	return f.dir.Sync()
+}
+
+// Keep one replacement slot. The intact stage can reconstruct the receipt
+// after any interruption up to the rename and directory sync.
+func (f *fileLedger) saveReceipt(raw []byte) error {
+	const temp = receiptName + ".tmp"
+	fd := int(f.dir.Fd())
+	if err := syscall.Unlinkat(fd, temp); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	file, err := f.create(temp, raw, "receipt")
+	if err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := syscall.Renameat(fd, temp, fd, receiptName); err != nil {
+		return err
+	}
+	if err := after(f.fault, "receipt.renamed"); err != nil {
+		return err
+	}
+	if err := f.dir.Sync(); err != nil {
+		return err
+	}
+	return after(f.fault, "receipt.rename-synced")
 }
 
 func (f *fileLedger) ClearStage() error {

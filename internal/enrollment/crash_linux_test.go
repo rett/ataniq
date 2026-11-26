@@ -81,14 +81,14 @@ func TestAdvanceCuts(t *testing.T) {
 			if tc.point == "lost reply" {
 				f.w.LoseNextReply()
 			}
-			err := AppendAndAdvance(f.ctx, s, e)
+			err := appendOnly(f.ctx, s, e)
 			want(t, err, Interrupted)
 			if tc.point != "lost reply" && !errors.Is(err, errCut) {
 				t.Fatal("missed boundary", err)
 			}
 			_, err = s.Ledger()
 			want(t, err, Closed)
-			want(t, AppendAndAdvance(f.ctx, s, e), Closed)
+			want(t, appendOnly(f.ctx, s, e), Closed)
 			check(t, s.Close())
 			state := f.state(t)
 			if (state.Head.Sequence == 1) != tc.committed {
@@ -164,7 +164,7 @@ func TestInvalidStageNeverAdvances(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			f := enrolled(t)
 			s := f.open(t, cut("append.dir-synced"))
-			want(t, AppendAndAdvance(f.ctx, s, f.seed(t, s, "project")), Interrupted)
+			want(t, appendOnly(f.ctx, s, f.seed(t, s, "project")), Interrupted)
 			check(t, s.Close())
 			path := filepath.Join(f.root.Path, stageName)
 			var p staged
@@ -237,20 +237,20 @@ func TestSwappedDirectoryNeverAdmitted(t *testing.T) {
 			want(t, f.enroll(swapAt(t, f, point)), EnrollmentFailed)
 		})
 	}
-	for _, point := range []string{"stage.created", "stage.written", "stage.file-synced", "stage.dir-synced", "append.written", "append.file-synced", "append.dir-synced", "advance.committed", "stage.removed", "stage.removal-synced"} {
+	for _, point := range []string{"stage.created", "stage.written", "stage.file-synced", "stage.dir-synced", "append.written", "append.file-synced", "append.dir-synced", "advance.committed", "receipt.created", "receipt.written", "receipt.file-synced", "receipt.dir-synced", "receipt.renamed", "receipt.rename-synced", "stage.removed", "stage.removal-synced"} {
 		t.Run(point, func(t *testing.T) {
 			f := enrolled(t)
 			s := f.open(t, swapAt(t, f, point))
-			if err := AppendAndAdvance(f.ctx, s, f.seed(t, s, "row")); err == nil {
+			if err := appendOnly(f.ctx, s, f.seed(t, s, "row")); err == nil {
 				t.Fatal("published after directory replacement")
 			}
 		})
 	}
-	for _, point := range []string{"start.claimed", "stage.removed", "stage.removal-synced"} {
+	for _, point := range []string{"start.claimed", "receipt.created", "receipt.written", "receipt.file-synced", "receipt.dir-synced", "receipt.renamed", "receipt.rename-synced", "stage.removed", "stage.removal-synced"} {
 		t.Run("start-"+point, func(t *testing.T) {
 			f := enrolled(t)
 			s := f.open(t, cut("advance.committed"))
-			want(t, AppendAndAdvance(f.ctx, s, f.seed(t, s, "row")), Interrupted)
+			want(t, appendOnly(f.ctx, s, f.seed(t, s, "row")), Interrupted)
 			check(t, s.Close())
 			f.release(t)
 			s, err := f.start(swapAt(t, f, point))
@@ -268,7 +268,7 @@ func TestTornStageNeedsCleanEqualLedger(t *testing.T) {
 			f := enrolled(t)
 			s := f.open(t, cut("append.dir-synced"))
 			header := contents(t, f.ledgerPath())
-			want(t, AppendAndAdvance(f.ctx, s, f.seed(t, s, "row")), Interrupted)
+			want(t, appendOnly(f.ctx, s, f.seed(t, s, "row")), Interrupted)
 			check(t, s.Close())
 			f.release(t)
 			path := filepath.Join(f.root.Path, stageName)
@@ -289,6 +289,76 @@ func TestTornStageNeedsCleanEqualLedger(t *testing.T) {
 			}
 			if f.state(t).Head != head {
 				t.Fatal("changed witness head")
+			}
+		})
+	}
+}
+
+func TestAdvanceReceiptSurvivesClose(t *testing.T) {
+	f := enrolled(t)
+	s := f.open(t, nil)
+	first, err := AppendAndAdvance(f.ctx, s, f.seed(t, s, "one"))
+	check(t, err)
+	ack, err := cp.VerifyReceipt(f.b.WitnessPin, first.Receipt)
+	check(t, err)
+	if ack.ID != first.ID || ack.State != f.state(t) {
+		t.Fatal("returned wrong evidence")
+	}
+	prior := contents(t, filepath.Join(f.root.Path, receiptName))
+	second, err := AppendAndAdvance(f.ctx, s, f.seed(t, s, "two"))
+	check(t, err)
+	check(t, s.Close())
+	f.release(t)
+	s = f.open(t, nil)
+	got, err := s.LastReceipt()
+	check(t, err)
+	if got.ID != second.ID || cp.ReceiptDigest(got.Receipt) != cp.ReceiptDigest(second.Receipt) {
+		t.Fatal("lost last verified advance")
+	}
+	files, err := os.ReadDir(f.root.Path)
+	check(t, err)
+	if len(files) != 2 {
+		t.Fatal("receipt history grew", files)
+	}
+	check(t, s.Close())
+	f.release(t)
+	state := f.state(t)
+	for _, raw := range [][]byte{prior, []byte("{")} {
+		put(t, filepath.Join(f.root.Path, receiptName), raw)
+		f.refused(t, Interrupted)
+		if f.state(t) != state {
+			t.Fatal("claimed before checking receipt")
+		}
+	}
+}
+
+func TestReceiptReplacementCuts(t *testing.T) {
+	for _, point := range []string{"receipt.created", "receipt.written", "receipt.file-synced", "receipt.dir-synced", "receipt.renamed", "receipt.rename-synced"} {
+		t.Run(point, func(t *testing.T) {
+			f := enrolled(t)
+			var fault cut
+			s := f.open(t, boundaryHook(func(boundary string) error { return fault.After(boundary) }))
+			check(t, appendOnly(f.ctx, s, f.seed(t, s, "one")))
+			fault = cut(point)
+			r, err := AppendAndAdvance(f.ctx, s, f.seed(t, s, "two"))
+			want(t, err, Interrupted)
+			if r != nil || !errors.Is(err, errCut) {
+				t.Fatal("published or missed boundary", err)
+			}
+			check(t, s.Close())
+			f.release(t)
+			s = f.open(t, nil)
+			last, err := s.LastReceipt()
+			check(t, err)
+			ack, err := cp.VerifyReceipt(f.b.WitnessPin, last.Receipt)
+			check(t, err)
+			if ack.State.Head.Sequence != 2 || ack.ID != last.ID {
+				t.Fatal("failed to recover receipt")
+			}
+			files, err := os.ReadDir(f.root.Path)
+			check(t, err)
+			if len(files) != 2 {
+				t.Fatal("replacement debris", files)
 			}
 		})
 	}

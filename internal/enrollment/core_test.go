@@ -41,6 +41,8 @@ func (m *readOnlyLedger) Ledger() (io.Reader, Identity, error) {
 
 func (m *readOnlyLedger) Check() error { return nil }
 
+func (m *readOnlyLedger) receipt() ([]byte, error) { return nil, nil }
+
 func (m *readOnlyLedger) Stage() ([]byte, error) { return nil, nil }
 
 func (m *readOnlyLedger) Close() error { m.locked = false; return nil }

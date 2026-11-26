@@ -124,6 +124,8 @@ type LockedLedger interface {
 	Ledger() (io.Reader, Identity, error)
 	Check() error           // recheck the locked root and the ledger observed by replay
 	Stage() ([]byte, error) // nil for absent
+	receipt() ([]byte, error)
+	saveReceipt([]byte) error
 	SaveStage([]byte) error // exclusive create
 	Append([]byte) error
 	Sync() error

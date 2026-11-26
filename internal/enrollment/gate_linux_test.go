@@ -17,6 +17,11 @@ import (
 	cp "ataniq/internal/checkpoint"
 )
 
+func appendOnly(ctx context.Context, s *Store, e a.Event) error {
+	_, err := AppendAndAdvance(ctx, s, e)
+	return err
+}
+
 func check(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
@@ -166,10 +171,10 @@ func TestCompareAndReplay(t *testing.T) {
 			header := contents(t, f.ledgerPath())
 			one := f.seed(t, s, "one")
 			alternative := f.seed(t, s, "another")
-			check(t, AppendAndAdvance(f.ctx, s, one))
+			check(t, appendOnly(f.ctx, s, one))
 			prefix := contents(t, f.ledgerPath())
 			fork := f.seed(t, s, "fork")
-			check(t, AppendAndAdvance(f.ctx, s, f.seed(t, s, "two")))
+			check(t, appendOnly(f.ctx, s, f.seed(t, s, "two")))
 			check(t, s.Close())
 			f.release(t)
 			path := f.ledgerPath()
@@ -305,8 +310,8 @@ func TestTwoHomesAndRetirement(t *testing.T) {
 	other.connect(t)
 	check(t, other.enroll(nil))
 	s2 := other.open(t, nil)
-	check(t, AppendAndAdvance(other.ctx, s2, other.seed(t, s2, "same")))
-	check(t, AppendAndAdvance(f.ctx, s, f.seed(t, s, "same")))
+	check(t, appendOnly(other.ctx, s2, other.seed(t, s2, "same")))
+	check(t, appendOnly(f.ctx, s, f.seed(t, s, "same")))
 	check(t, s.Close())
 	f.refused(t, Occupied)
 	m := cp.Mutation{ID: id(), Expected: f.state(t)}
@@ -336,7 +341,7 @@ func TestConcurrentAppends(t *testing.T) {
 	var wg sync.WaitGroup
 	results := make(chan error, 2)
 	for range 2 {
-		wg.Go(func() { results <- AppendAndAdvance(f.ctx, s, e) })
+		wg.Go(func() { results <- appendOnly(f.ctx, s, e) })
 	}
 	wg.Wait()
 	close(results)
@@ -369,7 +374,7 @@ func TestFencedWriter(t *testing.T) {
 	event := f.seed(t, store, "project")
 	f.release(t)
 	before := contents(t, f.ledgerPath())
-	want(t, AppendAndAdvance(f.ctx, store, event), Occupied)
+	want(t, appendOnly(f.ctx, store, event), Occupied)
 	if !bytes.Equal(before, contents(t, f.ledgerPath())) || f.state(t).Head.Sequence != 0 {
 		t.Fatal("old writer appended after release")
 	}
@@ -397,13 +402,13 @@ func TestPrewriteFailureCanRetry(t *testing.T) {
 				s.session = nil
 				reason = Interrupted
 			}
-			want(t, AppendAndAdvance(ctx, s, e), reason)
+			want(t, appendOnly(ctx, s, e), reason)
 			f.w.Inhibit(false)
 			s.session = session
 			if _, err := os.Stat(filepath.Join(f.root.Path, stageName)); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("stage after pre-write failure: %v", err)
 			}
-			check(t, AppendAndAdvance(f.ctx, s, e))
+			check(t, appendOnly(f.ctx, s, e))
 		})
 	}
 }
@@ -430,7 +435,7 @@ func TestTraverseOnlyAncestor(t *testing.T) {
 	t.Cleanup(func() { check(t, os.Chmod(parent, 0700)) })
 	check(t, f.enroll(nil))
 	s := f.open(t, nil)
-	check(t, AppendAndAdvance(f.ctx, s, f.seed(t, s, "row")))
+	check(t, appendOnly(f.ctx, s, f.seed(t, s, "row")))
 }
 
 func TestRestrictiveUmask(t *testing.T) {
@@ -439,7 +444,7 @@ func TestRestrictiveUmask(t *testing.T) {
 	defer syscall.Umask(old)
 	check(t, f.enroll(nil))
 	s := f.open(t, nil)
-	check(t, AppendAndAdvance(f.ctx, s, f.seed(t, s, "row")))
+	check(t, appendOnly(f.ctx, s, f.seed(t, s, "row")))
 }
 
 func TestStartWithoutClient(t *testing.T) {
