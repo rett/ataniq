@@ -62,7 +62,7 @@ func Marshal(p assignment.PublicEnvelope) ([]byte, error) {
 		assignment.Reserve, assignment.FenceReceipt, assignment.Fenced,
 		assignment.Commit, assignment.ConfirmReceipt, assignment.Open, assignment.HoldStarted,
 		assignment.HoldReviewed, assignment.AbortPrepared, assignment.Aborted, assignment.AbortedClosed,
-		assignment.RollbackFreeze:
+		assignment.RollbackFreeze, assignment.QuarantineAcknowledged:
 	default:
 		return nil, errProjection
 	}

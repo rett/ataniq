@@ -244,6 +244,9 @@ func apply(l Ledger, e Event, privateIndexes bool) (Ledger, error) {
 		return l, err
 	}
 	ch.row.PublicDigest = sha256Hex(signed)
+	if ch.row.Head.Phase == PhaseQuarantined && ch.row.QuarantineEventID == "" {
+		ch.row.QuarantineEventID = e.Result.EventID
+	}
 	switch e.Command.Kind {
 	case Reserve:
 		ch.transfer.ReservationEventID = e.Result.EventID

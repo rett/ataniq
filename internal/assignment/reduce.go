@@ -11,7 +11,7 @@ func reduce(r Row, t Transfer, c Command, digest string, prior Evidence) (Row, T
 	if old != c.Expected {
 		return r, t, ErrStale
 	}
-	if old.Phase == PhaseQuarantined {
+	if old.Phase == PhaseQuarantined && c.Kind != QuarantineAcknowledged {
 		return r, t, ErrPhase
 	}
 	if old.Revision == math.MaxUint64 {
@@ -46,6 +46,8 @@ func reduce(r Row, t Transfer, c Command, digest string, prior Evidence) (Row, T
 		scope, targetID = t.Reservation, t.ReservationEventID
 	case ConfirmReceipt:
 		scope, targetID = t.Committed, t.CommittedEventID
+	case QuarantineAcknowledged:
+		targetID = r.QuarantineEventID
 	}
 	if prior.Kind != "" {
 		if c.TransferID != prior.TransferID || old.Key != prior.Scope.Key {
@@ -143,6 +145,19 @@ func reduce(r Row, t Transfer, c Command, digest string, prior Evidence) (Row, T
 func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 	h := &r.Head
 	switch c.Kind {
+	case QuarantineAcknowledged:
+		if h.Phase != PhaseQuarantined || r.QuarantineAcknowledgement != (Evidence{}) {
+			return ErrPhase
+		}
+		if len(*p) != 1 {
+			return ErrEvidence
+		}
+		proof := (*p)[0]
+		if proof.Kind != "owner-disposition" || proof.Issuer != c.Actor || proof.Subject != c.Authorization {
+			return ErrEvidence
+		}
+		r.QuarantineAcknowledgement = proof
+		*p = nil
 	case Inventory:
 		if !h.Phase.precommit() {
 			return ErrPhase

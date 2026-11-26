@@ -1,6 +1,13 @@
 // Package assignment reduces verified home assignment commands to immutable
 // ledger values. The caller owns authentication, evidence verification, durable
-// append and the live admission barrier at each actual effect start.
+// append and the live admission barrier at each actual effect start. In
+// particular it verifies owner authorization for the exact command and head.
+//
+// A same-issuer correction of an accepted fence or confirmation permanently
+// quarantines this key in this store, including during a later transfer. Both
+// bindings lose admission. The owner may acknowledge the quarantine once,
+// recording a disposition against its event. Recovery requires retiring the
+// doubtful identity and freshly enrolling in a new store.
 package assignment
 
 import (
@@ -91,6 +98,11 @@ const (
 	RollbackFreeze Kind = "RollbackFreeze"
 )
 
+// QuarantineAcknowledged carries one verified owner-disposition proof. The
+// actor issued it for the command's authorization reference at QuarantineEventID.
+// Outcome records the owner's disposition. It never changes admission.
+const QuarantineAcknowledged Kind = "QuarantineAcknowledged"
+
 type Head struct {
 	BindingID  string `json:"binding_id"`
 	Generation uint64 `json:"generation,string"`
@@ -101,10 +113,12 @@ type Head struct {
 }
 
 type Row struct {
-	Head           Head
-	CommitRevision uint64
-	PublicDigest   string
-	Holder         Binding
+	QuarantineEventID         string
+	QuarantineAcknowledgement Evidence
+	Head                      Head
+	CommitRevision            uint64
+	PublicDigest              string
+	Holder                    Binding
 	// LastTransferID also identifies the record after its active ID clears.
 	LastTransferID string
 	// Previous is the binding displaced by the most recent commit.

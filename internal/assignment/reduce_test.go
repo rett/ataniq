@@ -73,6 +73,10 @@ func command(r Row, tr Transfer, k Kind, id, route string) Command {
 		add("route", route, "installed-stale-refused")
 	case Open:
 		add("enrollment", r.Holder.ID, "current")
+	case QuarantineAcknowledged:
+		targetID = r.QuarantineEventID
+		add("owner-disposition", c.Authorization, "retire and re-enroll")
+		c.Evidence[0].Issuer = c.Actor
 	case HoldStarted:
 		c.HoldStart, c.EarliestRetirement = 100, 100+14*24*3600
 		add("fallback", tr.Predecessor.ID, "stopped-disabled-preserved")
