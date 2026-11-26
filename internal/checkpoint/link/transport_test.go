@@ -64,7 +64,7 @@ func (f *fixture) endpoint(e Endpoint) Endpoint {
 	return e
 }
 func (f *fixture) serve(t *testing.T) Endpoint {
-	return f.endpoint(serve(t, func(l net.Listener) error { return f.s.Serve(l, f.w) }))
+	return f.endpoint(serve(t, func(l net.Listener) error { return f.s.Serve(l, memoryWitness{f.w}) }))
 }
 func (f *fixture) enroll(t *testing.T, a cp.Administration) cp.State {
 	t.Helper()
@@ -291,7 +291,7 @@ func TestReadFailureWithReadyEvidence(t *testing.T) {
 }
 
 type waitingWitness struct {
-	*cp.Memory
+	memoryWitness
 	received, release chan struct{}
 }
 
@@ -307,7 +307,7 @@ func (w waitingWitness) RawSubmit(ctx context.Context, slot cp.Slot, h ed25519.P
 
 func TestCancelAfterCommit(t *testing.T) {
 	f := newFixture(t, "witness")
-	w := waitingWitness{f.w, make(chan struct{}), make(chan struct{})}
+	w := waitingWitness{memoryWitness{f.w}, make(chan struct{}), make(chan struct{})}
 	e := f.endpoint(serve(t, func(l net.Listener) error { return f.s.Serve(l, w) }))
 	defer close(w.release)
 	s := f.enroll(t, f.w.Administration())
@@ -343,7 +343,7 @@ func TestReconnectAfterRestart(t *testing.T) {
 	f := newFixture(t, "witness")
 	l, dial := loopback(t)
 	done := make(chan error, 1)
-	go func() { done <- f.s.Serve(l, f.w) }()
+	go func() { done <- f.s.Serve(l, memoryWitness{f.w}) }()
 	var mu sync.Mutex
 	attempted := make(chan struct{})
 	var once sync.Once
@@ -384,7 +384,7 @@ func TestReconnectAfterRestart(t *testing.T) {
 	}
 	restarted, err := NewServer(f.id, f.pin)
 	must(t, err)
-	go func() { done <- restarted.Serve(newListener, f.w) }()
+	go func() { done <- restarted.Serve(newListener, memoryWitness{f.w}) }()
 	defer func() { newListener.Close(); <-done }()
 	select {
 	case err := <-read:

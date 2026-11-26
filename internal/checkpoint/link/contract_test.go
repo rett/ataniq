@@ -18,6 +18,16 @@ import (
 	"ataniq/internal/seatgate"
 )
 
+// The contract fixture uses the in-process, finite memory backend.
+type memoryWitness struct{ *cp.Memory }
+
+func (w memoryWitness) CheckHome(ctx context.Context, slot cp.Slot, key ed25519.PublicKey) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return w.Memory.CheckHome(slot, key)
+}
+
 func identity(t *testing.T, name string) seatgate.Identity {
 	t.Helper()
 	cert, key, err := seatgate.GenerateIdentity(rand.Reader, time.Now(), name)
@@ -149,7 +159,7 @@ func TestWitnessContract(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		home := serve(t, func(l net.Listener) error { return s.Serve(l, w) })
+		home := serve(t, func(l net.Listener) error { return s.Serve(l, memoryWitness{w}) })
 		admin := serve(t, func(l net.Listener) error { return s.ServeOwner(l, w.Administration(), ownerID.Fingerprint()) })
 		var proxy linktest.Proxy
 		for _, e := range []*Endpoint{&home, &admin} {

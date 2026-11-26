@@ -20,7 +20,7 @@ import (
 // Witness rechecks the live grant for each request. RawSubmit verifies the
 // exact body and both signatures under the witness's mutation contract.
 type Witness interface {
-	CheckHome(cp.Slot, ed25519.PublicKey) error
+	CheckHome(context.Context, cp.Slot, ed25519.PublicKey) error
 	ReadHome(context.Context, cp.ReadRequest, ed25519.PublicKey) (cp.View, error)
 	RawSubmit(context.Context, cp.Slot, ed25519.PublicKey, string, []byte, []byte, []byte) (cp.Receipt, error)
 }
@@ -138,7 +138,7 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 		}
 		peer := "owner"
 		if w != nil {
-			if err := authenticate(w, q.Slot, f[1], f[0], f[2]); err != nil {
+			if err := authenticate(ctx, w, q.Slot, f[1], f[0], f[2]); err != nil {
 				return nil, err
 			}
 			peer = string(f[1])
@@ -183,7 +183,7 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 		if !exactJSON(f[0], &slot) || !validSlot(slot) {
 			return nil, frame.ErrProtocol
 		}
-		if err := authenticate(w, slot, f[1], f[2], f[3]); err != nil {
+		if err := authenticate(ctx, w, slot, f[1], f[2], f[3]); err != nil {
 			return nil, err
 		}
 		if !s.limits.allow(string(f[1]), ordinary) {
@@ -229,8 +229,8 @@ func exactJSON(b []byte, out any) bool {
 	return err == nil && bytes.Equal(b, encoded)
 }
 
-func authenticate(w Witness, slot cp.Slot, key, body, sig []byte) error {
-	if err := w.CheckHome(slot, key); err != nil {
+func authenticate(ctx context.Context, w Witness, slot cp.Slot, key, body, sig []byte) error {
+	if err := w.CheckHome(ctx, slot, key); err != nil {
 		return err
 	}
 	if cp.VerifySignature(cp.HomeNamespace, key, body, sig) != nil {
