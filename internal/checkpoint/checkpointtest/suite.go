@@ -167,6 +167,7 @@ func (f fixture) reconnect(t *testing.T, h home, session ed25519.PrivateKey) hom
 // calls with identical keys used to model independent restores.
 func Run(t *testing.T, newWitness Factory) {
 	settlementBoundaries(t, newWitness)
+	t.Run("restart mutation history", func(t *testing.T) { restartHistory(t, start(t, newWitness)) })
 	t.Run("settle", func(t *testing.T) { settlement(t, start(t, newWitness)) })
 	for _, op := range []string{"claim", "advance"} {
 		t.Run("raw "+op, func(t *testing.T) { rawProofs(t, newWitness, op) })
