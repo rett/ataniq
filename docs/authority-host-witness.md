@@ -299,7 +299,8 @@ pins, epoch and signed status before resuming admission. Back to a release
 without the witness, confirm it is stopped and remove its line from the
 host emergency stop list once the unit link dangles. Retain the other
 services' stop commands. Preserve witness state and keep dependent homes
-suspended until an appropriate release is active again.
+suspended until an appropriate release is active again. The no-AI listener
+check continues to check the witness account after its unit link is removed.
 
 ## Retire and enroll a replacement
 

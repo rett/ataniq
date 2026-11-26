@@ -614,15 +614,28 @@ func TestBaselineUsageAndRefusals(t *testing.T) {
 	}
 }
 
-func TestReleaseCheckRequiresWitnessUnitWithBinary(t *testing.T) {
-	out := t.TempDir()
-	a, b := bins(t)
-	witness := filepath.Join(t.TempDir(), "ataniq-witness")
-	write(t, witness, "#!/bin/sh\nexit 0\n", 0755)
-	if code, stdout, diag := call(buildArgs(out, source(t), a, b, "--bin", witness)...); code != 0 {
-		t.Fatalf("fixture build: %s %s", stdout, diag)
-	}
-	if code, stdout, _ := call("check", "--no-noaicheck", filepath.Join(out, "0003-0123456")); code != 1 || !strings.Contains(stdout, "FAIL: witness-service") {
-		t.Fatalf("incomplete witness release: %d %s", code, stdout)
+func TestReleaseCheckRequiresWitnessUnitAndBinary(t *testing.T) {
+	for _, binary := range []bool{true, false} {
+		out, src := t.TempDir(), source(t)
+		a, b := bins(t)
+		args := buildArgs(out, src, a, b)
+		if binary {
+			witness := filepath.Join(t.TempDir(), "ataniq-witness")
+			write(t, witness, "#!/bin/sh\nexit 0\n", 0755)
+			args = append(args, "--bin", witness)
+		} else {
+			unit, err := os.ReadFile(filepath.Join("../../deploy/authority-host/witness", noaicheck.WitnessUnit))
+			if err != nil {
+				t.Fatal(err)
+			}
+			write(t, filepath.Join(src, noaicheck.WitnessUnit), string(unit), 0644)
+		}
+		if code, stdout, diag := call(args...); code != 0 {
+			t.Fatalf("fixture build: %s %s", stdout, diag)
+		}
+		want := "FAIL: witness-service witness isolation, component or health check is invalid: " + noaicheck.WitnessUnit + "\n"
+		if code, stdout, _ := call("check", "--no-noaicheck", filepath.Join(out, "0003-0123456")); code != 1 || !strings.Contains(stdout, want) {
+			t.Fatalf("incomplete witness release: %d %s", code, stdout)
+		}
 	}
 }

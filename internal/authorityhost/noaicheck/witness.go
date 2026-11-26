@@ -90,6 +90,9 @@ func (c *Checker) witnessExpected() bool {
 		return true
 	}
 	_, _, err := c.t.lstat(WitnessUnit)
-	c.unreadable(WitnessUnit, err)
-	return err == nil
+	if err != nil {
+		c.unreadable(WitnessUnit, err)
+		return false
+	}
+	return true
 }

@@ -30,7 +30,11 @@ func TestWitnessReleaseScan(t *testing.T) {
 			if err := c.CheckRelease(f.abs(releaseDir)); err != nil {
 				t.Fatal(err)
 			}
-			if got := c.Report().Hits; (len(got) > 0) != tc.hit {
+			want := []Hit{}
+			if tc.hit {
+				want = append(want, Hit{KindUnit, "/" + releaseDir + "/" + WitnessUnit, "witness-isolation"})
+			}
+			if got := c.Report().Hits; !slices.Equal(got, want) {
 				t.Fatal(got)
 			}
 		})
@@ -38,15 +42,60 @@ func TestWitnessReleaseScan(t *testing.T) {
 }
 
 func TestWitnessListenerOnAllowedPort(t *testing.T) {
-	f := cleanFixture(t)
-	f.file(WitnessUnit, "[Service]\nUser=ataniq-witness\n")
-	f.file("etc/passwd", "ataniq-witness:x:817:817::/:/bin/false\n")
-	// The same TCP port is permitted for another UID on the fixture host.
-	f.file("proc/net/tcp", tcpHeader+"0: 010200C0:0016 00000000:0000 0A 0:0 0:0 0 817 0 1\n")
-	c := f.checker(testLists())
-	c.CheckPorts()
-	if hits := c.Report().Hits; len(hits) != 1 || hits[0].Kind != KindPort {
-		t.Fatal(hits)
+	const account = "ataniq-witness:x:817:817::/:/bin/false\n"
+	port := Hit{KindPort, "tcp:192.0.2.1:22", ""}
+	invalid := Hit{KindUnit, show(WitnessUnit), "witness-account"}
+	for _, tc := range []struct {
+		name, passwd, uid string
+		installed         bool
+		hits              []Hit
+	}{
+		{"installed", account, "817", true, []Hit{port}},
+		{"link removed", account, "817", false, []Hit{port}},
+		{"other user", account, "818", true, nil},
+		{"unused account absent", "", "818", false, nil},
+		{"required account absent", "", "818", true, []Hit{invalid}},
+		{"root account", strings.Replace(account, ":817:", ":0:", 1), "818", false, []Hit{invalid}},
+		{"duplicate", account + account, "818", false, []Hit{invalid}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := cleanFixture(t)
+			if tc.installed {
+				f.file(WitnessUnit, "[Service]\nUser=ataniq-witness\n")
+			}
+			f.file("etc/passwd", tc.passwd)
+			f.file("proc/net/tcp", tcpHeader+"0: 010200C0:0016 00000000:0000 0A 0:0 0:0 0 "+tc.uid+" 0 1\n")
+			c := f.checker(testLists())
+			c.CheckPorts()
+			if hits := c.Report().Hits; !slices.Equal(hits, tc.hits) {
+				t.Fatal(hits)
+			}
+		})
+	}
+}
+
+func TestWitnessReleaseComponentHits(t *testing.T) {
+	b, err := os.ReadFile("../../../deploy/authority-host/witness/" + WitnessUnit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, binary := range []bool{true, false} {
+		f := cleanFixture(t)
+		detail := "witness-binary"
+		if binary {
+			f.exe(releaseDir + "/bin/ataniq-witness")
+			detail = "witness-unit-missing"
+		} else {
+			f.file(releaseDir+"/"+WitnessUnit, strings.ReplaceAll(string(b), "{release}", "/"+releaseDir))
+		}
+		c := f.checker(testLists())
+		if err := c.CheckRelease(f.abs(releaseDir)); err != nil {
+			t.Fatal(err)
+		}
+		want := []Hit{{KindUnit, "/" + releaseDir + "/" + WitnessUnit, detail}}
+		if hits := c.Report().Hits; !slices.Equal(hits, want) {
+			t.Fatalf("got %v want %v", hits, want)
+		}
 	}
 }
 
@@ -133,7 +182,7 @@ func TestWitnessMissingEgressNote(t *testing.T) {
 		c := f.checker(testLists())
 		c.CheckUnits()
 		note := slices.Contains(c.Report().Notes, "witness egress drop-in missing: home unreachable")
-		if note != installed {
+		if note != installed || len(c.Report().Hits) != 0 {
 			t.Fatalf("installed %v: %v", installed, c.Report())
 		}
 	}

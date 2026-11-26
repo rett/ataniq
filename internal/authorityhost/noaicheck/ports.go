@@ -86,11 +86,6 @@ func (c *Checker) CheckPorts() {
 
 // Check the owner of each live listener even on a baseline-approved port.
 func (c *Checker) witnessUID() string {
-	if !c.witnessRelease {
-		if _, _, err := c.t.lstat(WitnessUnit); errors.Is(err, fs.ErrNotExist) {
-			return ""
-		}
-	}
 	_, data, err := c.t.readFile("etc/passwd", 16<<20)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -107,16 +102,17 @@ func (c *Checker) witnessUID() string {
 			continue
 		}
 		if len(f) != 7 || uid != "" {
-			uid = ""
-			break
+			c.hit(KindUnit, show(WitnessUnit), "witness-account")
+			return ""
 		}
 		n, err := strconv.ParseUint(f[2], 10, 32)
 		if err != nil || n == 0 {
-			break
+			c.hit(KindUnit, show(WitnessUnit), "witness-account")
+			return ""
 		}
 		uid = strconv.FormatUint(n, 10)
 	}
-	if uid == "" {
+	if uid == "" && c.witnessExpected() {
 		c.hit(KindUnit, show(WitnessUnit), "witness-account")
 	}
 	return uid
