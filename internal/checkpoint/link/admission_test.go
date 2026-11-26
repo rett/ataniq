@@ -70,7 +70,7 @@ func TestAdmissionIsolation(t *testing.T) {
 				defer c.Close()
 			}
 			ownerID := identity(t, "owner")
-			admin := f.endpoint(testOwner(t, f.s, f.w.Administration(), ownerID.Fingerprint()))
+			admin := f.endpoint(testOwner(t, f.s, f.w, f.w.Administration(), ownerID.Fingerprint()))
 			a, err := admin.Administration(ownerID)
 			must(t, err)
 			f.enroll(t, a)

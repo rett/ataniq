@@ -33,7 +33,7 @@ func TestMutationWriteProgress(t *testing.T) {
 	for _, partial := range []bool{false, true} {
 		f := newFixture(t, "witness")
 		owner := identity(t, "owner")
-		e := f.endpoint(testOwner(t, f.s, f.w.Administration(), owner.Fingerprint()))
+		e := f.endpoint(testOwner(t, f.s, f.w, f.w.Administration(), owner.Fingerprint()))
 		dial := e.DialContext
 		e.DialContext = func(ctx context.Context, n, a string) (net.Conn, error) {
 			c, err := dial(ctx, n, a)
@@ -112,7 +112,7 @@ func TestOwnerRefusesTCP(t *testing.T) {
 	l := tcpListener(t)
 	defer l.Close()
 	f := newFixture(t, "witness")
-	if err := f.s.ServeOwner(l, f.w.Administration(), f.id.Fingerprint(), 0); !errors.Is(err, cp.ErrRefused) {
+	if err := f.s.ServeOwner(l, f.w.Administration(), f.w, f.id.Fingerprint(), 0); !errors.Is(err, cp.ErrRefused) {
 		t.Fatal(err)
 	}
 	if _, err := f.endpoint(Remote{Network: "tcp", Address: l.Addr().String()}).Administration(f.id); !errors.Is(err, cp.ErrRefused) {

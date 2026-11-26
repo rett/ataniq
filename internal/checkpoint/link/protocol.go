@@ -108,24 +108,24 @@ var categories = []error{cp.ErrRefused, cp.ErrStale, cp.ErrRetired, cp.ErrUnavai
 var reasons = []cp.ReasonKind{cp.InvalidRequest, cp.Unauthorized, cp.KeyRoleConflict, cp.NotEnrolled, cp.MutationConflict,
 	cp.Superseded, cp.PredecessorMismatch, cp.SessionConflict, cp.EnrollmentConflict, cp.CounterExhausted, cp.InvalidSuccessor}
 
-func encodeError(err error) frame.Message {
+func errorCode(err error) string {
 	if errors.Is(err, cp.ErrUnknownOutcome) {
-		return frame.New(frame.Failure, []byte(cp.ErrUnknownOutcome.Error()))
+		return string(cp.ErrUnknownOutcome.Error())
 	}
 	var reason *cp.Reason
 	if errors.As(err, &reason) {
 		for _, k := range reasons {
 			if k == reason.Kind {
-				return frame.New(frame.Failure, []byte(k))
+				return string(k)
 			}
 		}
 	}
 	for _, e := range categories {
 		if errors.Is(err, e) {
-			return frame.New(frame.Failure, []byte(e.Error()))
+			return string(e.Error())
 		}
 	}
-	return frame.New(frame.Failure, []byte(cp.ErrUnknownOutcome.Error()))
+	return string(cp.ErrUnknownOutcome.Error())
 }
 func decodeError(b []byte) error {
 	for _, k := range reasons {

@@ -214,7 +214,7 @@ func TestWitnessContract(t *testing.T) {
 			s.limits.now = func() time.Time { now = now.Add(2 * time.Second); return now }
 		}
 		advanceClock(s)
-		admin := testOwner(t, s, w.Administration(), ownerID.Fingerprint())
+		admin := testOwner(t, s, w, w.Administration(), ownerID.Fingerprint())
 		admin.ServerPin, admin.WitnessPin, admin.Epoch = serverID.Fingerprint(), pin, 1
 		var proxy linktest.Proxy
 		admin = proxied(t, admin, proxyID, ownerID, &proxy, false)
@@ -253,9 +253,10 @@ func TestWitnessContract(t *testing.T) {
 				})
 			},
 			Connect: func(slot cp.Slot, h, s ed25519.PrivateKey, p ed25519.PublicKey) (cp.Client, error) {
-				e := *endpoints[slot]
-				e.home.WitnessPin = p
-				e.home.wid, _ = cp.KeyID(p)
+				e := endpoints[slot]
+				if !ed25519.PublicKey(p).Equal(e.home.WitnessPin) {
+					return nil, &cp.Reason{Kind: cp.Unauthorized}
+				}
 				c, err := e.Connect(t.Context(), slot, h, s)
 				if err != nil {
 					return nil, err
@@ -298,12 +299,12 @@ func startPolling(t *testing.T, s *Server, r Remote, w Witness) context.CancelFu
 
 func loopbackTrust() TrustSources { return TrustSources{netip.MustParsePrefix("127.0.0.1/32")} }
 
-func testOwner(t *testing.T, s *Server, a cp.Administration, pin string) Remote {
+func testOwner(t *testing.T, s *Server, signer cp.DispositionSigner, a cp.Administration, pin string) Remote {
 	return serveNetwork(t, "unix", func(l net.Listener) error {
 		if _, pipe := l.(*pipeListener); pipe {
-			return s.serveOwner(l, a, pin, func(net.Conn) func() { return func() {} })
+			return s.serveOwner(l, a, signer, pin, func(net.Conn) func() { return func() {} })
 		}
-		return s.ServeOwner(l, a, pin, uint32(os.Getuid()))
+		return s.ServeOwner(l, a, signer, pin, uint32(os.Getuid()))
 	})
 }
 func TestOwnerPeerUID(t *testing.T) {
@@ -315,7 +316,9 @@ func TestOwnerPeerUID(t *testing.T) {
 	}
 	must(t, err)
 	done := make(chan error, 1)
-	go func() { done <- f.s.ServeOwner(l, f.w.Administration(), owner.Fingerprint(), uint32(os.Getuid())^1) }()
+	go func() {
+		done <- f.s.ServeOwner(l, f.w.Administration(), f.w, owner.Fingerprint(), uint32(os.Getuid())^1)
+	}()
 	defer func() {
 		l.Close()
 		if !errors.Is(<-done, net.ErrClosed) {

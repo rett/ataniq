@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,7 @@ import (
 // Witness rechecks the live grant for each request. RawSubmit verifies the
 // exact body and both signatures under the witness's mutation contract.
 type Witness interface {
+	cp.DispositionSigner
 	CheckHome(context.Context, cp.Slot, ed25519.PublicKey) error
 	ReadHome(context.Context, cp.ReadRequest, ed25519.PublicKey) (cp.View, error)
 	RawSubmit(context.Context, cp.Slot, ed25519.PublicKey, string, []byte, []byte, []byte) (cp.Receipt, error)
@@ -58,18 +60,18 @@ func NewServer(id seatgate.Identity, witnessPin ed25519.PublicKey, home Remote, 
 // ServeOwner is a separate owner endpoint. Supply a private local listener
 // and an independently provisioned client-certificate SPKI pin. Enrollment,
 // release, retirement and owner reads exist only on this authenticated endpoint.
-func (s *Server) ServeOwner(l net.Listener, a cp.Administration, ownerPin string, uid uint32) error {
+func (s *Server) ServeOwner(l net.Listener, a cp.Administration, signer cp.DispositionSigner, ownerPin string, uid uint32) error {
 	if _, ok := l.(*net.UnixListener); !ok {
 		return &ConfigError{"owner listener must be a Unix socket"}
 	}
-	return s.serveOwner(l, a, ownerPin, ownerAdmission(uid))
+	return s.serveOwner(l, a, signer, ownerPin, ownerAdmission(uid))
 }
-func (s *Server) serveOwner(l net.Listener, a cp.Administration, ownerPin string, admit admission) error {
-	if a == nil || !seatgate.ValidFingerprint(ownerPin) || !s.ownerServing.CompareAndSwap(false, true) {
+func (s *Server) serveOwner(l net.Listener, a cp.Administration, signer cp.DispositionSigner, ownerPin string, admit admission) error {
+	if a == nil || signer == nil || !seatgate.ValidFingerprint(ownerPin) || !s.ownerServing.CompareAndSwap(false, true) {
 		return cp.ErrRefused
 	}
 	defer s.ownerServing.Store(false)
-	return serveListener(l, serverTLS(s.id, ownerPin), s.ownerCapacity, s.timeout, admit, func(ctx context.Context, conn *tls.Conn, m frame.Message) { _ = s.reply(ctx, conn, nil, a, m) })
+	return serveListener(l, serverTLS(s.id, ownerPin), s.ownerCapacity, s.timeout, admit, func(ctx context.Context, conn *tls.Conn, m frame.Message) { _ = s.reply(ctx, conn, nil, a, signer, m) })
 }
 
 func transientAccept(err error) bool {
@@ -136,13 +138,32 @@ func serveListener(l net.Listener, cfg *tls.Config, capacity int, timeout time.D
 
 var errRequestFailed = errors.New("checkpoint link: request failed")
 
-func (s *Server) reply(ctx context.Context, conn *tls.Conn, w Witness, a cp.Administration, m frame.Message) error {
+func (s *Server) reply(ctx context.Context, conn *tls.Conn, w Witness, a cp.Administration, signer cp.DispositionSigner, m frame.Message) error {
 	replies, err := s.dispatch(ctx, w, a, m)
 	if errors.Is(err, frame.ErrProtocol) {
 		return err
 	}
-	if err != nil {
-		replies = []frame.Message{encodeError(err)}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err != nil || replies[0].Kind == frame.Granted {
+		result := "granted"
+		if err != nil {
+			result = errorCode(err)
+		}
+		data, marshalErr := m.Marshal()
+		if marshalErr != nil {
+			return marshalErr
+		}
+		sig, signErr := signer.SignDisposition(ctx, sha256.Sum256(data), result)
+		if signErr != nil {
+			return signErr
+		}
+		if err != nil {
+			replies = []frame.Message{frame.New(frame.Failure, []byte(result), sig)}
+		} else {
+			replies = []frame.Message{frame.New(frame.Granted, sig)}
+		}
 	}
 	for _, reply := range replies {
 		if err := reply.WriteToStream(conn); err != nil {

@@ -1,6 +1,6 @@
-# Checkpoint witness link v1
+# Checkpoint witness link v2
 
-The witness dials the home over TLS 1.3 with ALPN `ataniq-checkpoint/1`. At the home, construct a `NewEndpoint` with the home TLS identity, independently provisioned witness client certificate (DER), witness Ed25519 public key and expected epoch, the single enrollment slot and the witness source prefixes (`TrustSources`). On the home firewall, allow inbound connections to this listener only from those witness source prefixes. Run `Endpoint.Serve` on the home's listener. `Endpoint.Connect` takes the exact slot, home private key and process session private key. Its signed grant check can succeed before enrollment.
+The witness dials the home over TLS 1.3 with ALPN `ataniq-checkpoint/2`. At the home, construct a `NewEndpoint` with the home TLS identity, independently provisioned witness client certificate (DER), witness Ed25519 public key and expected epoch, the single enrollment slot and the witness source prefixes (`TrustSources`). On the home firewall, allow inbound connections to this listener only from those witness source prefixes. Run `Endpoint.Serve` on the home's listener. `Endpoint.Connect` takes the exact slot, home private key and process session private key. Its signed grant check can succeed before enrollment.
 
 On the authority host, construct a `NewServer` with the witness TLS identity and signing public key, home address and TLS pin in a `Remote`, and the same enrollment slot. Run `Server.Poll(ctx, witness)` once. Run a separate Server for each home. Each connection carries a poll followed by one signed home request or an idle indication. The witness returns the result on the same connection. Cancellation stops polling. The home admits one ordinary call and reserves a second lane for receipt lookups. Competing calls receive ErrBusy before handoff.
 
@@ -10,9 +10,11 @@ For owner calls, use `ServeOwner` on a private Unix-domain stream listener. Supp
 
 ## Framing and bounds
 
-One connection carries one request. The four-byte unsigned big-endian length covers the entire payload. The payload starts with version byte 1 and a one-byte message kind. Each field has a four-byte unsigned big-endian length followed by its exact bytes. Each kind has a fixed field count. Both sides enforce `checkpoint.MaxFrame` on each frame before allocating the payload. The numeric kinds, field order and decoder live together in [frame.go](internal/frame/frame.go).
+One connection carries one request. The four-byte unsigned big-endian length covers the entire payload. The payload starts with version byte 2 and a one-byte message kind. Mutation kinds also carry a fresh 32-byte delivery nonce before the fields. Each field has a four-byte unsigned big-endian length followed by its exact bytes. Each kind has a fixed field count. Both sides enforce `checkpoint.MaxFrame` on each frame before allocating the payload. The numeric kinds, field order and decoder live together in [frame.go](internal/frame/frame.go).
 
 Mutation requests carry the canonical bytes from `checkpoint.Intent.Body`. Home writes carry the scoped slot, home public key and detached home and session signatures. Home reads and grant checks sign canonical JSON containing the operation, schema, witness key ID, slot, challenge and receipt ID in the home namespace. Both IDs use 64 lowercase hex digits. An all-zero receipt ID requests current state only.
+
+The witness signs each grant and failure code over its epoch and the SHA-256 digest of the exact length-prefixed request, including the slot, home key and delivery challenge for home operations. The home checks this proof against its independent witness pin. A missing or invalid disposition leaves a delivered mutation unresolved.
 
 A mutation returns one receipt frame. A read returns three ordered frames carrying current state, the fresh signed receipt and the optional historical receipt. Two empty fields in the last frame mean no receipt matched. Each frame fits the same ceiling even when both receipts contain maximum-length identifiers. The client verifies the fresh challenge, slot, guard, epoch and historical evidence before returning the view. A signed inhibited view accompanies `ErrUnavailable`.
 

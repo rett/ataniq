@@ -87,5 +87,5 @@ func (s *Server) pollOnce(parent context.Context, t transport, w Witness) (bool,
 	if m.Kind == frame.Idle {
 		return false, nil
 	}
-	return true, s.reply(ctx, conn, w, nil, m)
+	return true, s.reply(ctx, conn, w, nil, w, m)
 }

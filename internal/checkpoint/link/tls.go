@@ -12,7 +12,7 @@ import (
 	"ataniq/internal/seatgate"
 )
 
-const ALPN = "ataniq-checkpoint/1"
+const ALPN = "ataniq-checkpoint/2"
 
 // Keep the seat's exact P-256 SPKI, role usage and TLS 1.3 checks. Give the
 // checkpoint service its own ALPN and provision it with separate identities.

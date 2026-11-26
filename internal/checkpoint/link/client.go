@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -241,13 +242,16 @@ func sendFirst(conn *tls.Conn, data []byte, dialed bool) (reply frame.Message, w
 // After a write starts, a mutation may have committed even on a write error.
 // Only a recognized witness refusal or a matching signed receipt resolves it.
 func (t transport) exchange(ctx context.Context, m frame.Message) (answer, error) {
+	if m.Kind.Mutation() {
+		rand.Read(m.Nonce[:])
+	}
 	data, err := m.Marshal()
 	if err != nil {
 		return answer{}, &cp.Reason{Kind: cp.InvalidRequest}
 	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	mutation := m.Kind != frame.Connect && m.Kind != frame.Read && m.Kind != frame.OwnerRead
+	mutation := m.Kind.Mutation()
 	if t.queue != nil {
 		return t.queue.exchange(ctx, m.Kind, data, t.recovery)
 	}
@@ -259,11 +263,11 @@ func (t transport) exchange(ctx context.Context, m frame.Message) (answer, error
 		return answer{}, err
 	}
 	defer conn.NetConn().Close()
-	return exchangeOn(ctx, conn, m.Kind, data, true)
+	return t.exchangeOn(ctx, conn, m.Kind, data, true)
 }
 
-func exchangeOn(ctx context.Context, conn *tls.Conn, kind frame.Kind, data []byte, dialed bool) (answer, error) {
-	mutation := kind != frame.Connect && kind != frame.Read && kind != frame.OwnerRead
+func (t transport) exchangeOn(ctx context.Context, conn *tls.Conn, kind frame.Kind, data []byte, dialed bool) (answer, error) {
+	mutation := kind.Mutation()
 	raw := conn.NetConn()
 	stop := context.AfterFunc(ctx, func() { raw.Close() })
 	defer stop()
@@ -282,7 +286,7 @@ func exchangeOn(ctx context.Context, conn *tls.Conn, kind frame.Kind, data []byt
 	counter := raw.(*countedConn)
 	before := counter.written.Load()
 	reply, writeErr, readErr := sendFirst(conn, data, dialed)
-	if errors.Is(readErr, cp.ErrRefused) {
+	if !mutation && errors.Is(readErr, cp.ErrRefused) {
 		return answer{}, cp.ErrRefused
 	}
 	if writeErr != nil && mutation && counter.written.Load() == before {
@@ -292,6 +296,9 @@ func exchangeOn(ctx context.Context, conn *tls.Conn, kind frame.Kind, data []byt
 		return answer{}, errors.Join(result, ctx.Err())
 	}
 	if reply.Kind == frame.Failure {
+		if !cp.VerifyDisposition(t.WitnessPin, t.Epoch, sha256.Sum256(data), string(reply.Fields[0]), reply.Fields[1]) {
+			return answer{}, result
+		}
 		err := decodeError(reply.Fields[0])
 		if err == frame.ErrProtocol || err == cp.ErrUnknownOutcome {
 			return answer{}, result
@@ -299,7 +306,7 @@ func exchangeOn(ctx context.Context, conn *tls.Conn, kind frame.Kind, data []byt
 		return answer{}, err
 	}
 	if kind == frame.Connect {
-		if reply.Kind != frame.Granted {
+		if reply.Kind != frame.Granted || !cp.VerifyDisposition(t.WitnessPin, t.Epoch, sha256.Sum256(data), "granted", reply.Fields[0]) {
 			return answer{}, result
 		}
 		return answer{}, nil
@@ -371,7 +378,7 @@ func (t transport) read(ctx context.Context, q cp.ReadRequest, m frame.Message) 
 	}
 	err = cp.VerifyView(t.WitnessPin, q, a.view)
 	if err != nil && !errors.Is(err, cp.ErrUnavailable) {
-		return cp.View{}, err
+		return cp.View{}, cp.ErrUnavailable
 	}
 	if a.view.Current.Epoch != t.Epoch {
 		return cp.View{}, cp.ErrStale

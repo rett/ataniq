@@ -113,7 +113,7 @@ func (e *Endpoint) Serve(l net.Listener) error {
 		case call := <-q.calls:
 			deadline, _ := ctx.Deadline()
 			exchange, cancel := context.WithDeadline(call.ctx, deadline)
-			a, err := exchangeOn(exchange, c, call.kind, call.data, false)
+			a, err := e.home.exchangeOn(exchange, c, call.kind, call.data, false)
 			cancel()
 			call.result <- callResult{a, err}
 		default:
