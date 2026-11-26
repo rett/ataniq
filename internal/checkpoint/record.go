@@ -246,16 +246,18 @@ type ackRecord struct {
 }
 type readRecord struct {
 	recordHeader
-	Challenge   string      `json:"challenge"`
-	Guard       string      `json:"guard"`
-	Current     stateRecord `json:"current"`
-	ReceiptID   string      `json:"receipt_id"`
-	PriorDigest string      `json:"prior_digest"`
+	JournalSequence uint64      `json:"journal_sequence,string,omitempty"`
+	PreviousDigest  string      `json:"previous_digest,omitempty"`
+	Challenge       string      `json:"challenge"`
+	Guard           string      `json:"guard"`
+	Current         stateRecord `json:"current"`
+	ReceiptID       string      `json:"receipt_id"`
+	PriorDigest     string      `json:"prior_digest"`
 }
 
-func readBody(keyID string, q ReadRequest, v View, guard string) ([]byte, error) {
+func expectedRead(keyID string, q ReadRequest, v View, guard string) (readRecord, error) {
 	if q.Challenge == (ID{}) || q.Slot != v.Current.Slot || !validState(v.Current) {
-		return nil, &Reason{Kind: InvalidRequest}
+		return readRecord{}, &Reason{Kind: InvalidRequest}
 	}
 	r := readRecord{recordHeader: recordHeader{1, "read", q.Slot.Authority, keyID}, Challenge: idString(q.Challenge), Guard: guard, Current: recordState(v.Current)}
 	if q.ReceiptID != (ID{}) {
@@ -264,9 +266,9 @@ func readBody(keyID string, q ReadRequest, v View, guard string) ([]byte, error)
 			r.PriorDigest = ReceiptDigest(*v.Prior)
 		}
 	} else if v.Prior != nil {
-		return nil, &Reason{Kind: InvalidRequest}
+		return readRecord{}, &Reason{Kind: InvalidRequest}
 	}
-	return encode(r)
+	return r, nil
 }
 
 // Acknowledgement binds one immutable result to its request and predecessor.
@@ -333,16 +335,28 @@ func verifyView(pin ed25519.PublicKey, keyID string, q ReadRequest, v View) erro
 			return &Reason{Kind: InvalidRequest}
 		}
 	}
-	for _, guard := range []string{"ready", "inhibited"} {
-		b, err := readBody(keyID, q, v, guard)
-		if err == nil && bytes.Equal(v.Fresh.Body, b) {
-			if guard == "inhibited" {
-				return ErrUnavailable
-			}
-			return nil
-		}
+	var signed readRecord
+	if decode(v.Fresh.Body, &signed) != nil || (signed.Guard != "ready" && signed.Guard != "inhibited") {
+		return &Reason{Kind: InvalidRequest}
 	}
-	return &Reason{Kind: InvalidRequest}
+	expected, err := expectedRead(keyID, q, v, signed.Guard)
+	if err != nil {
+		return err
+	}
+	// Memory witnesses and older reads omit the durable directory position.
+	if signed.JournalSequence != 0 || signed.PreviousDigest != "" {
+		if signed.JournalSequence < v.Current.JournalSequence || !digestOK(signed.PreviousDigest) {
+			return &Reason{Kind: InvalidRequest}
+		}
+		expected.JournalSequence, expected.PreviousDigest = signed.JournalSequence, signed.PreviousDigest
+	}
+	if signed != expected {
+		return &Reason{Kind: InvalidRequest}
+	}
+	if signed.Guard == "inhibited" {
+		return ErrUnavailable
+	}
+	return nil
 }
 
 func idString(id ID) string { return hex.EncodeToString(id[:]) }

@@ -12,11 +12,18 @@
 //
 // The independently configured activation epoch is signed into acknowledgements
 // and dispositions. The link pins it for an activation. Journal sequence
-// increases at every transition, and signed slot revision at every mutation.
-// A whole-directory restore can reproduce a valid older prefix, including its
-// epoch, signatures and tombstones. A home or owner retaining a later receipt,
-// revision or head can detect the discrepancy. If all independent evidence
-// rolls back together, the lost interval is unknowable. After a known restore,
+// orders transitions within this directory, including Settle fences. A matched
+// truncation of both files at a commit boundary or a whole-directory restore
+// can hide later mutations, releases, retirements and fences under the same
+// epoch. A forgotten fence can let its formerly fenced ID commit. A fence
+// changes neither slot revision nor ledger head and issues no mutation receipt.
+// Each mutation acknowledgement signs its directory sequence. A challenged
+// read also signs the current directory sequence and the digest of the last
+// frame signature (the predecessor for the next frame). A home or owner keeping
+// these outside the directory can detect a lower sequence, or a different
+// digest at the same observed position. A larger sequence alone does not prove
+// continuity. Without independent evidence, replay cannot distinguish a valid
+// older prefix from the latest one. After a known restore,
 // keep admission inhibited while the owner reconciles surviving evidence and
 // provisions a fresh identity and higher epoch.
 //

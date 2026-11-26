@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -702,4 +704,30 @@ func TestShortIndexWrite(t *testing.T) {
 	again := reopen(t, c)
 	_, err = again.Administration().Settle(t.Context(), 1, q.Slot, q.ID)
 	must(t, err)
+}
+
+func TestReadSignsDirectoryPositionAfterFence(t *testing.T) {
+	c := config(t, testKey("read head"))
+	w := create(t, c)
+	q := fixtureEnrollment(t, w)
+	_, err := w.Administration().Enroll(t.Context(), q)
+	must(t, err)
+	request := cp.ReadRequest{Slot: q.Slot, Challenge: cp.ID{11}}
+	before, err := w.Administration().Read(t.Context(), request)
+	must(t, err)
+	_, err = w.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{12})
+	if !errors.Is(err, cp.ErrNotApplied) {
+		t.Fatal(err)
+	}
+	after, err := w.ReadHome(t.Context(), request, q.HomePublicKey)
+	must(t, err)
+	must(t, cp.VerifyView(c.Pin, request, after))
+	var head struct {
+		Seq    uint64 `json:"journal_sequence,string"`
+		Digest string `json:"previous_digest"`
+	}
+	must(t, json.Unmarshal(after.Fresh.Body, &head))
+	if before.Current != after.Current || bytes.Equal(before.Fresh.Body, after.Fresh.Body) || head.Seq != w.seq || head.Digest != hex.EncodeToString(w.previous[:]) {
+		t.Fatalf("missing signed directory position after fence: %+v", head)
+	}
 }

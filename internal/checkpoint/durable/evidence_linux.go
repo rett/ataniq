@@ -101,6 +101,7 @@ func (w *Witness) read(q cp.ReadRequest) (cp.View, error) {
 		guard = "inhibited"
 	}
 	b, err := canonical(map[string]any{"schema": 1, "operation": "read", "audience": q.Slot.Authority, "key_id": w.keyID,
+		"journal_sequence": strconv.FormatUint(w.seq, 10), "previous_digest": hex.EncodeToString(w.previous[:]),
 		"challenge": hex.EncodeToString(q.Challenge[:]), "guard": guard, "current": protocolState(v.Current), "receipt_id": id, "prior_digest": prior})
 	if err != nil {
 		return cp.View{}, err
