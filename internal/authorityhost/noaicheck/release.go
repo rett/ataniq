@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // The phases of a run (see RunPhase).
@@ -73,7 +74,7 @@ func (c *Checker) RunPhase(phase, release string, listing []byte) (Report, error
 	c.CheckCredentials()
 	c.CheckEnv()
 	c.CheckProcesses()
-	c.CheckUnits()
+	c.checkUnits(phase == PhasePost && c.witnessRelease)
 	if phase == PhasePre {
 		if len(c.lists.PortsAllow) == 0 && c.RequirePolicy {
 			c.notEnforced(FilePortsAllow, DetailEmpty, "")
@@ -97,8 +98,7 @@ func (c *Checker) RunPhase(phase, release string, listing []byte) (Report, error
 // CheckRelease reads the release folder dir's own files, as the release
 // would install them, before the host loads any: every file beneath its
 // etc/systemd is a unit or drop-in, read with the rules of installed units
-// (Environment=, PassEnvironment= and EnvironmentFile= by name; a link to
-// /dev/null is a mask and is not read; a file in a folder named "user" is
+// (Environment=, PassEnvironment= and EnvironmentFile= by name; all symlinks anywhere in the release are refused; a file in a folder named "user" is
 // a user unit, its EnvironmentFile= resolved in every user's context, any
 // other a system unit), and every file a unit's EnvironmentFile= names is
 // read on the host like any other. Every file beneath its etc/caddy is
@@ -150,23 +150,9 @@ func (c *Checker) CheckRelease(dir string) error {
 	read := func(e *wentry) (string, []byte, bool) {
 		p := e.rel
 		if e.isLink() {
-			target, err := rt.readlink(e.rel)
-			if err == nil && path.Clean(target) == "/dev/null" {
-				return "", nil, false // a mask
-			}
-			p, err = rt.resolveStrict(e.rel)
-			switch {
-			case errors.Is(err, errLoop):
-				c.hit(KindUnitLink, at(e.rel), DetailLoop)
-				return "", nil, false
-			case errors.Is(err, errEscape):
-				c.hit(KindUnitLink, at(e.rel), DetailEscape)
-				return "", nil, false
-			case err != nil:
-				fail(e.rel, err)
-				return "", nil, false
-			}
-		} else if !e.isRegular() {
+			return "", nil, false // The whole-tree walk reports every release link.
+		}
+		if !e.isRegular() {
 			fail(e.rel, errNotRegular)
 			return "", nil, false
 		}
@@ -187,7 +173,24 @@ func (c *Checker) CheckRelease(dir string) error {
 		fail("bin/ataniq-witness", binErr)
 	}
 	seenWitness := false
-	walk(releaseUnits, func(e *wentry) {
+	relDir := "/opt/authority-host/releases/" + filepath.Base(filepath.Clean(dir))
+	shipped := func(name string) bool {
+		rel := "bin/" + name
+		resolved, info, err := rt.lstat(rel)
+		if err != nil || resolved != rel || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+			return false
+		}
+		st, ok := info.Sys().(*syscall.Stat_t)
+		return ok && st.Nlink == 1
+	}
+	walk(".", func(e *wentry) {
+		if e.isLink() {
+			c.hit(KindIncomplete, at(e.rel), "release-symlink")
+			return
+		}
+		if !strings.HasPrefix(e.rel, releaseUnits+"/") {
+			return
+		}
 		p, data, ok := read(e)
 		if !ok {
 			return
@@ -198,10 +201,14 @@ func (c *Checker) CheckRelease(dir string) error {
 				c.hit(KindUnit, at(e.rel), "witness-binary")
 			}
 		}
-		if (hasWitness || e.rel == WitnessUnit) && !WitnessUnitSafe(e.rel, string(data), "/opt/authority-host/releases/"+filepath.Base(filepath.Clean(dir))) {
+		text := string(data)
+		if !ReleaseExecsSafe(text, relDir, shipped) {
+			c.hit(KindUnit, at(e.rel), "decision-exec")
+		}
+		if (hasWitness || e.rel == WitnessUnit) && !WitnessUnitSafe(e.rel, text, relDir) {
 			c.hit(KindUnit, at(e.rel), "witness-isolation")
 		}
-		u := parseEnv(syntaxSystemd, string(data), false)
+		u := parseEnv(syntaxSystemd, text, false)
 		for _, n := range u.names {
 			c.hit(KindEnv, at(p), n)
 		}
@@ -254,6 +261,9 @@ func (c *Checker) CheckRelease(dir string) error {
 	}
 	imports := &importScan{c: c, done: map[string]bool{}}
 	for _, d := range strings.Fields(releaseNameDirs) {
+		if resolved, err := rt.resolve(d); err == nil && resolved != d {
+			continue // The link to this folder was already refused.
+		}
 		walk(d, func(e *wentry) {
 			p, data, ok := read(e)
 			if !ok {

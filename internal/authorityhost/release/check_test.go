@@ -180,11 +180,11 @@ func TestCheckCoverage(t *testing.T) {
 			set(t, s, "etc/systemd/system/ataniq-seat.service", testUnit)
 			set(t, s, "share/validators.list", testValidators+"systemd-analyze verify {release}/etc/systemd/system/ataniq-seat.service\n")
 			set(t, s, "share/reload.list", testReload+"systemctl daemon-reload\n")
-		}, want: []string{"static-has-service: etc/systemd/system/ataniq-seat.service"}},
+		}, want: []string{"static-has-service: etc/systemd/system/ataniq-seat.service", "decision-exec: etc/systemd/system/ataniq-seat.service"}},
 		{name: "a static release with a service in a drop-in", static: true, mutate: func(t *testing.T, s string) {
 			set(t, s, "etc/systemd/system/x.service.d/10.conf", "[Service]\nExecStart=\nExecStart=/bin/sh\n")
 			set(t, s, "share/reload.list", testReload+"systemctl daemon-reload\n")
-		}, want: []string{"static-has-service: etc/systemd/system/x.service.d/10.conf"}},
+		}, want: []string{"static-has-service: etc/systemd/system/x.service.d/10.conf", "decision-exec: etc/systemd/system/x.service.d/10.conf"}},
 		{name: "a static release with a timer and a oneshot-less service section", static: true, mutate: func(t *testing.T, s string) {
 			set(t, s, "etc/systemd/system/x.timer", "[Timer]\nOnBootSec=1min\n")
 			set(t, s, "etc/systemd/system/x.service", "[Service]\nType=oneshot\n")
@@ -219,7 +219,7 @@ func TestCheckCoverage(t *testing.T) {
 		}},
 		{name: "decision service with ExecStartPre from the system", mutate: func(t *testing.T, s string) {
 			replace(t, s, "etc/systemd/system/ataniq-seat.service", "Restart=", "ExecStartPre=/usr/bin/true\nRestart=")
-		}},
+		}, want: []string{"decision-exec: etc/systemd/system/ataniq-seat.service"}},
 		{name: "a second ExecStart runs a system binary", mutate: func(t *testing.T, s string) {
 			replace(t, s, "etc/systemd/system/ataniq-seat.service", "Restart=", "ExecStart=/usr/bin/sleep 1\nRestart=")
 		}, want: []string{"decision-exec: etc/systemd/system/ataniq-seat.service"}},

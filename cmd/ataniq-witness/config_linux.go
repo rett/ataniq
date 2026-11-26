@@ -109,7 +109,11 @@ func readFile(p string, limit int64, private bool) ([]byte, error) {
 		return nil, err
 	}
 	defer d.Close()
-	f, err := openRegular(d, filepath.Base(p), private)
+	return readRegular(d, filepath.Base(p), limit, private)
+}
+
+func readRegular(d *os.File, name string, limit int64, private bool) ([]byte, error) {
+	f, err := openRegular(d, name, private)
 	if err != nil {
 		return nil, err
 	}
@@ -186,11 +190,20 @@ func loadConfig(path string) (config, durable.Config, error) {
 
 func loadTLS(dir, pin string) (seatgate.Identity, error) {
 	var id seatgate.Identity
-	cert, err := readFile(filepath.Join(dir, seatgate.CertFile), 16<<10, false)
+	d, err := directory(dir, false)
 	if err != nil {
 		return id, err
 	}
-	key, err := readFile(filepath.Join(dir, seatgate.KeyFile), 16<<10, true)
+	defer d.Close()
+	st, err := d.Stat()
+	if err != nil || st.Mode().Perm()&0022 != 0 {
+		return id, errFiles
+	}
+	cert, err := readRegular(d, seatgate.CertFile, 16<<10, false)
+	if err != nil {
+		return id, err
+	}
+	key, err := readRegular(d, seatgate.KeyFile, 16<<10, true)
 	if err != nil {
 		return id, err
 	}

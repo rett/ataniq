@@ -342,3 +342,14 @@ func TestWitnessPinnedGuard(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestWitnessStickyWritableTLS(t *testing.T) {
+	c, path := fixture(t)
+	call(t, path, "init", 0)
+	for _, key := range []struct{ dir, pin string }{{c.ServiceTLS, c.ServicePin}, {c.OwnerTLS, c.OwnerPin}} {
+		must(t, os.Chmod(key.dir, os.ModeSticky|0777))
+		if _, err := loadTLS(key.dir, key.pin); !errors.Is(err, errFiles) {
+			t.Errorf("sticky writable TLS directory: %v", err)
+		}
+	}
+}

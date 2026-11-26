@@ -1,9 +1,11 @@
 package noaicheck
 
 import (
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -93,6 +95,9 @@ func TestWitnessReleaseComponentHits(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := []Hit{{KindUnit, "/" + releaseDir + "/" + WitnessUnit, detail}}
+		if !binary {
+			want = append(want, Hit{KindUnit, "/" + releaseDir + "/" + WitnessUnit, "decision-exec"})
+		}
 		if hits := c.Report().Hits; !slices.Equal(hits, want) {
 			t.Fatalf("got %v want %v", hits, want)
 		}
@@ -184,6 +189,114 @@ func TestWitnessMissingEgressNote(t *testing.T) {
 		note := slices.Contains(c.Report().Notes, "witness egress drop-in missing: home unreachable")
 		if note != installed || len(c.Report().Hits) != 0 {
 			t.Fatalf("installed %v: %v", installed, c.Report())
+		}
+	}
+}
+
+func TestWitnessReleaseExecutableIdentity(t *testing.T) {
+	const bin = "/" + releaseDir + "/bin/"
+	for _, value := range []string{"${PROGRAM}", bin + "%i", "relative", bin + "../bin/app", "/bin/app", bin + "absent", bin + "app ; /bin/other", bin + "alias"} {
+		t.Run(value, func(t *testing.T) {
+			f := cleanFixture(t)
+			f.exe(releaseDir + "/bin/app")
+			f.file(releaseDir+"/etc/systemd/system/app.service", "[Service]\nExecStartPre="+value+"\n")
+			if value == bin+"alias" {
+				f.link(releaseDir+"/bin/alias", "app")
+			}
+			c := f.checker(testLists())
+			if err := c.CheckRelease(f.abs(releaseDir)); err != nil {
+				t.Fatal(err)
+			}
+			if len(c.Report().Hits) == 0 {
+				t.Fatal("accepted executable", value)
+			}
+		})
+	}
+}
+
+func TestWitnessReleaseRejectsLinks(t *testing.T) {
+	for _, rel := range []string{"etc/systemd/system/alias.service", "etc/caddy/alias", "share/alias", "bin/alias"} {
+		f := cleanFixture(t)
+		f.file(releaseDir+"/data", "# comment\n")
+		target, err := filepath.Rel(filepath.Dir(rel), "data")
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.link(releaseDir+"/"+rel, target)
+		c := f.checker(testLists())
+		if err := c.CheckRelease(f.abs(releaseDir)); err != nil {
+			t.Fatal(err)
+		}
+		if len(c.Report().Hits) == 0 {
+			t.Errorf("accepted link %s", rel)
+		}
+	}
+}
+
+func TestWitnessInheritedEgress(t *testing.T) {
+	for _, dir := range []string{"etc/systemd/system/service.d", "run/systemd/system/ataniq-.service.d", "usr/lib/systemd/system/ataniq-witness.service.d", "etc/systemd/system.control/ataniq-witness.service.d"} {
+		f := cleanFixture(t)
+		f.file(WitnessUnit, "[Service]\nIPAddressDeny=any\n")
+		f.file(dir+"/override.conf", "[Service]\nIPAddressDeny=\n")
+		c := f.checker(testLists())
+		c.CheckUnits()
+		if !slices.ContainsFunc(c.Report().Hits, func(h Hit) bool { return h.Detail == "witness-egress" }) {
+			t.Errorf("accepted deny reset in %s", dir)
+		}
+	}
+}
+
+func TestWitnessEffectiveEgress(t *testing.T) {
+	addr := netip.MustParseAddr("192.0.2.4")
+	for _, tc := range []struct {
+		allow, deny string
+		addr        netip.Addr
+		valid       bool
+	}{
+		{"192.0.2.4/32", "::/0 0.0.0.0/0", addr, true},
+		{"", "0.0.0.0/0 ::/0", netip.Addr{}, true},
+		{"2001:db8::5/128", "any", netip.MustParseAddr("2001:db8::5"), true},
+		{"192.0.2.4/32", "", addr, false},
+		{"192.0.2.4/32", "0.0.0.0/0", addr, false},
+		{"192.0.2.4/32 192.0.2.5/32", "any", addr, false},
+		{"192.0.2.0/24", "any", addr, false},
+		{"192.0.2.5/32", "any", addr, false},
+		{"", "any", addr, false},
+	} {
+		result := "IPAddressDeny=" + tc.deny + "\nIPAddressAllow=" + tc.allow + "\nLoadState=loaded\n"
+		if effectiveWitnessEgress(result, tc.addr, false) != tc.valid {
+			t.Errorf("%q for %v", result, tc.addr)
+		}
+	}
+	for _, result := range []string{"", "IPAddressDeny=any\nLoadState=loaded\n", "LoadState=not-found\n", "LoadState=masked\n"} {
+		if effectiveWitnessEgress(result, netip.Addr{}, false) {
+			t.Errorf("accepted %q for loaded unit", result)
+		}
+	}
+}
+
+func TestWitnessSystemctlQuery(t *testing.T) {
+	tool := filepath.Join(t.TempDir(), "systemctl")
+	for _, tc := range []struct {
+		output               string
+		exit                 int
+		allowUnloaded, valid bool
+	}{
+		{"LoadState=loaded\nIPAddressAllow=\nIPAddressDeny=0.0.0.0/0 ::/0", 0, false, true},
+		{"LoadState=loaded\nIPAddressAllow=any\nIPAddressDeny=any", 0, false, false},
+		{"LoadState=not-found", 4, true, true},
+		{"LoadState=not-found", 4, false, false},
+		{"LoadState=not-found", 1, true, false},
+		{"LoadState=loaded\nIPAddressAllow=\nIPAddressDeny=any", 4, true, false},
+	} {
+		script := "#!/bin/sh\n" +
+			"test \"$*\" = '--system show --all -p IPAddressAllow,IPAddressDeny -p LoadState ataniq-witness.service' || exit 1\n" +
+			"printf '%s\\n' '" + tc.output + "'\nexit " + strconv.Itoa(tc.exit) + "\n"
+		if err := os.WriteFile(tool, []byte(script), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := queryWitnessEgress(tool, netip.Addr{}, tc.allowUnloaded); (err == nil) != tc.valid {
+			t.Errorf("reply %q exit %d: %v", tc.output, tc.exit, err)
 		}
 	}
 }

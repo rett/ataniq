@@ -68,9 +68,14 @@ IPv6. Use the canonical address spelling and decimal port without leading
 zeros. Use a unicast destination outside loopback and link-local space.
 IPv4-mapped IPv6 addresses and zones are refused. Only the firewall restricts
 the TCP port. The host no-AI check and witness `check` read the owner’s unit
-drop-ins and compare their single `IPAddressAllow` to the configured address.
-After reload, inspect `systemctl show ataniq-witness.service -p IPAddressAllow`
-to confirm the effective setting. The owner verifies the live
+drop-ins across the system manager’s unit search path, including
+`ataniq-witness.service.d`, `ataniq-.service.d` and `service.d`. Together
+these files may set one `IPAddressAllow` matching the home address. On a
+running systemd host both checks query the loaded unit with
+`systemctl show -p IPAddressAllow,IPAddressDeny ataniq-witness.service`.
+Its deny list must cover all IPv4 and IPv6 addresses, and its allow list must
+match the files on disk. After changing a drop-in, run
+`systemctl daemon-reload` before checking it. The owner verifies the live
 rules, their order and counters, then records the reviewed ruleset digest
 with the release baseline. No DNS allowance is needed.
 
@@ -112,7 +117,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 sh scripts/go-tool.sh build -trimpath -o b
    owner and the home. The verified seat binary's `gate-init --identity DIR`
    produces the supported `cert.pem` and `key.pem` format. Run it under the
    account that will use each key. Direct its fingerprint output to the
-   owner's protected pairing record. Use new 0700 folders and 0600 keys.
+   owner's protected pairing record. Use new 0700 folders and 0600 keys. Both TLS directories must deny
+   writes by group and others, including when the sticky bit is set.
    The local owner's key and directory belong to root. Use separate keys
    from the seat, gate, notifier and deploy tools.
 5. Exchange pins over an independent authenticated channel. At the witness
@@ -186,7 +192,8 @@ ln -s /opt/authority-host/current/etc/systemd/system/ataniq-witness.service /etc
 
 Activate the signed release with the existing switch procedure. Leave the
 unit disabled in systemd. The switch's validator checks the unit and its
-link, then its reload list starts the unit under the decision inhibit.
+exact link target under `/opt/authority-host/current`, even on the first
+switch while the link dangles. Its reload list starts the unit under the decision inhibit.
 The health command verifies signed local status even if the home is
 offline. Without the egress drop-in the service can pass this local health
 check while the unit denies all IP traffic. The host no-AI check reports

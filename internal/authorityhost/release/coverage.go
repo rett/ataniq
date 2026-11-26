@@ -120,6 +120,15 @@ func (c *checker) coverage(root *os.Root, m switcher.Manifest, id string, files 
 		return
 	}
 
+	if hasWitness {
+		const validator = "share/check-witness-unit-link"
+		_, included := files[validator]
+		if !included || !slices.ContainsFunc(l.validators, func(args []string) bool {
+			return slices.Equal(args, []string{"sh", relDir + "/" + validator, "/" + noaicheck.WitnessUnit})
+		}) {
+			c.add(CodeWitness, switcher.ValidatorsList)
+		}
+	}
 	if hasWitness && !slices.ContainsFunc(l.health, func(args []string) bool {
 		return slices.Equal(args, []string{relDir + "/bin/ataniq-witness", "status", "--config", noaicheck.WitnessConfig})
 	}) {
@@ -158,7 +167,7 @@ var notStopped = map[string]string{"ataniq-seat-notify": "ataniq-seat-notify"}
 // other. An ExecStart that runs no binary of the release at all is refused on
 // its own (decision-exec), so it does not need the stop line to be refused
 // again.
-func excused(name string, units []unit, id string, files map[string]entry) bool {
+func excused(name string, units []unit, id string) bool {
 	bin, ok := notStopped[name]
 	if !ok {
 		return false
@@ -168,7 +177,7 @@ func excused(name string, units []unit, id string, files map[string]entry) bool 
 			continue
 		}
 		for _, exec := range u.execs {
-			if n := shippedName(exec, id, files); n != "" && n != bin {
+			if n := noaicheck.ReleaseProgram(exec, hostRelDir+id); n != "" && n != bin {
 				return false
 			}
 		}
@@ -193,6 +202,12 @@ func (c *checker) units(root *os.Root, files map[string]entry, relDir string, wi
 			// Not built by Build, which replaces it: systemd would run
 			// the words as they are.
 			c.add(CodeUnitPlacehold, p)
+		}
+		if !noaicheck.ReleaseExecsSafe(string(data), relDir, func(name string) bool {
+			e, ok := files["bin/"+name]
+			return ok && e.nlink == 1 && e.mode&0o111 != 0
+		}) {
+			c.add(CodeDecisionExec, p)
 		}
 		if witness && !noaicheck.WitnessUnitSafe(p, string(data), relDir) {
 			c.add(CodeWitness, p)
@@ -508,59 +523,22 @@ func (c *checker) reloadsAndStops(static bool, relDir, id string, files map[stri
 	// decision service, which the notifier is not.
 	service := false
 	for _, u := range units {
-		service = service || !excused(u.name, units, id, files)
+		service = service || !excused(u.name, units, id)
 	}
 	if !service {
 		c.add(CodeNoService, "")
 	}
 	seen := map[string]bool{}
 	for _, u := range units {
-		for _, exec := range u.execs {
-			if !shippedBinary(exec, id, files) {
-				c.add(CodeDecisionExec, u.path)
-			}
-		}
 		if seen[u.name] {
 			continue
 		}
 		seen[u.name] = true
-		if !excused(u.name, units, id, files) && !does(l.stops, u.name, "stop") {
+		if !excused(u.name, units, id) && !does(l.stops, u.name, "stop") {
 			c.add(CodeStopNone, u.name)
 		}
 		if !does(l.reloads, u.name, "restart") {
 			c.add(CodeReloadNone, u.name)
 		}
 	}
-}
-
-// shippedBinary reports whether the ExecStart value runs a binary of this
-// release: /opt/authority-host/current/bin/NAME, or its own
-// /opt/authority-host/releases/ID/bin/NAME, NAME a file of bin/ with an
-// execute bit. systemd's prefixes (@ - : + !) before the program are
-// skipped.
-func shippedBinary(exec, id string, files map[string]entry) bool {
-	return shippedName(exec, id, files) != ""
-}
-
-// shippedName is the name of the binary of this release that the ExecStart
-// value runs, as shippedBinary reads it, or "" when it runs none.
-func shippedName(exec, id string, files map[string]entry) string {
-	fields := strings.Fields(exec)
-	if len(fields) == 0 {
-		return ""
-	}
-	prog := strings.TrimLeft(fields[0], "@-:+!")
-	var name string
-	for _, prefix := range []string{hostCurrent + "bin/", hostRelDir + id + "/bin/"} {
-		if n, ok := strings.CutPrefix(prog, prefix); ok {
-			name = n
-		}
-	}
-	if !validName(name) {
-		return ""
-	}
-	if e, ok := files["bin/"+name]; ok && e.mode&0o111 != 0 {
-		return name
-	}
-	return ""
 }

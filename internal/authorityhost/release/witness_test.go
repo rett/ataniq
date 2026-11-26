@@ -3,6 +3,7 @@ package release
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -24,6 +25,7 @@ func TestWitnessRelease(t *testing.T) {
 		{"indirect socket", "etc/systemd/system/other.socket", "", "[Socket]\nListenStream=9000\nService=ataniq-witness.service\n", CodeWitness},
 		{"unit override", noaicheck.WitnessUnit + ".d/user.conf", "", "[Service]\nUser=seat\n", CodeWitness},
 		{"global override", "etc/systemd/system/service.d/account.conf", "", "[Service]\nUser=seat\n", CodeWitness},
+		{"link target unchecked", "share/validators.list", "sh {release}/share/check-witness-unit-link /" + noaicheck.WitnessUnit, "test -L /" + noaicheck.WitnessUnit, CodeWitness},
 		{"missing health", "share/health.cmd", "{release}/bin/ataniq-witness status --config " + noaicheck.WitnessConfig, "", CodeWitness},
 		{"missing stop", "share/stop.list", "systemctl stop ataniq-witness.service", "", CodeStopNone},
 		{"missing restart", "share/reload.list", "systemctl restart ataniq-witness.service", "", CodeReloadNone},
@@ -125,5 +127,31 @@ func TestWitnessOverlayLists(t *testing.T) {
 				t.Errorf("first missing or out-of-order command: %s", remaining[0])
 			}
 		})
+	}
+}
+
+func TestWitnessInstalledUnitLink(t *testing.T) {
+	src := filepath.Join(baseTree, "witness")
+	const validator = "sh {release}/share/check-witness-unit-link /" + noaicheck.WitnessUnit
+	if !slices.Contains(strings.Split(string(mustRead(t, filepath.Join(src, "share/validators.list"))), "\n"), validator) {
+		t.Fatal("missing exact link validator")
+	}
+	unit := filepath.Join(t.TempDir(), "unit")
+	target := "/opt/authority-host/current/" + noaicheck.WitnessUnit
+	for _, dest := range []string{target, "/another/release/unit", target + "\n", ""} {
+		if dest != "" {
+			if err := os.Symlink(dest, unit); err != nil {
+				t.Fatal(err)
+			}
+		}
+		err := exec.Command("sh", filepath.Join(src, "share/check-witness-unit-link"), unit).Run()
+		if (err == nil) != (dest == target) {
+			t.Errorf("target %q: %v", dest, err)
+		}
+		if dest != "" {
+			if err := os.Remove(unit); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 }
