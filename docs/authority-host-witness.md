@@ -28,3 +28,35 @@ result before filling the baseline. Add `--bin build/authority-host/ataniq-witne
 to the release build and check the resulting release. The switch uses the
 witness's read-only preflight at startup and a challenged local status after
 restart. The witness needs no additional enabled unit, port or package.
+
+## Firewall and home listener
+
+The owner installs these two rules, in order, in the host's existing nftables
+`inet` output filter. Place them **before** any general accept, including
+established traffic and loopback. Substitute the dedicated account's numeric
+UID, one home IP address and one TCP port. For IPv6 change `ip daddr` to
+`ip6 daddr`. Install only the rule for the chosen family. The final drop
+covers both families and all protocols for that UID.
+
+```nft
+meta skuid WITNESS_UID ip daddr HOME_ADDRESS tcp dport HOME_PORT accept
+meta skuid WITNESS_UID drop
+```
+
+In the owner's `ataniq-witness.service.d/egress.conf`, add the corresponding
+single address (`/32` for IPv4 or `/128` for IPv6).
+
+```ini
+[Service]
+IPAddressAllow=HOME_ADDRESS
+```
+
+Configure `home_endpoint` as that literal address and decimal port, bracketing
+IPv6. Both `check` and `run` validate it locally. The owner verifies the live
+rules, their order and counters, then records the reviewed ruleset digest
+with the release baseline. No DNS allowance is needed.
+
+On the home firewall allow inbound TCP to that listener **only from the
+witness's observed source address** and drop other sources for the port.
+Set the home link's `TrustSources` to that same host prefix. The home checks
+the witness's pinned TLS identity on every connection.

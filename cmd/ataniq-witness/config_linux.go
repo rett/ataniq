@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
-	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,8 +149,9 @@ func loadConfig(path string) (config, durable.Config, error) {
 	if c.ServicePin == c.OwnerPin || c.HomePin == c.OwnerPin || c.ServicePin == c.HomePin || c.SigningKey == c.HomeKey {
 		return c, store, errConfig
 	}
-	host, port, err := net.SplitHostPort(c.Home)
-	if err != nil || host == "" || port == "" {
+	// Use the same single numeric destination as the account's firewall rule.
+	home, err := netip.ParseAddrPort(c.Home)
+	if err != nil || home.Port() == 0 || home.Addr().Unmap().IsUnspecified() || home.Addr().IsMulticast() || home.Addr().Zone() != "" {
 		return c, store, errConfig
 	}
 	store = durable.Config{Identity: c.Identity, Directory: c.State, KeyPath: c.Seed}

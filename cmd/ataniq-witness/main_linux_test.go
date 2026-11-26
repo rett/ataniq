@@ -194,3 +194,23 @@ func TestWitnessOwnerSocketRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestWitnessHomeFirewallEndpoint(t *testing.T) {
+	c, path := fixture(t)
+	call(t, path, "init", 0)
+	for _, addr := range []string{"192.0.2.20:7443", "[2001:db8::5]:7443"} {
+		c.Home = addr
+		writeConfig(t, path, c)
+		call(t, path, "check", 0)
+	}
+	for _, addr := range []string{"*:7443", ":7443", "0.0.0.0:7443", "[::]:7443", "[::ffff:0.0.0.0]:7443",
+		"HOME:7443", "192.0.2.5:https", "192.0.2.5:0", "192.0.2.5:65536", "192.0.2.0/24:7443", "[2001:db8::5%if]:7443"} {
+		c.Home = addr
+		writeConfig(t, path, c)
+		for _, op := range []string{"check", "run"} {
+			if got := call(t, path, op, 1); got != "invalid witness configuration\n" {
+				t.Fatalf("%q: %s", addr, got)
+			}
+		}
+	}
+}
