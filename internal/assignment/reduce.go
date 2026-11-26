@@ -260,6 +260,11 @@ func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 		if !h.Phase.precommit() {
 			return ErrPhase
 		}
+		if t.PreviewMismatch {
+			if _, err := p.take("preview", t.Candidate.ID, "stopped"); err != nil {
+				return err
+			}
+		}
 		if _, err := p.take("candidate", t.Candidate.ID, "never-executed"); err != nil {
 			return err
 		}

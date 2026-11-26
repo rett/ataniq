@@ -174,3 +174,21 @@ func TestContradictoryReceiptRequiresReconciliation(t *testing.T) {
 		assertHolder(t, s.ledger, managed, 2, true)
 	}
 }
+
+func TestAbortNeedsMismatchedPreviewStop(t *testing.T) {
+	s := forward(t, 2)
+	belief := next(s.ledger, key, BeliefAccepted, "T", "")
+	belief.Evidence[0].Outcome = "mismatch"
+	s.accept(t, belief)
+	c := next(s.ledger, key, AbortPrepared, "T", "")
+	stopped := next(s.ledger, key, Inventory, "T", "").Evidence[0]
+	refused(t, s.ledger, c, ErrEvidence)
+	wrong := c
+	wrong.Evidence = append(slices.Clone(c.Evidence), stopped)
+	wrong.Evidence[1].Subject = legacy.ID
+	refused(t, s.ledger, wrong, ErrEvidence)
+	c.Evidence = append(c.Evidence, stopped)
+	s.accept(t, c)
+	s.steps(t, "T", []step{{kind: Aborted}})
+	assertHolder(t, s.ledger, legacy, 1, true)
+}
