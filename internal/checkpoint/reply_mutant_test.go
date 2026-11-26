@@ -1,6 +1,7 @@
 package checkpoint_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"errors"
@@ -62,6 +63,18 @@ func TestReceiptFieldMutants(t *testing.T) {
 						got.State.Slot.Witness = want.State.Slot.Witness
 					}
 					return got == want
+				})
+			})
+		})
+	}
+}
+
+func TestReceiptNamespaceMutants(t *testing.T) {
+	for field, namespace := range map[string]string{"profile_home": cp.HomeNamespace, "profile_session": cp.SessionNamespace} {
+		t.Run(field, func(t *testing.T) {
+			rejectMutant(t, "lying_advance_"+field, "got <nil>, want checkpoint: unknown mutation outcome", func(h *checkpointtest.Harness) {
+				acceptAlteredReply(h, func(pin ed25519.PublicKey, original, delivered cp.Receipt) bool {
+					return bytes.Equal(delivered.Body, original.Body) && cp.VerifySignature(namespace, pin, delivered.Body, delivered.Signature) == nil
 				})
 			})
 		})

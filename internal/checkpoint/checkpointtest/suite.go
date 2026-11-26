@@ -163,7 +163,7 @@ func Run(t *testing.T, newWitness Factory) {
 		t.Run("conflicting "+op, func(t *testing.T) { conflictingOwnerID(t, newWitness, op) })
 	}
 	for _, op := range []string{"claim", "advance"} {
-		for _, field := range []string{"operation", "id", "request_digest", "predecessor", "head", "fence", "session", "epoch", "revision", "home", "witness_slot", "replay", "signer"} {
+		for _, field := range []string{"operation", "id", "request_digest", "predecessor", "head", "fence", "session", "epoch", "revision", "home", "witness_slot", "replay", "signer", "profile_home", "profile_session"} {
 			t.Run("lying "+op+" "+field, func(t *testing.T) { lyingReply(t, newWitness, op, field) })
 		}
 	}

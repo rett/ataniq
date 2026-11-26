@@ -37,6 +37,15 @@ func lyingReply(t *testing.T, factory Factory, op, field string) {
 		if field == "replay" {
 			return *before.Prior
 		}
+		if field == "profile_home" || field == "profile_session" {
+			namespace := cp.HomeNamespace
+			if field == "profile_session" {
+				namespace = cp.SessionNamespace
+			}
+			sig, err := cp.Sign(namespace, key("test witness"), r.Body)
+			check(t, err)
+			return cp.Receipt{Body: r.Body, Signature: sig}
+		}
 		var body map[string]any
 		check(t, json.Unmarshal(r.Body, &body))
 		result := body["result"].(map[string]any)
