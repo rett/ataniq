@@ -59,7 +59,7 @@ func Marshal(p assignment.PublicEnvelope) ([]byte, error) {
 	}
 	switch p.Kind {
 	case assignment.Seed, assignment.Freeze, assignment.Inventory, assignment.BeliefAccepted,
-		assignment.Reserve, assignment.ReceiptReconciled, assignment.FenceReceipt, assignment.Fenced,
+		assignment.Reserve, assignment.FenceReceipt, assignment.Fenced,
 		assignment.Commit, assignment.ConfirmReceipt, assignment.Open, assignment.HoldStarted,
 		assignment.HoldReviewed, assignment.AbortPrepared, assignment.Aborted, assignment.AbortedClosed,
 		assignment.RollbackFreeze:
@@ -67,7 +67,7 @@ func Marshal(p assignment.PublicEnvelope) ([]byte, error) {
 		return nil, errProjection
 	}
 	switch p.Phase {
-	case assignment.PhaseReceiptDisputed, assignment.PhaseFrozen, assignment.PhaseInventoried,
+	case assignment.PhaseQuarantined, assignment.PhaseFrozen, assignment.PhaseInventoried,
 		assignment.PhaseBeliefVerified, assignment.PhaseReserved, assignment.PhasePartiallyFenced,
 		assignment.PhaseFenced, assignment.PhaseCommittedClosed, assignment.PhaseConfirmed,
 		assignment.PhaseAborting, assignment.PhaseAborted, assignment.PhaseAbortedClosed:

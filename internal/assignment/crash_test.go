@@ -532,10 +532,10 @@ func TestCrashAndPartitionTable(t *testing.T) {
 					t.Fatal("legacy claim")
 				}
 			}
-			dispute := next(s.ledger, key, ConfirmReceipt, "T", "worker")
-			dispute.Evidence[0].Outcome = "legacy-still-running"
-			dispute.Evidence[0].Digest = sha256Hex([]byte("two routes observed"))
-			s.accept(t, dispute)
+			correction := next(s.ledger, key, ConfirmReceipt, "T", "worker")
+			correction.Evidence[0].Outcome = "legacy-still-running"
+			correction.Evidence[0].Digest = sha256Hex([]byte("two routes observed"))
+			s.accept(t, correction)
 			home, err := recoverAt(s.events, s.ledger.Checkpoint())
 			if err != nil {
 				t.Fatal(err)
@@ -544,17 +544,7 @@ func TestCrashAndPartitionTable(t *testing.T) {
 			if closed.Permits(closed.Head) || closed.Permits(old) || closed.Permits(r.Head) {
 				t.Fatal("claim elected during conflict")
 			}
-			tr, _ := home.Transfer(key, "T")
-			if !slices.Contains(tr.Disputes, dispute.Evidence[0]) {
-				t.Fatal("lost live-route evidence")
-			}
-			resolve := next(home, key, ReceiptReconciled, "T", "")
-			resolve.Evidence = []Evidence{{Kind: "reconciliation", Issuer: dispute.Evidence[0].Issuer, Subject: dispute.Evidence[0].Digest, Scope: closed.Head, TransferID: "T", Digest: sha256Hex([]byte("old executor stopped and work accounted for")), Revision: "review", Outcome: "reconciled"}}
-			s.accept(t, resolve)
-			s.steps(t, "T", forwardSteps[4:6])
-			refused(t, s.ledger, next(s.ledger, key, Open, "T", ""), ErrEvidence)
-			s.steps(t, "T", forwardSteps[8:])
-			assertHolder(t, s.ledger, managed, 2, true)
+			refused(t, home, next(home, key, Open, "T", ""), ErrPhase)
 		}},
 		{"Crash during the 14-day hold or reverse transfer", func(t *testing.T) {
 			s := forward(t, len(forwardSteps))

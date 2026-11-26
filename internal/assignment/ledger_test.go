@@ -478,3 +478,28 @@ func TestExactFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+func TestDecideReservesSignedFrameSpace(t *testing.T) {
+	s := fresh(t)
+	c := next(s.ledger, key, Seed, "seed", "")
+	e, _, err := Decide(s.ledger, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Signature = strings.Repeat("A", 262) // unpadded base64url of the schema-1 SSHSIG
+	b, err := e.RecordBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Actor += strings.Repeat("a", 65536-len(b))
+	e, _, err = Decide(s.ledger, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Signature = strings.Repeat("A", 262)
+	b, err = e.RecordBytes()
+	if err != nil || len(b) != 65536 {
+		t.Fatal(len(b), err)
+	}
+	c.Actor += "a"
+	refused(t, s.ledger, c, ErrLimit)
+}

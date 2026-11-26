@@ -52,19 +52,17 @@ type disposition struct {
 	result Result
 }
 
-// A receipt target survives inventory resets, reconciliations and later transfers.
-// Event IDs bind the original row and transfer. Renewal separates attestations
-// made against the same reservation or commit after different disputes.
+// Event IDs bind accepted receipts across inventory resets and later transfers.
 type receiptTarget struct {
-	kind                  Kind
-	event, renewal, route string
+	kind         Kind
+	event, route string
 }
 
 func routeReport(c Command) (receiptTarget, Evidence) {
 	if c.Kind == FenceReceipt || c.Kind == ConfirmReceipt {
 		for _, e := range c.Evidence {
 			if e.Kind == "route" {
-				return receiptTarget{c.Kind, e.ScopeEventID, e.ReconciliationID, e.Subject}, e
+				return receiptTarget{c.Kind, e.ScopeEventID, e.Subject}, e
 			}
 		}
 	}
@@ -73,7 +71,6 @@ func routeReport(c Command) (receiptTarget, Evidence) {
 
 type Ledger struct {
 	receipts   map[receiptTarget]Evidence
-	reported   map[Evidence]bool
 	header     Header
 	checkpoint Checkpoint
 	rows       map[Key]Row
@@ -93,7 +90,7 @@ func NewLedger(h Header) (Ledger, error) {
 func initialLedger(h Header, raw []byte) Ledger {
 	hash := sha256Hex(raw)
 	return Ledger{
-		header: h, receipts: make(map[receiptTarget]Evidence), reported: make(map[Evidence]bool),
+		header: h, receipts: make(map[receiptTarget]Evidence),
 		checkpoint: Checkpoint{h.Authority, h.Store, h.Incarnation, h.LedgerID, hash, 0},
 		rows:       make(map[Key]Row),
 		transfers:  make(map[transferKey]Transfer),
@@ -154,10 +151,7 @@ func decideNew(l Ledger, c Command, digest string) (change, error) {
 		id = c.TransferID
 	}
 	tr := l.transfers[transferKey{key, id}]
-	target, report := routeReport(c)
-	if l.reported[report] {
-		return change{}, ErrEvidence
-	}
+	target, _ := routeReport(c)
 	r, tr, err := reduce(r, tr.clone(), c, digest, l.receipts[target])
 	if err != nil {
 		return change{}, err
@@ -251,10 +245,6 @@ func apply(l Ledger, e Event, privateIndexes bool) (Ledger, error) {
 	}
 	ch.row.PublicDigest = sha256Hex(signed)
 	switch e.Command.Kind {
-	case ReceiptReconciled:
-		if ch.row.Head.Phase == PhaseCommittedClosed {
-			ch.transfer.ReconciliationID = e.Result.EventID
-		}
 	case Reserve:
 		ch.transfer.ReservationEventID = e.Result.EventID
 	case Seed, Commit:
@@ -264,18 +254,11 @@ func apply(l Ledger, e Event, privateIndexes bool) (Ledger, error) {
 		l.rows, l.transfers = maps.Clone(l.rows), maps.Clone(l.transfers)
 		l.history, l.latest = maps.Clone(l.history), maps.Clone(l.latest)
 	}
-	if target, report := routeReport(e.Command); report.Kind != "" {
-		if ch.row.Head.Phase == PhaseReceiptDisputed {
-			if !privateIndexes {
-				l.reported = maps.Clone(l.reported)
-			}
-			l.reported[report] = true
-		} else {
-			if !privateIndexes {
-				l.receipts = maps.Clone(l.receipts)
-			}
-			l.receipts[target] = report
+	if target, report := routeReport(e.Command); report.Kind != "" && ch.row.Head.Phase != PhaseQuarantined {
+		if !privateIndexes {
+			l.receipts = maps.Clone(l.receipts)
 		}
+		l.receipts[target] = report
 	}
 	l.rows[id.key], l.transfers[transferKey{id.key, ch.transfer.ID}] = ch.row, ch.transfer
 	l.history[op], l.latest[id] = disposition{digest, e.Result}, e.Result

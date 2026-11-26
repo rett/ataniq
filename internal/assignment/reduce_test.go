@@ -18,11 +18,7 @@ func command(r Row, tr Transfer, k Kind, id, route string) Command {
 	scope := r.Head
 	var targetID string
 	add := func(kind, subject, outcome string) {
-		var renewal string
-		if k == FenceReceipt || k == ConfirmReceipt {
-			renewal = tr.ReconciliationID
-		}
-		c.Evidence = append(c.Evidence, Evidence{ReconciliationID: renewal,
+		c.Evidence = append(c.Evidence, Evidence{
 			Kind: kind, Issuer: "source", Subject: subject, Revision: "snapshot", Outcome: outcome,
 			Digest: fmt.Sprintf("%x", sha256.Sum256([]byte(kind+subject+outcome))),
 			Scope:  scope, TransferID: id, ScopeEventID: targetID,
