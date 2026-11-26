@@ -17,15 +17,27 @@ var (
 	ErrOverflow = errors.New("assignment: counter exhausted")
 )
 
-type Key struct{ Home, Project, Role string }
+type Key struct {
+	Home    string `json:"home"`
+	Project string `json:"project"`
+	Role    string `json:"role"`
+}
 
 type Binding struct {
-	Kind, ID, Authority, Store, Incarnation string
-	Conversation, LaunchIntent              string
-	RoleEpoch                               uint64
+	Authority    string `json:"authority"`
+	Conversation string `json:"conversation"`
+	ID           string `json:"id"`
+	Incarnation  string `json:"incarnation"`
+	Kind         string `json:"kind"`
+	LaunchIntent string `json:"launch_intent"`
+	RoleEpoch    uint64 `json:"role_epoch,string"`
+	Store        string `json:"store"`
 }
 
 func (b Binding) valid() bool {
+	if b.Kind == "managed" && (b.LaunchIntent == "") != (b.RoleEpoch == 0) {
+		return false
+	}
 	return (b.Kind == "legacy" || b.Kind == "managed") && b.ID != "" &&
 		b.Authority != "" && b.Store != "" && b.Incarnation != "" && b.Conversation != ""
 }
@@ -33,6 +45,7 @@ func (b Binding) valid() bool {
 type Phase string
 
 const (
+	PhaseReceiptDisputed Phase = "receipt-disputed"
 	PhaseFrozen          Phase = "frozen"
 	PhaseInventoried     Phase = "inventoried"
 	PhaseBeliefVerified  Phase = "belief-verified"
@@ -60,34 +73,39 @@ func (p Phase) precommit() bool {
 type Kind string
 
 const (
-	Seed           Kind = "Seed"
-	Freeze         Kind = "Freeze"
-	Inventory      Kind = "Inventory"
-	BeliefAccepted Kind = "BeliefAccepted"
-	Reserve        Kind = "Reserve"
-	FenceReceipt   Kind = "FenceReceipt"
-	Fenced         Kind = "Fenced"
-	Commit         Kind = "Commit"
-	ConfirmReceipt Kind = "ConfirmReceipt"
-	Open           Kind = "Open"
-	HoldStarted    Kind = "HoldStarted"
-	HoldReviewed   Kind = "HoldReviewed"
-	AbortPrepared  Kind = "AbortPrepared"
-	Aborted        Kind = "Aborted"
-	AbortedClosed  Kind = "AbortedClosed"
-	RollbackFreeze Kind = "RollbackFreeze"
+	Seed              Kind = "Seed"
+	Freeze            Kind = "Freeze"
+	Inventory         Kind = "Inventory"
+	BeliefAccepted    Kind = "BeliefAccepted"
+	Reserve           Kind = "Reserve"
+	ReceiptReconciled Kind = "ReceiptReconciled"
+	FenceReceipt      Kind = "FenceReceipt"
+	Fenced            Kind = "Fenced"
+	Commit            Kind = "Commit"
+	ConfirmReceipt    Kind = "ConfirmReceipt"
+	Open              Kind = "Open"
+	HoldStarted       Kind = "HoldStarted"
+	HoldReviewed      Kind = "HoldReviewed"
+	AbortPrepared     Kind = "AbortPrepared"
+	Aborted           Kind = "Aborted"
+	AbortedClosed     Kind = "AbortedClosed"
+	RollbackFreeze    Kind = "RollbackFreeze"
 )
 
 type Head struct {
-	Key                   Key
-	Generation, Revision  uint64
-	BindingID, TransferID string
-	Phase                 Phase
+	BindingID  string `json:"binding_id"`
+	Generation uint64 `json:"generation,string"`
+	Key        Key    `json:"key"`
+	Phase      Phase  `json:"phase"`
+	Revision   uint64 `json:"revision,string"`
+	TransferID string `json:"transfer_id"`
 }
 
 type Row struct {
-	Head   Head
-	Holder Binding
+	Head           Head
+	CommitRevision uint64
+	PublicDigest   string
+	Holder         Binding
 	// LastTransferID also identifies the record after its active ID clears.
 	LastTransferID string
 	// Previous is the binding displaced by the most recent commit.
@@ -103,10 +121,16 @@ func (r Row) Permits(h Head) bool { return r.Head == h && h.Phase.open() }
 // TransferID also binds evidence for a new transfer against an older head.
 // The issuer attests the outcome for the subject in that scope.
 type Evidence struct {
-	Route                                            string // Owning route for an effect reference.
-	Kind, Issuer, Subject, Revision, Digest, Outcome string
-	Scope                                            Head
-	TransferID                                       string
+	Digest       string `json:"digest"`
+	Issuer       string `json:"issuer"`
+	Kind         string `json:"kind"`
+	Outcome      string `json:"outcome"`
+	Revision     string `json:"revision"`
+	Route        string `json:"route"`
+	Scope        Head   `json:"scope"`
+	ScopeEventID string `json:"scope_event_id"`
+	Subject      string `json:"subject"`
+	TransferID   string `json:"transfer_id"`
 }
 
 type Hold struct {
@@ -118,22 +142,25 @@ type Hold struct {
 type Effect struct{ ID, Route string }
 
 type Transfer struct {
-	ID, BeginDigest, Authorization    string
-	Original                          Head
-	Predecessor, Candidate            Binding
-	Phase                             Phase
-	PhaseRevision                     uint64
-	Routes                            []string
-	Outstanding                       []Effect
-	Inventory, Note, Belief, Decision Evidence
-	PreviewMismatch                   bool
-	Reservation, Committed            Head
-	Fences, Confirmations             []Evidence
-	Disposition                       string
-	Hold                              Hold
+	ID, BeginDigest, Authorization       string
+	Original                             Head
+	Predecessor, Candidate               Binding
+	Phase                                Phase
+	PhaseRevision                        uint64
+	Routes                               []string
+	Outstanding                          []Effect
+	Inventory, Note, Belief, Decision    Evidence
+	PreviewMismatch                      bool
+	Reservation, Committed               Head
+	ReservationEventID, CommittedEventID string
+	Fences, Confirmations, Disputes      []Evidence
+	BeforeDispute                        Phase
+	Disposition                          string
+	Hold                                 Hold
 }
 
 func (t Transfer) clone() Transfer {
+	t.Disputes = slices.Clone(t.Disputes)
 	t.Routes = slices.Clone(t.Routes)
 	t.Outstanding = slices.Clone(t.Outstanding)
 	t.Fences = slices.Clone(t.Fences)
@@ -142,17 +169,23 @@ func (t Transfer) clone() Transfer {
 }
 
 type Command struct {
-	Expected                                    Head
-	Kind                                        Kind
-	TransferID, RequestID, Actor, Authorization string
-	Candidate                                   Binding
-	Evidence                                    []Evidence
-	HoldStart, EarliestRetirement               uint64
+	Actor              string     `json:"actor"`
+	Authorization      string     `json:"authorization"`
+	Candidate          Binding    `json:"candidate"`
+	EarliestRetirement uint64     `json:"earliest_retirement,string"`
+	Evidence           []Evidence `json:"evidence"`
+	Expected           Head       `json:"expected"`
+	HoldStart          uint64     `json:"hold_start,string"`
+	Kind               Kind       `json:"kind"`
+	RequestID          string     `json:"request_id"`
+	TransferID         string     `json:"transfer_id"`
 }
 
 type Result struct {
-	Head                            Head
-	RequestID, Disposition, EventID string
+	Disposition string `json:"disposition"`
+	EventID     string `json:"event_id"`
+	Head        Head   `json:"head"`
+	RequestID   string `json:"request_id"`
 }
 
 type Event struct {
@@ -161,4 +194,5 @@ type Event struct {
 	Command                     Command
 	Result                      Result
 	Signature                   string
+	Public                      PublicEnvelope
 }

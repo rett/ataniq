@@ -1,7 +1,11 @@
 package assignment
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"reflect"
 	"slices"
@@ -9,17 +13,17 @@ import (
 	"testing"
 )
 
-var header = Header{1, "home", "store", "incarnation", "enrolled-key", "ledger"}
+var header = Header{Schema: 1, Authority: "home", Store: "store", Incarnation: "incarnation", KeyID: "enrolled-key", LedgerID: "ledger"}
 var errSignature = errors.New("test signature mismatch")
 
 type testKey struct{}
 
-func (testKey) Sign(h Header, e Event) (string, error) {
-	return h.KeyID + "/" + e.Result.EventID, nil
+func (testKey) Sign(h Header, b []byte) (string, error) {
+	return h.KeyID + "/" + sha256Hex(b), nil
 }
-func (k testKey) Verify(h Header, e Event) error {
-	want, _ := k.Sign(h, e)
-	if e.Signature != want {
+func (k testKey) Verify(h Header, b []byte, sig string) error {
+	want, _ := k.Sign(h, b)
+	if sig != want {
 		return errSignature
 	}
 	return nil
@@ -40,8 +44,12 @@ func TestCanonicalCommitments(t *testing.T) {
 	}
 	e := s.accept(t, c)
 	hash, _ := ledgerDigest(e)
-	if hash == one || hash == e.Result.EventID || one == e.Result.EventID {
-		t.Fatal("digest domains")
+	// Independently computed SHA-256 over each domain, NUL and its schema-1 bytes.
+	const wantRequest = "16d174bd564a20701b49ea795dffe1ef6974d5c080bcf4a997f0d1747663f3d3"
+	const wantPublic = "5b88a159cdd5a0cbd9d7a677cfbcedb612ebd9e9703d1018ef5ec35e8c65139b"
+	const wantLedger = "0258eb1fff112df3948e44a57d3d60234a09815750fc3f160aa69677a13b4a7e"
+	if one != wantRequest || e.Result.EventID != wantPublic || hash != wantLedger {
+		t.Fatal("commitment differs from golden", one, e.Result.EventID, hash)
 	}
 	old := hash
 	e.Signature += "changed"
@@ -111,7 +119,11 @@ func (s *trace) accept(t *testing.T, c Command) Event {
 	if err != nil || e == nil || e.Result != result {
 		t.Fatalf("decide %s: %v, %+v", c.Kind, err, result)
 	}
-	e.Signature, err = (testKey{}).Sign(header, *e)
+	b, err := e.SigningBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Signature, err = (testKey{}).Sign(header, b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,5 +279,198 @@ func TestCounterExhaustion(t *testing.T) {
 			l.rows[key] = r
 			refused(t, l, next(l, key, Commit, "T", ""), ErrOverflow)
 		})
+	}
+}
+
+func TestReceiptNamesExactEvent(t *testing.T) {
+	for _, tc := range []struct {
+		target, receipt Kind
+		n               int
+	}{{Seed, ConfirmReceipt, 0}, {Reserve, FenceReceipt, 3}, {Commit, ConfirmReceipt, 7}} {
+		t.Run(string(tc.target), func(t *testing.T) {
+			s := fresh(t)
+			id := "seed"
+			if tc.target != Seed {
+				s = forward(t, tc.n)
+				id = "T"
+			}
+			a, b := trace{ledger: s.ledger}, trace{ledger: s.ledger}
+			c := next(s.ledger, key, tc.target, id, "")
+			ea := a.accept(t, c)
+			c.Actor = "other-owner"
+			eb := b.accept(t, c)
+			if ea.Result.Head != eb.Result.Head || ea.Result.EventID == eb.Result.EventID {
+				t.Fatal("targets must fork at equal heads")
+			}
+			receipt := next(a.ledger, key, tc.receipt, id, "worker")
+			refused(t, b.ledger, receipt, ErrEvidence)
+			b.accept(t, next(b.ledger, key, tc.receipt, id, "worker"))
+		})
+	}
+}
+
+func TestReviewHistoricalHold(t *testing.T) {
+	s := forward(t, len(forwardSteps))
+	s.steps(t, "T", []step{{kind: HoldStarted}})
+	held, _ := s.ledger.Transfer(key, "T")
+	s.steps(t, "U", []step{{kind: RollbackFreeze}})
+	active, _ := s.ledger.Transfer(key, "U")
+	row, _ := s.ledger.Row(key)
+	c := command(row, held, HoldReviewed, "T", "")
+	event := s.accept(t, c)
+	l, err := recoverAt(s.events, s.ledger.Checkpoint())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := l.Row(key)
+	row.Head.Revision++
+	row.PublicDigest = got.PublicDigest
+	u, _ := l.Transfer(key, "U")
+	reviewed, _ := l.Transfer(key, "T")
+	held.Hold.Review = c.Evidence[0]
+	if got != row || !reflect.DeepEqual(u, active) || !reflect.DeepEqual(held, reviewed) {
+		t.Fatal(got, u, reviewed)
+	}
+	dup, result, err := Decide(l, c)
+	if err != nil || dup != nil || result != event.Result {
+		t.Fatal(result, err)
+	}
+	s.steps(t, "U", forwardSteps[1:])
+}
+
+func TestUnsignedDecisionCannotAdvanceCheckpoint(t *testing.T) {
+	s := seeded(t)
+	c := next(s.ledger, key, Freeze, "T", "")
+	e, _, err := Decide(s.ledger, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Apply(s.ledger, *e)
+	if !errors.Is(err, ErrChain) || !reflect.DeepEqual(got, s.ledger) {
+		t.Fatal("unsigned decision advanced checkpoint", err)
+	}
+	if _, ok := Lookup(got, key, "T", ""); ok {
+		t.Fatal("unsigned disposition")
+	}
+	if _, err = Replay(header, append(s.events, *e), testKey{}); !errors.Is(err, ErrChain) {
+		t.Fatal(err)
+	}
+}
+
+func TestSignerHasStandalonePerRowProjection(t *testing.T) {
+	s := forward(t, 10)
+	pred := s.events[len(s.events)-1]
+	other := key
+	other.Project = "second"
+	s.accept(t, next(s.ledger, other, Seed, "elsewhere", ""))
+	open := s.accept(t, next(s.ledger, key, Open, "T", ""))
+	type publicBytes interface {
+		SigningBytes() ([]byte, error)
+		SignedPublicBytes() ([]byte, error)
+	}
+	prior, ok := any(pred).(publicBytes)
+	if !ok {
+		t.Fatal("accepted event lacks the signed public projection")
+	}
+	b, err := prior.SignedPublicBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPrev := fmt.Sprintf("%x", sha256.Sum256(b))
+	signing, err := any(open).(publicBytes).SigningBytes()
+	prefix := []byte("ataniq.assignment.event.v1\x00")
+	if err != nil || !bytes.HasPrefix(signing, prefix) {
+		t.Fatal("missing signing domain", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(signing[len(prefix):], &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["previous_public_digest"] != wantPrev || doc["commit_revision"] != "12" || doc["event_id"] != open.Result.EventID || doc["admission"] != true || doc["generation"] != "2" || doc["key_id"] != header.KeyID || doc["alg"] != "Ed25519" {
+		t.Fatal(doc)
+	}
+	executing, ok := doc["executing_instance"].(map[string]any)
+	if !ok || executing["store"] != managed.Store || executing["incarnation"] != managed.Incarnation {
+		t.Fatal(doc)
+	}
+	if _, exists := doc["signature"]; exists {
+		t.Fatal("signature in signing input")
+	}
+	l, err := Replay(header, s.events, testKey{})
+	if err != nil || !reflect.DeepEqual(l, s.ledger) {
+		t.Fatal(err)
+	}
+}
+
+func TestJournalEncodingBoundary(t *testing.T) {
+	s := fresh(t)
+	c := next(s.ledger, key, Seed, "T", "")
+	t.Run("invalid UTF-8", func(t *testing.T) { c := c; c.Actor = "bad\xff"; refused(t, s.ledger, c, ErrInvalid) })
+	t.Run("escaped record", func(t *testing.T) {
+		c := c
+		c.Actor = strings.Repeat("\x00", recordLimit/6)
+		refused(t, s.ledger, c, ErrLimit)
+	})
+	t.Run("signed frame", func(t *testing.T) {
+		e, _, err := Decide(s.ledger, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.Signature = strings.Repeat("\x01", recordLimit/6)
+		if _, err := Apply(s.ledger, *e); !errors.Is(err, ErrLimit) {
+			t.Fatal("oversize signed record", err)
+		}
+	})
+	t.Run("exact header", func(t *testing.T) {
+		frame, err := header.Bytes()
+		if err != nil || sha256Hex(frame) != s.ledger.Checkpoint().Digest {
+			t.Fatal("wrong root commitment", err)
+		}
+	})
+}
+
+func TestExactFrames(t *testing.T) {
+	s := fresh(t)
+	c := next(s.ledger, key, Seed, "T", "")
+	c.Actor = "line separator\u2028and literal\\u2028<&"
+	e := s.accept(t, c)
+	raw, err := e.RecordBytes()
+	if err != nil || !bytes.Contains(raw, []byte(c.Actor[:14])) {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeRecord(raw)
+	if err != nil || !reflect.DeepEqual(decoded, e) {
+		t.Fatal("event round trip", err)
+	}
+	root, err := header.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := ReplayFromHeader(root, []Event{decoded}, testKey{})
+	if err != nil || recovered.Checkpoint() != s.ledger.Checkpoint() {
+		t.Fatal(err)
+	}
+	for _, bad := range [][]byte{root[:len(root)-1], append([]byte(" "), root...), bytes.Replace(root, []byte("{"), []byte("{\"format\":\"other\","), 1)} {
+		if _, err := NewLedgerFromHeader(bad); err == nil {
+			t.Fatal("accepted different header")
+		}
+	}
+	for _, bad := range [][]byte{raw[:len(raw)-1], append([]byte(" "), raw...), bytes.Replace(raw, []byte("{"), []byte("{\"schema\":1,"), 1)} {
+		if _, err := DecodeRecord(bad); err == nil {
+			t.Fatal("accepted different record")
+		}
+	}
+	e.Signature += strings.Repeat("s", recordLimit-len(raw))
+	full, err := e.RecordBytes()
+	if err != nil || len(full) != recordLimit {
+		t.Fatal(len(full), err)
+	}
+	e.Signature += "s"
+	if _, err = e.RecordBytes(); !errors.Is(err, ErrLimit) {
+		t.Fatal(err)
+	}
+	e.Signature = "\xff"
+	if _, err = e.RecordBytes(); !errors.Is(err, ErrInvalid) {
+		t.Fatal(err)
 	}
 }

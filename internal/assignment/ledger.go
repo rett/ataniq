@@ -4,6 +4,7 @@ import (
 	"errors"
 	"maps"
 	"math"
+	"reflect"
 	"slices"
 )
 
@@ -14,8 +15,12 @@ var (
 )
 
 type Header struct {
-	Schema                                         uint64
-	Authority, Store, Incarnation, KeyID, LedgerID string
+	Authority   string `json:"authority"`
+	Incarnation string `json:"incarnation"`
+	KeyID       string `json:"key_id"`
+	LedgerID    string `json:"ledger_id"`
+	Schema      uint64 `json:"schema"`
+	Store       string `json:"store"`
 }
 
 type Checkpoint struct {
@@ -26,9 +31,11 @@ type Checkpoint struct {
 // Signer and Verifier belong to the authenticated adapter. Its verifier must
 // use the independently enrolled key for the supplied header.
 type Signer interface {
-	Sign(Header, Event) (string, error)
+	Sign(Header, []byte) (string, error)
 }
-type Verifier interface{ Verify(Header, Event) error }
+type Verifier interface {
+	Verify(Header, []byte, string) error
+}
 
 type transferKey struct {
 	key Key
@@ -56,16 +63,14 @@ type Ledger struct {
 
 // NewLedger starts at the header hash. The caller establishes enrollment.
 func NewLedger(h Header) (Ledger, error) {
-	if h.Schema != 1 || h.Authority == "" || h.Store == "" || h.Incarnation == "" || h.KeyID == "" || h.LedgerID == "" {
-		return Ledger{}, ErrInvalid
-	}
-	var w encoding
-	w.number(h.Schema)
-	w.strings(h.Authority, h.Store, h.Incarnation, h.KeyID, h.LedgerID)
-	hash, err := w.digest("ataniq.assignment.header.v1")
+	raw, err := h.Bytes()
 	if err != nil {
 		return Ledger{}, err
 	}
+	return initialLedger(h, raw), nil
+}
+func initialLedger(h Header, raw []byte) Ledger {
+	hash := sha256Hex(raw)
 	return Ledger{
 		header:     h,
 		checkpoint: Checkpoint{h.Authority, h.Store, h.Incarnation, h.LedgerID, hash, 0},
@@ -73,7 +78,7 @@ func NewLedger(h Header) (Ledger, error) {
 		transfers:  make(map[transferKey]Transfer),
 		history:    make(map[operation]disposition),
 		latest:     make(map[transferKey]Result),
-	}, nil
+	}
 }
 
 func (l Ledger) Checkpoint() Checkpoint { return l.checkpoint }
@@ -123,7 +128,11 @@ func decideNew(l Ledger, c Command, digest string) (change, error) {
 			return change{}, ErrConflict
 		}
 	}
-	tr := l.transfers[transferKey{key, r.LastTransferID}]
+	id := r.LastTransferID
+	if c.Kind == HoldReviewed {
+		id = c.TransferID
+	}
+	tr := l.transfers[transferKey{key, id}]
 	r, tr, err := reduce(r, tr.clone(), c, digest)
 	if err != nil {
 		return change{}, err
@@ -135,6 +144,14 @@ func decideNew(l Ledger, c Command, digest string) (change, error) {
 	if err != nil {
 		return change{}, err
 	}
+	if c.Kind == Seed || c.Kind == Commit {
+		r.CommitRevision = r.Head.Revision
+	}
+	projected := tr
+	if tr.ID != r.LastTransferID {
+		projected = l.transfers[transferKey{key, r.LastTransferID}]
+	}
+	e.Public = project(l.header, l.rows[key], r, projected, e)
 	return change{e, r, tr}, nil
 }
 
@@ -174,7 +191,7 @@ func apply(l Ledger, e Event, privateIndexes bool) (Ledger, error) {
 	if l.checkpoint.Sequence == math.MaxUint64 {
 		return l, ErrOverflow
 	}
-	if e.Schema != 1 || e.Sequence != l.checkpoint.Sequence+1 || e.PreviousHash != l.checkpoint.Digest {
+	if e.Signature == "" || e.Schema != 1 || e.Sequence != l.checkpoint.Sequence+1 || e.PreviousHash != l.checkpoint.Digest {
 		return l, ErrChain
 	}
 	hash, err := ledgerDigest(e)
@@ -194,8 +211,19 @@ func apply(l Ledger, e Event, privateIndexes bool) (Ledger, error) {
 	if err != nil {
 		return l, err
 	}
-	if ch.event.Result != e.Result {
+	if ch.event.Result != e.Result || !reflect.DeepEqual(ch.event.Public, e.Public) {
 		return l, ErrChain
+	}
+	signed, err := e.SignedPublicBytes()
+	if err != nil {
+		return l, err
+	}
+	ch.row.PublicDigest = sha256Hex(signed)
+	switch e.Command.Kind {
+	case Reserve:
+		ch.transfer.ReservationEventID = e.Result.EventID
+	case Seed, Commit:
+		ch.transfer.CommittedEventID = e.Result.EventID
 	}
 	if !privateIndexes {
 		l.rows, l.transfers = maps.Clone(l.rows), maps.Clone(l.transfers)

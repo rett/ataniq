@@ -117,6 +117,7 @@ func TestAssignmentWalk(t *testing.T) {
 		t.Run(fmt.Sprint(seed), func(t *testing.T) {
 			rng := rand.New(rand.NewSource(seed))
 			s := fresh(t)
+			snapshot := fresh(t).ledger
 			var m walk
 			history := make(map[[2]string]Result)
 			latest := make(map[string]Result)
@@ -163,20 +164,23 @@ func TestAssignmentWalk(t *testing.T) {
 						t.Fatalf("step %d admitted %s", n, b.ID)
 					}
 				}
-				if prev.Checkpoint().Digest != e.PreviousHash {
+				if prev.Checkpoint().Digest != e.PreviousHash || !reflect.DeepEqual(prev, snapshot) {
 					t.Fatal("prior ledger mutated")
 				}
 				active := m.id
 				if m.admitted || m.phase == PhaseAbortedClosed {
 					active = ""
 				}
-				expected := Head{key, m.generation, m.revision, m.holder.ID, active, m.phase}
-				want := Result{expected, c.RequestID, m.disposition, e.Result.EventID}
+				expected := Head{Key: key, Generation: m.generation, Revision: m.revision, BindingID: m.holder.ID, TransferID: active, Phase: m.phase}
+				want := Result{Head: expected, RequestID: c.RequestID, Disposition: m.disposition, EventID: e.Result.EventID}
 				history[[2]string{m.id, c.RequestID}], latest[m.id] = want, want
 				replayed, err := Replay(header, s.events, testKey{})
 				if err != nil || !reflect.DeepEqual(s.ledger, replayed) {
 					t.Fatalf("prefix %d: %v", n, err)
 				}
+				// Replay allocated independent indexes and transfer slices for this
+				// prefix. Keep them to check the prior value after the next Apply.
+				snapshot = replayed
 				for op, want := range history {
 					if got, ok := Lookup(replayed, key, op[0], op[1]); !ok || got != want {
 						t.Fatal(n, op, got, want)

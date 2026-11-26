@@ -1,103 +1,183 @@
 package assignment
 
 import (
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/hex"
+	"bytes"
+	"encoding/json"
+	"reflect"
+	"unicode/utf8"
 )
 
-// These are canonical bytes for the in-memory model, independent of JSON
-// framing. Every field has a fixed position. Integers and byte lengths are
-// unsigned big-endian uint64s. Evidence order is part of request identity.
 const recordLimit = 64 << 10
+const (
+	requestDomain = "ataniq.assignment.request.v1"
+	publicDomain  = "ataniq.assignment.public.v1"
+	ledgerDomain  = "ataniq.assignment.ledger.v1"
+)
 
-type encoding struct {
-	b   []byte
-	err error
-}
-
-func (w *encoding) number(n uint64) {
-	if len(w.b)+8 > recordLimit {
-		w.err = ErrLimit
-		return
-	}
-	w.b = binary.BigEndian.AppendUint64(w.b, n)
-}
-
-func (w *encoding) strings(values ...string) {
-	for _, s := range values {
-		w.number(uint64(len(s)))
-		if len(s) > recordLimit-len(w.b) {
-			w.err = ErrLimit
-			return
-		}
-		w.b = append(w.b, s...)
-	}
-}
-
-func (w *encoding) head(h Head) {
-	w.strings(h.Key.Home, h.Key.Project, h.Key.Role)
-	w.number(h.Generation)
-	w.number(h.Revision)
-	w.strings(h.BindingID, h.TransferID, string(h.Phase))
-}
-
-func (w *encoding) command(c Command) {
-	w.head(c.Expected)
-	w.strings(string(c.Kind), c.TransferID, c.RequestID, c.Actor, c.Authorization)
-	b := c.Candidate
-	w.strings(b.Kind, b.ID, b.Authority, b.Store, b.Incarnation, b.Conversation, b.LaunchIntent)
-	w.number(b.RoleEpoch)
-	w.number(c.HoldStart)
-	w.number(c.EarliestRetirement)
-	w.number(uint64(len(c.Evidence)))
-	for _, e := range c.Evidence {
-		w.strings(e.Kind, e.Issuer, e.Subject, e.Revision, e.Digest, e.Outcome, e.Route)
-		w.head(e.Scope)
-		w.strings(e.TransferID)
-		if w.err != nil {
-			return
-		}
-	}
-}
-
-// public binds the predecessor, resulting row and private request commitment.
-// The wire codec supplies its own signed envelope and schema.
-func (w *encoding) public(e Event) {
-	w.number(e.Schema)
-	w.number(e.Sequence)
-	w.strings(e.PreviousHash, e.RequestDigest, string(e.Command.Kind), e.Command.TransferID)
-	w.head(e.Command.Expected)
-	w.head(e.Result.Head)
-	w.strings(e.Result.RequestID, e.Result.Disposition)
-}
-
-func (w *encoding) digest(domain string) (string, error) {
-	if w.err != nil {
-		return "", w.err
-	}
-	h := sha256.New()
-	h.Write([]byte(domain + "\x00"))
-	h.Write(w.b)
-	return hex.EncodeToString(h.Sum(nil)), nil
+func domainDigest(domain string, b []byte) string {
+	return sha256Hex(append([]byte(domain+"\x00"), b...))
 }
 
 func requestDigest(c Command) (string, error) {
-	var w encoding
-	w.command(c)
-	return w.digest("ataniq.assignment.request.v1")
+	if c.Evidence == nil {
+		c.Evidence = []Evidence{}
+	}
+	b, err := canonicalJSON(c)
+	if err != nil {
+		return "", err
+	}
+	return domainDigest(requestDomain, b), nil
 }
 
+// The event ID commits to the private request and resulting row before the
+// public envelope (which contains the ID) is produced.
 func publicID(e Event) (string, error) {
-	var w encoding
-	w.public(e)
-	return w.digest("ataniq.assignment.public.v1")
+	result := e.Result
+	result.EventID = ""
+	b, err := canonicalJSON(struct {
+		PreviousHash  string `json:"previous_hash"`
+		RequestDigest string `json:"request_digest"`
+		Result        Result `json:"result"`
+		Schema        uint64 `json:"schema"`
+		Sequence      uint64 `json:"sequence,string"`
+	}{e.PreviousHash, e.RequestDigest, result, e.Schema, e.Sequence})
+	if err != nil {
+		return "", err
+	}
+	return domainDigest(publicDomain, b), nil
 }
 
 func ledgerDigest(e Event) (string, error) {
-	var w encoding
-	w.command(e.Command)
-	w.public(e)
-	w.strings(e.Result.EventID, e.Signature)
-	return w.digest("ataniq.assignment.ledger.v1")
+	b, err := e.recordFrame()
+	if err != nil {
+		return "", err
+	}
+	return domainDigest(ledgerDomain, b), nil
+}
+
+// Validate strings before encoding/json can silently replace malformed UTF-8.
+// The raw string lengths bound encoder allocation before escape expansion.
+func checkStrings(v reflect.Value, remaining *int) error {
+	switch v.Kind() {
+	case reflect.String:
+		s := v.String()
+		if len(s) > *remaining {
+			return ErrLimit
+		}
+		if !utf8.ValidString(s) {
+			return ErrInvalid
+		}
+		*remaining -= len(s)
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			if err := checkStrings(v.Field(i), remaining); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice:
+		if v.Len() > *remaining {
+			return ErrLimit
+		}
+		*remaining -= v.Len()
+		for i := 0; i < v.Len(); i++ {
+			if err := checkStrings(v.Index(i), remaining); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func frame(v any) ([]byte, error) {
+	b, err := canonicalJSON(v)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) >= recordLimit {
+		return nil, ErrLimit
+	}
+	return append(b, '\n'), nil
+}
+
+type headerRecord struct {
+	Format string `json:"format"`
+	Header Header `json:"header"`
+}
+
+// Bytes returns the immutable schema-1 header, including its terminating LF.
+func (h Header) Bytes() ([]byte, error) {
+	if h.Schema != 1 || h.Authority == "" || h.Store == "" || h.Incarnation == "" || h.KeyID == "" || h.LedgerID == "" {
+		return nil, ErrInvalid
+	}
+	return frame(headerRecord{"ataniq.assignment", h})
+}
+
+// NewLedgerFromHeader validates and pins the exact bytes presented at recovery.
+// Byte equality also rejects duplicate, unknown, missing and noncanonical fields.
+func NewLedgerFromHeader(raw []byte) (Ledger, error) {
+	if len(raw) > recordLimit {
+		return Ledger{}, ErrLimit
+	}
+	var rec headerRecord
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		return Ledger{}, ErrInvalid
+	}
+	canonical, err := rec.Header.Bytes()
+	if err != nil {
+		return Ledger{}, err
+	}
+	if !bytes.Equal(raw, canonical) {
+		return Ledger{}, ErrInvalid
+	}
+	return initialLedger(rec.Header, raw), nil
+}
+
+type journalRecord struct {
+	Command       Command        `json:"command"`
+	PreviousHash  string         `json:"previous_hash"`
+	Public        PublicEnvelope `json:"public"`
+	RequestDigest string         `json:"request_digest"`
+	Result        Result         `json:"result"`
+	Schema        uint64         `json:"schema"`
+	Sequence      uint64         `json:"sequence,string"`
+}
+
+func (e Event) recordFrame() ([]byte, error) {
+	p := e.Public
+	p.Signature = e.Signature
+	c := e.Command
+	if c.Evidence == nil {
+		c.Evidence = []Evidence{}
+	}
+	return frame(journalRecord{c, e.PreviousHash, p, e.RequestDigest, e.Result, e.Schema, e.Sequence})
+}
+
+// RecordBytes returns one complete signed journal record with its LF.
+func (e Event) RecordBytes() ([]byte, error) {
+	if e.Signature == "" || e.Public.Signature != "" {
+		return nil, ErrChain
+	}
+	return e.recordFrame()
+}
+
+// DecodeRecord checks the frame and its canonical representation. Replay
+// authenticates the public envelope and checks the chain and transition.
+func DecodeRecord(raw []byte) (Event, error) {
+	if len(raw) > recordLimit {
+		return Event{}, ErrLimit
+	}
+	var r journalRecord
+	if err := json.Unmarshal(raw, &r); err != nil || r.Schema != 1 {
+		return Event{}, ErrChain
+	}
+	e := Event{Schema: r.Schema, Sequence: r.Sequence, PreviousHash: r.PreviousHash, RequestDigest: r.RequestDigest, Command: r.Command, Result: r.Result, Public: r.Public, Signature: r.Public.Signature}
+	e.Public.Signature = ""
+	canonical, err := e.RecordBytes()
+	if err != nil {
+		return Event{}, err
+	}
+	if !bytes.Equal(raw, canonical) {
+		return Event{}, ErrChain
+	}
+	return e, nil
 }

@@ -37,18 +37,39 @@ func reduce(r Row, t Transfer, c Command, digest string) (Row, Transfer, error) 
 	}
 
 	scope := old
+	var targetID string
 	switch c.Kind {
 	case FenceReceipt:
-		scope = t.Reservation
+		scope, targetID = t.Reservation, t.ReservationEventID
 	case ConfirmReceipt:
-		scope = t.Committed
+		scope, targetID = t.Committed, t.CommittedEventID
 	}
-	p, err := proofs(c, scope)
+	if (c.Kind == FenceReceipt || c.Kind == ConfirmReceipt) && !validDigest(targetID) {
+		return r, t, ErrEvidence
+	}
+	p, err := proofs(c, scope, targetID)
 	if err != nil {
 		return r, t, err
 	}
 	r.Head.Revision++
+	if c.Kind == HoldReviewed {
+		if t.ID != c.TransferID {
+			return r, t, ErrStale
+		}
+		if t.Hold.Preservation == (Evidence{}) || t.Hold.Review != (Evidence{}) {
+			return r, t, ErrPhase
+		}
+		review, err := p.take("fallback", t.Hold.Preservation.Digest, "reviewed")
+		if err != nil || len(p) != 0 {
+			return r, t, ErrEvidence
+		}
+		t.Hold.Review = review
+		return r, t, nil
+	}
 	begin := c.Kind == Seed || c.Kind == Freeze || c.Kind == RollbackFreeze
+	if old.Phase == PhaseReceiptDisputed && c.Kind != ReceiptReconciled && c.Kind != FenceReceipt && c.Kind != ConfirmReceipt {
+		return r, t, ErrEvidence
+	}
 	if begin {
 		required := t.Routes
 		t = Transfer{ID: c.TransferID, Original: old, Predecessor: r.Holder,
@@ -86,9 +107,6 @@ func reduce(r Row, t Transfer, c Command, digest string) (Row, Transfer, error) 
 				return r, t, err
 			}
 		}
-		if old.Phase != PhaseAbortedClosed && c.Kind != RollbackFreeze {
-			required = nil
-		}
 		err = t.capture(&p, required)
 		if c.Kind == Seed && len(t.Outstanding) != 0 {
 			return r, t, ErrEvidence
@@ -114,7 +132,20 @@ func reduce(r Row, t Transfer, c Command, digest string) (Row, Transfer, error) 
 
 func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 	h := &r.Head
+	// A later report from the same issuer about an acknowledged route can
+	// arrive even after fencing or opening. Retain it before checking phase.
+	if c.Kind == FenceReceipt || c.Kind == ConfirmReceipt {
+		existing := t.Fences
+		if c.Kind == ConfirmReceipt {
+			existing = t.Confirmations
+		}
+		if found, err := t.dispute(h, p, existing); found || err != nil {
+			return err
+		}
+	}
 	switch c.Kind {
+	case ReceiptReconciled:
+		return t.reconcile(h, c, p)
 	case Inventory:
 		if !h.Phase.precommit() {
 			return ErrPhase
@@ -126,6 +157,7 @@ func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 		}
 		// A changed snapshot invalidates every dependent comparison and seal.
 		t.Belief, t.Decision, t.Reservation, t.Fences = Evidence{}, Evidence{}, Head{}, nil
+		t.ReservationEventID = ""
 		t.PreviewMismatch = false
 		t.Disposition = "pending"
 		subject := h.Key.Project
@@ -242,6 +274,11 @@ func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 		if !h.Phase.precommit() {
 			return ErrPhase
 		}
+		if t.PreviewMismatch {
+			if _, err := p.take("preview", t.Candidate.ID, "stopped"); err != nil {
+				return err
+			}
+		}
 		if _, err := p.take("candidate", t.Candidate.ID, "never-executed"); err != nil {
 			return err
 		}
@@ -281,15 +318,6 @@ func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 			return err
 		}
 		t.Hold = Hold{Start: c.HoldStart, EarliestRetirement: c.EarliestRetirement, Preservation: e}
-	case HoldReviewed:
-		if h.Phase != PhaseConfirmed || t.Hold.Preservation == (Evidence{}) || t.Hold.Review != (Evidence{}) {
-			return ErrPhase
-		}
-		e, err := p.take("fallback", t.Hold.Preservation.Digest, "reviewed")
-		if err != nil {
-			return err
-		}
-		t.Hold.Review = e
 	default:
 		return ErrInvalid
 	}

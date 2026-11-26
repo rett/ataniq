@@ -18,10 +18,10 @@ func validDigest(s string) bool {
 	return err == nil
 }
 
-func proofs(c Command, scope Head) (evidenceSet, error) {
+func proofs(c Command, scope Head, eventID string) (evidenceSet, error) {
 	for i, e := range c.Evidence {
 		if (e.Kind == "effect") != (e.Route != "") || !validDigest(e.Digest) ||
-			e.Scope != scope || e.TransferID != c.TransferID || e.Kind == "" ||
+			e.ScopeEventID != eventID || e.Scope != scope || e.TransferID != c.TransferID || e.Kind == "" ||
 			e.Issuer == "" || e.Subject == "" || e.Revision == "" || e.Outcome == "" {
 			return nil, ErrEvidence
 		}
@@ -123,4 +123,75 @@ func receipt(p *evidenceSet, routes []string, existing []Evidence, outcome strin
 		return nil, ErrEvidence
 	}
 	return append(existing, es[0]), nil
+}
+
+// dispute recognizes a second attestation for the same sealed or installed
+// route. proofs has already matched every reference to the receipt scope.
+func (t *Transfer) dispute(h *Head, p *evidenceSet, existing []Evidence) (bool, error) {
+	for _, report := range *p {
+		if report.Kind != "route" {
+			continue
+		}
+		for _, prior := range existing {
+			if prior.Subject != report.Subject {
+				continue
+			}
+			if prior.Issuer != report.Issuer || prior == report || slices.Contains(t.Disputes, report) {
+				return false, ErrEvidence
+			}
+			if _, err := p.take("route", report.Subject, report.Outcome); err != nil {
+				return false, err
+			}
+			for _, effect := range *p {
+				if effect.Kind != "effect" || effect.Route != report.Subject {
+					return false, ErrEvidence
+				}
+			}
+			if err := t.inventoryEffects(p); err != nil {
+				return false, err
+			}
+			if h.Phase != PhaseReceiptDisputed {
+				t.BeforeDispute = h.Phase
+			}
+			t.Disputes = append(t.Disputes, report)
+			h.Phase, h.TransferID, t.Disposition = PhaseReceiptDisputed, t.ID, "uncertain"
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// A verified resolution identifies each contradictory object and accounts
+// for its work. Rebuild the applicable proofs before admitting either holder.
+func (t *Transfer) reconcile(h *Head, c Command, p *evidenceSet) error {
+	if h.Phase != PhaseReceiptDisputed {
+		return ErrPhase
+	}
+	if c.Authorization != t.Authorization {
+		return ErrEvidence
+	}
+	for _, report := range t.Disputes {
+		proof, err := p.take("reconciliation", report.Digest, "reconciled")
+		if err != nil || proof.Issuer != report.Issuer {
+			return ErrEvidence
+		}
+	}
+	if err := t.settle(p, ""); err != nil {
+		return err
+	}
+	switch t.BeforeDispute {
+	case PhaseConfirmed, PhaseCommittedClosed:
+		h.Phase, t.Disposition = PhaseCommittedClosed, "committed"
+		t.Confirmations = nil
+	case PhaseAborted, PhaseAborting:
+		h.Phase, t.Disposition = PhaseAborting, "pending"
+	case PhaseAbortedClosed:
+		h.Phase, h.TransferID, t.Disposition = PhaseAbortedClosed, "", "aborted-closed"
+	default:
+		h.Phase, t.Disposition = PhaseFrozen, "pending"
+		t.Inventory, t.Note, t.Belief, t.Decision = Evidence{}, Evidence{}, Evidence{}, Evidence{}
+		t.Reservation, t.ReservationEventID, t.Fences = Head{}, "", nil
+	}
+	t.BeforeDispute, t.Disputes = "", nil
+	return nil
 }

@@ -76,7 +76,7 @@ func TestAuthorizationAndPhaseRefusals(t *testing.T) {
 		{"new authorization on open", 10, Open, func(c *Command) { c.Authorization = "other" }, ErrEvidence},
 		{"hold too short", 11, HoldStarted, func(c *Command) { c.EarliestRetirement-- }, ErrEvidence},
 		{"hold would wrap", 11, HoldStarted, func(c *Command) { c.HoldStart = ^uint64(0) - 2 }, ErrEvidence},
-		{"unverified hold", 11, HoldReviewed, func(c *Command) { c.Evidence[0].Subject = "unrecorded-preservation" }, ErrPhase},
+		{"hold missing", 11, HoldReviewed, func(c *Command) { c.Evidence[0].Subject = sha256Hex([]byte("preservation")) }, ErrPhase},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := forward(t, tc.n)
@@ -113,4 +113,117 @@ func TestAbortCannotReopenAnUnconfirmedIncumbent(t *testing.T) {
 	if tr.Disposition != "aborted-closed" {
 		t.Fatal(tr)
 	}
+}
+
+func TestFreezeRetainsConfirmedRoutes(t *testing.T) {
+	s := seeded(t)
+	c := next(s.ledger, key, Freeze, "T", "")
+	c.Evidence = slices.DeleteFunc(c.Evidence, func(e Evidence) bool { return e.Subject == "worker" || e.Kind == "effect" })
+	refused(t, s.ledger, c, ErrEvidence)
+	s.steps(t, "T", forwardSteps)
+}
+
+func TestContradictoryReceiptRequiresReconciliation(t *testing.T) {
+	for _, tc := range []struct {
+		k      Kind
+		n      int
+		route  string
+		finish Kind
+	}{{FenceReceipt, 7, "worker", Commit}, {ConfirmReceipt, 10, "qargi", Open}, {ConfirmReceipt, 11, "worker", Open}} {
+		s := forward(t, tc.n)
+		c := next(s.ledger, key, tc.k, "T", tc.route)
+		c.Evidence[0].Outcome = "unresolved-child"
+		c.Evidence[0].Digest = s.events[0].RequestDigest
+		foreign := c
+		foreign.Evidence = slices.Clone(c.Evidence)
+		foreign.Evidence[0].Issuer = "another-issuer"
+		refused(t, s.ledger, foreign, ErrEvidence)
+		event := s.accept(t, c)
+		l, err := recoverAt(s.events, s.ledger.Checkpoint())
+		if err != nil {
+			t.Fatal(err)
+		}
+		row, _ := l.Row(key)
+		if row.Permits(row.Head) || event.Result.Disposition != "uncertain" {
+			t.Fatal(row, event.Result)
+		}
+		dup, res, err := Decide(l, c)
+		if err != nil || dup != nil || res != event.Result {
+			t.Fatal(res, err)
+		}
+		refused(t, l, next(l, key, tc.finish, "T", ""), ErrEvidence)
+		refused(t, l, next(l, key, RollbackFreeze, "U", ""), ErrEvidence)
+		resolve := next(l, key, Kind("ReceiptReconciled"), "T", "")
+		proof := c.Evidence[0]
+		proof.Scope = row.Head
+		proof.ScopeEventID = ""
+		proof.Kind, proof.Subject, proof.Outcome = "reconciliation", proof.Digest, "reconciled"
+		proof.Digest = event.Result.EventID
+		resolve.Evidence = []Evidence{proof}
+		wrong := resolve
+		wrong.Evidence = slices.Clone(resolve.Evidence)
+		wrong.Evidence[0].Subject = "other"
+		refused(t, l, wrong, ErrEvidence)
+		s.accept(t, resolve)
+		if tc.k == FenceReceipt {
+			s.steps(t, "T", forwardSteps[1:])
+		} else {
+			refused(t, s.ledger, next(s.ledger, key, Open, "T", ""), ErrEvidence)
+			s.steps(t, "T", forwardSteps[8:])
+		}
+		assertHolder(t, s.ledger, managed, 2, true)
+	}
+}
+
+func TestAbortNeedsMismatchedPreviewStop(t *testing.T) {
+	s := forward(t, 2)
+	belief := next(s.ledger, key, BeliefAccepted, "T", "")
+	belief.Evidence[0].Outcome = "mismatch"
+	s.accept(t, belief)
+	c := next(s.ledger, key, AbortPrepared, "T", "")
+	stopped := next(s.ledger, key, Inventory, "T", "").Evidence[0]
+	refused(t, s.ledger, c, ErrEvidence)
+	wrong := c
+	wrong.Evidence = append(slices.Clone(c.Evidence), stopped)
+	wrong.Evidence[1].Subject = legacy.ID
+	refused(t, s.ledger, wrong, ErrEvidence)
+	c.Evidence = append(c.Evidence, stopped)
+	s.accept(t, c)
+	s.steps(t, "T", []step{{kind: Aborted}})
+	assertHolder(t, s.ledger, legacy, 1, true)
+}
+
+func TestManagedLaunchIdentityPair(t *testing.T) {
+	for _, kind := range []Kind{Seed, Freeze} {
+		for _, tc := range []struct {
+			intent string
+			epoch  uint64
+			valid  bool
+		}{{"launch", 0, false}, {"", 1, false}, {"", 0, true}, {"launch", 1, true}} {
+			s := fresh(t)
+			if kind == Freeze {
+				s = seeded(t)
+			}
+			c := next(s.ledger, key, kind, "T", "")
+			c.Candidate = managed
+			c.Candidate.LaunchIntent, c.Candidate.RoleEpoch = tc.intent, tc.epoch
+			if kind == Seed {
+				c.Evidence[0].Subject = managed.ID
+			}
+			if tc.valid {
+				s.accept(t, c)
+			} else {
+				refused(t, s.ledger, c, ErrInvalid)
+			}
+		}
+	}
+}
+
+func TestHoldReviewedEvidence(t *testing.T) {
+	s := forward(t, len(forwardSteps))
+	s.steps(t, "T", []step{{kind: HoldStarted}})
+	c := next(s.ledger, key, HoldReviewed, "T", "")
+	c.Evidence[0].Subject = sha256Hex([]byte("different preservation proof"))
+	refused(t, s.ledger, c, ErrEvidence)
+	s.accept(t, next(s.ledger, key, HoldReviewed, "T", ""))
 }
