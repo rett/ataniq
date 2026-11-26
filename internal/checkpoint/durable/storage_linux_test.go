@@ -61,7 +61,7 @@ func TestWitnessChild(t *testing.T) {
 		return
 	}
 	root := os.Getenv(childDirectory)
-	c := Config{Directory: root, KeyPath: filepath.Join(filepath.Dir(root), "key"), Pin: public(testKey("process")), Identity: Identity{"witness", "store", "incarnation", 1}}
+	c := Config{HomePin: public(testKey("fixture home")), Directory: root, KeyPath: filepath.Join(filepath.Dir(root), "key"), Pin: public(testKey("process")), Identity: Identity{"witness", "store", "incarnation", 1}}
 	w, err := Open(c)
 	if stage == "compete" {
 		if !errors.Is(err, ErrLocked) {
@@ -225,7 +225,7 @@ func TestIdentityAndCreation(t *testing.T) {
 	}
 	for _, edit := range []func(*Config){
 		func(c *Config) { c.Identity.Witness += "x" }, func(c *Config) { c.Identity.Store += "x" }, func(c *Config) { c.Identity.Incarnation += "x" },
-		func(c *Config) { c.Identity.Epoch++ }, func(c *Config) { c.Pin = public(testKey("other")) },
+		func(c *Config) { c.HomePin = public(testKey("foreign")) }, func(c *Config) { c.Identity.Epoch++ }, func(c *Config) { c.Pin = public(testKey("other")) },
 	} {
 		given := c
 		edit(&given)
@@ -305,9 +305,10 @@ func TestTypedCapacityAfterRestart(t *testing.T) {
 	must(t, w.Close())
 	w = reopen(t, c)
 	w.Inhibit(false)
-	_, err = w.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{3})
+	must(t, w.Grant(q.Slot, q.HomePublicKey, true))
+	_, err = w.SettleHome(t.Context(), 1, q.Slot, cp.ID{3}, q.HomePublicKey)
 	var capErr *CapacityError
-	if !errors.As(err, &capErr) || capErr.Limit != 2 || !errors.Is(err, cp.ErrUnavailable) {
+	if !errors.As(err, &capErr) || capErr.Limit != 2 || !errors.Is(err, cp.ErrCapacity) {
 		t.Fatal(err)
 	}
 	_, err = w.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{2})
@@ -465,4 +466,58 @@ func TestReviewReceiptPosition(t *testing.T) {
 	if bytes.Equal(a.Body, b.Body) {
 		t.Fatalf("journal positions %d and %d have identical signed receipt bodies (signatures identical=%t)", p, q, bytes.Equal(a.Signature, b.Signature))
 	}
+}
+
+func TestHomePinAndOwnerAllowance(t *testing.T) {
+	c := config(t, testKey("home isolation"))
+	c.ReceiptLimit = 1
+	w := create(t, c)
+	q := fixtureEnrollment(t, w)
+	foreignKey := testKey("foreign")
+	foreign := public(foreignKey)
+	other := q
+	other.HomePublicKey = foreign
+	other.ProofOfPossession, _ = cp.ProveEnrollment(foreignKey, other)
+	for name, request := range map[string]func() error{
+		"grant":   func() error { return w.Grant(q.Slot, foreign, true) },
+		"connect": func() error { _, err := w.Connect(q.Slot, foreignKey, testKey("session"), c.Pin); return err },
+		"check":   func() error { return w.CheckHome(t.Context(), q.Slot, foreign) },
+		"read": func() error {
+			_, err := w.ReadHome(t.Context(), cp.ReadRequest{Slot: q.Slot, Challenge: cp.ID{2}}, foreign)
+			return err
+		},
+		"settle": func() error { _, err := w.SettleHome(t.Context(), 1, q.Slot, q.ID, foreign); return err },
+		"enroll": func() error { _, err := w.Administration().Enroll(t.Context(), other); return err },
+		"submit": func() error { _, err := w.RawSubmit(t.Context(), q.Slot, foreign, "claim", nil, nil, nil); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			var reason *cp.Reason
+			if err := request(); !errors.As(err, &reason) || reason.Kind != cp.HomeMismatch {
+				t.Fatalf("foreign key: %v", err)
+			}
+		})
+	}
+
+	must(t, w.Grant(q.Slot, q.HomePublicKey, true))
+	_, err := w.Administration().Enroll(t.Context(), q)
+	must(t, err)
+	_, err = w.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{8})
+	if !errors.Is(err, cp.ErrNotApplied) {
+		t.Fatalf("owner could not settle at normal limit: %v", err)
+	}
+	must(t, w.Close())
+	w = reopen(t, c)
+	w.Inhibit(false)
+	_, err = w.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{8})
+	if !errors.Is(err, cp.ErrNotApplied) {
+		t.Fatal("lost owner fence", err)
+	}
+	_, err = w.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{9})
+	if !errors.Is(err, cp.ErrCapacity) {
+		t.Fatal("reopen lost owner reserve accounting", err)
+	}
+	v, err := w.Administration().Read(t.Context(), cp.ReadRequest{Slot: q.Slot, Challenge: cp.ID{2}})
+	must(t, err)
+	_, err = w.Administration().Retire(t.Context(), cp.Retirement{Mutation: cp.Mutation{Expected: v.Current, ID: cp.ID{10}}, DispositionDigest: v.Current.Head.Digest})
+	must(t, err)
 }

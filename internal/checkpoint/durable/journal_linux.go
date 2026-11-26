@@ -22,15 +22,17 @@ const journalDomain = "ataniq.checkpoint.durable.v1\x00"
 const maxRecord = 2*cp.MaxFrame + 4096
 
 type record struct {
-	Seq          uint64    `json:"seq,string"`
-	Previous     string    `json:"previous"`
-	Op           string    `json:"op"`
-	Identity     *Identity `json:"identity,omitempty"`
-	Slot         *cp.Slot  `json:"slot,omitempty"`
-	ID           *cp.ID    `json:"id,omitempty"`
-	Body         []byte    `json:"body,omitempty"`
-	HomeProof    []byte    `json:"home_proof,omitempty"`
-	SessionProof []byte    `json:"session_proof,omitempty"`
+	Seq                uint64    `json:"seq,string"`
+	HomeKeyID          string    `json:"home_key_id,omitempty"`
+	ReservedSettlement bool      `json:"reserved_settlement,omitempty"`
+	Previous           string    `json:"previous"`
+	Op                 string    `json:"op"`
+	Identity           *Identity `json:"identity,omitempty"`
+	Slot               *cp.Slot  `json:"slot,omitempty"`
+	ID                 *cp.ID    `json:"id,omitempty"`
+	Body               []byte    `json:"body,omitempty"`
+	HomeProof          []byte    `json:"home_proof,omitempty"`
+	SessionProof       []byte    `json:"session_proof,omitempty"`
 }
 
 func readPart(in io.Reader, b []byte, atBoundary bool) error {
@@ -178,7 +180,7 @@ func readEntry(in io.Reader, digest [32]byte) ([]byte, error) {
 	return sig, readPart(in, sig, false)
 }
 
-func (w *Witness) replay() error {
+func (w *Witness) replay(homeID string) error {
 	frames, entries := bufio.NewReader(w.journal), bufio.NewReader(w.lockFile)
 	for {
 		r, digest, err := decode(frames, w.pin)
@@ -209,14 +211,14 @@ func (w *Witness) replay() error {
 		}
 		var c change
 		if w.seq == 0 {
-			if r.Op != "create" || r.Identity == nil || r.Body != nil || r.HomeProof != nil || r.SessionProof != nil || r.ID != nil || r.Slot != nil {
+			if r.Op != "create" || r.ReservedSettlement || r.Identity == nil || r.Body != nil || r.HomeProof != nil || r.SessionProof != nil || r.ID != nil || r.Slot != nil {
 				return ErrCorrupt
 			}
-			if *r.Identity != w.identity {
+			if *r.Identity != w.identity || r.HomeKeyID != homeID {
 				return ErrIdentity
 			}
 		} else {
-			if r.Op == "create" || r.Identity != nil {
+			if r.Op == "create" || r.HomeKeyID != "" || r.Identity != nil {
 				return ErrCorrupt
 			}
 			c, _, err = w.prepare(r, true)

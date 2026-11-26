@@ -56,7 +56,7 @@ func (w *Witness) RawSubmit(ctx context.Context, slot cp.Slot, home ed25519.Publ
 		return cp.Receipt{}, err
 	}
 	defer w.unlock()
-	if err := w.authorize(slot, home, true); err != nil {
+	if err := w.checkGrant(slot, home, true); err != nil {
 		return cp.Receipt{}, err
 	}
 	return w.submit(ctx, record{Op: op, Slot: &slot, Body: b, HomeProof: hs, SessionProof: ss})
@@ -66,24 +66,26 @@ func (a admin) Settle(ctx context.Context, epoch uint64, slot cp.Slot, id cp.ID)
 		return cp.Receipt{}, err
 	}
 	defer a.w.unlock()
-	return a.w.settle(ctx, epoch, slot, id)
+	return a.w.settle(ctx, epoch, slot, id, true)
 }
 func (w *Witness) SettleHome(ctx context.Context, epoch uint64, slot cp.Slot, id cp.ID, home ed25519.PublicKey) (cp.Receipt, error) {
 	if err := w.enter(ctx); err != nil {
 		return cp.Receipt{}, err
 	}
 	defer w.unlock()
-	if err := w.authorize(slot, home, true); err != nil {
+	if err := w.checkGrant(slot, home, true); err != nil {
 		return cp.Receipt{}, err
 	}
-	return w.settle(ctx, epoch, slot, id)
+	return w.settle(ctx, epoch, slot, id, false)
 }
-func (w *Witness) settle(ctx context.Context, epoch uint64, slot cp.Slot, id cp.ID) (cp.Receipt, error) {
+func (w *Witness) settle(ctx context.Context, epoch uint64, slot cp.Slot, id cp.ID, owner bool) (cp.Receipt, error) {
 	if epoch != w.identity.Epoch {
 		return cp.Receipt{}, cp.ErrStale
 	}
-	return w.submit(ctx, record{Op: "settle", Slot: &slot, ID: &id})
+	return w.submit(ctx, record{Op: "settle", Slot: &slot, ID: &id, ReservedSettlement: owner && w.normalHistory() >= w.limit})
 }
+
+func (w *Witness) normalHistory() uint64 { return uint64(len(w.history)) - w.reservedSettlements }
 
 type change struct {
 	target        item
@@ -120,7 +122,7 @@ func (w *Witness) prepare(r record, replay bool) (change, cp.Receipt, error) {
 		}
 		c.target = item{*r.Slot, *r.ID}
 	} else {
-		if r.ID != nil {
+		if r.ID != nil || r.ReservedSettlement {
 			return c, empty, ErrCorrupt
 		}
 		q, err = cp.ParseIntent(r.Op, w.keyID, r.Body)
@@ -169,17 +171,25 @@ func (w *Witness) prepare(r record, replay bool) (change, cp.Receipt, error) {
 		}
 		return c, clone(prior.receipt), nil
 	}
-	if !replay {
-		if w.inhibited {
-			return c, empty, cp.ErrUnavailable
+	limit := w.limit
+	if replay {
+		limit = maxReceipts
+	} else if w.inhibited {
+		return c, empty, cp.ErrUnavailable
+	}
+	switch {
+	case r.ReservedSettlement:
+		if w.reservedSettlements >= limit {
+			return c, empty, &CapacityError{limit}
 		}
-		if r.Op != "release" && r.Op != "retire" && uint64(len(w.history)) >= w.limit {
-			return c, empty, &CapacityError{w.limit}
+	case r.Op != "release" && r.Op != "retire":
+		if w.normalHistory() >= limit {
+			return c, empty, &CapacityError{limit}
 		}
 	}
 	// At most one release per claim and one retirement per enrollment can
 	// spend reserved capacity. Apply the same absolute bound during replay.
-	if len(w.history) >= 2*maxReceipts {
+	if !r.ReservedSettlement && w.normalHistory() >= 2*maxReceipts {
 		return c, empty, &CapacityError{2 * maxReceipts}
 	}
 	switch v := q.(type) {
@@ -202,6 +212,9 @@ func (w *Witness) checkProofs(r record, c *change, e *enrollment) error {
 	denied := &cp.Reason{Kind: cp.Unauthorized}
 	switch r.Op {
 	case "enroll":
+		if !bytes.Equal(c.home, w.homePin) {
+			return &cp.Reason{Kind: cp.HomeMismatch}
+		}
 		if r.Slot != nil || r.SessionProof != nil || bytes.Equal(c.home, w.pin) || cp.VerifySignature(cp.HomeNamespace, c.home, r.Body, r.HomeProof) != nil {
 			return denied
 		}
@@ -311,6 +324,9 @@ func (w *Witness) apply(r record, c change, sig []byte) cp.Receipt {
 		return cp.Receipt{}
 	}
 	if r.Op == "settle" {
+		if r.ReservedSettlement {
+			w.reservedSettlements++
+		}
 		w.history[c.target] = accepted{}
 		return cp.Receipt{}
 	}

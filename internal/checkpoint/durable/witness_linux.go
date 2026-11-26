@@ -30,14 +30,14 @@ const (
 	ErrTorn     StorageError = "incomplete journal or receipt index"
 )
 
-// CapacityError preserves the link's unavailable disposition.
+// CapacityError reports which per-store history allowance was exhausted.
 type CapacityError struct{ Limit uint64 }
 
 func (*CapacityError) Error() string { return "durable witness: history capacity exhausted" }
-func (*CapacityError) Unwrap() error { return cp.ErrUnavailable }
+func (*CapacityError) Unwrap() error { return cp.ErrCapacity }
 
 // Identity is independently provisioned for the journal, distinct from the
-// many home ledger identities it can witness.
+// home ledger identities it can witness.
 type Identity struct {
 	Witness     string `json:"witness"`
 	Store       string `json:"store"`
@@ -47,23 +47,20 @@ type Identity struct {
 
 // Config provides the local paths, limits and independently pinned identity.
 // KeyPath contains exactly one raw 32-byte Ed25519 seed in a service-owned
-// 0600 regular file. Pin comes from independent configuration. Directory is
+// 0600 regular file. Pin identifies the witness, and HomePin its sole home.
+// Both come from independent configuration. Directory is
 // pre-provisioned durably. Both paths are clean and absolute. ReceiptLimit
 // charges one unit per new receipt or Settle fence. Zero uses the maximum.
 // Release and retirement have reserved space to fence existing writers.
 type Config struct {
 	Identity           Identity
 	Directory, KeyPath string
-	Pin                ed25519.PublicKey
+	Pin, HomePin       ed25519.PublicKey
 	ReceiptLimit       uint64
 }
 
 const maxReceipts = 65536
 
-type grant struct {
-	pin   ed25519.PublicKey
-	write bool
-}
 type item struct {
 	slot cp.Slot
 	id   cp.ID
@@ -80,21 +77,21 @@ type enrollment struct {
 
 // Witness owns the files and the serialized transaction and replay indexes.
 type Witness struct {
-	transaction            chan struct{}
-	dir, journal, lockFile *os.File
-	identity               Identity
-	pin                    ed25519.PublicKey
-	keyID                  string
-	signRecord             func([]byte) []byte
-	sign                   func([]byte) ([]byte, error)
-	seq                    uint64
-	previous               [32]byte
-	limit                  uint64
-	inhibited, stopped     bool
-	slots                  map[cp.Slot]*enrollment
-	history                map[item]accepted // a zero receipt denotes a permanent Settle fence
-	grants                 map[cp.Slot]grant
-	fault                  func(string) error
+	transaction                chan struct{}
+	dir, journal, lockFile     *os.File
+	identity                   Identity
+	pin, homePin               ed25519.PublicKey
+	keyID                      string
+	signRecord                 func([]byte) []byte
+	sign                       func([]byte) ([]byte, error)
+	seq                        uint64
+	previous                   [32]byte
+	limit, reservedSettlements uint64
+	inhibited, stopped         bool
+	slots                      map[cp.Slot]*enrollment
+	history                    map[item]accepted // a zero receipt denotes a permanent Settle fence
+	grants                     map[cp.Slot]bool
+	fault                      func(string) error
 }
 
 // Create exclusively initializes both files. A failed creation leaves its
@@ -116,6 +113,10 @@ func start(c Config, create bool) (*Witness, error) {
 	if !textOK(id.Witness) || !textOK(id.Store) || !textOK(id.Incarnation) || id.Epoch == 0 || c.ReceiptLimit > maxReceipts {
 		return nil, &cp.Reason{Kind: cp.InvalidRequest}
 	}
+	homeID, err := cp.KeyID(c.HomePin)
+	if err != nil || bytes.Equal(c.HomePin, c.Pin) {
+		return nil, ErrIdentity
+	}
 	key, err := loadKey(c.KeyPath)
 	if err != nil {
 		return nil, err
@@ -128,6 +129,7 @@ func start(c Config, create bool) (*Witness, error) {
 		transaction: make(chan struct{}, 1),
 		identity:    id,
 		pin:         slices.Clone(c.Pin),
+		homePin:     slices.Clone(c.HomePin),
 		keyID:       wid,
 		limit:       c.ReceiptLimit,
 		inhibited:   true,
@@ -135,7 +137,7 @@ func start(c Config, create bool) (*Witness, error) {
 		signRecord:  func(b []byte) []byte { return ed25519.Sign(key, b) },
 		slots:       make(map[cp.Slot]*enrollment),
 		history:     make(map[item]accepted),
-		grants:      make(map[cp.Slot]grant),
+		grants:      make(map[cp.Slot]bool),
 	}
 	if w.limit == 0 {
 		w.limit = maxReceipts
@@ -175,9 +177,9 @@ func start(c Config, create bool) (*Witness, error) {
 		return nil, err
 	}
 	if create {
-		_, err = w.commit(record{Seq: 1, Identity: &id, Op: "create"}, change{})
+		_, err = w.commit(record{Seq: 1, Identity: &id, HomeKeyID: homeID, Op: "create"}, change{})
 	} else {
-		err = w.replay()
+		err = w.replay(homeID)
 	}
 	if err != nil {
 		return nil, err
@@ -241,11 +243,13 @@ func (w *Witness) Grant(slot cp.Slot, pin ed25519.PublicKey, write bool) error {
 		return err
 	}
 	defer w.unlock()
-	id, err := cp.KeyID(pin)
-	if err != nil || id == w.keyID || !w.valid(slot) {
+	if !bytes.Equal(pin, w.homePin) {
+		return &cp.Reason{Kind: cp.HomeMismatch}
+	}
+	if !w.valid(slot) {
 		return &cp.Reason{Kind: cp.InvalidRequest}
 	}
-	w.grants[slot] = grant{slices.Clone(pin), write}
+	w.grants[slot] = write
 	return nil
 }
 func (w *Witness) Revoke(slot cp.Slot) {
@@ -270,17 +274,14 @@ func (w *Witness) CheckHome(ctx context.Context, slot cp.Slot, pin ed25519.Publi
 	return w.checkGrant(slot, pin, false)
 }
 func (w *Witness) checkGrant(slot cp.Slot, pin ed25519.PublicKey, write bool) error {
-	g, ok := w.grants[slot]
-	if !ok || (write && !g.write) || !bytes.Equal(g.pin, pin) {
+	if !bytes.Equal(pin, w.homePin) {
+		return &cp.Reason{Kind: cp.HomeMismatch}
+	}
+	writable, ok := w.grants[slot]
+	if !ok || (write && !writable) {
 		return &cp.Reason{Kind: cp.Unauthorized}
 	}
 	return nil
-}
-func (w *Witness) authorize(slot cp.Slot, pin ed25519.PublicKey, write bool) error {
-	if e := w.slots[slot]; e != nil && !bytes.Equal(e.home, pin) {
-		return &cp.Reason{Kind: cp.Unauthorized}
-	}
-	return w.checkGrant(slot, pin, write)
 }
 func (w *Witness) HasReceipt(ctx context.Context, slot cp.Slot, id cp.ID) (bool, error) {
 	if err := w.enter(ctx); err != nil {

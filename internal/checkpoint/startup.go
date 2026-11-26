@@ -7,6 +7,7 @@ type ReasonKind string
 
 const (
 	InvalidRequest      ReasonKind = "invalid request"
+	HomeMismatch        ReasonKind = "foreign home key"
 	Unauthorized        ReasonKind = "unauthorized"
 	KeyRoleConflict     ReasonKind = "overlapping key roles"
 	NotEnrolled         ReasonKind = "slot not enrolled"

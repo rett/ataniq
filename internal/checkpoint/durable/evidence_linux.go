@@ -72,7 +72,7 @@ func (w *Witness) ReadHome(ctx context.Context, q cp.ReadRequest, home ed25519.P
 		return cp.View{}, err
 	}
 	defer w.unlock()
-	if err := w.authorize(q.Slot, home, false); err != nil {
+	if err := w.checkGrant(q.Slot, home, false); err != nil {
 		return cp.View{}, err
 	}
 	return w.read(q)

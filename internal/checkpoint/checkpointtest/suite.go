@@ -23,6 +23,8 @@ import (
 // establishes a new handle and verifies the independently supplied witness pin.
 // LoseNextReply drops a mutation acknowledgement only after its commit.
 type Harness struct {
+	// HomeKey is the provisioned fixture key for a single-home witness.
+	HomeKey ed25519.PrivateKey
 	// Restart reopens the same witness storage and returns fresh capabilities.
 	// Callers discard all previous handles. Durable adapters must reopen disk.
 	Restart         func() Harness
@@ -70,7 +72,11 @@ type home struct {
 
 func (f fixture) home(t *testing.T, authority, store, generation string, write bool) home {
 	t.Helper()
-	return f.homeWithKey(t, authority, store, generation, write, key(authority+generation))
+	private := f.HomeKey
+	if private == nil {
+		private = key(authority + generation)
+	}
+	return f.homeWithKey(t, authority, store, generation, write, private)
 }
 
 func (f fixture) homeWithKey(t *testing.T, authority, store, generation string, write bool, private ed25519.PrivateKey) home {
@@ -334,7 +340,13 @@ func Run(t *testing.T, newWitness Factory) {
 		check(t, err)
 		_, err = f.Admin.Enroll(f.ctx, h.e)
 		want(t, err, cp.ErrStale)
-		f.enroll(t, replacement)
+		if f.HomeKey != nil {
+			// A new enrollment for this retired authority requires a new home key.
+			_, err = f.Admin.Enroll(f.ctx, replacement.e)
+			want(t, err, cp.ErrStale)
+		} else {
+			f.enroll(t, replacement)
+		}
 	})
 	t.Run("two homes and live grants", func(t *testing.T) {
 		f := start(t, newWitness)
@@ -345,7 +357,11 @@ func Run(t *testing.T, newWitness Factory) {
 		}
 		_, err := a.c.Read(f.ctx, cp.ReadRequest{Slot: b.slot, Challenge: id("foreign")})
 		want(t, err, cp.ErrRefused)
-		_, err = f.Connect(a.slot, b.private, b.session, f.pin)
+		foreign := b.private
+		if f.HomeKey != nil {
+			foreign = key("foreign")
+		}
+		_, err = f.Connect(a.slot, foreign, b.session, f.pin)
 		want(t, err, cp.ErrRefused)
 		_, err = f.Connect(a.slot, a.private, a.session, pub(key("wrong witness")))
 		want(t, err, cp.ErrRefused)
@@ -386,7 +402,7 @@ func Run(t *testing.T, newWitness Factory) {
 			s := f.claim(t, h, f.enroll(t, h), "claim")
 			f.SetReceiptLimit(2)
 			_, err := h.c.Advance(f.ctx, advance(s, "full"))
-			want(t, err, cp.ErrUnavailable)
+			want(t, err, cp.ErrCapacity)
 			m := mutation(s, "owner")
 			var r cp.Receipt
 			status := cp.Active
@@ -424,7 +440,7 @@ func Run(t *testing.T, newWitness Factory) {
 			t.Fatal("receipt lost at capacity")
 		}
 		_, err = h.c.Advance(f.ctx, advance(v.Current, "over limit"))
-		want(t, err, cp.ErrUnavailable)
+		want(t, err, cp.ErrCapacity)
 		if f.state(t, h, "still recoverable") != v.Current {
 			t.Fatal("capacity refusal changed state")
 		}

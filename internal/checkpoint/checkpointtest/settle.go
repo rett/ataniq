@@ -150,8 +150,14 @@ func settlementBoundaries(t *testing.T, factory Factory) {
 			_, err = f.Admin.Settle(f.ctx, 1, h.slot, fenced)
 			want(t, err, cp.ErrNotApplied)
 			m := mutation(s, "new")
-			_, err = f.Admin.Settle(f.ctx, 1, h.slot, m.ID)
-			if !errors.Is(err, cp.ErrUnavailable) {
+			settler := cp.Settler(f.Admin)
+			expected := cp.ErrUnavailable
+			if guard == "limit" {
+				expected = cp.ErrCapacity
+				settler = h.c
+			}
+			_, err = settler.Settle(f.ctx, 1, h.slot, m.ID)
+			if !errors.Is(err, expected) {
 				t.Fatalf("new fence during %s: %v", guard, err)
 			}
 			f.Inhibit(false)

@@ -292,7 +292,7 @@ func (w *Memory) commit(e *enrollment, op string, id ID, body []byte, s State, s
 		return Receipt{}, ErrNotApplied
 	}
 	if op != "release" && op != "retire" && w.receiptLimit != 0 && w.receiptCount >= w.receiptLimit {
-		return Receipt{}, ErrUnavailable
+		return Receipt{}, ErrCapacity
 	}
 	// Position one is witness creation. Every receipt and new settlement
 	// fence consumes one subsequent position, across all slots.
