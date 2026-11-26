@@ -99,9 +99,10 @@ type Checker struct {
 	su      *startupScan    // the startup files, once read (see startup)
 	funcs   map[string]bool // the shell functions that add their argument to PATH
 
-	binScanned bool
-	binHits    []string // paths named like an agent tool
-	toolHits   []string // paths named like an installer or runtime
+	witnessRelease bool // candidate carries the outbound-only witness
+	binScanned     bool
+	binHits        []string // paths named like an agent tool
+	toolHits       []string // paths named like an installer or runtime
 }
 
 // Open opens the tree beneath rootDir for the checks; close it with Close.

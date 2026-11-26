@@ -1,0 +1,7 @@
+caddy validate --config {release}/etc/caddy/Caddyfile --adapter caddyfile
+systemd-analyze verify {release}/etc/systemd/system/ataniq-seat.service
+systemd-analyze verify {release}/etc/systemd/system/ataniq-seat-notify.service
+test -L /etc/systemd/system/ataniq-seat.service
+test -L /etc/systemd/system/ataniq-seat-notify.service
+systemd-analyze verify {release}/etc/systemd/system/ataniq-witness.service
+test -L /etc/systemd/system/ataniq-witness.service
