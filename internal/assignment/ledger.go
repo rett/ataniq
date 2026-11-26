@@ -149,7 +149,7 @@ func decideNew(l Ledger, c Command, digest string) (change, error) {
 		}
 	}
 	id := r.LastTransferID
-	if c.Kind == HoldReviewed {
+	if c.Kind == HoldStarted || c.Kind == HoldReviewed {
 		id = c.TransferID
 	}
 	tr := l.transfers[transferKey{key, id}]

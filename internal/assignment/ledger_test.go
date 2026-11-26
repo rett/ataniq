@@ -309,6 +309,31 @@ func TestReceiptNamesExactEvent(t *testing.T) {
 	}
 }
 
+func TestStartHoldAfterLaterAbort(t *testing.T) {
+	s := forward(t, len(forwardSteps))
+	confirmed, _ := s.ledger.Transfer(key, "T")
+	s.steps(t, "U", []step{{kind: RollbackFreeze}, {kind: AbortPrepared}, {kind: Aborted}})
+	aborted, _ := s.ledger.Transfer(key, "U")
+	row, _ := s.ledger.Row(key)
+	refused(t, s.ledger, command(row, aborted, HoldStarted, "U", ""), ErrPhase)
+	c := command(row, confirmed, HoldStarted, "T", "")
+	s.accept(t, c)
+	l, err := recoverAt(s.events, s.ledger.Checkpoint())
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, _ := l.Transfer(key, "T")
+	confirmed.Hold = Hold{Start: c.HoldStart, EarliestRetirement: c.EarliestRetirement, Preservation: c.Evidence[0]}
+	latest, _ := l.Transfer(key, "U")
+	current, _ := l.Row(key)
+	if !reflect.DeepEqual(held, confirmed) || !reflect.DeepEqual(latest, aborted) ||
+		current.LastTransferID != "U" || current.Head.Phase != PhaseAborted || !current.Permits(current.Head) {
+		t.Fatal(held, latest, current)
+	}
+	refused(t, l, command(current, held, HoldStarted, "T", ""), ErrPhase)
+	s.accept(t, command(current, held, HoldReviewed, "T", ""))
+}
+
 func TestReviewHistoricalHold(t *testing.T) {
 	s := forward(t, len(forwardSteps))
 	s.steps(t, "T", []step{{kind: HoldStarted}})
