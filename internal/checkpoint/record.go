@@ -238,6 +238,9 @@ func parseHomeMutation(op string, body []byte) (homeMutation, error) {
 		if err != nil || len(raw) != ed25519.PublicKeySize || base64.RawURLEncoding.EncodeToString(raw) != r.SessionPublicKey || r.Next != nil {
 			return homeMutation{}, ErrRefused
 		}
+		if _, err := KeyID(raw); err != nil {
+			return homeMutation{}, err
+		}
 		request.session = raw
 	case "advance":
 		if r.Next == nil || r.SessionPublicKey != "" || !digestOK(r.Next.Digest) {
