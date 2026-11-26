@@ -420,3 +420,15 @@ func TestAncestorSubstitutionReturningToHeldRoot(t *testing.T) {
 	}}
 	f.refused(t, IdentityMismatch)
 }
+
+func TestTraverseOnlyAncestor(t *testing.T) {
+	f := setup(t)
+	parent := filepath.Join(t.TempDir(), "traverse")
+	f.root.Path = filepath.Join(parent, "private")
+	check(t, os.MkdirAll(f.root.Path, 0700))
+	check(t, os.Chmod(parent, 0100))
+	t.Cleanup(func() { check(t, os.Chmod(parent, 0700)) })
+	check(t, f.enroll(nil))
+	s := f.open(t, nil)
+	check(t, AppendAndAdvance(f.ctx, s, f.seed(t, s, "row")))
+}

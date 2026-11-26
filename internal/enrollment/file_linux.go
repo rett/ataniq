@@ -22,12 +22,19 @@ type FileRoot struct {
 
 const directoryFlags = syscall.O_RDONLY | syscall.O_DIRECTORY | syscall.O_NOFOLLOW | syscall.O_CLOEXEC
 
+// Linux O_PATH is absent from the frozen syscall package on amd64.
+const pathDirectoryFlags = 0x200000 | directoryFlags
+
 func (root FileRoot) Lock(fault Fault) (LockedLedger, error) {
 	path, err := filepath.Abs(root.Path)
 	if err != nil || root.Path == "" {
 		return nil, refuse(Insecure, err)
 	}
-	fd, err := syscall.Open("/", directoryFlags, 0)
+	flags := pathDirectoryFlags
+	if path == "/" {
+		flags = directoryFlags
+	}
+	fd, err := syscall.Open("/", flags, 0)
 	if err != nil {
 		return nil, refuse(Insecure, err)
 	}
@@ -35,8 +42,12 @@ func (root FileRoot) Lock(fault Fault) (LockedLedger, error) {
 	fail := func(err error) (LockedLedger, error) {
 		return nil, errors.Join(err, l.Close())
 	}
-	for _, name := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' }) {
-		next, err := syscall.Openat(int(l.dir.Fd()), name, directoryFlags, 0)
+	names := strings.FieldsFunc(path, func(r rune) bool { return r == '/' })
+	for i, name := range names {
+		if i == len(names)-1 {
+			flags = directoryFlags
+		}
+		next, err := syscall.Openat(int(l.dir.Fd()), name, flags, 0)
 		if err != nil {
 			return fail(refuse(Insecure, err))
 		}
@@ -183,7 +194,7 @@ func (f *fileLedger) Check() error {
 	child := f.dir
 	for i := len(f.parents) - 1; i >= 0; i-- {
 		parent := f.parents[i]
-		fd, err := syscall.Openat(int(parent.Fd()), child.Name(), directoryFlags, 0)
+		fd, err := syscall.Openat(int(parent.Fd()), child.Name(), pathDirectoryFlags, 0)
 		if err != nil {
 			return refuse(IdentityMismatch, err)
 		}
