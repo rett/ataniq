@@ -199,8 +199,14 @@ func Decide(l Ledger, c Command) (*Event, Result, error) {
 	if err != nil {
 		return nil, Result{}, err
 	}
-	if _, err := ledgerDigest(ch.event); err != nil {
+	// Size the exact LF-framed journal with the schema-1 SSHSIG field.
+	// Its 196-byte container occupies 262 unescaped base64url characters.
+	frame, err := ch.event.recordFrame()
+	if err != nil {
 		return nil, Result{}, err
+	}
+	if len(frame)+len(`,"signature":""`)+262 > recordLimit {
+		return nil, Result{}, ErrLimit
 	}
 	return &ch.event, ch.event.Result, nil
 }

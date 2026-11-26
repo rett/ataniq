@@ -106,6 +106,18 @@ func (t *Transfer) addEffects(effects []Evidence) error {
 }
 
 func (t *Transfer) settle(p *evidenceSet, route string) error {
+	if err := t.settleBatch(p, route); err != nil {
+		return err
+	}
+	for _, effect := range t.Outstanding {
+		if route == "" || effect.Route == route {
+			return ErrEvidence
+		}
+	}
+	return nil
+}
+
+func (t *Transfer) settleBatch(p *evidenceSet, route string) error {
 	for _, e := range p.group("effect", "settled") {
 		if route != "" && e.Route != route {
 			return ErrEvidence
@@ -115,11 +127,6 @@ func (t *Transfer) settle(p *evidenceSet, route string) error {
 			return ErrEvidence
 		}
 		t.Outstanding = slices.Delete(t.Outstanding, i, i+1)
-	}
-	for _, effect := range t.Outstanding {
-		if route == "" || effect.Route == route {
-			return ErrEvidence
-		}
 	}
 	return nil
 }
@@ -173,14 +180,23 @@ func (t *Transfer) reconcile(h *Head, c Command, p *evidenceSet) error {
 	if c.Authorization != t.Authorization {
 		return ErrEvidence
 	}
-	for _, report := range t.Disputes {
-		proof, err := p.take("reconciliation", report.Digest, "reconciled")
-		if err != nil || proof.Issuer != report.Issuer {
+	if len(*p) == 0 {
+		return ErrEvidence
+	}
+	for _, proof := range p.group("reconciliation", "reconciled") {
+		i := slices.IndexFunc(t.Disputes, func(report Evidence) bool {
+			return proof.Subject == report.Digest && proof.Issuer == report.Issuer
+		})
+		if i < 0 {
 			return ErrEvidence
 		}
+		t.Disputes = slices.Delete(t.Disputes, i, i+1)
 	}
-	if err := t.settle(p, ""); err != nil {
+	if err := t.settleBatch(p, ""); err != nil {
 		return err
+	}
+	if len(t.Disputes) != 0 || len(t.Outstanding) != 0 {
+		return nil
 	}
 	switch t.BeforeDispute {
 	case PhaseConfirmed, PhaseCommittedClosed:
