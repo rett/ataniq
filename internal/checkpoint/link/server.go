@@ -222,13 +222,7 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, e
 			pool = reconcile
 		}
 		if (m.Kind == frame.Read || m.Kind == frame.OwnerRead) && q.ReceiptID != (cp.ID{}) {
-			found, err := evidence.HasReceipt(ctx, q.Slot, q.ReceiptID)
-			if err != nil {
-				return nil, err
-			}
-			if found {
-				pool = recoveryReads
-			}
+			pool = receiptIndex
 		}
 		if !s.limits.allow(w == nil, pool) {
 			return nil, cp.ErrUnavailable
@@ -236,6 +230,19 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, e
 		if w != nil {
 			if err := authenticate(ctx, w, q.Slot, f[1], f[0], f[2]); err != nil {
 				return nil, err
+			}
+		}
+		if pool == receiptIndex {
+			found, err := evidence.HasReceipt(ctx, q.Slot, q.ReceiptID)
+			if err != nil {
+				return nil, err
+			}
+			pool = ordinary
+			if found {
+				pool = recoveryReads
+			}
+			if !s.limits.allow(w == nil, pool) {
+				return nil, cp.ErrUnavailable
 			}
 		}
 		if m.Kind == frame.Connect {

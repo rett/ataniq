@@ -10,6 +10,7 @@ import (
 	"time"
 
 	cp "ataniq/internal/checkpoint"
+	"ataniq/internal/checkpoint/link/internal/frame"
 )
 
 type blockedGrant struct {
@@ -126,5 +127,38 @@ func TestOnlyCommittedReceiptsUseRecoveryBudget(t *testing.T) {
 				t.Fatal("history lookup lost reserved credit")
 			}
 		})
+	}
+}
+
+type lookupCounter struct {
+	memoryWitness
+	indexCalls int
+}
+
+func (w *lookupCounter) HasReceipt(ctx context.Context, s cp.Slot, id cp.ID) (bool, error) {
+	w.indexCalls++
+	return w.Memory.HasReceipt(ctx, s, id)
+}
+func TestReceiptIndexAfterChargeAndAuth(t *testing.T) {
+	f := newFixture(t, "witness")
+	w := &lookupCounter{memoryWitness: memoryWitness{f.w}}
+	q := cp.ReadRequest{Slot: f.slot, Challenge: cp.ID{1}, ReceiptID: cp.ID{2}}
+	body, err := readBody(q, f.s.witnessKeyID, "read", 0)
+	must(t, err)
+	sig, err := cp.Sign(cp.HomeNamespace, f.home, body)
+	must(t, err)
+	msg := frame.New(frame.Read, body, public(f.home), nil)
+	_, err = f.s.dispatch(t.Context(), w, nil, w, msg)
+	if !errors.Is(err, cp.ErrRefused) || w.indexCalls != 0 {
+		t.Fatalf("bad signature: %d index calls, %v", w.indexCalls, err)
+	}
+	msg.Fields[2] = sig
+	for range 60 {
+		f.s.limits.allow(false, ordinary)
+		f.s.limits.allow(false, recoveryReads)
+	}
+	_, err = f.s.dispatch(t.Context(), w, nil, w, msg)
+	if !errors.Is(err, cp.ErrUnavailable) || w.indexCalls != 0 {
+		t.Fatalf("exhausted budgets: %d index calls, %v", w.indexCalls, err)
 	}
 }
