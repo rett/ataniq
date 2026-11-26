@@ -1,8 +1,32 @@
 package assignment
 
 import (
+	"slices"
 	"testing"
 )
+
+func TestHistoricalCorrectionRequiresFreshRequestID(t *testing.T) {
+	s := forward(t, len(forwardSteps))
+	original := s.events[1] // enrollment's worker confirmation
+	row, _ := s.ledger.Row(key)
+	c := original.Command
+	c.Expected = row.Head
+	c.Evidence = slices.Clone(c.Evidence)
+	c.Evidence[0].Digest = sha256Hex([]byte("revised confirmation"))
+	refused(t, s.ledger, c, ErrConflict)
+
+	c.RequestID = "revised-enrollment-confirmation"
+	corrected := s.accept(t, c)
+	if corrected.Result.Head.Phase != PhaseQuarantined || corrected.Result.Head.TransferID != "T" {
+		t.Fatal(corrected.Result)
+	}
+	for _, e := range []Event{original, corrected} {
+		retry, result, err := Decide(s.ledger, e.Command)
+		if err != nil || retry != nil || result != e.Result {
+			t.Fatalf("retry %q: %+v, %v", e.Command.RequestID, result, err)
+		}
+	}
+}
 
 func TestHistoricalCorrectionQuarantinesCurrentTransfer(t *testing.T) {
 	s := forward(t, len(forwardSteps))

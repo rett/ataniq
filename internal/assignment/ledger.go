@@ -113,7 +113,8 @@ func (l Ledger) Transfer(key Key, id string) (Transfer, bool) {
 
 // Lookup with an empty request ID returns the latest result recorded for, or
 // applied to, the transfer. A correction of a historical receipt is requested
-// under its original ID and changes the disposition of the current transfer.
+// under its original transfer ID and a fresh request ID, and changes the
+// disposition of the current transfer.
 func Lookup(l Ledger, key Key, transferID, requestID string) (Result, bool) {
 	t := transferKey{key, transferID}
 	if requestID == "" {
