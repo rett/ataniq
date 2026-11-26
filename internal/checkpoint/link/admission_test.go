@@ -118,11 +118,11 @@ func TestFrameHeaderDeadline(t *testing.T) {
 func TestRejectedWitnessStopsPolling(t *testing.T) {
 	f := newFixture(t, "witness")
 	_, r := f.listener(t)
-	other, err := NewServer(identity(t, "untrusted"), f.pin)
+	other, err := NewServer(identity(t, "untrusted"), f.pin, r, f.slot)
 	must(t, err)
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	if err := other.Poll(ctx, r, memoryWitness{f.w}); !errors.Is(err, cp.ErrRefused) {
+	if err := other.Poll(ctx, memoryWitness{f.w}); !errors.Is(err, cp.ErrRefused) {
 		t.Fatalf("poll: %v", err)
 	}
 }

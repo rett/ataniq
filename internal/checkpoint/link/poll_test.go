@@ -15,7 +15,7 @@ import (
 func endpointFor(t *testing.T, home, witness seatgate.Identity, f *fixture) *Endpoint {
 	t.Helper()
 	cert := seatgate.ServerTLS(witness, nil).Certificates[0].Certificate[0]
-	e, err := NewEndpoint(home, cert, f.pin, 1)
+	e, err := NewEndpoint(home, cert, f.pin, 1, f.slot)
 	must(t, err)
 	return e
 }
@@ -46,7 +46,8 @@ func TestWitnessDialsHome(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			stopped := make(chan error, 1)
 			go func() {
-				stopped <- f.s.Poll(ctx, Remote{Network: l.Addr().Network(), Address: l.Addr().String(), DialContext: dial, ServerPin: homeID.Fingerprint()}, memoryWitness{f.w})
+				f.s.home = Remote{Network: l.Addr().Network(), Address: l.Addr().String(), DialContext: dial, ServerPin: homeID.Fingerprint()}
+				stopped <- f.s.Poll(ctx, memoryWitness{f.w})
 			}()
 			defer func() {
 				cancel()
@@ -59,6 +60,14 @@ func TestWitnessDialsHome(t *testing.T) {
 			state := f.enroll(t, f.w.Administration())
 			c, err := e.Connect(call, f.slot, f.home, f.session)
 			must(t, err)
+			if err := f.s.Poll(call, memoryWitness{f.w}); !errors.Is(err, cp.ErrRefused) {
+				t.Fatal("second poll loop", err)
+			}
+			foreign := f.slot
+			foreign.Store += "-other"
+			if _, err := e.Connect(call, foreign, f.home, f.session); !errors.Is(err, cp.ErrRefused) {
+				t.Fatal("foreign enrollment", err)
+			}
 			q := cp.Claim{Mutation: cp.Mutation{ID: cp.ID{2}, Expected: state}, NewSessionPublicKey: public(f.session)}
 			first, err := c.Claim(call, q)
 			must(t, err)
@@ -76,37 +85,23 @@ func TestOneOutstandingMutationPerEnrollment(t *testing.T) {
 	q := endpointFor(t, identity(t, "home"), f.id, f).home.queue
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	submit := func(ctx context.Context, slot cp.Slot) <-chan error {
-		ch := make(chan error, 1)
-		go func() { _, err := q.exchange(ctx, frame.Claim, nil, slot); ch <- err }()
-		return ch
+	first := make(chan error, 1)
+	go func() { _, err := q.exchange(ctx, frame.Claim, nil, false); first <- err }()
+	active := <-q.calls
+	if _, err := q.exchange(ctx, frame.Advance, nil, false); !errors.Is(err, ErrNotSent) {
+		t.Fatal(err)
 	}
-	first := submit(ctx, f.slot)
-	var active pendingCall
+	read := make(chan error, 1)
+	go func() { _, err := q.exchange(ctx, frame.Read, nil, true); read <- err }()
 	select {
-	case active = <-q.calls:
+	case call := <-q.calls:
+		call.result <- callResult{}
 	case <-ctx.Done():
-		t.Fatal(ctx.Err())
+		t.Fatal("recovery read was not admitted")
 	}
-	defer func() { active.result <- callResult{}; must(t, <-first) }()
-	wait, stop := context.WithCancel(ctx)
-	second := submit(wait, f.slot)
-	other := submit(ctx, cp.Slot{Witness: "other"})
-	select {
-	case next := <-q.calls:
-		if next.ctx != ctx {
-			next.result <- callResult{}
-			t.Fatal("second mutation handed off while first active")
-		}
-		next.result <- callResult{}
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	must(t, <-other)
-	stop()
-	if err := <-second; !errors.Is(err, ErrNotSent) || !errors.Is(err, context.Canceled) {
-		t.Fatalf("queued mutation: %v", err)
-	}
+	must(t, <-read)
+	active.result <- callResult{}
+	must(t, <-first)
 }
 
 func TestPollShutdownCancelsGrant(t *testing.T) {

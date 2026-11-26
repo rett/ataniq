@@ -33,10 +33,10 @@ type Remote struct {
 
 type transport struct {
 	Remote
-	queue        *requestQueue
-	mutationSlot cp.Slot
-	tls          *tls.Config
-	wid          string
+	queue    *requestQueue
+	recovery bool
+	tls      *tls.Config
+	wid      string
 }
 
 func (e Remote) transport(owner seatgate.Identity) (transport, error) {
@@ -74,6 +74,9 @@ func (e Endpoint) Connect(ctx context.Context, slot cp.Slot, home, session ed255
 	t := e.home
 	if t.queue == nil {
 		return nil, cp.ErrRefused
+	}
+	if slot != e.slot {
+		return nil, &cp.Reason{Kind: cp.Unauthorized}
 	}
 	if !validSlot(slot) || !validPrivate(home) || !validPrivate(session) {
 		return nil, &cp.Reason{Kind: cp.InvalidRequest}
@@ -246,7 +249,7 @@ func (t transport) exchange(ctx context.Context, m frame.Message) (answer, error
 	defer cancel()
 	mutation := m.Kind != frame.Connect && m.Kind != frame.Read && m.Kind != frame.OwnerRead
 	if t.queue != nil {
-		return t.queue.exchange(ctx, m.Kind, data, t.mutationSlot)
+		return t.queue.exchange(ctx, m.Kind, data, t.recovery)
 	}
 	conn, err := t.connect(ctx)
 	if err != nil {
@@ -361,6 +364,7 @@ func (c *owner) Read(ctx context.Context, q cp.ReadRequest) (cp.View, error) {
 	return c.read(ctx, q, frame.New(frame.OwnerRead, b))
 }
 func (t transport) read(ctx context.Context, q cp.ReadRequest, m frame.Message) (cp.View, error) {
+	t.recovery = q.ReceiptID != (cp.ID{})
 	a, err := t.exchange(ctx, m)
 	if err != nil {
 		return cp.View{}, err
@@ -403,7 +407,7 @@ func (c *client) submit(ctx context.Context, k frame.Kind, s cp.State, q cp.Inte
 	return c.rawSubmit(ctx, k, c.slot, c.home.Public().(ed25519.PublicKey), b, hs, ss)
 }
 func (t transport) rawSubmit(ctx context.Context, k frame.Kind, slot cp.Slot, home ed25519.PublicKey, b, hs, ss []byte) (cp.Receipt, error) {
-	t.mutationSlot = slot
+
 	route, err := json.Marshal(slot)
 	if err != nil {
 		return cp.Receipt{}, err
@@ -418,6 +422,9 @@ func (e Endpoint) RawSubmit(ctx context.Context, slot cp.Slot, home ed25519.Publ
 	t := e.home
 	if t.queue == nil {
 		return cp.Receipt{}, cp.ErrRefused
+	}
+	if slot != e.slot {
+		return cp.Receipt{}, &cp.Reason{Kind: cp.Unauthorized}
 	}
 	switch op {
 	case "claim":

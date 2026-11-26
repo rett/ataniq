@@ -164,26 +164,35 @@ func TestWitnessContract(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		s, err := NewServer(serverID, pin)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// The state-machine suite models up to 70 transitions per schedule.
-		// Space calls in logical time, exercising the real rolling window. The
-		// rate tests exercise bursts with the production clock.
-		now := time.Now()
-		s.limits.now = func() time.Time { now = now.Add(time.Second * 2); return now }
 		homeID := identity(t, "home")
-		home, err := NewEndpoint(homeID, seatgate.ServerTLS(serverID, nil).Certificates[0].Certificate[0], pin, 1)
+		placeholder := Remote{Address: "home", ServerPin: homeID.Fingerprint()}
+		s, err := NewServer(serverID, pin, placeholder, cp.Slot{Witness: "witness", Authority: "owner", Store: "owner"})
 		must(t, err)
-		addr := serve(t, home.Serve)
-		addr.ServerPin, addr.WitnessPin, addr.Epoch = homeID.Fingerprint(), pin, 1
+		advanceClock := func(s *Server) {
+			now := time.Now()
+			s.limits.now = func() time.Time { now = now.Add(2 * time.Second); return now }
+		}
+		advanceClock(s)
 		admin := serve(t, func(l net.Listener) error { return s.ServeOwner(l, w.Administration(), ownerID.Fingerprint()) })
 		admin.ServerPin, admin.WitnessPin, admin.Epoch = serverID.Fingerprint(), pin, 1
 		var proxy linktest.Proxy
-		addr = proxied(t, addr, proxyID, serverID, &proxy, true)
 		admin = proxied(t, admin, proxyID, ownerID, &proxy, false)
-		startPolling(t, s, addr, memoryWitness{w})
+		endpoints := map[cp.Slot]*Endpoint{}
+		provision := func(slot cp.Slot, key ed25519.PublicKey, write bool) error {
+			if endpoints[slot] == nil {
+				e, err := NewEndpoint(homeID, seatgate.ServerTLS(serverID, nil).Certificates[0].Certificate[0], pin, 1, slot)
+				must(t, err)
+				addr := serve(t, e.Serve)
+				addr.ServerPin, addr.WitnessPin, addr.Epoch = homeID.Fingerprint(), pin, 1
+				addr = proxied(t, addr, proxyID, serverID, &proxy, true)
+				poller, err := NewServer(serverID, pin, addr, slot)
+				must(t, err)
+				advanceClock(poller)
+				startPolling(t, poller, addr, memoryWitness{w})
+				endpoints[slot] = e
+			}
+			return w.Grant(slot, key, write)
+		}
 		a, err := admin.Administration(ownerID)
 		if err != nil {
 			t.Fatal(err)
@@ -193,7 +202,7 @@ func TestWitnessContract(t *testing.T) {
 		// with that write even when kernel TCP carries the reply.
 		var delivery sync.Mutex
 		return checkpointtest.Harness{
-			Admin: a, Grant: w.Grant, Revoke: w.Revoke, Inhibit: w.Inhibit, SetReceiptLimit: w.SetReceiptLimit,
+			Admin: a, Grant: provision, Revoke: w.Revoke, Inhibit: w.Inhibit, SetReceiptLimit: w.SetReceiptLimit,
 			LoseNextReply: proxy.DropNextReply,
 			TransformNextReply: func(change func(cp.Receipt) cp.Receipt) {
 				w.TransformNextReply(func(r cp.Receipt) cp.Receipt {
@@ -203,7 +212,7 @@ func TestWitnessContract(t *testing.T) {
 				})
 			},
 			Connect: func(slot cp.Slot, h, s ed25519.PrivateKey, p ed25519.PublicKey) (cp.Client, error) {
-				e := *home
+				e := *endpoints[slot]
 				e.home.WitnessPin = p
 				e.home.wid, _ = cp.KeyID(p)
 				c, err := e.Connect(t.Context(), slot, h, s)
@@ -212,7 +221,9 @@ func TestWitnessContract(t *testing.T) {
 				}
 				return synchronizedClient{c, &delivery}, nil
 			},
-			RawSubmit: home.RawSubmit,
+			RawSubmit: func(ctx context.Context, slot cp.Slot, key ed25519.PublicKey, op string, b, hs, ss []byte) (cp.Receipt, error) {
+				return endpoints[slot].RawSubmit(ctx, slot, key, op, b, hs, ss)
+			},
 		}
 	})
 }
@@ -232,9 +243,10 @@ func startPolling(t *testing.T, s *Server, r Remote, w Witness) context.CancelFu
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
+	s.home = r
 	go func() {
 		defer close(done)
-		if err := s.Poll(ctx, r, w); !errors.Is(err, context.Canceled) {
+		if err := s.Poll(ctx, w); !errors.Is(err, context.Canceled) {
 			t.Errorf("poll: %v", err)
 		}
 	}()

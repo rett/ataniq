@@ -50,9 +50,10 @@ func newFixture(t *testing.T, name string) *fixture {
 	w, err := cp.NewMemory(name, 1, k)
 	must(t, err)
 	id := identity(t, "authority")
-	s, err := NewServer(id, public(k))
+	slot := cp.Slot{Witness: name, Authority: name, Store: name}
+	s, err := NewServer(id, public(k), Remote{Address: "home", ServerPin: id.Fingerprint()}, slot)
 	must(t, err)
-	f := &fixture{w, public(k), s, id, key(t), key(t), cp.Slot{Witness: name, Authority: name, Store: name}}
+	f := &fixture{w, public(k), s, id, key(t), key(t), slot}
 	must(t, w.Grant(f.slot, public(f.home), true))
 	return f
 }
@@ -365,7 +366,7 @@ func TestReconnectAfterRestart(t *testing.T) {
 		_, err := c.Read(t.Context(), cp.ReadRequest{Slot: f.slot, Challenge: cp.ID{3}, ReceiptID: cp.ID{1}})
 		read <- err
 	}()
-	restarted, err := NewServer(f.id, f.pin)
+	restarted, err := NewServer(f.id, f.pin, r, f.slot)
 	must(t, err)
 	startPolling(t, restarted, r, memoryWitness{f.w})
 	select {

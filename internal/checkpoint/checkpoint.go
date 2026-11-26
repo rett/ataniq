@@ -16,6 +16,8 @@ import (
 // the latest mutation returns its receipt even during inhibition. ErrUnknownOutcome requires
 // reconciling the saved intent by its ID before publishing a result.
 var (
+	// ErrBusy identifies a competing call refused before delivery.
+	ErrBusy           = errors.New("checkpoint: endpoint busy")
 	ErrRefused        = errors.New("checkpoint: refused")
 	ErrStale          = errors.New("checkpoint: stale or conflicting request")
 	ErrRetired        = errors.New("checkpoint: retired")

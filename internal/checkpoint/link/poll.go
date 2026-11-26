@@ -8,15 +8,16 @@ import (
 
 	cp "ataniq/internal/checkpoint"
 	"ataniq/internal/checkpoint/link/internal/frame"
-	"ataniq/internal/seatgate"
 )
 
 // Poll dials the configured home until cancellation or a permanent refusal.
 // Each connection can deliver one request. The witness has no home-facing listener.
-func (s *Server) Poll(ctx context.Context, home Remote, w Witness) error {
-	if w == nil || home.Address == "" || !seatgate.ValidFingerprint(home.ServerPin) {
+func (s *Server) Poll(ctx context.Context, w Witness) error {
+	home := s.home
+	if w == nil || !s.polling.CompareAndSwap(false, true) {
 		return cp.ErrRefused
 	}
+	defer s.polling.Store(false)
 	if home.Network == "" {
 		home.Network = "tcp"
 	}
@@ -46,12 +47,6 @@ func (s *Server) Poll(ctx context.Context, home Remote, w Witness) error {
 func (s *Server) pollOnce(parent context.Context, t transport, w Witness) (bool, error) {
 	ctx, cancel := context.WithTimeout(parent, s.timeout)
 	defer cancel()
-	select {
-	case s.polls <- struct{}{}:
-		defer func() { <-s.polls }()
-	case <-ctx.Done():
-		return false, ctx.Err()
-	}
 	conn, err := t.connect(ctx)
 	if err != nil {
 		return false, err

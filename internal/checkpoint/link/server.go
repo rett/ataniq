@@ -10,6 +10,7 @@ import (
 	"net"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -35,18 +36,20 @@ type Server struct {
 	witnessPin    ed25519.PublicKey
 	timeout       time.Duration
 	ownerCapacity int
-	polls         chan struct{}
+	home          Remote
+	slot          cp.Slot
+	polling       atomic.Bool
 	limits        limiter
 }
 
-func NewServer(id seatgate.Identity, witnessPin ed25519.PublicKey) (*Server, error) {
+func NewServer(id seatgate.Identity, witnessPin ed25519.PublicKey, home Remote, slot cp.Slot) (*Server, error) {
 	wid, err := cp.KeyID(witnessPin)
-	if err != nil || id.Fingerprint() == "" {
+	if err != nil || id.Fingerprint() == "" || !validSlot(slot) || home.Address == "" || !seatgate.ValidFingerprint(home.ServerPin) {
 		return nil, cp.ErrRefused
 	}
 	return &Server{
 		id: id, witnessKeyID: wid, witnessPin: slices.Clone(witnessPin),
-		timeout: requestTimeout, ownerCapacity: 2, polls: make(chan struct{}, 6),
+		timeout: requestTimeout, ownerCapacity: 2, home: home, slot: slot,
 	}, nil
 }
 
@@ -162,6 +165,9 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 		}
 		peer := "owner"
 		if w != nil {
+			if q.Slot != s.slot {
+				return nil, cp.ErrRefused
+			}
 			if err := authenticate(ctx, w, q.Slot, f[1], f[0], f[2]); err != nil {
 				return nil, err
 			}
@@ -206,6 +212,9 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 		var slot cp.Slot
 		if !exactJSON(f[0], &slot) || !validSlot(slot) {
 			return nil, frame.ErrProtocol
+		}
+		if slot != s.slot {
+			return nil, cp.ErrRefused
 		}
 		if err := authenticate(ctx, w, slot, f[1], f[2], f[3]); err != nil {
 			return nil, err

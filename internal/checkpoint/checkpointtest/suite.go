@@ -493,7 +493,9 @@ func Run(t *testing.T, newWitness Factory) {
 		for range cap(results) {
 			v := <-results
 			if v.err != nil {
-				want(t, v.err, cp.ErrStale)
+				if !errors.Is(v.err, cp.ErrBusy) {
+					want(t, v.err, cp.ErrStale)
+				}
 				continue
 			}
 			winners++
