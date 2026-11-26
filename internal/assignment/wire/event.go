@@ -73,6 +73,14 @@ func Unmarshal(b []byte) (assignment.PublicEnvelope, error) {
 	if err != nil {
 		return p, err
 	}
+	return unmarshalCanonical(canonical)
+}
+
+func unmarshalCanonical(canonical []byte) (assignment.PublicEnvelope, error) {
+	var p assignment.PublicEnvelope
+	if len(canonical) > recordLimit {
+		return p, assignment.ErrLimit
+	}
 	if err := json.Unmarshal(canonical, &p); err != nil {
 		return assignment.PublicEnvelope{}, err
 	}
