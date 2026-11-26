@@ -16,3 +16,14 @@ func TestParseClaimValidatesSessionPin(t *testing.T) {
 		t.Fatalf("invalid session pin parsed: %v", err)
 	}
 }
+
+func TestClaimSessionSeparation(t *testing.T) {
+	f := newSetup(t)
+	home, witness := public(f.home), public(f.witness)
+	for _, pin := range [][]byte{home, witness} {
+		if err := checkSessionRole(pin, home, witness); !errors.Is(err, ErrRefused) {
+			t.Fatalf("accepted overlapping roles: %v", err)
+		}
+	}
+	requireOK(t, checkSessionRole(public(f.session), home, witness))
+}

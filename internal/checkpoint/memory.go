@@ -104,11 +104,19 @@ type client struct {
 	sessionID     string
 }
 
+// Both ends of a claim require three independently held key roles.
+func checkSessionRole(session, home, witness ed25519.PublicKey) error {
+	if bytes.Equal(session, home) || bytes.Equal(session, witness) {
+		return ErrRefused
+	}
+	return nil
+}
+
 // Connect creates an authenticated handle scoped to one home and process
 // session. Mutations and reads recheck the live grant under the witness lock.
 func (w *Memory) Connect(slot Slot, home, session ed25519.PrivateKey, witnessPin ed25519.PublicKey) (Client, error) {
-	if !validPrivate(home) || !validPrivate(session) || home.Equal(session) ||
-		!bytes.Equal(witnessPin, w.key.Public().(ed25519.PublicKey)) || session.Public().(ed25519.PublicKey).Equal(witnessPin) {
+	if !validPrivate(home) || !validPrivate(session) ||
+		!bytes.Equal(witnessPin, w.key.Public().(ed25519.PublicKey)) {
 		return nil, ErrRefused
 	}
 	w.mu.Lock()
@@ -116,6 +124,9 @@ func (w *Memory) Connect(slot Slot, home, session ed25519.PrivateKey, witnessPin
 	g, ok := w.grants[slot]
 	if !ok || !bytes.Equal(home.Public().(ed25519.PublicKey), g.key) {
 		return nil, ErrRefused
+	}
+	if err := checkSessionRole(session.Public().(ed25519.PublicKey), g.key, witnessPin); err != nil {
+		return nil, err
 	}
 	sessionID, err := KeyID(session.Public().(ed25519.PublicKey))
 	if err != nil {
@@ -340,6 +351,9 @@ func (c *client) accept(ctx context.Context, op string, b, homeSig, sessionSig [
 	session := e.session
 	if op == "claim" {
 		session = record.session
+		if err := checkSessionRole(session, e.home, w.key.Public().(ed25519.PublicKey)); err != nil {
+			return Receipt{}, err
+		}
 		if !bytes.Equal(session, c.session.Public().(ed25519.PublicKey)) {
 			return Receipt{}, ErrRefused
 		}
