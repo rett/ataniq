@@ -163,7 +163,7 @@ func LoadPublicKey(line string) (ed25519.PublicKey, string, error) {
 	if len(fields) < 2 || strings.HasPrefix(fields[0], "#") {
 		return nil, "", errKey
 	}
-	if fields[0] != keyType {
+	if len(fields) >= 3 && fields[1] == keyType {
 		fields = fields[1:]
 	}
 	if len(fields) < 2 || fields[0] != keyType {

@@ -69,7 +69,7 @@ func TestPublicKeyLine(t *testing.T) {
 	pub := testKey().Public().(ed25519.PublicKey)
 	encoded := base64.StdEncoding.EncodeToString(keyBlob(pub))
 	key := keyType + " " + encoded
-	for _, line := range []string{key, "fixture\t" + key + " fixture key\n", key + " comment\r\n"} {
+	for _, line := range []string{key, keyType + " " + key, "fixture\t" + key + " fixture key\n", key + " comment\r\n"} {
 		got, id, err := LoadPublicKey(line)
 		if err != nil || !got.Equal(pub) || id != keyID(pub) {
 			t.Fatal(id, err)
