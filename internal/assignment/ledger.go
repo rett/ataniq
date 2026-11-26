@@ -123,7 +123,11 @@ func decideNew(l Ledger, c Command, digest string) (change, error) {
 			return change{}, ErrConflict
 		}
 	}
-	tr := l.transfers[transferKey{key, r.LastTransferID}]
+	id := r.LastTransferID
+	if c.Kind == HoldReviewed {
+		id = c.TransferID
+	}
+	tr := l.transfers[transferKey{key, id}]
 	r, tr, err := reduce(r, tr.clone(), c, digest)
 	if err != nil {
 		return change{}, err

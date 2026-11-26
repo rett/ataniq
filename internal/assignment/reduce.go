@@ -52,6 +52,20 @@ func reduce(r Row, t Transfer, c Command, digest string) (Row, Transfer, error) 
 		return r, t, err
 	}
 	r.Head.Revision++
+	if c.Kind == HoldReviewed {
+		if t.ID != c.TransferID {
+			return r, t, ErrStale
+		}
+		if t.Hold.Preservation == (Evidence{}) || t.Hold.Review != (Evidence{}) {
+			return r, t, ErrPhase
+		}
+		review, err := p.take("fallback", t.Hold.Preservation.Digest, "reviewed")
+		if err != nil || len(p) != 0 {
+			return r, t, ErrEvidence
+		}
+		t.Hold.Review = review
+		return r, t, nil
+	}
 	begin := c.Kind == Seed || c.Kind == Freeze || c.Kind == RollbackFreeze
 	if old.Phase == PhaseReceiptDisputed && c.Kind != ReceiptReconciled && c.Kind != FenceReceipt && c.Kind != ConfirmReceipt {
 		return r, t, ErrEvidence
@@ -304,15 +318,6 @@ func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 			return err
 		}
 		t.Hold = Hold{Start: c.HoldStart, EarliestRetirement: c.EarliestRetirement, Preservation: e}
-	case HoldReviewed:
-		if h.Phase != PhaseConfirmed || t.Hold.Preservation == (Evidence{}) || t.Hold.Review != (Evidence{}) {
-			return ErrPhase
-		}
-		e, err := p.take("fallback", t.Hold.Preservation.Digest, "reviewed")
-		if err != nil {
-			return err
-		}
-		t.Hold.Review = e
 	default:
 		return ErrInvalid
 	}

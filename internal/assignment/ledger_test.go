@@ -296,3 +296,31 @@ func TestReceiptNamesExactEvent(t *testing.T) {
 		})
 	}
 }
+
+func TestReviewHistoricalHold(t *testing.T) {
+	s := forward(t, len(forwardSteps))
+	s.steps(t, "T", []step{{kind: HoldStarted}})
+	held, _ := s.ledger.Transfer(key, "T")
+	s.steps(t, "U", []step{{kind: RollbackFreeze}})
+	active, _ := s.ledger.Transfer(key, "U")
+	row, _ := s.ledger.Row(key)
+	c := command(row, held, HoldReviewed, "T", "")
+	event := s.accept(t, c)
+	l, err := recoverAt(s.events, s.ledger.Checkpoint())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := l.Row(key)
+	row.Head.Revision++
+	u, _ := l.Transfer(key, "U")
+	reviewed, _ := l.Transfer(key, "T")
+	held.Hold.Review = c.Evidence[0]
+	if got != row || !reflect.DeepEqual(u, active) || !reflect.DeepEqual(held, reviewed) {
+		t.Fatal(got, u, reviewed)
+	}
+	dup, result, err := Decide(l, c)
+	if err != nil || dup != nil || result != event.Result {
+		t.Fatal(result, err)
+	}
+	s.steps(t, "U", forwardSteps[1:])
+}
