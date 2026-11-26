@@ -40,6 +40,7 @@ type Memory struct {
 	grants                     map[Slot]grant
 	slots                      map[Slot]*enrollment
 	inhibited, loseReply       bool
+	transformNextReply         func(Receipt) Receipt
 	receiptCount, receiptLimit uint64
 }
 
@@ -82,6 +83,15 @@ func (w *Memory) LoseNextReply() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.loseReply = true
+}
+
+// TransformNextReply installs a one-shot delivery fault for adapter qualification.
+// The callback receives a detached receipt under the witness lock and must not
+// call back into Memory. It cannot alter the committed evidence.
+func (w *Memory) TransformNextReply(f func(Receipt) Receipt) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.transformNextReply = f
 }
 
 // SetReceiptLimit bounds the number of accepted mutations across the
@@ -323,7 +333,7 @@ func (c *client) mutate(ctx context.Context, op string, m Mutation, b []byte) (R
 
 // accept consumes only the signed bytes and independently pinned identities.
 // The method selects the operation before interpreting its record.
-func (w *Memory) accept(ctx context.Context, slot Slot, home ed25519.PublicKey, op string, b, homeSig, sessionSig []byte) (Receipt, error) {
+func (w *Memory) accept(ctx context.Context, slot Slot, home ed25519.PublicKey, op string, b, homeSig, sessionSig []byte) (reply Receipt, err error) {
 	intent, err := ParseIntent(op, w.keyID, b)
 	if err != nil {
 		return Receipt{}, err
@@ -346,6 +356,13 @@ func (w *Memory) accept(ctx context.Context, slot Slot, home ed25519.PublicKey, 
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	defer func() {
+		if err == nil && w.transformNextReply != nil {
+			change := w.transformNextReply
+			w.transformNextReply = nil
+			reply = change(reply)
+		}
+	}()
 	e, err := w.authorized(slot, home, true)
 	if err != nil {
 		return Receipt{}, err

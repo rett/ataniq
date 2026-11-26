@@ -30,6 +30,9 @@ type Harness struct {
 	Revoke          func(cp.Slot)
 	LoseNextReply   func()
 	SetReceiptLimit func(uint64)
+	// TransformNextReply alters one successful claim or advance response after
+	// the witness produces it and before the client verifies it.
+	TransformNextReply func(func(cp.Receipt) cp.Receipt)
 }
 
 type Factory func(*testing.T, ed25519.PrivateKey) Harness
@@ -150,6 +153,11 @@ func Run(t *testing.T, newWitness Factory) {
 	}
 	for _, op := range []string{"enroll", "release", "retire"} {
 		t.Run("conflicting "+op, func(t *testing.T) { conflictingOwnerID(t, newWitness, op) })
+	}
+	for _, op := range []string{"claim", "advance"} {
+		for _, field := range []string{"operation", "id", "request_digest", "predecessor", "head", "fence", "session", "epoch", "replay", "signer"} {
+			t.Run("lying "+op+" "+field, func(t *testing.T) { lyingReply(t, newWitness, op, field) })
+		}
 	}
 	t.Run("enrollment", func(t *testing.T) {
 		f := start(t, newWitness)

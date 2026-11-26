@@ -211,3 +211,28 @@ func TestOwnerRetryMutants(t *testing.T) {
 		})
 	}
 }
+
+// An unchecked client returns the delivered acknowledgement even when its
+// operation, evidence, result or signature disagrees with the request.
+func TestUncheckedReceiptMutant(t *testing.T) {
+	for _, field := range []string{"operation", "id", "request_digest", "predecessor", "head", "fence", "session", "epoch", "replay", "signer"} {
+		t.Run(field, func(t *testing.T) {
+			rejectMutant(t, "lying_advance_"+field, "got <nil>, want checkpoint: unknown mutation outcome", func(h *checkpointtest.Harness) {
+				var delivered cp.Receipt
+				transform := h.TransformNextReply
+				h.TransformNextReply = func(change func(cp.Receipt) cp.Receipt) {
+					transform(func(r cp.Receipt) cp.Receipt { delivered = change(r); return delivered })
+				}
+				wrapConnect(h, func(c cp.Client) cp.Client {
+					return adapterClient{c, func(ctx context.Context, q cp.Advance) (cp.Receipt, error) {
+						r, err := c.Advance(ctx, q)
+						if errors.Is(err, cp.ErrUnknownOutcome) {
+							return delivered, nil
+						}
+						return r, err
+					}}
+				})
+			})
+		})
+	}
+}
