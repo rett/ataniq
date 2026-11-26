@@ -194,8 +194,10 @@ Activate the signed release with the existing switch procedure. Leave the
 unit disabled in systemd. The switch's validator checks the unit and its
 exact link target under `/opt/authority-host/current`, even on the first
 switch while the link dangles. Its reload list starts the unit under the decision inhibit.
-The health command verifies signed local status even if the home is
-offline. Without the egress drop-in the service can pass this local health
+The unit's `run` process checks the egress files on disk. The health command
+verifies signed local status over the owner socket even if the home is offline.
+Neither operation calls `systemctl`. The post-switch host no-AI check queries
+systemd for the loaded unit's effective grants before decisions resume. Without the egress drop-in the service can pass this local health
 check while the unit denies all IP traffic. The host no-AI check reports
 `NOTE witness egress drop-in missing: home unreachable`. Once the first switch succeeds, add
 `systemctl stop ataniq-witness.service` to the host emergency stop list
@@ -321,15 +323,22 @@ the old identity and provision a fresh identity at a higher externally
 recorded epoch. A new epoch fences future requests. It cannot reconstruct
 the missing interval. [Durable storage contract](../internal/checkpoint/durable/doc.go)
 
+Before rolling back across the change that pinned the guard directory, edit
+`/etc/authority-host/witness/config.json` for the target binary. The older
+`ataniq-witness` requires `"guard": "/var/lib/authority-host"`. Restore that
+key before switching to the older witness. Remove it before switching back
+to the binary with the pinned guard.
+
 For a software rollback use the signed switch procedure
-`ah-switch --rollback-to previous`. The switch runs the host stop list and the departing
-release’s stop list before reloading the target. If a stop fails, decisions
+`ah-switch --rollback-to previous`. The switch runs the host stop list before reloading the target.
+It also runs the departing release’s stop list when that release still verifies. If a stop fails, decisions
 stay inhibited. Correct the cause and retry the rollback. A target that carries the witness restarts its own
 binary against the existing store. Verify storage-format compatibility,
-pins, epoch and signed status before resuming admission. Back to a release
-without the witness, confirm it is stopped and remove its line from the
-host emergency stop list once the unit link dangles. Retain the other
-services' stop commands. Preserve witness state and keep dependent homes
+pins, epoch and signed status before resuming admission. When returning to a
+release without the witness, confirm it is stopped. Keep its single-unit
+stop command in the host list. Once the target's daemon-reload unloads
+the unit, the switch accepts systemctl exit 5 on that stop, including
+when retrying an interrupted rollback. Preserve witness state and keep dependent homes
 suspended until an appropriate release is active again. The no-AI listener
 check continues to check the witness account after its unit link is removed.
 

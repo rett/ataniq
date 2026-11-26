@@ -41,3 +41,92 @@ func TestExplicitRollbackStopsDepartingWitness(t *testing.T) {
 		})
 	}
 }
+
+func TestRollbackFromUnverifiableRelease(t *testing.T) {
+	e := active(t)
+	e.write(filepath.Join(e.relDir(rel2), "unlisted"), "extra", 0644)
+	e.write(filepath.Join(e.root, PolicyDir, HostStopList), "stop-host\n", 0644)
+	e.runner.fail["stop-host"] = 1
+	if code := e.rollBack("previous"); code != ExitFailed {
+		t.Fatalf("host stop failure: exit %d", code)
+	}
+	if _, inhibited := e.inhibited(); !inhibited {
+		t.Fatal("failed stop cleared the inhibit")
+	}
+	e.ran(map[string]int{"stop-host": 1, "stop-app": 0, "reload-units": 0})
+	e.runner.reset()
+	if code := e.rollBack("previous"); code != ExitOK {
+		t.Fatalf("retry: %s", e.last)
+	}
+	e.links(rel1, rel2)
+	e.ran(map[string]int{"stop-host": 1, "stop-app": 0, "reload-units": 1, "health-probe": 1})
+	if _, inhibited := e.inhibited(); inhibited || !strings.Contains(e.last, CodeFileNotListed) {
+		t.Fatalf("inhibited %v: %s", inhibited, e.last)
+	}
+}
+
+func TestWitnessRollbackStopAfterReload(t *testing.T) {
+	const stop = "systemctl stop ataniq-witness.service"
+	for _, point := range []string{CrashReload, CrashDone} {
+		t.Run(point, func(t *testing.T) {
+			e := newEnv(t)
+			e.release(rel1, "s")
+			if e.switchTo(rel1) != ExitOK {
+				t.Fatal(e.last)
+			}
+			e.release(rel2, "s")
+			e.withLists(rel2, "start-witness", "health-witness", stop)
+			if e.switchTo(rel2) != ExitOK {
+				t.Fatal(e.last)
+			}
+			e.write(filepath.Join(e.root, PolicyDir, HostStopList), stop+"\n", 0644)
+			loaded := true
+			e.runner.gate = func(argv []string) error {
+				switch strings.Join(argv, " ") {
+				case stop:
+					if !loaded {
+						return &RunError{Status: 5}
+					}
+				case "reload-units":
+					loaded = false // rel1's daemon-reload drops the witness unit
+				case "start-witness":
+					loaded = true
+				}
+				return nil
+			}
+			e.crashAt(point, true, "previous")
+			if _, inhibited := e.inhibited(); !inhibited || loaded {
+				t.Fatalf("after %s: inhibited %v, loaded %v", point, inhibited, loaded)
+			}
+			e.runner.reset()
+			if e.rollBack("previous") != ExitOK {
+				t.Fatal(e.last)
+			}
+			e.links(rel1, rel2)
+			e.ran(map[string]int{"systemctl": 2, "reload-units": 1, "health-probe": 1})
+			if _, inhibited := e.inhibited(); inhibited {
+				t.Fatal("target still inhibited")
+			}
+			// The host list also stops this unloaded unit during normal rollback
+			// back onto rel2, before rel2's reload starts its own witness.
+			if e.rollBack("previous") != ExitOK || !loaded {
+				t.Fatal(e.last)
+			}
+			e.links(rel2, rel1)
+		})
+	}
+}
+
+func TestWitnessStopExitFiveIsSpecific(t *testing.T) {
+	e := newEnv(t)
+	e.runner.gate = func([]string) error { return &RunError{Status: 5} }
+	s := e.switcher()
+	for _, argv := range [][]string{
+		{"stop-app"}, {"/other/systemctl", "stop", "app"}, {"systemctl", "restart", "app"},
+		{"systemctl", "stop", "app", "other"},
+	} {
+		if failures := s.runStops(t.Context(), "host", [][]string{argv}); len(failures) != 1 {
+			t.Errorf("accepted exit 5 from %q", argv)
+		}
+	}
+}

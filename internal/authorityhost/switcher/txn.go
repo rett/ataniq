@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -237,7 +238,7 @@ func linkText(target string) string {
 	return q(target)
 }
 
-// stopDeparting runs both lists even if one of their commands fails. Keep
+// stopDeparting runs the host list, then the departing list if verified. Keep
 // the journal in its current phase on failure so a retry repeats the stops
 // before the target's reload list can start any shared service again.
 func (s *Switcher) stopDeparting(ctx context.Context, t *txn) error {
@@ -250,7 +251,7 @@ func (s *Switcher) stopDeparting(ctx context.Context, t *txn) error {
 	}
 	departing, err := s.fallback(ctx, t)
 	if err != nil {
-		failures = append(failures, "departing release: "+describe(err))
+		s.printf("stop: skipped the departing release stop list because verification failed (%s)", describe(err))
 	} else {
 		failures = append(failures, s.runStops(ctx, departing.id.Name, departing.stops)...)
 	}
@@ -437,12 +438,29 @@ func (s *Switcher) restore(ctx context.Context, t *txn) error {
 	return s.done(t, ResultRolledBack)
 }
 
+// Only systemctl stop of a single named unit gives exit 5 this meaning.
+func (s *Switcher) unitAlreadyStopped(argv []string, err error) bool {
+	if len(argv) != 3 || argv[1] != "stop" || strings.HasPrefix(argv[2], "-") {
+		return false
+	}
+	switch argv[0] {
+	case "systemctl", filepath.Join(s.cfg.Root, "usr/bin/systemctl"), filepath.Join(s.cfg.Root, "bin/systemctl"):
+		var failure *RunError
+		return errors.As(err, &failure) && failure.Status == 5
+	}
+	return false
+}
+
 // runStops runs the stop commands cmds of list, every one whatever the
 // others do, and returns the failures.
 func (s *Switcher) runStops(ctx context.Context, list string, cmds [][]string) []string {
 	var failures []string
 	for _, c := range cmds {
 		if _, err := s.cfg.Runner.Run(ctx, Command{Argv: c, Timeout: ReloadTimeout}); err != nil {
+			if s.unitAlreadyStopped(c, err) {
+				s.printf("stop: already stopped (unit not loaded): %s", qargv(c))
+				continue
+			}
 			s.printf("stop: FAILED: %s: %s", qargv(c), summary(err))
 			failures = append(failures, list+": "+q(c[0])+": "+summary(err))
 			continue
@@ -455,8 +473,8 @@ func (s *Switcher) runStops(ctx context.Context, list string, cmds [][]string) [
 // stop is the stopping phase: the host's own stop list runs, then the stop
 // lists of the transaction's release and of the old release, each one
 // that can be verified (the host's list is what does not depend on that).
-// Only when every command exits 0 are the services taken as stopped and
-// the transaction done; otherwise it stays in this phase, the command
+// Only when every stop succeeds or finds its unit unloaded is the transaction
+// done; otherwise it stays in this phase, the command
 // fails, and the next one runs the stops again.
 func (s *Switcher) stop(ctx context.Context, t *txn) error {
 	var failures []string

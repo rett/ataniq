@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -36,6 +38,9 @@ type config struct {
 	Home       string           `json:"home_endpoint"`
 	SigningKey string           `json:"signing_public_key"`
 	HomeKey    string           `json:"home_public_key"`
+
+	// Read only to give older configurations a specific refusal.
+	ObsoleteGuard json.RawMessage `json:"guard,omitempty"`
 }
 
 var (
@@ -134,6 +139,9 @@ func loadConfig(path string) (config, durable.Config, error) {
 	}
 	if !utf8.Valid(b) || seatgate.DecodeStrict(b, &c) != nil {
 		return c, store, errConfig
+	}
+	if c.ObsoleteGuard != nil {
+		return c, store, fmt.Errorf("%w: remove the obsolete guard key", errConfig)
 	}
 	for _, p := range []string{c.State, c.Seed, c.ServiceTLS, c.OwnerTLS, c.Socket} {
 		if !absolute(p) {

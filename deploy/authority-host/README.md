@@ -2041,11 +2041,17 @@ It checks, in this order, all of them (a pass is no finding):
    - No file under `etc/systemd` still holds `{release}` (`unit-placeholder`):
      the builder replaces it, so one left is a folder made or changed by
      hand, whose unit systemd would run with the words as they are.
+   - Write each systemd directive on one UTF-8 line. The release and host
+     checks report `unit-syntax` for a trailing backslash, a lone carriage
+     return or any control character other than a tab or line ending (LF or
+     CRLF), including in comments and drop-ins.
    - In every service and socket command, including pre-start, post-start,
      reload and stop commands, the executable word must literally name an
      executable file of this release’s `bin/` under the release path or
-     `/opt/authority-host/current`. Both release checks refuse shell prefixes,
-     relative paths, path aliases, and `$` or `%` expansion in that word.
+     `/opt/authority-host/current`. Use an unprefixed executable path, as in the seat, notifier and
+     witness units. Both release checks report `decision-exec` for a systemd
+     execution prefix (including `+`, `!`, `:`, `@` and `-`), a relative path,
+     a path alias, or `$` or `%` expansion in the executable word.
    - A static release has no unit that starts a program: no file under
      `etc/systemd`, a drop-in included, with a `[Service]` section and an
      `ExecStart=` line. Any other release has at least one (a *decision
@@ -2359,8 +2365,8 @@ folder's alone.
   switch before anything changes when the owner's link of the unit (setup
   step 5, below) is missing; a link that dangles passes, as it must before
   the first switch. (`systemd-analyze verify` reads the release's own path,
-  so it passes without the link, and the reload's restart and the stop list's
-  stop would fail with exit 5 after `current` moved.)
+  so it passes without the link and the reload would fail to restart the seat
+  after `current` moved.)
 - `share/reload.list`: `systemctl daemon-reload`,
   `systemctl restart ataniq-seat.service`, `systemctl restart caddy`.
 - `share/health.cmd`: the front end's `/healthz`, and the seat's own over
@@ -2556,10 +2562,8 @@ ataniq-seat.service`): for the release a switch goes back from, and when
 no healthy release is left. The host's own `/etc/authority-host/stop.list`
 must stop every decision service of any release, so once the first switch
 to the seat's release ended `ok`, replace its line `/usr/bin/true` with
-`systemctl stop ataniq-seat.service` (not before: `systemctl stop` of a
-unit systemd does not know fails, exit 5, and a stop list that fails
-leaves a transaction in `stopping`). Until then the seat release's own
-list covers it. While the seat is stopped, decisions are not made at all;
+`systemctl stop ataniq-seat.service`. Use a separate stop command for each unit. The switch counts exit 5
+from `systemctl stop UNIT` as already stopped. While the seat is stopped, decisions are not made at all;
 the static status page stays.
 
 ### Rollback
@@ -2568,11 +2572,8 @@ the static status page stays.
 release's `stop.list` stops the seat, `current` goes back, and the earlier
 release's reload list runs. Back to another seat release, that restarts
 the seat from that release's binary. Back to the first (static) release,
-the seat stays stopped and the unit's link dangles: `systemctl stop
-ataniq-seat.service` then fails for a unit systemd does not know, so put
-`/usr/bin/true` back in the host's stop list (or remove the link) until
-a seat release is `current` again, or the next stop the host's list must
-make fails and the transaction stays in `stopping`. The seat's state is
+the seat stays stopped and the unit's link dangles. Its stop command can stay
+in the host list across rollbacks and retries. The seat's state is
 its key, in `/var/lib/seat`, which no switch touches; sessions are in
 memory and end with the process.
 

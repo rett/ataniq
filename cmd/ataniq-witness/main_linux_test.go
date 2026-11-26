@@ -334,12 +334,16 @@ func TestWitnessPinnedGuard(t *testing.T) {
 	must(t, err)
 	var fields map[string]json.RawMessage
 	must(t, json.Unmarshal(data, &fields))
-	fields["guard"] = json.RawMessage(`"/another/guard"`)
-	data, err = json.Marshal(fields)
-	must(t, err)
-	must(t, os.WriteFile(configPath, data, 0600))
-	if got := call(t, configPath, "check", 1); got != "invalid witness configuration\n" {
-		t.Fatal(got)
+	for _, legacy := range []string{`"/another/guard"`, "null"} {
+		fields["guard"] = json.RawMessage(legacy)
+		data, err = json.Marshal(fields)
+		must(t, err)
+		must(t, os.WriteFile(configPath, data, 0600))
+		for _, op := range []string{"check", "run"} {
+			if got := call(t, configPath, op, 1); got != "invalid witness configuration: remove the obsolete guard key\n" {
+				t.Fatal(got)
+			}
+		}
 	}
 }
 

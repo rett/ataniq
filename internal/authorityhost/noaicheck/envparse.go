@@ -414,7 +414,7 @@ func lineEnd(data string, i int) int {
 // parsePam reads ~/.pam_environment: the first word of a line (up to a
 // blank or '=') is the variable, the rest is its settings.
 func parsePam(r *envParse, data string) {
-	for _, line := range logicalLines(data) {
+	for _, line := range pamLines(data) {
 		line = strings.TrimSpace(line)
 		if line == "" || line[0] == '#' {
 			continue
@@ -434,10 +434,8 @@ func parsePam(r *envParse, data string) {
 	}
 }
 
-// logicalLines joins lines ending with a backslash to the next one, as
-// systemd and pam_env do; a comment line inside a continued line is
-// skipped, as systemd does.
-func logicalLines(data string) []string {
+// pamLines joins continuations in ~/.pam_environment.
+func pamLines(data string) []string {
 	var out []string
 	var cur strings.Builder
 	cont := false
@@ -477,7 +475,7 @@ func logicalLines(data string) []string {
 // is not NAME=VALUE, an unclosed quote or a path with a specifier is
 // syntax the check cannot parse.
 func parseSystemd(r *envParse, data string) {
-	for _, line := range logicalLines(data) {
+	for line := range strings.SplitSeq(data, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || line[0] == '#' || line[0] == ';' || line[0] == '[' {
 			continue

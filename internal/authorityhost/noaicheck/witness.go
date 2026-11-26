@@ -109,7 +109,7 @@ func WitnessUnitSafe(rel, text, releaseDir string) bool {
 		return ok && len(settings) == 0
 	}
 	section := ""
-	for _, line := range logicalLines(text) {
+	for line := range strings.SplitSeq(text, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "[") {
 			section = line

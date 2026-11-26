@@ -215,8 +215,11 @@ func TestCheckCoverage(t *testing.T) {
 			replace(t, s, "etc/systemd/system/ataniq-seat.service", "current/bin", "releases/0001-abcdef0/bin")
 		}, want: []string{"decision-exec: etc/systemd/system/ataniq-seat.service"}},
 		{name: "decision service runs a binary of its own release by id", mutate: func(t *testing.T, s string) {
-			replace(t, s, "etc/systemd/system/ataniq-seat.service", "ExecStart=/opt/authority-host/current/bin", "ExecStart=-/opt/authority-host/releases/0007-0123456/bin")
+			replace(t, s, "etc/systemd/system/ataniq-seat.service", "ExecStart=/opt/authority-host/current/bin", "ExecStart=/opt/authority-host/releases/0007-0123456/bin")
 		}},
+		{name: "a prefixed release executable", mutate: func(t *testing.T, s string) {
+			replace(t, s, "etc/systemd/system/ataniq-seat.service", "ExecStart=/opt", "ExecStart=-/opt")
+		}, want: []string{"decision-exec: etc/systemd/system/ataniq-seat.service"}},
 		{name: "decision service with ExecStartPre from the system", mutate: func(t *testing.T, s string) {
 			replace(t, s, "etc/systemd/system/ataniq-seat.service", "Restart=", "ExecStartPre=/usr/bin/true\nRestart=")
 		}, want: []string{"decision-exec: etc/systemd/system/ataniq-seat.service"}},
@@ -225,7 +228,7 @@ func TestCheckCoverage(t *testing.T) {
 		}, want: []string{"decision-exec: etc/systemd/system/ataniq-seat.service"}},
 		{name: "an ExecStart continued over two lines", mutate: func(t *testing.T, s string) {
 			replace(t, s, "etc/systemd/system/ataniq-seat.service", "ExecStart=/opt", "ExecStart=\\\n  /opt")
-		}},
+		}, want: []string{"unit-syntax: etc/systemd/system/ataniq-seat.service"}},
 		{name: "a unit gated on the inhibit", mutate: func(t *testing.T, s string) {
 			replace(t, s, "etc/systemd/system/ataniq-seat.service", "[Service]", "ConditionPathExists=!/var/lib/authority-host/decisions.inhibit\n\n[Service]")
 		}, want: []string{"inhibit-start-condition: etc/systemd/system/ataniq-seat.service"}},

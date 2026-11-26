@@ -100,7 +100,6 @@ func TestParseEnv(t *testing.T) {
 			[]string{"ANTHROPIC_API_KEY"}, nil, nil, false},
 		{"unit Environment quoted whole", unit, `Environment="OPENAI_API_KEY=` + secret + `"`, []string{"OPENAI_API_KEY"}, nil, nil, false},
 		{"unit Environment value like a name", unit, `Environment="A=OPENAI_API_KEY=x" 'B=x CODEX_HOME=y'`, nil, nil, nil, false},
-		{"unit continued line", unit, "Environment=LANG=C \\\n  # a comment\n  OPENAI_API_KEY=x\n", []string{"OPENAI_API_KEY"}, nil, nil, false},
 		{"unit comments", unit, "#Environment=OPENAI_API_KEY=x\n;Environment=CODEX_HOME=x\n", nil, nil, nil, false},
 		{"unit other keys", unit, "ExecStart=/usr/bin/env OPENAI_API_KEY=x 'unclosed\nDescription=CODEX_HOME=x\n", nil, nil, nil, false},
 		{"manager DefaultEnvironment", unit, "DefaultEnvironment=CLAUDE_CODE_X=1", []string{"CLAUDE_CODE_X"}, nil, nil, false},
