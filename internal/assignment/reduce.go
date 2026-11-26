@@ -47,6 +47,15 @@ func reduce(r Row, t Transfer, c Command, digest string) (Row, Transfer, error) 
 	if (c.Kind == FenceReceipt || c.Kind == ConfirmReceipt) && !validDigest(targetID) {
 		return r, t, ErrEvidence
 	}
+	var renewal string
+	if c.Kind == FenceReceipt || c.Kind == ConfirmReceipt {
+		renewal = t.ReconciliationID
+	}
+	for _, e := range c.Evidence {
+		if e.ReconciliationID != renewal {
+			return r, t, ErrEvidence
+		}
+	}
 	p, err := proofs(c, scope, targetID)
 	if err != nil {
 		return r, t, err
@@ -71,6 +80,9 @@ func reduce(r Row, t Transfer, c Command, digest string) (Row, Transfer, error) 
 		return r, t, ErrEvidence
 	}
 	if begin {
+		if old.Phase == PhaseCommittedClosed && t.ReconciliationID != "" {
+			return r, t, ErrEvidence
+		}
 		required := t.Routes
 		t = Transfer{ID: c.TransferID, Original: old, Predecessor: r.Holder,
 			Candidate: c.Candidate, BeginDigest: digest, Authorization: c.Authorization, Disposition: "pending"}
@@ -210,7 +222,8 @@ func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 		h.Phase = PhaseReserved
 		t.Reservation = *h
 	case FenceReceipt:
-		if h.Phase != PhaseReserved && h.Phase != PhasePartiallyFenced {
+		renewing := h.Phase == PhaseCommittedClosed && t.ReconciliationID != ""
+		if !renewing && h.Phase != PhaseReserved && h.Phase != PhasePartiallyFenced {
 			return ErrPhase
 		}
 		var err error
@@ -221,7 +234,9 @@ func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 		if err := t.settle(p, t.Fences[len(t.Fences)-1].Subject); err != nil {
 			return err
 		}
-		h.Phase = PhasePartiallyFenced
+		if !renewing {
+			h.Phase = PhasePartiallyFenced
+		}
 	case Fenced:
 		if h.Phase != PhasePartiallyFenced {
 			return ErrPhase
@@ -261,6 +276,9 @@ func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 	case Open:
 		if h.Phase != PhaseCommittedClosed {
 			return ErrPhase
+		}
+		if t.ReservationEventID != "" && !covers(subjects(t.Fences), t.Routes) {
+			return ErrEvidence
 		}
 		if !covers(subjects(t.Confirmations), t.Routes) || len(t.Outstanding) != 0 ||
 			c.Authorization != t.Authorization {

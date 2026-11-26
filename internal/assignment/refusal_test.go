@@ -165,11 +165,22 @@ func TestContradictoryReceiptRequiresReconciliation(t *testing.T) {
 		wrong.Evidence[0].Subject = "other"
 		refused(t, l, wrong, ErrEvidence)
 		s.accept(t, resolve)
+		if tc.k == ConfirmReceipt {
+			stale := next(s.ledger, key, ConfirmReceipt, "T", tc.route)
+			stale.Evidence = s.events[len(seedSteps)+8].Command.Evidence
+			refused(t, s.ledger, stale, ErrEvidence)
+		}
 		if tc.k == FenceReceipt {
 			s.steps(t, "T", forwardSteps[1:])
 		} else {
 			refused(t, s.ledger, next(s.ledger, key, Open, "T", ""), ErrEvidence)
-			s.steps(t, "T", forwardSteps[8:])
+			s.steps(t, "T", forwardSteps[8:10])
+			refused(t, s.ledger, next(s.ledger, key, Open, "T", ""), ErrEvidence)
+			stale := next(s.ledger, key, FenceReceipt, "T", "worker")
+			stale.Evidence = s.events[len(seedSteps)+4].Command.Evidence
+			refused(t, s.ledger, stale, ErrEvidence)
+			s.steps(t, "T", forwardSteps[4:6])
+			s.steps(t, "T", forwardSteps[10:])
 		}
 		assertHolder(t, s.ledger, managed, 2, true)
 	}

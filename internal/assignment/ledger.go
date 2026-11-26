@@ -220,6 +220,10 @@ func apply(l Ledger, e Event, privateIndexes bool) (Ledger, error) {
 	}
 	ch.row.PublicDigest = sha256Hex(signed)
 	switch e.Command.Kind {
+	case ReceiptReconciled:
+		if ch.row.Head.Phase == PhaseCommittedClosed {
+			ch.transfer.ReconciliationID = e.Result.EventID
+		}
 	case Reserve:
 		ch.transfer.ReservationEventID = e.Result.EventID
 	case Seed, Commit:

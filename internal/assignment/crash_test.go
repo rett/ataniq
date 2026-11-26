@@ -527,6 +527,7 @@ func TestCrashAndPartitionTable(t *testing.T) {
 			resolve := next(home, key, ReceiptReconciled, "T", "")
 			resolve.Evidence = []Evidence{{Kind: "reconciliation", Issuer: dispute.Evidence[0].Issuer, Subject: dispute.Evidence[0].Digest, Scope: closed.Head, TransferID: "T", Digest: sha256Hex([]byte("old executor stopped and work accounted for")), Revision: "review", Outcome: "reconciled"}}
 			s.accept(t, resolve)
+			s.steps(t, "T", forwardSteps[4:6])
 			refused(t, s.ledger, next(s.ledger, key, Open, "T", ""), ErrEvidence)
 			s.steps(t, "T", forwardSteps[8:])
 			assertHolder(t, s.ledger, managed, 2, true)

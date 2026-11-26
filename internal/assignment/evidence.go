@@ -182,7 +182,7 @@ func (t *Transfer) reconcile(h *Head, c Command, p *evidenceSet) error {
 	switch t.BeforeDispute {
 	case PhaseConfirmed, PhaseCommittedClosed:
 		h.Phase, t.Disposition = PhaseCommittedClosed, "committed"
-		t.Confirmations = nil
+		t.Fences, t.Confirmations = nil, nil
 	case PhaseAborted, PhaseAborting:
 		h.Phase, t.Disposition = PhaseAborting, "pending"
 	case PhaseAbortedClosed:
