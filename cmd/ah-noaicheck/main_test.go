@@ -82,7 +82,7 @@ func host(t *testing.T) string {
 	write(t, root, "usr/lib/systemd/system/sshd.service", "[Service]\nExecStart=/usr/bin/sshd -D\n")
 	write(t, root, "proc/1/comm", "systemd\n")
 	write(t, root, "var/lib/pacman/local/bash-5-1/desc", "%NAME%\nbash\n")
-	write(t, root, "proc/net/tcp", "  sl  local_address rem_address   st\n"+
+	write(t, root, "proc/net/tcp", "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n"+
 		"   0: 00000000:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 1\n")
 	return root
 }
@@ -199,6 +199,11 @@ func TestPorts(t *testing.T) {
 	if code != exitHit || out != "HIT port tcp6:[::]:8080\nRUN complete\nFAILED 1 hit(s)\n" {
 		t.Errorf("planted: exit %d\n%s", code, out)
 	}
+	header, row, _ := strings.Cut(tcp6Listen8080, "\n")
+	write(t, root, "proc/net/tcp6", header+"\n"+strings.Join(strings.Fields(row)[:7], " ")+"\n")
+	if code, out, _ := runCmd(t, "", "ports", "--root", root, "--release", rel); code != exitHit || !strings.Contains(out, `HIT unreadable /proc/net/tcp6 "malformed line 2"`) {
+		t.Errorf("listener missing uid: exit %d\n%s", code, out)
+	}
 	if code, _, _ := runCmd(t, "", "ports", "--root", root, "--release", rel, "--nft-listing", "x"); code != exitError {
 		t.Errorf("ports with --nft-listing: exit %d", code)
 	}
@@ -207,7 +212,7 @@ func TestPorts(t *testing.T) {
 // tcp6Listen8080 is a proc/net/tcp6 with the kernel's IPv6 header (its
 // remote column spelled remote_address) and one listening socket.
 const tcp6Listen8080 = "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n" +
-	"   0: 00000000000000000000000000000000:1F90 00000000000000000000000000000000:0000 0A 0 0 0\n"
+	"   0: 00000000000000000000000000000000:1F90 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000 1000 0 2\n"
 
 // The switch's call: --require-policy with every policy of the release set
 // passes on a clean host and says the run was complete; each policy left

@@ -64,7 +64,7 @@ func TestWitnessListenerOnAllowedPort(t *testing.T) {
 				f.file(WitnessUnit, "[Service]\nUser=ataniq-witness\n")
 			}
 			f.file("etc/passwd", tc.passwd)
-			f.file("proc/net/tcp", tcpHeader+"0: 010200C0:0016 00000000:0000 0A 0:0 0:0 0 "+tc.uid+" 0 1\n")
+			f.file("proc/net/tcp", tcpHeader+"0: 010200C0:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000 "+tc.uid+" 0 1\n")
 			c := f.checker(testLists())
 			c.CheckPorts()
 			if hits := c.Report().Hits; !slices.Equal(hits, tc.hits) {
