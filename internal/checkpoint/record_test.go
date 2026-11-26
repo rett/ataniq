@@ -301,6 +301,14 @@ func TestWitnessChecksBothSignaturesAndOperation(t *testing.T) {
 	_, err := f.w.Administration().Enroll(ctx, f.e)
 	requireOK(t, err)
 	claim := v["claim"]
+	sessionInHomeProfile, err := homeProfile.sign(f.session, claim.Body)
+	requireOK(t, err)
+	for _, sessionSig := range [][]byte{nil, sessionInHomeProfile} {
+		_, err := accept(ctx, "claim", claim.Body, []byte(claim.Signatures["home"]), sessionSig)
+		if !errors.Is(err, ErrRefused) {
+			t.Fatalf("claim session proof: got %v, want ErrRefused", err)
+		}
+	}
 	_, err = accept(ctx, "claim", claim.Body, []byte(claim.Signatures["home"]), []byte(claim.Signatures["session"]))
 	requireOK(t, err)
 	advance := v["advance"]

@@ -33,6 +33,10 @@ type Harness struct {
 	// TransformNextReply alters one successful claim or advance response after
 	// the witness produces it and before the client verifies it.
 	TransformNextReply func(func(cp.Receipt) cp.Receipt)
+	// RawSubmit submits the supplied body and proofs to the witness's normal
+	// verifier verbatim. Adapters without this capability must provide a hook
+	// returning an error wrapping errors.ErrUnsupported with the reason.
+	RawSubmit func(ctx context.Context, slot cp.Slot, home ed25519.PublicKey, op string, body, homeSig, sessionSig []byte) (cp.Receipt, error)
 }
 
 type Factory func(*testing.T, ed25519.PrivateKey) Harness
@@ -159,6 +163,9 @@ func (f fixture) reconnect(t *testing.T, h home, session ed25519.PrivateKey) hom
 // The factory must provision a separate directory for each call, including
 // calls with identical keys used to model independent restores.
 func Run(t *testing.T, newWitness Factory) {
+	for _, op := range []string{"claim", "advance"} {
+		t.Run("raw "+op, func(t *testing.T) { rawProofs(t, newWitness, op) })
+	}
 	for _, role := range []string{"home", "witness"} {
 		t.Run("session equals "+role, func(t *testing.T) {
 			f := start(t, newWitness)
