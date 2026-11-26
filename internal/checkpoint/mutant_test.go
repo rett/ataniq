@@ -17,10 +17,15 @@ import (
 // Require the case's own diagnostic so setup failures cannot kill a mutant.
 func rejectMutant(t *testing.T, scenario, diagnostic string, mutate func(*checkpointtest.Harness)) {
 	t.Helper()
+	rejectMemoryMutant(t, scenario, diagnostic, func(h *checkpointtest.Harness, _ *cp.Memory) { mutate(h) })
+}
+
+func rejectMemoryMutant(t *testing.T, scenario, diagnostic string, mutate func(*checkpointtest.Harness, *cp.Memory)) {
+	t.Helper()
 	if os.Getenv("CHECKPOINT_MUTANT") == t.Name() {
 		checkpointtest.Run(t, func(t *testing.T, k ed25519.PrivateKey) checkpointtest.Harness {
-			h := memoryHarness(t, k)
-			mutate(&h)
+			h, w := newMemoryHarness(t, k)
+			mutate(&h, w)
 			return h
 		})
 		return
@@ -73,6 +78,34 @@ func TestHistoricalHeadMutant(t *testing.T) {
 		h.Connect = func(s cp.Slot, home, session ed25519.PrivateKey, pin ed25519.PublicKey) (cp.Client, error) {
 			c, err := connect(s, home, session, pin)
 			return historicalClient{c, pin}, err
+		}
+	})
+}
+
+type unscopedReader struct {
+	cp.Client
+	connect func(cp.Slot) (cp.Client, error)
+}
+
+func (c unscopedReader) Read(ctx context.Context, q cp.ReadRequest) (cp.View, error) {
+	client, err := c.connect(q.Slot)
+	if err != nil {
+		return cp.View{}, err
+	}
+	return client.Read(ctx, q)
+}
+
+func TestUnscopedReadMutant(t *testing.T) {
+	rejectMutant(t, "shared_home_key_slot_scope", "got <nil>, want checkpoint: refused", func(h *checkpointtest.Harness) {
+		connect := h.Connect
+		h.Connect = func(slot cp.Slot, home, session ed25519.PrivateKey, pin ed25519.PublicKey) (cp.Client, error) {
+			c, err := connect(slot, home, session, pin)
+			if err != nil {
+				return nil, err
+			}
+			return unscopedReader{c, func(slot cp.Slot) (cp.Client, error) {
+				return connect(slot, home, session, pin)
+			}}, nil
 		}
 	})
 }
@@ -173,6 +206,30 @@ func TestTombstoneMutants(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestReusableRetiredSlotMutant(t *testing.T) {
+	rejectMemoryMutant(t, "permanent_retired_slot", "fresh enrollment replaced retired slot", func(h *checkpointtest.Harness, w *cp.Memory) {
+		admin := h.Admin
+		h.Admin = ownerAdapter{Administration: admin, enroll: func(ctx context.Context, q cp.Enrollment) (cp.Receipt, error) {
+			w.ForgetRetiredSlot(q.Slot)
+			return admin.Enroll(ctx, q)
+		}}
+	})
+}
+
+func TestClaimAfterRetireMutant(t *testing.T) {
+	rejectMutant(t, "permanent_retired_slot", "got <nil>, want checkpoint: retired", func(h *checkpointtest.Harness) {
+		wrapConnect(h, func(c cp.Client) cp.Client {
+			return claimClient{c, func(ctx context.Context, q cp.Claim) (cp.Receipt, error) {
+				r, err := c.Claim(ctx, q)
+				if errors.Is(err, cp.ErrRetired) {
+					return r, nil
+				}
+				return r, err
+			}}
+		})
+	})
 }
 
 func TestOwnerRetryMutants(t *testing.T) {

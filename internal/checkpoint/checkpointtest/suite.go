@@ -33,6 +33,10 @@ type Harness struct {
 	// TransformNextReply alters one successful claim or advance response after
 	// the witness produces it and before the client verifies it.
 	TransformNextReply func(func(cp.Receipt) cp.Receipt)
+	// RawSubmit submits the supplied body and proofs to the witness's normal
+	// verifier verbatim. Adapters without this capability must provide a hook
+	// returning an error wrapping errors.ErrUnsupported with the reason.
+	RawSubmit func(ctx context.Context, slot cp.Slot, home ed25519.PublicKey, op string, body, homeSig, sessionSig []byte) (cp.Receipt, error)
 }
 
 type Factory func(*testing.T, ed25519.PrivateKey) Harness
@@ -44,13 +48,14 @@ func digest(label string) string                 { d := id(label); return hex.En
 
 type fixture struct {
 	Harness
-	ctx context.Context
-	pin ed25519.PublicKey
+	ctx     context.Context
+	pin     ed25519.PublicKey
+	witness ed25519.PrivateKey
 }
 
 func start(t *testing.T, factory Factory) fixture {
 	k := key("test witness")
-	return fixture{factory(t, k), t.Context(), pub(k)}
+	return fixture{Harness: factory(t, k), ctx: t.Context(), pin: pub(k), witness: k}
 }
 
 type home struct {
@@ -62,8 +67,13 @@ type home struct {
 
 func (f fixture) home(t *testing.T, authority, store, generation string, write bool) home {
 	t.Helper()
+	return f.homeWithKey(t, authority, store, generation, write, key(authority+generation))
+}
+
+func (f fixture) homeWithKey(t *testing.T, authority, store, generation string, write bool, private ed25519.PrivateKey) home {
+	t.Helper()
 	slot := cp.Slot{Witness: "witness", Authority: authority, Store: store}
-	h := home{slot: slot, private: key(authority + generation), session: key("session " + authority + generation)}
+	h := home{slot: slot, private: private, session: key("session " + authority + generation)}
 	keyID, err := cp.KeyID(pub(h.private))
 	check(t, err)
 	header := assignment.Header{Schema: 1, Authority: authority, Store: store, LedgerID: "ledger" + generation, Incarnation: "incarnation" + generation, KeyID: keyID}
@@ -153,6 +163,50 @@ func (f fixture) reconnect(t *testing.T, h home, session ed25519.PrivateKey) hom
 // The factory must provision a separate directory for each call, including
 // calls with identical keys used to model independent restores.
 func Run(t *testing.T, newWitness Factory) {
+	for _, op := range []string{"claim", "advance"} {
+		t.Run("raw "+op, func(t *testing.T) { rawProofs(t, newWitness, op) })
+	}
+	for _, role := range []string{"home", "witness"} {
+		t.Run("session equals "+role, func(t *testing.T) {
+			f := start(t, newWitness)
+			h := f.home(t, "west", "s", "one", true)
+			session := h.private
+			if role == "witness" {
+				session = f.witness
+			}
+			_, err := f.Connect(h.slot, h.private, session, f.pin)
+			want(t, err, cp.ErrRefused)
+		})
+	}
+	t.Run("shared home key slot scope", func(t *testing.T) {
+		f := start(t, newWitness)
+		west := f.home(t, "west", "shared", "one", true)
+		east := f.homeWithKey(t, "east", "shared", "two", true, west.private)
+		f.enroll(t, west)
+		f.enroll(t, east)
+		q := cp.ReadRequest{Slot: east.slot, ReceiptID: east.e.ID, Challenge: id("foreign slot")}
+		_, err := west.c.Read(f.ctx, q)
+		want(t, err, cp.ErrRefused)
+	})
+	t.Run("permanent retired slot", func(t *testing.T) { retiredSlot(t, newWitness) })
+	for _, op := range []string{"enroll", "claim", "release", "retire"} {
+		t.Run("lost ack "+op, func(t *testing.T) { lostAck(t, newWitness, op) })
+	}
+	t.Run("session claim history", func(t *testing.T) {
+		f := start(t, newWitness)
+		first := f.home(t, "west", "s", "one", true)
+		s := f.enroll(t, first)
+		second := f.reconnect(t, first, key("second session"))
+		for _, writer := range []home{first, second} {
+			label := digest(string(pub(writer.session)))
+			s = f.claim(t, writer, s, "claim "+label)
+			_, err := f.Admin.Release(f.ctx, mutation(s, "release "+label))
+			check(t, err)
+			s = f.state(t, first, "released "+label)
+		}
+		_, err := first.c.Claim(f.ctx, cp.Claim{Mutation: mutation(s, "reuse first"), NewSessionPublicKey: pub(first.session)})
+		want(t, err, cp.ErrStale)
+	})
 	for _, op := range []string{"release", "retire"} {
 		t.Run("stale owner "+op, func(t *testing.T) { ownerCAS(t, newWitness, op) })
 	}
@@ -163,7 +217,7 @@ func Run(t *testing.T, newWitness Factory) {
 		t.Run("conflicting "+op, func(t *testing.T) { conflictingOwnerID(t, newWitness, op) })
 	}
 	for _, op := range []string{"claim", "advance"} {
-		for _, field := range []string{"operation", "id", "request_digest", "predecessor", "head", "fence", "session", "epoch", "replay", "signer"} {
+		for _, field := range []string{"operation", "id", "request_digest", "predecessor", "head", "fence", "session", "epoch", "revision", "home", "witness_slot", "replay", "signer", "profile_home", "profile_session"} {
 			t.Run("lying "+op+" "+field, func(t *testing.T) { lyingReply(t, newWitness, op, field) })
 		}
 	}
