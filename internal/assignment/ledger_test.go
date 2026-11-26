@@ -479,27 +479,49 @@ func TestExactFrames(t *testing.T) {
 	}
 }
 func TestDecideReservesSignedFrameSpace(t *testing.T) {
-	s := fresh(t)
-	c := next(s.ledger, key, Seed, "seed", "")
+	s := seeded(t)
+	c := next(s.ledger, key, ConfirmReceipt, "seed", "worker")
+	c.Evidence[0].Digest = sha256Hex([]byte("amended"))
+	// Attached observations are journaled with a correction. Fill the record
+	// with distinct, bounded references and then tune the last bytes exactly.
+	work := c.Evidence[0]
+	work.Kind, work.Route, work.Outcome = "effect", "worker", "outstanding"
+	for i := 0; ; i++ {
+		work.Subject = fmt.Sprint("child-", i)
+		c.Evidence = append(c.Evidence, work)
+		e, _, err := Decide(s.ledger, c)
+		if errors.Is(err, ErrLimit) {
+			c.Evidence = c.Evidence[:len(c.Evidence)-1]
+			break
+		}
+		if err != nil || e == nil {
+			t.Fatal(err)
+		}
+	}
 	e, _, err := Decide(s.ledger, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.Signature = strings.Repeat("A", 262) // unpadded base64url of the schema-1 SSHSIG
-	b, err := e.RecordBytes()
+	e.Signature = strings.Repeat("A", 262)
+	raw, err := e.RecordBytes()
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.Actor += strings.Repeat("a", 65536-len(b))
+	padding := recordLimit - len(raw)
+	for i := 1; padding > 0; i++ {
+		add := min(padding, MaxReferenceBytes-len(c.Evidence[i].Revision))
+		c.Evidence[i].Revision += strings.Repeat("x", add)
+		padding -= add
+	}
 	e, _, err = Decide(s.ledger, c)
 	if err != nil {
 		t.Fatal(err)
 	}
 	e.Signature = strings.Repeat("A", 262)
-	b, err = e.RecordBytes()
-	if err != nil || len(b) != 65536 {
-		t.Fatal(len(b), err)
+	raw, err = e.RecordBytes()
+	if err != nil || len(raw) != recordLimit {
+		t.Fatal(len(raw), err)
 	}
-	c.Actor += "a"
+	c.Actor += "x"
 	refused(t, s.ledger, c, ErrLimit)
 }

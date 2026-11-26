@@ -11,6 +11,9 @@ func reduce(r Row, t Transfer, c Command, digest string, prior Evidence) (Row, T
 	if old != c.Expected {
 		return r, t, ErrStale
 	}
+	if err := c.checkReferences(); err != nil {
+		return r, t, err
+	}
 	if old.Phase == PhaseQuarantined && c.Kind != QuarantineAcknowledged {
 		return r, t, ErrPhase
 	}

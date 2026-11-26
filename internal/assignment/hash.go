@@ -109,6 +109,9 @@ func (h Header) Bytes() ([]byte, error) {
 	if h.Schema != 1 || h.Authority == "" || h.Store == "" || h.Incarnation == "" || h.KeyID == "" || h.LedgerID == "" {
 		return nil, ErrInvalid
 	}
+	if !referencesFit(h.Authority, h.Store, h.Incarnation, h.KeyID, h.LedgerID) {
+		return nil, ErrLimit
+	}
 	return frame(headerRecord{"ataniq.assignment", h})
 }
 
