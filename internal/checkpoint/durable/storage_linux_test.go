@@ -912,8 +912,21 @@ func TestCompleteInterruptedPublication(t *testing.T) {
 	must(t, dir.Close())
 	w, err := CompletePublication(c)
 	must(t, err)
+	checkStatus := func(w *Witness, challenge cp.ID, want cp.Inhibition) {
+		t.Helper()
+		r, err := w.Administration().Status(t.Context(), challenge)
+		must(t, err)
+		s, err := cp.VerifyDirectoryStatus(c.Pin, c.Identity.Epoch, challenge, r)
+		must(t, err)
+		if s.Inhibition != want || s.Sequence != 1 || s.Digest != hex.EncodeToString(index[:32]) {
+			t.Fatalf("status after completion: %+v, want %q at genesis", s, want)
+		}
+	}
+	checkStatus(w, cp.ID{1}, cp.ServiceInhibited)
+	w.Inhibit(false)
+	checkStatus(w, cp.ID{2}, cp.Ready)
 	must(t, w.Close())
-	reopen(t, c)
+	checkStatus(reopen(t, c), cp.ID{3}, cp.ServiceInhibited)
 	if !bytes.Equal(before, readFile(t, filepath.Join(c.Directory, journalName))) ||
 		!bytes.Equal(index, readFile(t, filepath.Join(c.Directory, lockName))) {
 		t.Fatal("recovery changed genesis")

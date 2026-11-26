@@ -76,7 +76,9 @@
 // including before enrollment. AcknowledgeStorageError clears the poison
 // marker and recovery inhibition after re-proof. The service guard is independent.
 // OpenForRecovery can also inspect a provable interrupted genesis without
-// publishing it. Completing publication requires the offline owner call. On every Open, replay rewrites the last
+// publishing it. The offline CompletePublication call clears the interrupted
+// publication reason after verifying the published genesis. Status then reports
+// the ordinary service guard. On every Open, replay rewrites the last
 // validated frame and index entry in place and syncs both files and the directory
 // before signing or serving. Torn or corrupt evidence still prevents Open.
 package durable
