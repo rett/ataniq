@@ -441,3 +441,13 @@ func TestRestrictiveUmask(t *testing.T) {
 	s := f.open(t, nil)
 	check(t, AppendAndAdvance(f.ctx, s, f.seed(t, s, "row")))
 }
+
+func TestStartWithoutClient(t *testing.T) {
+	for _, c := range []cp.Client{nil, (*claimHook)(nil)} {
+		f := enrolled(t)
+		f.client = c
+		f.refused(t, Unreachable)
+		f.connect(t)
+		f.open(t, nil)
+	}
+}

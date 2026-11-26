@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"io"
+	"reflect"
 	"slices"
 	"sync"
 
@@ -112,6 +113,9 @@ func (s *Store) confirm(ctx context.Context, op string, q checkpoint.Intent, r c
 // Start authenticates the ledger and any staged evidence before claiming a
 // fresh session. A committed advance can be verified by its historical receipt.
 func Start(ctx context.Context, root LedgerStore, b Binding, client checkpoint.Client, session ed25519.PrivateKey, fault Fault) (*Store, error) {
+	if c := reflect.ValueOf(client); !c.IsValid() || (c.Kind() == reflect.Pointer && c.IsNil()) {
+		return nil, refuse(Unreachable, errors.New("missing witness client"))
+	}
 	if len(session) != ed25519.PrivateKeySize {
 		return nil, refuse(Unknown, checkpoint.ErrRefused)
 	}
