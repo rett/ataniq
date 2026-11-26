@@ -17,10 +17,15 @@ import (
 // Require the case's own diagnostic so setup failures cannot kill a mutant.
 func rejectMutant(t *testing.T, scenario, diagnostic string, mutate func(*checkpointtest.Harness)) {
 	t.Helper()
+	rejectMemoryMutant(t, scenario, diagnostic, func(h *checkpointtest.Harness, _ *cp.Memory) { mutate(h) })
+}
+
+func rejectMemoryMutant(t *testing.T, scenario, diagnostic string, mutate func(*checkpointtest.Harness, *cp.Memory)) {
+	t.Helper()
 	if os.Getenv("CHECKPOINT_MUTANT") == t.Name() {
 		checkpointtest.Run(t, func(t *testing.T, k ed25519.PrivateKey) checkpointtest.Harness {
-			h := memoryHarness(t, k)
-			mutate(&h)
+			h, w := newMemoryHarness(t, k)
+			mutate(&h, w)
 			return h
 		})
 		return
