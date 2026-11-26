@@ -52,7 +52,9 @@ func TestWitnessProvisionFromOperatorGuide(t *testing.T) {
 
 func TestWitnessOfflinePublication(t *testing.T) {
 	c, path := fixture(t)
-	call(t, path, "init", 0)
+	if got := call(t, path, "init", 0); got != "witness store initialized\n" {
+		t.Errorf("init: %q", got)
+	}
 	journal := filepath.Join(c.State, "journal.v1")
 	staged := filepath.Join(c.State, ".create-fixture-journal.v1")
 	original, err := os.ReadFile(journal)
@@ -66,7 +68,9 @@ func TestWitnessOfflinePublication(t *testing.T) {
 	must(t, err)
 	call(t, path, "complete-publication", 1) // Inspector still holds the lock.
 	must(t, w.Close())
-	call(t, path, "complete-publication", 0)
+	if got := call(t, path, "complete-publication", 0); got != "witness publication completed\n" {
+		t.Errorf("complete-publication: %q", got)
+	}
 	call(t, path, "complete-publication", 1)
 	got, err := os.ReadFile(journal)
 	must(t, err)
@@ -168,5 +172,31 @@ func TestWitnessAttendedEnrollment(t *testing.T) {
 	must(t, err)
 	if v.Current.Status != cp.Retired {
 		t.Fatal("missing retirement tombstone")
+	}
+}
+
+func TestWitnessRecoveryGuide(t *testing.T) {
+	data, err := os.ReadFile("../../docs/authority-host-witness.md")
+	must(t, err)
+	_, recovery, ok := strings.Cut(string(data), "## Storage error and interrupted publication")
+	if !ok {
+		t.Fatal("missing storage recovery procedure")
+	}
+	recovery, backup, ok := strings.Cut(recovery, "## Backup, restore and rollback")
+	if !ok {
+		t.Fatal("missing backup procedure")
+	}
+	for _, step := range []string{"ah-switch status", "ah-switch recover", "ah-switch inhibit-clear --asked", "decisions: not inhibited", "WITNESS acknowledge --config CONFIG"} {
+		var found bool
+		_, recovery, found = strings.Cut(recovery, step)
+		if !found {
+			t.Errorf("missing or out-of-order recovery step %q", step)
+			break
+		}
+	}
+	for _, term := range []string{"signing seed separately", "offline custody", "higher externally"} {
+		if !strings.Contains(backup, term) {
+			t.Errorf("missing backup safeguard %q", term)
+		}
 	}
 }

@@ -33,8 +33,9 @@ func fixture(t *testing.T) (config, string) {
 	c := config{Identity: durable.Identity{Witness: "witness", Store: "directory", Incarnation: "first", Epoch: 7},
 		Slot:  cp.Slot{Witness: "witness", Authority: "authority", Store: "ledger"},
 		State: filepath.Join(dir, "state"), Seed: filepath.Join(dir, "seed"), Guard: filepath.Join(dir, "guard"),
-		Socket: filepath.Join(dir, "admin.sock"), ServiceTLS: filepath.Join(dir, "tls"), OwnerTLS: filepath.Join(dir, "owner"),
+		Socket: filepath.Join(dir, "run", "admin.sock"), ServiceTLS: filepath.Join(dir, "tls"), OwnerTLS: filepath.Join(dir, "owner"),
 		Home: "192.0.2.4:7443", HomePin: strings.Repeat("a", 64)}
+	must(t, os.Mkdir(filepath.Dir(c.Socket), 0700))
 	must(t, os.Mkdir(c.State, 0700))
 	must(t, os.Mkdir(c.Guard, 0755))
 	service, err := seatgate.WriteIdentityFiles(c.ServiceTLS, "witness")
@@ -62,7 +63,7 @@ func writeConfig(t *testing.T, path string, c config) {
 func call(t *testing.T, path, op string, want int) string {
 	t.Helper()
 	var b bytes.Buffer
-	if code := run(t.Context(), []string{op, "--config", path}, &b, &b); code != want {
+	if code := run(t.Context(), filepath.Dir(path), []string{op, "--config", path}, &b, &b); code != want {
 		t.Fatalf("%s: exit %d, %s", op, code, &b)
 	}
 	return b.String()
@@ -107,12 +108,13 @@ func TestWitnessRefusesUnsafeInputs(t *testing.T) {
 			t.Fatal("diagnostic exposed input")
 		}
 	}
+	originalSocket := c.Socket
 	c.Socket = "tcp://192.0.2.5:80"
 	writeConfig(t, path, c)
 	for _, op := range []string{"status", "acknowledge", "run"} {
 		call(t, path, op, 1)
 	}
-	c.Socket = filepath.Join(c.State, "sock")
+	c.Socket = originalSocket
 	writeConfig(t, path, c)
 	must(t, os.Chmod(c.State, 0750))
 	call(t, path, "init", 1)
@@ -203,13 +205,114 @@ func TestWitnessHomeFirewallEndpoint(t *testing.T) {
 		writeConfig(t, path, c)
 		call(t, path, "check", 0)
 	}
-	for _, addr := range []string{"*:7443", ":7443", "0.0.0.0:7443", "[::]:7443", "[::ffff:0.0.0.0]:7443",
+	for _, addr := range []string{"192.0.2.5:07443", "192.000.2.5:7443", "[2001:0db8::5]:7443", "[::ffff:192.0.2.4]:7443",
+		"255.255.255.255:7443", "0.1.2.3:7443", "127.0.0.1:7443", "[::1]:7443", "169.254.1.2:7443", "[fe80::1]:7443", "224.0.0.1:7443", "[ff02::1]:7443", "*:7443", ":7443", "0.0.0.0:7443", "[::]:7443", "[::ffff:0.0.0.0]:7443",
 		"HOME:7443", "192.0.2.5:https", "192.0.2.5:0", "192.0.2.5:65536", "192.0.2.0/24:7443", "[2001:db8::5%if]:7443"} {
 		c.Home = addr
 		writeConfig(t, path, c)
 		for _, op := range []string{"check", "run"} {
 			if got := call(t, path, op, 1); got != "invalid witness configuration\n" {
 				t.Fatalf("%q: %s", addr, got)
+			}
+		}
+	}
+}
+
+func TestWitnessCheckEgress(t *testing.T) {
+	c, configPath := fixture(t)
+	call(t, configPath, "init", 0)
+	dir := filepath.Join(filepath.Dir(configPath), "etc/systemd/system/ataniq-witness.service.d")
+	must(t, os.MkdirAll(dir, 0755))
+	rule := filepath.Join(dir, "egress.conf")
+	must(t, os.WriteFile(rule, []byte("[Service]\nIPAddressAllow=192.0.2.4/32\n"), 0644))
+	call(t, configPath, "check", 0)
+	c.Home = "192.0.2.5:7443"
+	writeConfig(t, configPath, c)
+	for _, op := range []string{"check", "run"} {
+		if got := call(t, configPath, op, 1); got != "invalid witness egress drop-in\n" {
+			t.Fatal(got)
+		}
+	}
+}
+
+func TestWitnessOwnerSocketPreflight(t *testing.T) {
+	c, path := fixture(t)
+	call(t, path, "init", 0)
+	for _, tc := range []struct{ name, socket string }{
+		{"occupied", c.Socket}, {"missing parent", filepath.Join(filepath.Dir(c.Socket), "missing", "socket")},
+		{"overlong", filepath.Join(filepath.Dir(c.Socket), strings.Repeat("x", 108))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := c
+			s.Socket = tc.socket
+			if tc.name == "occupied" {
+				must(t, os.WriteFile(s.Socket, nil, 0600))
+			}
+			writeConfig(t, path, s)
+			for _, op := range []string{"check", "run", "recover"} {
+				if got := call(t, path, op, 1); got != "owner socket already present or unusable\n" {
+					t.Fatal(got)
+				}
+			}
+		})
+	}
+}
+
+func TestWitnessStaleOwnerSocket(t *testing.T) {
+	c, path := fixture(t)
+	call(t, path, "init", 0)
+	l := privateListener(t, c.Socket)
+	l.SetUnlinkOnClose(false)
+	must(t, l.Close())
+	if got := call(t, path, "check", 1); got != "owner socket already present or unusable\n" {
+		t.Fatal(got)
+	}
+	if _, err := os.Lstat(c.Socket); err != nil {
+		t.Fatal("check removed the socket", err)
+	}
+}
+
+func TestWitnessOverlappingPaths(t *testing.T) {
+	c, p := fixture(t)
+	for _, tc := range []struct {
+		name   string
+		change func(*config)
+	}{
+		{"socket in state", func(x *config) { x.Socket = filepath.Join(x.State, "s") }},
+		{"guard in state", func(x *config) { x.Guard = filepath.Join(x.State, "g") }},
+		{"guard equals state", func(x *config) { x.Guard = x.State }},
+		{"seed in state", func(x *config) { x.Seed = filepath.Join(x.State, "seed") }},
+		{"owner below service TLS", func(x *config) { x.OwnerTLS = filepath.Join(x.ServiceTLS, "owner") }},
+		{"service below owner TLS", func(x *config) { x.ServiceTLS = filepath.Join(x.OwnerTLS, "service") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			x := c
+			tc.change(&x)
+			writeConfig(t, p, x)
+			_, _, err := loadConfig(p)
+			if !errors.Is(err, errConfig) {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestWitnessIdentityCharacters(t *testing.T) {
+	c, p := fixture(t)
+	for _, value := range []string{"space ~", "nul\x00", "tab\t", "line\n", "del\x7f", "é"} {
+		for _, set := range []func(*config, string){
+			func(x *config, s string) { x.Identity.Witness = s; x.Slot.Witness = s },
+			func(x *config, s string) { x.Identity.Store = s },
+			func(x *config, s string) { x.Identity.Incarnation = s },
+			func(x *config, s string) { x.Slot.Authority = s },
+			func(x *config, s string) { x.Slot.Store = s },
+		} {
+			x := c
+			set(&x, value)
+			writeConfig(t, p, x)
+			_, _, err := loadConfig(p)
+			if (err == nil) != (value == "space ~") {
+				t.Errorf("%q: %v", value, err)
 			}
 		}
 	}

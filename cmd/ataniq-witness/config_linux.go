@@ -6,13 +6,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
 	"ataniq/internal/assignment"
+	"ataniq/internal/authorityhost/noaicheck"
 	cp "ataniq/internal/checkpoint"
 	"ataniq/internal/checkpoint/durable"
 	"ataniq/internal/checkpoint/link"
@@ -38,6 +38,8 @@ type config struct {
 }
 
 var (
+	errSocket   = errors.New("owner socket already present or unusable")
+	errEgress   = errors.New("invalid witness egress drop-in")
 	errConfig   = errors.New("invalid witness configuration")
 	errFiles    = errors.New("unsafe or missing witness file or directory")
 	errIdentity = errors.New("witness identity or pin mismatch")
@@ -137,8 +139,25 @@ func loadConfig(path string) (config, durable.Config, error) {
 		if len(v) == 0 || len(v) > assignment.MaxReferenceBytes {
 			return c, store, errConfig
 		}
+		for _, ch := range v {
+			if ch < ' ' || ch > '~' {
+				return c, store, errConfig
+			}
+		}
 	}
-	if c.Slot.Witness != c.Identity.Witness || c.Identity.Epoch == 0 || c.ServiceTLS == c.OwnerTLS {
+	// Each storage, key, guard and runtime location has a separate owner or lifecycle.
+	paths := []string{c.State, c.Seed, c.Guard, filepath.Dir(c.Socket), c.ServiceTLS, c.OwnerTLS}
+	for i, p := range paths {
+		if p == "/" {
+			return c, store, errConfig
+		}
+		for _, other := range paths[:i] {
+			if p == other || strings.HasPrefix(other, p+"/") || strings.HasPrefix(p, other+"/") {
+				return c, store, errConfig
+			}
+		}
+	}
+	if c.Slot.Witness != c.Identity.Witness || c.Identity.Epoch == 0 {
 		return c, store, errConfig
 	}
 	for _, p := range []string{c.ServicePin, c.OwnerPin, c.HomePin, c.SigningKey, c.HomeKey} {
@@ -150,8 +169,7 @@ func loadConfig(path string) (config, durable.Config, error) {
 		return c, store, errConfig
 	}
 	// Use the same single numeric destination as the account's firewall rule.
-	home, err := netip.ParseAddrPort(c.Home)
-	if err != nil || home.Port() == 0 || home.Addr().Unmap().IsUnspecified() || home.Addr().IsMulticast() || home.Addr().Zone() != "" {
+	if _, ok := noaicheck.WitnessHomeAddress(c.Home); !ok {
 		return c, store, errConfig
 	}
 	store = durable.Config{Identity: c.Identity, Directory: c.State, KeyPath: c.Seed}
@@ -229,6 +247,27 @@ func checkState(path string) error {
 		if err != nil || st.Size() == 0 {
 			return errFiles
 		}
+	}
+	return nil
+}
+
+// checkSocket verifies the conditions visible without binding or unlinking.
+func checkSocket(path string) error {
+	if len(path) >= len(unix.RawSockaddrUnix{}.Path) {
+		return errSocket
+	}
+	dir, err := directory(filepath.Dir(path), true)
+	if err != nil {
+		return errSocket
+	}
+	defer dir.Close()
+	fd := int(dir.Fd())
+	if unix.Faccessat(fd, ".", unix.W_OK|unix.X_OK, unix.AT_EACCESS) != nil {
+		return errSocket
+	}
+	var st unix.Stat_t
+	if err := unix.Fstatat(fd, filepath.Base(path), &st, unix.AT_SYMLINK_NOFOLLOW); !errors.Is(err, unix.ENOENT) {
+		return errSocket
 	}
 	return nil
 }

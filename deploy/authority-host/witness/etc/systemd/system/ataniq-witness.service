@@ -1,15 +1,33 @@
-# The switch starts this decision service under its inhibit.
+# ataniq-witness.service serves the owner socket and polls the configured home.
+# Link the release unit once as local root:
+# ln -s /opt/authority-host/current/etc/systemd/system/ataniq-witness.service /etc/systemd/system/ataniq-witness.service
+# No [Install] section. Leave the unit disabled. The switch starts it under
+# its decision inhibit and checks signed local status after restart.
+#
+# Owner-local provision (docs/authority-host-witness.md):
+#   /etc/authority-host/witness/config.json   root:ataniq-witness 0640
+#   /var/lib/ataniq-witness/store             ataniq-witness 0700
+#   /var/lib/ataniq-witness/seed              ataniq-witness 0600
+#   /var/lib/ataniq-witness/tls               ataniq-witness 0700, key 0600
+#   /etc/authority-host/witness/owner-tls     root 0700, key 0600
+#   /run/ataniq-witness                       ataniq-witness 0700
+#   /etc/systemd/system/ataniq-witness.service.d/egress.conf
+#       root-owned, readable by the service, single IPAddressAllow for home
+# Without the drop-in the witness has no IP connectivity. Local status can
+# still pass health. The host no-AI check reports the missing drop-in.
 [Unit]
 Description=Authority host checkpoint witness
 After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=exec
 User=ataniq-witness
 Group=ataniq-witness
-ExecStartPre={release}/bin/ataniq-witness check --config /etc/authority-host/witness/config.json
 ExecStart={release}/bin/ataniq-witness run --config /etc/authority-host/witness/config.json
 Restart=on-failure
+RestartPreventExitStatus=1
 RestartSec=5s
 RuntimeDirectory=ataniq-witness
 RuntimeDirectoryMode=0700
@@ -17,7 +35,8 @@ StateDirectory=ataniq-witness
 StateDirectoryMode=0700
 UMask=0077
 
-# The owner's drop-in allows the home address. nftables restricts the port.
+# IPAddressAllow grants the home address on every port. Only the owner's
+# nftables output rules restrict the witness to the configured TCP port.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 IPAddressDeny=any
 SocketBindDeny=any

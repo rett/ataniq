@@ -7,19 +7,23 @@ separate files under protected directories.
 
 | Command | Account | Result |
 | --- | --- | --- |
-| `init` | Witness service | Creates signed genesis in a pre-provisioned, service-owned 0700 directory. Refuses an existing or interrupted store. |
+| `init` | Witness service | Creates signed genesis in a pre-provisioned, service-owned 0700 directory. Prints `witness store initialized` on success. Refuses an existing or interrupted store. |
 | `check` | Witness service | Checks local configuration, signing and TLS identity, and published file modes without opening the journal for replay. Prints one line and exits. |
 | `run` | Witness service | Opens and re-proves the store, grants the configured home access to one slot, polls outbound and serves the owner socket. |
 | `status` | Local root | Verifies a fresh signed status and prints the epoch, directory sequence, predecessor digest, counts and inhibition reason. |
 | `acknowledge` | Local root | Sends a pinned, epoch-bound acknowledgement over the owner socket. |
 | `recover` | Witness service, under owner control | Re-proves storage and serves only the owner socket with decisions inhibited. |
-| `complete-publication` | Witness service, offline | Finishes publication of one unambiguous staged signed genesis pair. |
+| `complete-publication` | Witness service, offline | Finishes publication of one unambiguous staged signed genesis pair and prints `witness publication completed`. |
 
 Exit 0 indicates success, 1 refusal and 2 incorrect usage. A verified status
 reporting storage failure, an unclean end or interrupted publication also exits
 1. The switch's ordinary decision inhibit allows status to succeed. Local
 root needs its own pinned TLS key to administer the witness. The socket's
-parent must be a service-owned 0700 directory.
+parent must be a service-owned 0700 directory. Keep that directory, state,
+seed, guard and both TLS directories at disjoint paths. Before startup,
+`check` verifies the socket path fits in 107 bytes, its private parent is
+writable and the name is free. It leaves the socket untouched. A bind can
+still fail at startup. Both cases report `owner socket already present or unusable`.
 
 Build the witness for Linux with the release toolchain. On the development
 host, compose the base, seat and notifier release trees as described in
@@ -27,7 +31,12 @@ the authority-host README, then copy `deploy/authority-host/witness/.` over the
 result before filling the baseline. Add `--bin build/authority-host/ataniq-witness`
 to the release build and check the resulting release. The switch uses the
 witness's read-only preflight at startup and a challenged local status after
-restart. The witness needs no additional enabled unit, port or package.
+restart. The main process performs preflight before opening the store. A refusal
+(exit 1), including a bad configuration, unsafe files, a pin mismatch or a
+poisoned store, leaves the service failed. Other failures eligible for restart
+are limited to five starts in 300 seconds. After repairing the cause, perform
+any required storage recovery, then run `systemctl reset-failed ataniq-witness.service`
+and `systemctl restart ataniq-witness.service` by hand. The witness needs no additional enabled unit, port or package.
 
 ## Firewall and home listener
 
@@ -52,7 +61,13 @@ IPAddressAllow=HOME_ADDRESS
 ```
 
 Configure `home_endpoint` as that literal address and decimal port, bracketing
-IPv6. Both `check` and `run` validate it locally. The owner verifies the live
+IPv6. Use the canonical address spelling and decimal port without leading
+zeros. Use a unicast destination outside loopback and link-local space.
+IPv4-mapped IPv6 addresses and zones are refused. Only the firewall restricts
+the TCP port. The host no-AI check and witness `check` read the owner’s unit
+drop-ins and compare their single `IPAddressAllow` to the configured address.
+After reload, inspect `systemctl show ataniq-witness.service -p IPAddressAllow`
+to confirm the effective setting. The owner verifies the live
 rules, their order and counters, then records the reviewed ruleset digest
 with the release baseline. No DNS allowance is needed.
 
@@ -117,7 +132,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 sh scripts/go-tool.sh build -trimpath -o b
 Replace the uppercase values locally. The five public-key and fingerprint
 values each use 64 lowercase hex digits. The witness directory identity
 and the home ledger slot have separate store identifiers. The witness name
-is shared. Encode the nonzero activation epoch as a decimal string.
+is shared. Use nonempty printable ASCII (space through tilde) for witness,
+store, incarnation and authority identifiers. Encode the nonzero activation epoch as a decimal string.
 
 ```json
 {
@@ -152,6 +168,8 @@ is shared. Encode the nonzero activation epoch as a decimal string.
 Use a verified copy of the candidate release's executable for these first
 two calls, before switching `current`. In the examples, `WITNESS` stands for
 its absolute path, and `CONFIG` for `/etc/authority-host/witness/config.json`.
+Before running `check` by hand, create `/run/ataniq-witness` owned by the
+witness account with mode 0700. Systemd creates it on subsequent unit starts.
 
 ```sh
 runuser -u ataniq-witness -- WITNESS init --config CONFIG
@@ -168,7 +186,9 @@ Activate the signed release with the existing switch procedure. Leave the
 unit disabled in systemd. The switch's validator checks the unit and its
 link, then its reload list starts the unit under the decision inhibit.
 The health command verifies signed local status even if the home is
-offline. Once the first switch succeeds, add
+offline. Without the egress drop-in the service can pass this local health
+check while the unit denies all IP traffic. The host no-AI check reports
+`NOTE witness egress drop-in missing: home unreachable`. Once the first switch succeeds, add
 `systemctl stop ataniq-witness.service` to the host emergency stop list
 `/etc/authority-host/stop.list`, retaining the other decision services.
 Verify the effective account and restrictions, the output filter and the
@@ -226,10 +246,21 @@ request ID to bypass an unresolved mutation.
 
 3. From a second local root terminal, run `WITNESS status --config CONFIG`.
    Compare its verified head, reason and counts with the independent record.
-   After repairing storage and reconciling evidence, the owner may run
-   `WITNESS acknowledge --config CONFIG`, then request fresh status. The
-   switch guard must allow the acknowledgement. Keep the home suspended
-   independently during this step and let the switch manage its guard.
+   After repairing storage and reconciling evidence, keep home admission
+   independently suspended. In the owner's root session run `ah-switch status`.
+   If a transaction is open, including a journal held in the inhibit, end the
+   attended witness process before running `ah-switch recover`. Recovery can
+   reload services. Follow the switch's recovery procedure until the transaction
+   settles, inspect the outcome, then re-establish attended witness recovery
+   with the regular unit stopped.
+
+   A healthy switched release normally has its guard cleared by the switch.
+   If a plain inhibit remains, first verify the active release and that it is
+   safe for **all** decision services to resume. With no open transaction, the
+   owner can run `ah-switch inhibit-clear --asked "WORDS"`, recording what was
+   checked. Never remove `decisions.inhibit` by hand. Confirm `ah-switch status`
+   reports `decisions: not inhibited` before running
+   `WITNESS acknowledge --config CONFIG`, then request fresh signed status.
    A lost acknowledgement reply requires a fresh status read before deciding
    to retry. Recovery mode remains service-inhibited after acknowledgement.
    End the recovery process cleanly, start the verified unit and check status
@@ -246,15 +277,19 @@ request ID to bypass an unresolved mutation.
 
 ## Backup, restore and rollback
 
-Take a consistent backup while the service is stopped, including the complete
-store and the protected identity material. Retain verification keys and
+Stop the service and back up the complete store, including hidden files.
+Back up the signing seed separately, encrypted and in the owner's offline custody.
+Keep private TLS keys out of the store backup as well. Retain verification keys and
 owner-signed activation records outside that backup. Keep signed receipts
 and challenged sequence/digest observations outside the witness after each
 accepted pilot transition. A status line is a verified summary. Retain the
 actual signed receipts when independently verifiable evidence is needed.
 
 After a known restore, isolate all copies of the signer and store, keep
-managed admission closed, and inspect through `recover`. A directory lock
+managed admission closed, and fence the old identity before using any key
+to inspect the evidence through attended `recover`. Never reactivate the old
+seed beside a live instance. Returning a restored store to service requires
+a fresh identity and a higher externally recorded epoch. A directory lock
 and key-file lock protect only those particular filesystem objects. A copied
 directory and copied key can sign conflicting histories. Replay detects a
 journal suffix missing from just one file. Matching truncation of **both**
@@ -279,7 +314,8 @@ pins, epoch and signed status before resuming admission. Back to a release
 without the witness, confirm it is stopped and remove its line from the
 host emergency stop list once the unit link dangles. Retain the other
 services' stop commands. Preserve witness state and keep dependent homes
-suspended until an appropriate release is active again.
+suspended until an appropriate release is active again. The no-AI listener
+check continues to check the witness account after its unit link is removed.
 
 ## Retire and enroll a replacement
 
