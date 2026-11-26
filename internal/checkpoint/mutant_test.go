@@ -36,13 +36,13 @@ func rejectMutant(t *testing.T, scenario, diagnostic string, mutate func(*checkp
 
 func TestReplacementRetryMutant(t *testing.T) {
 	rejectMutant(t, "replacement_retry", "got <nil>, want checkpoint: stale", func(h *checkpointtest.Harness) {
-		saved := map[cp.ID]cp.Receipt{}
+		saved := map[cp.Advance]cp.Receipt{}
 		wrapConnect(h, func(c cp.Client) cp.Client {
 			return adapterClient{c, func(ctx context.Context, q cp.Advance) (cp.Receipt, error) {
 				r, err := c.Advance(ctx, q)
 				if err == nil {
-					saved[q.ID] = r
-				} else if prior, ok := saved[q.ID]; ok && errors.Is(err, cp.ErrStale) {
+					saved[q] = r
+				} else if prior, ok := saved[q]; ok && errors.Is(err, cp.ErrStale) {
 					return prior, nil
 				}
 				return r, err
@@ -106,8 +106,7 @@ func TestOwnerCASMutant(t *testing.T) {
 	for _, op := range []string{"release", "retire"} {
 		t.Run(op, func(t *testing.T) {
 			rejectMutant(t, "stale_owner_"+op, "got <nil>, want checkpoint: stale", func(h *checkpointtest.Harness) {
-				var reader cp.Client
-				wrapConnect(h, func(c cp.Client) cp.Client { reader = c; return c })
+				reader := h.Admin
 				a := ownerAdapter{Administration: h.Admin}
 				current := func(ctx context.Context, s cp.Slot) cp.State {
 					v, err := reader.Read(ctx, cp.ReadRequest{Slot: s, Challenge: cp.ID{1}})
@@ -226,7 +225,7 @@ func TestUncheckedReceiptMutant(t *testing.T) {
 				wrapConnect(h, func(c cp.Client) cp.Client {
 					return adapterClient{c, func(ctx context.Context, q cp.Advance) (cp.Receipt, error) {
 						r, err := c.Advance(ctx, q)
-						if errors.Is(err, cp.ErrUnknownOutcome) {
+						if delivered.Body != nil && errors.Is(err, cp.ErrUnknownOutcome) {
 							return delivered, nil
 						}
 						return r, err

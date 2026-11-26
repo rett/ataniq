@@ -241,7 +241,7 @@ func TestRejectMalformedSignedRecords(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := ParseIntent("advance", "", edit(b)); err != ErrRefused {
+			if _, err := ParseIntent("advance", "", edit(b)); !errors.Is(err, ErrRefused) {
 				t.Fatal(err)
 			}
 		})
@@ -250,11 +250,11 @@ func TestRejectMalformedSignedRecords(t *testing.T) {
 		v := vs[name]
 		r := Receipt{v.Body, []byte(v.Signatures["witness"])}
 		for _, bad := range [][]byte{append(bytes.Clone(r.Signature), '='), append(bytes.Clone(r.Signature), '\n'), []byte("wrong")} {
-			if _, err := VerifyReceipt(public(fixtureKey("witness")), Receipt{r.Body, bad}); err != ErrRefused {
+			if _, err := VerifyReceipt(public(fixtureKey("witness")), Receipt{r.Body, bad}); !errors.Is(err, ErrRefused) {
 				t.Fatal(name, "signature encoding")
 			}
 		}
-		if _, err := VerifyReceipt(public(fixtureKey("home")), r); err != ErrRefused {
+		if _, err := VerifyReceipt(public(fixtureKey("home")), r); !errors.Is(err, ErrRefused) {
 			t.Fatal("wrong witness pin")
 		}
 	}
@@ -284,7 +284,7 @@ func TestCounterExhaustion(t *testing.T) {
 				next.Digest = idString(fixtureID("next"))
 				_, err = f.c.Advance(ctx, Advance{Mutation{fixtureID("advance"), e.state}, next})
 			}
-			if err != ErrStale {
+			if !errors.Is(err, ErrStale) {
 				t.Fatal("wrapped", field, err)
 			}
 		})
@@ -318,7 +318,7 @@ func TestWitnessChecksBothSignaturesAndOperation(t *testing.T) {
 		{"advance", advance.Body, hs, nil},
 		{"advance", claim.Body, []byte(claim.Signatures["home"]), []byte(claim.Signatures["session"])},
 	} {
-		if _, err := accept(ctx, tc.op, tc.body, tc.home, tc.session); err != ErrRefused {
+		if _, err := accept(ctx, tc.op, tc.body, tc.home, tc.session); !errors.Is(err, ErrRefused) {
 			t.Fatal("invalid proof accepted", tc.op, err)
 		}
 	}

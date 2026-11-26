@@ -89,6 +89,14 @@ func want(t *testing.T, err, errorValue error) {
 		t.Fatalf("got %v, want %v", err, errorValue)
 	}
 }
+func wantReason(t *testing.T, err, category error, kind cp.ReasonKind) {
+	t.Helper()
+	want(t, err, category)
+	var r *cp.Reason
+	if !errors.As(err, &r) || r.Kind != kind {
+		t.Fatalf("got %v, want reason %s", err, kind)
+	}
+}
 func same(a, b cp.Receipt) bool {
 	return bytes.Equal(a.Body, b.Body) && bytes.Equal(a.Signature, b.Signature)
 }
@@ -159,6 +167,34 @@ func Run(t *testing.T, newWitness Factory) {
 			t.Run("lying "+op+" "+field, func(t *testing.T) { lyingReply(t, newWitness, op, field) })
 		}
 	}
+	t.Run("owner read after revocation", func(t *testing.T) {
+		f := start(t, newWitness)
+		h := f.home(t, "west", "s", "one", true)
+		s := f.claim(t, h, f.enroll(t, h), "claim")
+		f.Revoke(h.slot)
+		q := cp.ReadRequest{Slot: h.slot, Challenge: id("owner"), ReceiptID: h.e.ID}
+		v, err := f.Admin.Read(f.ctx, q)
+		check(t, err)
+		check(t, cp.VerifyView(f.pin, q, v))
+		if v.Current != s || v.Prior == nil {
+			t.Fatal("owner could not form Expected")
+		}
+		_, err = f.Admin.Release(f.ctx, mutation(v.Current, "release"))
+		check(t, err)
+		q.Challenge = id("released")
+		v, err = f.Admin.Read(f.ctx, q)
+		check(t, err)
+		check(t, cp.VerifyView(f.pin, q, v))
+		_, err = f.Admin.Retire(f.ctx, cp.Retirement{Mutation: mutation(v.Current, "retire"), DispositionDigest: digest("d")})
+		check(t, err)
+		q.Challenge = id("tombstone")
+		v, err = f.Admin.Read(f.ctx, q)
+		check(t, err)
+		check(t, cp.VerifyView(f.pin, q, v))
+		if v.Current.Status != cp.Retired || v.Current.Head != s.Head || v.Prior == nil {
+			t.Fatal("owner lost retired evidence")
+		}
+	})
 	t.Run("enrollment", func(t *testing.T) {
 		f := start(t, newWitness)
 		h := f.home(t, "west", "shared", "one", true)
@@ -250,7 +286,7 @@ func Run(t *testing.T, newWitness Factory) {
 		_, err = a.c.Advance(f.ctx, advance(sa, "revoked"))
 		want(t, err, cp.ErrRefused)
 		_, err = a.c.Read(f.ctx, cp.ReadRequest{Slot: a.slot, Challenge: id("revoked")})
-		want(t, err, cp.ErrRefused)
+		wantReason(t, err, cp.ErrRefused, cp.Unauthorized)
 		_, err = f.Admin.Retire(f.ctx, cp.Retirement{Mutation: mutation(sa, "lost key"), DispositionDigest: digest("fenced")})
 		check(t, err)
 		if f.state(t, b, "still online").Head.Sequence != 1 {
@@ -545,7 +581,7 @@ func recovery(t *testing.T, f fixture) {
 	conflict := q
 	conflict.Next.Digest = digest("conflict")
 	_, err = h.c.Advance(f.ctx, conflict)
-	want(t, err, cp.ErrStale)
+	wantReason(t, err, cp.ErrStale, cp.MutationConflict)
 	conflict.ID = id("divergence")
 	_, err = h.c.Advance(f.ctx, conflict)
 	want(t, err, cp.ErrStale)

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-
 	"math"
 	"slices"
 	"sync"
@@ -46,7 +45,7 @@ type Memory struct {
 
 func NewMemory(witness string, epoch uint64, key ed25519.PrivateKey) (*Memory, error) {
 	if !textOK(witness) || epoch == 0 || !validPrivate(key) {
-		return nil, ErrRefused
+		return nil, &Reason{Kind: InvalidRequest}
 	}
 	id, err := KeyID(key.Public().(ed25519.PublicKey))
 	if err != nil {
@@ -60,7 +59,7 @@ func NewMemory(witness string, epoch uint64, key ed25519.PrivateKey) (*Memory, e
 func (w *Memory) Grant(slot Slot, pin ed25519.PublicKey, write bool) error {
 	id, err := KeyID(pin)
 	if err != nil || id == w.keyID || !slot.valid() || slot.Witness != w.witness {
-		return ErrRefused
+		return &Reason{Kind: InvalidRequest}
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -117,7 +116,7 @@ type client struct {
 // Both ends of a claim require three independently held key roles.
 func checkSessionRole(session, home, witness ed25519.PublicKey) error {
 	if bytes.Equal(session, home) || bytes.Equal(session, witness) {
-		return ErrRefused
+		return &Reason{Kind: KeyRoleConflict}
 	}
 	return nil
 }
@@ -125,15 +124,17 @@ func checkSessionRole(session, home, witness ed25519.PublicKey) error {
 // Connect creates an authenticated handle scoped to one home and process
 // session. Mutations and reads recheck the live grant under the witness lock.
 func (w *Memory) Connect(slot Slot, home, session ed25519.PrivateKey, witnessPin ed25519.PublicKey) (Client, error) {
-	if !validPrivate(home) || !validPrivate(session) ||
-		!bytes.Equal(witnessPin, w.key.Public().(ed25519.PublicKey)) {
-		return nil, ErrRefused
+	if !bytes.Equal(witnessPin, w.key.Public().(ed25519.PublicKey)) {
+		return nil, &Reason{Kind: Unauthorized}
+	}
+	if !validPrivate(home) || !validPrivate(session) {
+		return nil, &Reason{Kind: InvalidRequest}
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	g, ok := w.grants[slot]
 	if !ok || !bytes.Equal(home.Public().(ed25519.PublicKey), g.key) {
-		return nil, ErrRefused
+		return nil, &Reason{Kind: Unauthorized}
 	}
 	if err := checkSessionRole(session.Public().(ed25519.PublicKey), g.key, witnessPin); err != nil {
 		return nil, err
@@ -155,9 +156,14 @@ func (w *Memory) available(ctx context.Context) error {
 func (w *Memory) authorized(slot Slot, home ed25519.PublicKey, write bool) (*enrollment, error) {
 	g, ok := w.grants[slot]
 	e := w.slots[slot]
-	if !ok || e == nil || write && !g.write ||
-		!bytes.Equal(g.key, e.home) || !bytes.Equal(g.key, home) {
-		return nil, ErrRefused
+	if !ok || write && !g.write || !bytes.Equal(g.key, home) {
+		return nil, &Reason{Kind: Unauthorized}
+	}
+	if e == nil {
+		return nil, &Reason{Kind: NotEnrolled}
+	}
+	if !bytes.Equal(g.key, e.home) {
+		return nil, &Reason{Kind: Unauthorized}
 	}
 	if write && e.state.Status == Retired {
 		return nil, ErrRetired
@@ -173,12 +179,34 @@ func (c *client) Read(ctx context.Context, q ReadRequest) (View, error) {
 		return View{}, ErrUnavailable
 	}
 	if q.Slot != c.slot {
-		return View{}, ErrRefused
+		return View{}, &Reason{Kind: Unauthorized}
 	}
 	e, err := w.authorized(q.Slot, c.home.Public().(ed25519.PublicKey), false)
 	if err != nil {
 		return View{}, err
 	}
+	return w.read(q, e, c.witnessPin)
+}
+
+func (a admin) Read(ctx context.Context, q ReadRequest) (View, error) {
+	w := a.w
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if ctx.Err() != nil {
+		return View{}, ErrUnavailable
+	}
+	if !q.Slot.valid() || q.Slot.Witness != w.witness || q.Challenge == (ID{}) {
+		return View{}, &Reason{Kind: InvalidRequest}
+	}
+	e := w.slots[q.Slot]
+	if e == nil {
+		return View{}, &Reason{Kind: NotEnrolled}
+	}
+	return w.read(q, e, w.key.Public().(ed25519.PublicKey))
+}
+
+// read snapshots both ends of the challenged view under the witness lock.
+func (w *Memory) read(q ReadRequest, e *enrollment, pin ed25519.PublicKey) (View, error) {
 	// Current comes from the live slot even when Prior names an older head.
 	v := View{Current: e.state}
 	if history, ok := e.history[q.ReceiptID]; ok {
@@ -198,7 +226,7 @@ func (c *client) Read(ctx context.Context, q ReadRequest) (View, error) {
 		return View{}, err
 	}
 	v.Fresh = Receipt{b, sig}
-	if err := verifyView(c.witnessPin, w.keyID, q, v); err == ErrUnavailable {
+	if err := verifyView(pin, w.keyID, q, v); err == ErrUnavailable {
 		return v, err
 	} else if err != nil {
 		return View{}, err
@@ -211,8 +239,11 @@ func (e *enrollment) retry(id ID, b []byte) (Receipt, bool, error) {
 	if !ok {
 		return Receipt{}, false, nil
 	}
-	if !bytes.Equal(saved.request, b) || ReceiptDigest(saved.receipt) != e.state.LastReceiptDigest {
-		return Receipt{}, true, ErrStale
+	if !bytes.Equal(saved.request, b) {
+		return Receipt{}, true, &Reason{Kind: MutationConflict}
+	}
+	if ReceiptDigest(saved.receipt) != e.state.LastReceiptDigest {
+		return Receipt{}, true, &Reason{Kind: Superseded}
 	}
 	return cloneReceipt(saved.receipt), true, nil
 }
@@ -256,11 +287,14 @@ func (a admin) Enroll(ctx context.Context, q Enrollment) (Receipt, error) {
 	defer w.mu.Unlock()
 	g, ok := w.grants[q.Slot]
 	if !ok || !bytes.Equal(g.key, q.HomePublicKey) {
-		return Receipt{}, ErrRefused
+		return Receipt{}, &Reason{Kind: Unauthorized}
 	}
 	b, err := enrollmentBody(q, g.keyID)
-	if err != nil || !homeProfile.verify(g.key, b, q.ProofOfPossession) {
-		return Receipt{}, ErrRefused
+	if err != nil {
+		return Receipt{}, err
+	}
+	if !homeProfile.verify(g.key, b, q.ProofOfPossession) {
+		return Receipt{}, &Reason{Kind: Unauthorized}
 	}
 	old := w.slots[q.Slot]
 	if old != nil {
@@ -275,7 +309,7 @@ func (a admin) Enroll(ctx context.Context, q Enrollment) (Receipt, error) {
 		if old.state.Status == Retired {
 			return Receipt{}, ErrRetired
 		}
-		return Receipt{}, ErrStale
+		return Receipt{}, &Reason{Kind: EnrollmentConflict}
 	}
 	s, err := enrollmentState(q, g.keyID, w.epoch)
 	if err != nil {
@@ -285,7 +319,7 @@ func (a admin) Enroll(ctx context.Context, q Enrollment) (Receipt, error) {
 	for slot, old := range w.slots {
 		if slot.Authority == q.Slot.Authority && (old.state.Status == Active || h.LedgerID == old.state.Header.LedgerID ||
 			h.Incarnation == old.state.Header.Incarnation || h.KeyID == old.state.HomeKeyID) {
-			return Receipt{}, ErrStale
+			return Receipt{}, &Reason{Kind: EnrollmentConflict}
 		}
 	}
 	e := &enrollment{headerBytes: slices.Clone(q.HeaderBytes), home: slices.Clone(g.key), history: make(map[ID]accepted), claimed: make(map[string]bool)}
@@ -294,7 +328,7 @@ func (a admin) Enroll(ctx context.Context, q Enrollment) (Receipt, error) {
 
 func (c *client) Claim(ctx context.Context, q Claim) (Receipt, error) {
 	if !bytes.Equal(q.NewSessionPublicKey, c.session.Public().(ed25519.PublicKey)) {
-		return Receipt{}, ErrRefused
+		return Receipt{}, &Reason{Kind: InvalidRequest}
 	}
 	b, err := q.Body("")
 	if err != nil {
@@ -311,7 +345,7 @@ func (c *client) Advance(ctx context.Context, q Advance) (Receipt, error) {
 }
 func (c *client) mutate(ctx context.Context, op string, m Mutation, b []byte) (Receipt, error) {
 	if m.Expected.Slot != c.slot {
-		return Receipt{}, ErrRefused
+		return Receipt{}, &Reason{Kind: Unauthorized}
 	}
 	homeSig, err := Sign(HomeNamespace, c.home, b)
 	if err != nil {
@@ -349,10 +383,10 @@ func (w *Memory) accept(ctx context.Context, slot Slot, home ed25519.PublicKey, 
 		m = q.Mutation
 		successor = q.Next
 	default:
-		return Receipt{}, ErrRefused
+		return Receipt{}, &Reason{Kind: InvalidRequest}
 	}
 	if m.Expected.Slot != slot {
-		return Receipt{}, ErrRefused
+		return Receipt{}, &Reason{Kind: Unauthorized}
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -380,7 +414,7 @@ func (w *Memory) accept(ctx context.Context, slot Slot, home ed25519.PublicKey, 
 		}
 	}
 	if len(session) == 0 || !homeProfile.verify(e.home, b, homeSig) || !sessionProfile.verify(session, b, sessionSig) {
-		return Receipt{}, ErrRefused
+		return Receipt{}, &Reason{Kind: Unauthorized}
 	}
 	// A past claim or advance cannot return success on a later fence.
 	// Read retains the old receipt.
@@ -393,33 +427,39 @@ func (w *Memory) accept(ctx context.Context, slot Slot, home ed25519.PublicKey, 
 			fence++
 		}
 		if fence != e.state.Fence || e.state.SessionKeyID != sessionID {
-			return Receipt{}, ErrStale
+			return Receipt{}, &Reason{Kind: SessionConflict}
 		}
 		return r, nil
 	}
 	if err := w.available(ctx); err != nil {
 		return Receipt{}, err
 	}
-	if m.Expected != e.state || e.state.Revision == math.MaxUint64 {
-		return Receipt{}, ErrStale
+	if m.Expected != e.state {
+		return Receipt{}, &Reason{Kind: PredecessorMismatch}
+	}
+	if e.state.Revision == math.MaxUint64 {
+		return Receipt{}, &Reason{Kind: CounterExhausted}
 	}
 	s := e.state
 	s.Revision++
 	if op == "claim" {
-		if len(e.session) != 0 || e.claimed[sessionID] || s.Fence == math.MaxUint64 {
-			return Receipt{}, ErrStale
+		if s.Fence == math.MaxUint64 {
+			return Receipt{}, &Reason{Kind: CounterExhausted}
+		}
+		if len(e.session) != 0 || e.claimed[sessionID] {
+			return Receipt{}, &Reason{Kind: SessionConflict}
 		}
 		s.Fence++
 		s.SessionKeyID = sessionID
 	} else {
 		if s.Head.Sequence == math.MaxUint64 {
-			return Receipt{}, ErrStale
+			return Receipt{}, &Reason{Kind: CounterExhausted}
 		}
 		expected := s.Head
 		expected.Sequence++
 		expected.Digest = successor.Digest
 		if expected != successor {
-			return Receipt{}, ErrStale
+			return Receipt{}, &Reason{Kind: InvalidSuccessor}
 		}
 		s.Head = successor
 	}
@@ -437,7 +477,7 @@ func (a admin) end(ctx context.Context, op string, m Mutation, disposition strin
 	defer w.mu.Unlock()
 	e := w.slots[m.Expected.Slot]
 	if e == nil {
-		return Receipt{}, ErrRefused
+		return Receipt{}, &Reason{Kind: NotEnrolled}
 	}
 	b, err := mutationBody(op, w.keyID, m, nil, nil, disposition)
 	if err != nil {
@@ -453,8 +493,14 @@ func (a admin) end(ctx context.Context, op string, m Mutation, disposition strin
 		return Receipt{}, ErrRetired
 	}
 	s := e.state
-	if m.Expected != s || s.Revision == math.MaxUint64 || s.Fence == math.MaxUint64 || op == "release" && len(e.session) == 0 {
-		return Receipt{}, ErrStale
+	if m.Expected != s {
+		return Receipt{}, &Reason{Kind: PredecessorMismatch}
+	}
+	if s.Revision == math.MaxUint64 || s.Fence == math.MaxUint64 {
+		return Receipt{}, &Reason{Kind: CounterExhausted}
+	}
+	if op == "release" && len(e.session) == 0 {
+		return Receipt{}, &Reason{Kind: SessionConflict}
 	}
 	s.Revision++
 	s.Fence++

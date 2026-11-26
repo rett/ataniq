@@ -21,7 +21,7 @@ func ownerCAS(t *testing.T, factory Factory, op string) {
 	} else {
 		_, err = f.Admin.Retire(f.ctx, cp.Retirement{Mutation: m, DispositionDigest: digest("disposed")})
 	}
-	want(t, err, cp.ErrStale)
+	wantReason(t, err, cp.ErrStale, cp.PredecessorMismatch)
 	if f.state(t, h, "after stale decision") != a.State {
 		t.Fatal("owner operation changed the head")
 	}

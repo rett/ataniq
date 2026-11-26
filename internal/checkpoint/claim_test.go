@@ -27,3 +27,19 @@ func TestClaimSessionSeparation(t *testing.T) {
 	}
 	requireOK(t, checkSessionRole(public(f.session), home, witness))
 }
+
+func TestWitnessChecksClaimRolesBeforeAcceptingProofs(t *testing.T) {
+	f := newSetup(t)
+	_, err := f.w.Administration().Enroll(t.Context(), f.e)
+	requireOK(t, err)
+	for _, pin := range [][]byte{public(f.home), public(f.witness)} {
+		q := Claim{Mutation{fixtureID("claim"), f.w.slots[f.e.Slot].state}, pin}
+		body, err := q.Body("")
+		requireOK(t, err)
+		_, err = f.w.accept(t.Context(), f.e.Slot, public(f.home), "claim", body, nil, nil)
+		var reason *Reason
+		if !errors.Is(err, ErrRefused) || !errors.As(err, &reason) || reason.Kind != KeyRoleConflict {
+			t.Fatalf("wrong claim-role result: %v", err)
+		}
+	}
+}

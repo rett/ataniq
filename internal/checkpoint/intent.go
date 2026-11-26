@@ -32,13 +32,13 @@ func (q Claim) Body(_ string) ([]byte, error) {
 func (q Advance) Body(_ string) ([]byte, error) { return AdvanceBody(q) }
 func (q Mutation) Body(witnessKeyID string) ([]byte, error) {
 	if !textOK(witnessKeyID) {
-		return nil, ErrRefused
+		return nil, &Reason{Kind: InvalidRequest}
 	}
 	return mutationBody("release", witnessKeyID, q, nil, nil, "")
 }
 func (q Retirement) Body(witnessKeyID string) ([]byte, error) {
 	if !textOK(witnessKeyID) {
-		return nil, ErrRefused
+		return nil, &Reason{Kind: InvalidRequest}
 	}
 	return mutationBody("retire", witnessKeyID, q.Mutation, nil, nil, q.DispositionDigest)
 }
@@ -49,41 +49,41 @@ func ParseIntent(op, witnessKeyID string, body []byte) (Intent, error) {
 	if op == "enroll" {
 		var r enrollRecord
 		if decode(body, &r) != nil {
-			return nil, ErrRefused
+			return nil, &Reason{Kind: InvalidRequest}
 		}
 		var q Enrollment
 		if !digestOK(r.ID) {
-			return nil, ErrRefused
+			return nil, &Reason{Kind: InvalidRequest}
 		}
 		_, err := hex.Decode(q.ID[:], []byte(r.ID))
 		if err != nil {
-			return nil, ErrRefused
+			return nil, &Reason{Kind: InvalidRequest}
 		}
 		q.Slot = r.Slot
 		q.HeaderBytes, err = base64.RawURLEncoding.Strict().DecodeString(r.HeaderBytes)
 		if err != nil {
-			return nil, ErrRefused
+			return nil, &Reason{Kind: InvalidRequest}
 		}
 		q.HomePublicKey, err = base64.RawURLEncoding.Strict().DecodeString(r.HomePublicKey)
 		if err != nil {
-			return nil, ErrRefused
+			return nil, &Reason{Kind: InvalidRequest}
 		}
 		return exactIntent(q, witnessKeyID, body)
 	}
 	var r mutationRecord
 	if decode(body, &r) != nil || !digestOK(r.ID) {
-		return nil, ErrRefused
+		return nil, &Reason{Kind: InvalidRequest}
 	}
 	m := Mutation{Expected: r.Expected.state()}
 	if _, err := hex.Decode(m.ID[:], []byte(r.ID)); err != nil {
-		return nil, ErrRefused
+		return nil, &Reason{Kind: InvalidRequest}
 	}
 	var q Intent
 	switch op {
 	case "claim":
 		session, err := base64.RawURLEncoding.Strict().DecodeString(r.SessionPublicKey)
 		if err != nil {
-			return nil, ErrRefused
+			return nil, &Reason{Kind: InvalidRequest}
 		}
 		if _, err := KeyID(session); err != nil {
 			return nil, err
@@ -91,7 +91,7 @@ func ParseIntent(op, witnessKeyID string, body []byte) (Intent, error) {
 		q = Claim{m, session}
 	case "advance":
 		if r.Next == nil {
-			return nil, ErrRefused
+			return nil, &Reason{Kind: InvalidRequest}
 		}
 		q = Advance{m, assignment.Checkpoint(*r.Next)}
 	case "release":
@@ -99,7 +99,7 @@ func ParseIntent(op, witnessKeyID string, body []byte) (Intent, error) {
 	case "retire":
 		q = Retirement{m, r.DispositionDigest}
 	default:
-		return nil, ErrRefused
+		return nil, &Reason{Kind: InvalidRequest}
 	}
 	return exactIntent(q, witnessKeyID, body)
 }
@@ -107,7 +107,7 @@ func ParseIntent(op, witnessKeyID string, body []byte) (Intent, error) {
 func exactIntent(q Intent, witnessKeyID string, body []byte) (Intent, error) {
 	encoded, err := q.Body(witnessKeyID)
 	if err != nil || !bytes.Equal(encoded, body) {
-		return nil, ErrRefused
+		return nil, &Reason{Kind: InvalidRequest}
 	}
 	return q, nil
 }
@@ -117,11 +117,11 @@ func enrollmentState(q Enrollment, homeID string, epoch uint64) (State, error) {
 	ledger, err := assignment.NewLedgerFromHeader(q.HeaderBytes)
 	var frame struct{ Header assignment.Header }
 	if err != nil || json.Unmarshal(q.HeaderBytes, &frame) != nil {
-		return State{}, ErrRefused
+		return State{}, &Reason{Kind: InvalidRequest}
 	}
 	h := frame.Header
 	if h.KeyID != homeID || h.Authority != q.Slot.Authority || h.Store != q.Slot.Store {
-		return State{}, ErrRefused
+		return State{}, &Reason{Kind: InvalidRequest}
 	}
 	return State{Slot: q.Slot, Header: h, Head: ledger.Checkpoint(), Epoch: epoch, Revision: 1, HomeKeyID: homeID, Status: Active}, nil
 }

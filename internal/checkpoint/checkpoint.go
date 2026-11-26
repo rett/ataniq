@@ -89,7 +89,11 @@ type Client interface {
 	Claim(context.Context, Claim) (Receipt, error)
 	Advance(context.Context, Advance) (Receipt, error)
 }
+
+// Administration is the owner capability. Its challenged Read works without
+// a home grant or session and supplies the exact Expected for owner mutations.
 type Administration interface {
+	Read(context.Context, ReadRequest) (View, error)
 	Enroll(context.Context, Enrollment) (Receipt, error)
 	Release(context.Context, Mutation) (Receipt, error)
 	Retire(context.Context, Retirement) (Receipt, error)
