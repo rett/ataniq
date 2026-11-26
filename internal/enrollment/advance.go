@@ -114,12 +114,13 @@ func AppendAndAdvance(ctx context.Context, s *Store, event assignment.Event) err
 	if err != nil {
 		return ledgerError(err)
 	}
-	s.stopped = true
 	v, err := s.read(ctx, checkpoint.ID{})
 	if err != nil {
 		return err
 	}
 	if v.Current != s.state {
+		// The challenged read proves this session has lost its fence.
+		s.stopped = true
 		return refuse(Occupied, checkpoint.ErrStale)
 	}
 	q := checkpoint.Advance{Mutation: checkpoint.Mutation{ID: id(), Expected: s.state}, Next: next.Checkpoint()}
@@ -139,8 +140,11 @@ func AppendAndAdvance(ctx context.Context, s *Store, event assignment.Event) err
 		return err
 	}
 	if err := s.files.SaveStage(raw); err != nil {
+		// Exclusive creation may already have made a partial stage visible.
+		s.stopped = true
 		return refuse(Interrupted, err)
 	}
+	s.stopped = true
 	if err := s.files.Append(frame); err != nil {
 		return refuse(Interrupted, err)
 	}

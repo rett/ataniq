@@ -376,3 +376,34 @@ func TestFencedWriter(t *testing.T) {
 	_, err := store.Ledger()
 	want(t, err, Closed)
 }
+
+func TestPrewriteFailureCanRetry(t *testing.T) {
+	for _, failure := range []string{"unreachable", "cancel", "signing"} {
+		t.Run(failure, func(t *testing.T) {
+			f := enrolled(t)
+			s := f.open(t, nil)
+			e := f.seed(t, s, "row")
+			ctx := f.ctx
+			session := s.session
+			reason := Unreachable
+			switch failure {
+			case "unreachable":
+				f.w.Inhibit(true)
+			case "cancel":
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			case "signing":
+				s.session = nil
+				reason = Interrupted
+			}
+			want(t, AppendAndAdvance(ctx, s, e), reason)
+			f.w.Inhibit(false)
+			s.session = session
+			if _, err := os.Stat(filepath.Join(f.root.Path, stageName)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("stage after pre-write failure: %v", err)
+			}
+			check(t, AppendAndAdvance(f.ctx, s, e))
+		})
+	}
+}
