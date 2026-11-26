@@ -180,6 +180,30 @@ func TestTombstoneMutants(t *testing.T) {
 	}
 }
 
+func TestReusableRetiredSlotMutant(t *testing.T) {
+	rejectMemoryMutant(t, "permanent_retired_slot", "fresh enrollment replaced retired slot", func(h *checkpointtest.Harness, w *cp.Memory) {
+		admin := h.Admin
+		h.Admin = ownerAdapter{Administration: admin, enroll: func(ctx context.Context, q cp.Enrollment) (cp.Receipt, error) {
+			w.ForgetRetiredSlot(q.Slot)
+			return admin.Enroll(ctx, q)
+		}}
+	})
+}
+
+func TestClaimAfterRetireMutant(t *testing.T) {
+	rejectMutant(t, "permanent_retired_slot", "got <nil>, want checkpoint: retired", func(h *checkpointtest.Harness) {
+		wrapConnect(h, func(c cp.Client) cp.Client {
+			return claimClient{c, func(ctx context.Context, q cp.Claim) (cp.Receipt, error) {
+				r, err := c.Claim(ctx, q)
+				if errors.Is(err, cp.ErrRetired) {
+					return r, nil
+				}
+				return r, err
+			}}
+		})
+	})
+}
+
 func TestOwnerRetryMutants(t *testing.T) {
 	for _, op := range []string{"enroll", "release", "retire"} {
 		t.Run(op, func(t *testing.T) {

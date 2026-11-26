@@ -105,3 +105,29 @@ func conflictingOwnerID(t *testing.T, factory Factory, op string) {
 		t.Fatal("conflict changed current state")
 	}
 }
+
+func retiredSlot(t *testing.T, factory Factory) {
+	f := start(t, factory)
+	h := f.home(t, "west", "s", "one", true)
+	s := f.enroll(t, h)
+	retire := mutation(s, "retire")
+	r, err := f.Admin.Retire(f.ctx, cp.Retirement{Mutation: retire, DispositionDigest: digest("disposed")})
+	check(t, err)
+	a, err := cp.VerifyReceipt(f.pin, r)
+	check(t, err)
+	_, err = h.c.Claim(f.ctx, cp.Claim{Mutation: mutation(a.State, "late claim"), NewSessionPublicKey: pub(h.session)})
+	want(t, err, cp.ErrRetired)
+
+	fresh := f.home(t, h.slot.Authority, h.slot.Store, "two", true)
+	_, err = f.Admin.Enroll(f.ctx, fresh.e)
+	if err == nil {
+		t.Fatal("fresh enrollment replaced retired slot")
+	}
+	q := cp.ReadRequest{Slot: h.slot, ReceiptID: retire.ID, Challenge: id("check tombstone")}
+	v, err := f.Admin.Read(f.ctx, q)
+	check(t, err)
+	check(t, cp.VerifyView(f.pin, q, v))
+	if v.Current != a.State || v.Prior == nil || !same(*v.Prior, r) {
+		t.Fatal("retired slot lost its tombstone")
+	}
+}
