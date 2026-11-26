@@ -92,7 +92,7 @@ func execute(ctx context.Context, hostRoot, op, path string, out io.Writer) (ret
 		if err := decisionguard.Check(guardDir); err != nil && !(errors.As(err, &guardErr) && guardErr.Code == decisionguard.CodeInhibited) {
 			return errFiles
 		}
-		address, err := noaicheck.WitnessEgressAddress(hostRoot, op == "run")
+		address, err := noaicheck.WitnessEgressAddress(hostRoot, op == "check")
 		want, _ := noaicheck.WitnessHomeAddress(c.Home)
 		if err != nil || address.IsValid() && address != want {
 			return errEgress

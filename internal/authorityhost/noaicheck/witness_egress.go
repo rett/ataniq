@@ -26,15 +26,15 @@ func WitnessHomeAddress(endpoint string) (netip.Addr, bool) {
 	return a, true
 }
 
-// WitnessEgressAddress checks drop-ins and, on a running host, the manager's
-// grants. Offline preflight may precede the first installation of the unit.
-func WitnessEgressAddress(root string, requireLoaded bool) (netip.Addr, error) {
+// WitnessEgressAddress checks the drop-ins. Owner preflight can also query
+// the running manager, including before the first installation of the unit.
+func WitnessEgressAddress(root string, queryManager bool) (netip.Addr, error) {
 	t, err := openTree(root)
 	if err != nil {
 		return netip.Addr{}, err
 	}
 	defer t.close()
-	return t.witnessEgressAddress(filepath.Clean(root) == "/", true, requireLoaded)
+	return t.witnessEgressAddress(queryManager && filepath.Clean(root) == "/", true, false)
 }
 
 // singleAddress accepts only a single host address, optionally with its full
