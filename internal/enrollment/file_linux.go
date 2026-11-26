@@ -26,7 +26,7 @@ const directoryFlags = syscall.O_RDONLY | syscall.O_DIRECTORY | syscall.O_NOFOLL
 // Linux O_PATH is absent from the frozen syscall package on amd64.
 const pathDirectoryFlags = 0x200000 | directoryFlags
 
-func (root FileRoot) Lock(fault Fault) (LockedLedger, error) {
+func (root FileRoot) lock(fault Fault) (lockedLedger, error) {
 	path, err := filepath.Abs(root.Path)
 	if err != nil || root.Path == "" {
 		return nil, refuse(Insecure, err)
@@ -40,8 +40,8 @@ func (root FileRoot) Lock(fault Fault) (LockedLedger, error) {
 		return nil, refuse(Insecure, err)
 	}
 	l := &fileLedger{dir: os.NewFile(uintptr(fd), "/"), fault: fault}
-	fail := func(err error) (LockedLedger, error) {
-		return nil, errors.Join(err, l.Close())
+	fail := func(err error) (lockedLedger, error) {
+		return nil, errors.Join(err, l.close())
 	}
 	names := strings.FieldsFunc(path, func(r rune) bool { return r == '/' })
 	for i, name := range names {
@@ -132,7 +132,7 @@ func (f *fileLedger) persist(file *os.File, data []byte, op string) error {
 	return after(f.fault, op+".dir-synced")
 }
 
-func (f *fileLedger) create(name string, data []byte, op string) (*os.File, error) {
+func (f *fileLedger) createFile(name string, data []byte, op string) (*os.File, error) {
 	file, _, err := f.open(name, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL)
 	if err != nil {
 		return nil, err
@@ -146,14 +146,14 @@ func (f *fileLedger) create(name string, data []byte, op string) (*os.File, erro
 	return file, nil
 }
 
-func (f *fileLedger) Create(header []byte) (Identity, error) {
+func (f *fileLedger) createLedger(header []byte) (Identity, error) {
 	if names, err := f.dir.Readdirnames(1); err != io.EOF || len(names) != 0 {
 		if err != nil {
 			return Identity{}, err
 		}
 		return Identity{}, errors.New("enrollment requires an empty root")
 	}
-	file, err := f.create(ledgerName, header, "header")
+	file, err := f.createFile(ledgerName, header, "header")
 	if err != nil {
 		return Identity{}, err
 	}
@@ -167,7 +167,7 @@ func (f *fileLedger) Create(header []byte) (Identity, error) {
 	return f.identity, nil
 }
 
-func (f *fileLedger) Ledger() (io.Reader, Identity, error) {
+func (f *fileLedger) readLedger() (io.Reader, Identity, error) {
 	file, st, err := f.open(ledgerName, syscall.O_RDONLY)
 	if errors.Is(err, os.ErrNotExist) {
 		// A scratch registry is never a candidate for automatic conversion.
@@ -191,7 +191,7 @@ func (f *fileLedger) Ledger() (io.Reader, Identity, error) {
 }
 
 // Check the name as well as the open descriptor across calls to the witness.
-func (f *fileLedger) Check() error {
+func (f *fileLedger) check() error {
 	if _, err := inspect(f.dir, true); err != nil {
 		return err
 	}
@@ -245,7 +245,7 @@ func (f *fileLedger) checkLedger(st syscall.Stat_t) error {
 const stageLimit = 192 << 10
 
 func (f *fileLedger) receipt() ([]byte, error) { return f.readOptional(receiptName) }
-func (f *fileLedger) Stage() ([]byte, error)   { return f.readOptional(stageName) }
+func (f *fileLedger) stage() ([]byte, error)   { return f.readOptional(stageName) }
 func (f *fileLedger) readOptional(name string) ([]byte, error) {
 	file, st, err := f.open(name, syscall.O_RDONLY)
 	if errors.Is(err, os.ErrNotExist) {
@@ -265,15 +265,15 @@ func (f *fileLedger) readOptional(name string) ([]byte, error) {
 	return b, nil
 }
 
-func (f *fileLedger) SaveStage(b []byte) error {
-	file, err := f.create(stageName, b, "stage")
+func (f *fileLedger) saveStage(b []byte) error {
+	file, err := f.createFile(stageName, b, "stage")
 	if err != nil {
 		return err
 	}
 	return file.Close()
 }
 
-func (f *fileLedger) Append(b []byte) error {
+func (f *fileLedger) append(b []byte) error {
 	file, st, err := f.open(ledgerName, syscall.O_APPEND|syscall.O_WRONLY)
 	if err != nil {
 		return err
@@ -294,13 +294,6 @@ func (f *fileLedger) Append(b []byte) error {
 	return errors.Join(err, file.Close())
 }
 
-func (f *fileLedger) Sync() error {
-	if err := f.ledger.Sync(); err != nil {
-		return err
-	}
-	return f.dir.Sync()
-}
-
 // Keep one replacement slot. The intact stage can reconstruct the receipt
 // after any interruption up to the rename and directory sync.
 func (f *fileLedger) saveReceipt(raw []byte) error {
@@ -309,7 +302,7 @@ func (f *fileLedger) saveReceipt(raw []byte) error {
 	if err := syscall.Unlinkat(fd, temp); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	file, err := f.create(temp, raw, "receipt")
+	file, err := f.createFile(temp, raw, "receipt")
 	if err != nil {
 		return err
 	}
@@ -328,7 +321,7 @@ func (f *fileLedger) saveReceipt(raw []byte) error {
 	return after(f.fault, "receipt.rename-synced")
 }
 
-func (f *fileLedger) ClearStage() error {
+func (f *fileLedger) clearStage() error {
 	if err := syscall.Unlinkat(int(f.dir.Fd()), stageName); err != nil {
 		return err
 	}
@@ -341,7 +334,7 @@ func (f *fileLedger) ClearStage() error {
 	return after(f.fault, "stage.removal-synced")
 }
 
-func (f *fileLedger) Close() error {
+func (f *fileLedger) close() error {
 	var err error
 	if f.ledger != nil {
 		err = f.ledger.Close()

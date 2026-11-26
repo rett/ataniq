@@ -136,19 +136,19 @@ func AppendAndAdvance(ctx context.Context, s *Store, event assignment.Event) (*A
 	if err != nil {
 		return nil, refuse(Interrupted, err)
 	}
-	if err := s.files.Check(); err != nil {
+	if err := s.files.check(); err != nil {
 		return nil, err
 	}
-	if err := s.files.SaveStage(raw); err != nil {
+	if err := s.files.saveStage(raw); err != nil {
 		// Exclusive creation may already have made a partial stage visible.
 		s.stopped = true
 		return nil, refuse(Interrupted, err)
 	}
 	s.stopped = true
-	if err := s.files.Append(frame); err != nil {
+	if err := s.files.append(frame); err != nil {
 		return nil, refuse(Interrupted, err)
 	}
-	if err := s.files.Check(); err != nil {
+	if err := s.files.check(); err != nil {
 		return nil, err
 	}
 	r, err := s.client.Advance(ctx, q)
@@ -165,17 +165,17 @@ func AppendAndAdvance(ctx context.Context, s *Store, event assignment.Event) (*A
 	if err := compare(next.Checkpoint(), state); err != nil {
 		return nil, err
 	}
-	if err := s.files.Check(); err != nil {
+	if err := s.files.check(); err != nil {
 		return nil, err
 	}
 	evidence := AdvanceReceipt{ID: q.ID, Receipt: r}
 	if err := s.saveReceipt(evidence); err != nil {
 		return nil, err
 	}
-	if err := s.files.ClearStage(); err != nil {
+	if err := s.files.clearStage(); err != nil {
 		return nil, refuse(Interrupted, err)
 	}
-	if err := s.files.Check(); err != nil {
+	if err := s.files.check(); err != nil {
 		return nil, err
 	}
 	s.ledger, s.state, s.stopped = next, state, false

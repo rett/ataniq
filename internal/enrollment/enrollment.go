@@ -111,26 +111,25 @@ type Binding struct {
 	Receipt             checkpoint.Receipt
 }
 
+// LedgerStore is a sealed storage capability. FileRoot supplies it to Enroll
+// and Start. Start keeps raw file operations and the witness client private.
+// AppendAndAdvance on the admitted Store is the single managed append path.
 type LedgerStore interface {
-	Lock(Fault) (LockedLedger, error)
+	lock(Fault) (lockedLedger, error)
 }
 
-// LockedLedger holds an exclusive lock until Close. Ledger and Stage only
-// read. Create requires an empty root and a new file. All mutators sync the
-// affected file and parent before returning success; Sync covers the ledger
-// and parent even when the previous process died during an append.
-type LockedLedger interface {
-	Create(header []byte) (Identity, error)
-	Ledger() (io.Reader, Identity, error)
-	Check() error           // recheck the locked root and the ledger observed by replay
-	Stage() ([]byte, error) // nil for absent
+// lockedLedger owns the file descriptors and exclusive cooperating-writer lock.
+type lockedLedger interface {
+	createLedger(header []byte) (Identity, error)
+	readLedger() (io.Reader, Identity, error)
+	check() error           // recheck the locked root and the ledger observed by replay
+	stage() ([]byte, error) // nil for absent
 	receipt() ([]byte, error)
 	saveReceipt([]byte) error
-	SaveStage([]byte) error // exclusive create
-	Append([]byte) error
-	Sync() error
-	ClearStage() error
-	Close() error
+	saveStage([]byte) error // exclusive create
+	append([]byte) error
+	clearStage() error
+	close() error
 }
 
 // Fault stops an operation immediately after a named boundary. A nil Fault
@@ -164,19 +163,19 @@ func (b Binding) request() (checkpoint.Enrollment, error) {
 // owner-selected slot and key. No binding is issued on failure, including a
 // lost enrollment reply. Retire any uncertain registration before replacing it.
 func Enroll(ctx context.Context, root LedgerStore, admin checkpoint.Administration, slot checkpoint.Slot, epoch uint64, home ed25519.PrivateKey, witness ed25519.PublicKey, fault Fault) (Binding, error) {
-	f, err := root.Lock(fault)
+	f, err := root.lock(fault)
 	if err != nil {
 		return Binding{}, refuse(EnrollmentFailed, err)
 	}
 	b, err := enroll(ctx, f, admin, slot, epoch, home, witness, fault)
-	err = errors.Join(err, f.Close())
+	err = errors.Join(err, f.close())
 	if err != nil {
 		return Binding{}, refuse(EnrollmentFailed, err)
 	}
 	return b, nil
 }
 
-func enroll(ctx context.Context, f LockedLedger, admin checkpoint.Administration, slot checkpoint.Slot, epoch uint64, home ed25519.PrivateKey, witness ed25519.PublicKey, fault Fault) (Binding, error) {
+func enroll(ctx context.Context, f lockedLedger, admin checkpoint.Administration, slot checkpoint.Slot, epoch uint64, home ed25519.PrivateKey, witness ed25519.PublicKey, fault Fault) (Binding, error) {
 	if len(home) != ed25519.PrivateKeySize || epoch == 0 {
 		return Binding{}, checkpoint.ErrRefused
 	}
@@ -203,11 +202,11 @@ func enroll(ctx context.Context, f LockedLedger, admin checkpoint.Administration
 	if err != nil {
 		return Binding{}, err
 	}
-	b.Identity, err = f.Create(q.HeaderBytes)
+	b.Identity, err = f.createLedger(q.HeaderBytes)
 	if err != nil {
 		return Binding{}, err
 	}
-	if err := f.Check(); err != nil {
+	if err := f.check(); err != nil {
 		return Binding{}, err
 	}
 	b.Receipt, err = admin.Enroll(ctx, q)
@@ -224,5 +223,5 @@ func enroll(ctx context.Context, f LockedLedger, admin checkpoint.Administration
 	if err = checkpoint.MatchReceipt(witness, epoch, "enroll", body, b.Receipt); err != nil {
 		return Binding{}, err
 	}
-	return b, f.Check()
+	return b, f.check()
 }

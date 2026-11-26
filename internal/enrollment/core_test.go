@@ -14,12 +14,12 @@ import (
 // This store has no filesystem, clock or writer. Calling a mutator other than
 // owner creation panics, so these tests also guard the startup write boundary.
 type readOnlyLedger struct {
-	LockedLedger
+	lockedLedger
 	header []byte
 	locked bool
 }
 
-func (m *readOnlyLedger) Lock(Fault) (LockedLedger, error) {
+func (m *readOnlyLedger) lock(Fault) (lockedLedger, error) {
 	if m.locked {
 		return nil, refuse(Occupied, nil)
 	}
@@ -27,7 +27,7 @@ func (m *readOnlyLedger) Lock(Fault) (LockedLedger, error) {
 	return m, nil
 }
 
-func (m *readOnlyLedger) Create(b []byte) (Identity, error) {
+func (m *readOnlyLedger) createLedger(b []byte) (Identity, error) {
 	if m.header != nil {
 		return Identity{}, errors.New("nonempty")
 	}
@@ -35,17 +35,17 @@ func (m *readOnlyLedger) Create(b []byte) (Identity, error) {
 	return Identity{RootInode: 1, LedgerInode: 2}, nil
 }
 
-func (m *readOnlyLedger) Ledger() (io.Reader, Identity, error) {
+func (m *readOnlyLedger) readLedger() (io.Reader, Identity, error) {
 	return bytes.NewReader(m.header), Identity{RootInode: 1, LedgerInode: 2}, nil
 }
 
-func (m *readOnlyLedger) Check() error { return nil }
+func (m *readOnlyLedger) check() error { return nil }
 
 func (m *readOnlyLedger) receipt() ([]byte, error) { return nil, nil }
 
-func (m *readOnlyLedger) Stage() ([]byte, error) { return nil, nil }
+func (m *readOnlyLedger) stage() ([]byte, error) { return nil, nil }
 
-func (m *readOnlyLedger) Close() error { m.locked = false; return nil }
+func (m *readOnlyLedger) close() error { m.locked = false; return nil }
 
 type claimHook struct {
 	checkpoint.Client

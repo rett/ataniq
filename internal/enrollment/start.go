@@ -19,7 +19,7 @@ import (
 // Store owns the local writer lock and the admitted witness session.
 type Store struct {
 	mu          sync.Mutex
-	files       LockedLedger
+	files       lockedLedger
 	b           Binding
 	client      checkpoint.Client
 	session     ed25519.PrivateKey
@@ -48,7 +48,7 @@ func (s *Store) Close() error {
 	if s.files == nil {
 		return nil
 	}
-	err := s.files.Close()
+	err := s.files.close()
 	s.files = nil
 	clear(s.session)
 	return err
@@ -135,7 +135,7 @@ func Start(ctx context.Context, root LedgerStore, b Binding, client checkpoint.C
 	if err != nil {
 		return nil, refuse(IdentityMismatch, err)
 	}
-	f, err := root.Lock(fault)
+	f, err := root.lock(fault)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +148,7 @@ func Start(ctx context.Context, root LedgerStore, b Binding, client checkpoint.C
 }
 
 func (s *Store) start(ctx context.Context, header []byte) error {
-	r, identity, err := s.files.Ledger()
+	r, identity, err := s.files.readLedger()
 	if err != nil {
 		return err
 	}
@@ -159,7 +159,7 @@ func (s *Store) start(ctx context.Context, header []byte) error {
 	if err != nil {
 		return err
 	}
-	stage, err := s.files.Stage()
+	stage, err := s.files.stage()
 	if err != nil {
 		return err
 	}
@@ -170,7 +170,7 @@ func (s *Store) start(ctx context.Context, header []byte) error {
 	if v.Prior == nil || checkpoint.ReceiptDigest(*v.Prior) != checkpoint.ReceiptDigest(s.b.Receipt) {
 		return refuse(Unknown, errors.New("original enrollment receipt missing or changed"))
 	}
-	if err := s.files.Check(); err != nil {
+	if err := s.files.check(); err != nil {
 		return err
 	}
 	var recovered *AdvanceReceipt
@@ -186,7 +186,7 @@ func (s *Store) start(ctx context.Context, header []byte) error {
 	if err := s.loadReceipt(ctx, ledger.Checkpoint(), last, recovered); err != nil {
 		return err
 	}
-	if err := s.files.Check(); err != nil {
+	if err := s.files.check(); err != nil {
 		return err
 	}
 	q := checkpoint.Claim{Mutation: checkpoint.Mutation{ID: id(), Expected: v.Current}, NewSessionPublicKey: s.session.Public().(ed25519.PublicKey)}
@@ -204,7 +204,7 @@ func (s *Store) start(ctx context.Context, header []byte) error {
 	if err = compare(ledger.Checkpoint(), s.state); err != nil {
 		return err
 	}
-	if err := s.files.Check(); err != nil {
+	if err := s.files.check(); err != nil {
 		return err
 	}
 	if recovered != nil {
@@ -213,11 +213,11 @@ func (s *Store) start(ctx context.Context, header []byte) error {
 		}
 	}
 	if stage != nil {
-		if err := s.files.ClearStage(); err != nil {
+		if err := s.files.clearStage(); err != nil {
 			return refuse(Interrupted, err)
 		}
 	}
-	if err := s.files.Check(); err != nil {
+	if err := s.files.check(); err != nil {
 		return err
 	}
 	s.ledger = ledger
