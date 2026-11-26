@@ -45,11 +45,11 @@ func TestProjection(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !bytes.HasPrefix(body, []byte(`{"admission":false,`)) {
+		if !bytes.HasPrefix(body, []byte(`{"active_transfer_id":`)) {
 			t.Fatal(string(body))
 		}
-		reordered := append(bytes.Clone(body[len(`{"admission":false`):len(body)-1]), `,  "admission" : false}`...)
-		reordered[0] = '{'
+		reordered := bytes.Replace(body, []byte(`"admission":false,`), nil, 1)
+		reordered = append(reordered[:len(reordered)-1], `,  "admission" : false}`...)
 		decoded, err := Unmarshal(reordered)
 		if err != nil || !reflect.DeepEqual(decoded, p) {
 			t.Fatalf("%+v, %v", decoded, err)

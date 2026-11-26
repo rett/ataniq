@@ -21,6 +21,7 @@ type Instance struct {
 	Store       string `json:"store"`
 }
 type PublicEnvelope struct {
+	ActiveTransferID     string        `json:"active_transfer_id"`
 	Admission            bool          `json:"admission"`
 	Algorithm            string        `json:"alg"`
 	Binding              PublicBinding `json:"binding"`
@@ -53,7 +54,8 @@ func project(h Header, prior, row Row, tr Transfer, e Event) PublicEnvelope {
 		digests = append(digests, proof.Digest)
 	}
 	return PublicEnvelope{
-		Admission: row.Permits(row.Head), Algorithm: "Ed25519", Binding: PublicBinding{row.Holder.ID, row.Holder.Kind},
+		ActiveTransferID: row.Head.TransferID,
+		Admission:        row.Permits(row.Head), Algorithm: "Ed25519", Binding: PublicBinding{row.Holder.ID, row.Holder.Kind},
 		CommitRevision: strconv.FormatUint(row.CommitRevision, 10), EventID: e.Result.EventID, EvidenceDigests: digests,
 		ExecutingInstance: Instance{row.Holder.Authority, row.Holder.Incarnation, row.Holder.Store},
 		Generation:        strconv.FormatUint(row.Head.Generation, 10), Home: Instance{h.Authority, h.Incarnation, h.Store},

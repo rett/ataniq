@@ -47,7 +47,7 @@ func TestCanonicalCommitments(t *testing.T) {
 	// Independently computed SHA-256 over each domain, NUL and its schema-1 bytes.
 	const wantRequest = "16d174bd564a20701b49ea795dffe1ef6974d5c080bcf4a997f0d1747663f3d3"
 	const wantPublic = "5b88a159cdd5a0cbd9d7a677cfbcedb612ebd9e9703d1018ef5ec35e8c65139b"
-	const wantLedger = "0258eb1fff112df3948e44a57d3d60234a09815750fc3f160aa69677a13b4a7e"
+	const wantLedger = "5a3d82948af6e54770d337a84773ab34b3b2f3ddc2b30106aaebd7cff1c5d6f8"
 	if one != wantRequest || e.Result.EventID != wantPublic || hash != wantLedger {
 		t.Fatal("commitment differs from golden", one, e.Result.EventID, hash)
 	}
@@ -318,6 +318,10 @@ func TestReviewHistoricalHold(t *testing.T) {
 	row, _ := s.ledger.Row(key)
 	c := command(row, held, HoldReviewed, "T", "")
 	event := s.accept(t, c)
+	body, err := event.SigningBytes()
+	if err != nil || !bytes.Contains(body, []byte(`"active_transfer_id":"U"`)) || event.Public.TransferID != "T" {
+		t.Fatal("historical review lacks active rollback identity", err)
+	}
 	l, err := recoverAt(s.events, s.ledger.Checkpoint())
 	if err != nil {
 		t.Fatal(err)
