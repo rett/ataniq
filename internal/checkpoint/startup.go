@@ -47,7 +47,10 @@ const (
 // Compare takes an independently replayed home head and an authenticated
 // witness state. Missing or malformed evidence is Unknown. A valid tombstone
 // takes precedence over the local head. Conflicting ledger identities or
-// digests at a known sequence (including genesis) are forks.
+// digests at a known sequence (including genesis) are forks. HomeBehind and
+// HomeAhead report sequence order only. Before using either for recovery,
+// replay the longer journal through the shorter head's sequence and compare
+// the digest there. Divergent journals can also have unequal lengths.
 func Compare(home assignment.Checkpoint, witness State) Comparison {
 	if !validState(witness) {
 		return Unknown
