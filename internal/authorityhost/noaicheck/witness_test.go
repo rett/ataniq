@@ -48,3 +48,31 @@ func TestWitnessListenerOnAllowedPort(t *testing.T) {
 		t.Fatal(hits)
 	}
 }
+
+func TestWitnessExactUnitPolicy(t *testing.T) {
+	data, err := os.ReadFile("../../../deploy/authority-host/witness/" + WitnessUnit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit := strings.ReplaceAll(string(data), "{release}", "/release")
+	for line := range strings.Lines(unit) {
+		if !strings.HasPrefix(line, "#") && strings.Contains(line, "=") && WitnessUnitSafe(WitnessUnit, strings.Replace(unit, line, "", 1), "/release") {
+			t.Errorf("accepted missing %s", line)
+		}
+	}
+	for _, assignment := range []string{
+		"ReadWritePaths=/etc", "ReadOnlyPaths=", "InaccessiblePaths=", "BindPaths=/home", "BindReadOnlyPaths=/", "TemporaryFileSystem=/",
+		"RootDirectory=/", "RootImage=/image", "PrivateNetwork=no", "NetworkNamespacePath=/net", "JoinsNamespaceOf=other.service",
+		"PrivateUsers=no", "Delegate=yes", "StartLimitIntervalSec=0", "Unrecognised=yes", "IPAddressAllow=any",
+	} {
+		for _, path := range []string{WitnessUnit, WitnessUnit + ".d/x.conf", "etc/systemd/system/service.d/x.conf", "etc/systemd/system/ataniq-.service.d/x.conf"} {
+			candidate := "[Service]\n" + assignment + "\n"
+			if path == WitnessUnit {
+				candidate = unit + candidate
+			}
+			if WitnessUnitSafe(path, candidate, "/release") {
+				t.Errorf("%s accepted %s", path, assignment)
+			}
+		}
+	}
+}
