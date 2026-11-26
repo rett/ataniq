@@ -123,69 +123,6 @@ func TestFreezeRetainsConfirmedRoutes(t *testing.T) {
 	s.steps(t, "T", forwardSteps)
 }
 
-func TestContradictoryReceiptRequiresReconciliation(t *testing.T) {
-	for _, tc := range []struct {
-		k      Kind
-		n      int
-		route  string
-		finish Kind
-	}{{FenceReceipt, 7, "worker", Commit}, {ConfirmReceipt, 10, "qargi", Open}, {ConfirmReceipt, 11, "worker", Open}} {
-		s := forward(t, tc.n)
-		c := next(s.ledger, key, tc.k, "T", tc.route)
-		c.Evidence[0].Outcome = "unresolved-child"
-		c.Evidence[0].Digest = s.events[0].RequestDigest
-		foreign := c
-		foreign.Evidence = slices.Clone(c.Evidence)
-		foreign.Evidence[0].Issuer = "another-issuer"
-		refused(t, s.ledger, foreign, ErrEvidence)
-		event := s.accept(t, c)
-		l, err := recoverAt(s.events, s.ledger.Checkpoint())
-		if err != nil {
-			t.Fatal(err)
-		}
-		row, _ := l.Row(key)
-		if row.Permits(row.Head) || event.Result.Disposition != "uncertain" {
-			t.Fatal(row, event.Result)
-		}
-		dup, res, err := Decide(l, c)
-		if err != nil || dup != nil || res != event.Result {
-			t.Fatal(res, err)
-		}
-		refused(t, l, next(l, key, tc.finish, "T", ""), ErrEvidence)
-		refused(t, l, next(l, key, RollbackFreeze, "U", ""), ErrEvidence)
-		resolve := next(l, key, Kind("ReceiptReconciled"), "T", "")
-		proof := c.Evidence[0]
-		proof.Scope = row.Head
-		proof.ScopeEventID = ""
-		proof.Kind, proof.Subject, proof.Outcome = "reconciliation", proof.Digest, "reconciled"
-		proof.Digest = event.Result.EventID
-		resolve.Evidence = []Evidence{proof}
-		wrong := resolve
-		wrong.Evidence = slices.Clone(resolve.Evidence)
-		wrong.Evidence[0].Subject = "other"
-		refused(t, l, wrong, ErrEvidence)
-		s.accept(t, resolve)
-		if tc.k == ConfirmReceipt {
-			stale := next(s.ledger, key, ConfirmReceipt, "T", tc.route)
-			stale.Evidence = s.events[len(seedSteps)+8].Command.Evidence
-			refused(t, s.ledger, stale, ErrEvidence)
-		}
-		if tc.k == FenceReceipt {
-			s.steps(t, "T", forwardSteps[1:])
-		} else {
-			refused(t, s.ledger, next(s.ledger, key, Open, "T", ""), ErrEvidence)
-			s.steps(t, "T", forwardSteps[8:10])
-			refused(t, s.ledger, next(s.ledger, key, Open, "T", ""), ErrEvidence)
-			stale := next(s.ledger, key, FenceReceipt, "T", "worker")
-			stale.Evidence = s.events[len(seedSteps)+4].Command.Evidence
-			refused(t, s.ledger, stale, ErrEvidence)
-			s.steps(t, "T", forwardSteps[4:6])
-			s.steps(t, "T", forwardSteps[10:])
-		}
-		assertHolder(t, s.ledger, managed, 2, true)
-	}
-}
-
 func TestAbortNeedsMismatchedPreviewStop(t *testing.T) {
 	s := forward(t, 2)
 	belief := next(s.ledger, key, BeliefAccepted, "T", "")
@@ -237,4 +174,31 @@ func TestHoldReviewedEvidence(t *testing.T) {
 	c.Evidence[0].Subject = sha256Hex([]byte("different preservation proof"))
 	refused(t, s.ledger, c, ErrEvidence)
 	s.accept(t, next(s.ledger, key, HoldReviewed, "T", ""))
+}
+
+func TestRollbackFromClosedCommitWithFreshOwnerAuthorization(t *testing.T) {
+	s := forward(t, 8)
+	committed := s.events[len(s.events)-1]
+	reverse := next(s.ledger, key, RollbackFreeze, "U", "")
+	reverse.Authorization = ""
+	refused(t, s.ledger, reverse, ErrInvalid)
+	reverse.Authorization = "owner approval for U"
+	wrong := reverse
+	wrong.Candidate.Incarnation += "-replacement"
+	refused(t, s.ledger, wrong, ErrPhase)
+	s.accept(t, reverse)
+	home, err := recoverAt(s.events, s.ledger.Checkpoint())
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := home.Transfer(key, "U")
+	if u.Original != committed.Result.Head || u.Authorization != reverse.Authorization || u.Candidate != legacy {
+		t.Fatal(u)
+	}
+	if prior, ok := Lookup(home, key, "T", ""); !ok || prior != committed.Result {
+		t.Fatal(prior)
+	}
+	assertHolder(t, home, managed, 2, false)
+	s.steps(t, "U", forwardSteps[1:])
+	assertHolder(t, s.ledger, legacy, 3, true)
 }

@@ -11,6 +11,12 @@ func reduce(r Row, t Transfer, c Command, digest string, prior Evidence) (Row, T
 	if old != c.Expected {
 		return r, t, ErrStale
 	}
+	if err := c.checkReferences(); err != nil {
+		return r, t, err
+	}
+	if old.Phase == PhaseQuarantined && c.Kind != QuarantineAcknowledged {
+		return r, t, ErrPhase
+	}
 	if old.Revision == math.MaxUint64 {
 		return r, t, ErrOverflow
 	}
@@ -43,6 +49,8 @@ func reduce(r Row, t Transfer, c Command, digest string, prior Evidence) (Row, T
 		scope, targetID = t.Reservation, t.ReservationEventID
 	case ConfirmReceipt:
 		scope, targetID = t.Committed, t.CommittedEventID
+	case QuarantineAcknowledged:
+		targetID = r.QuarantineEventID
 	}
 	if prior.Kind != "" {
 		if c.TransferID != prior.TransferID || old.Key != prior.Scope.Key {
@@ -52,18 +60,6 @@ func reduce(r Row, t Transfer, c Command, digest string, prior Evidence) (Row, T
 	}
 	if (c.Kind == FenceReceipt || c.Kind == ConfirmReceipt) && !validDigest(targetID) {
 		return r, t, ErrEvidence
-	}
-	var renewal string
-	if c.Kind == FenceReceipt || c.Kind == ConfirmReceipt {
-		renewal = t.ReconciliationID
-		if prior.Kind != "" {
-			renewal = prior.ReconciliationID
-		}
-	}
-	for _, e := range c.Evidence {
-		if e.ReconciliationID != renewal {
-			return r, t, ErrEvidence
-		}
 	}
 	p, err := proofs(c, scope, targetID)
 	if err != nil {
@@ -85,13 +81,7 @@ func reduce(r Row, t Transfer, c Command, digest string, prior Evidence) (Row, T
 		return r, t, nil
 	}
 	begin := c.Kind == Seed || c.Kind == Freeze || c.Kind == RollbackFreeze
-	if old.Phase == PhaseReceiptDisputed && c.Kind != ReceiptReconciled && c.Kind != FenceReceipt && c.Kind != ConfirmReceipt {
-		return r, t, ErrEvidence
-	}
 	if begin {
-		if old.Phase == PhaseCommittedClosed && t.ReconciliationID != "" {
-			return r, t, ErrEvidence
-		}
 		required := t.Routes
 		t = Transfer{ID: c.TransferID, Original: old, Predecessor: r.Holder,
 			Candidate: c.Candidate, BeginDigest: digest, Authorization: c.Authorization, Disposition: "pending"}
@@ -115,7 +105,14 @@ func reduce(r Row, t Transfer, c Command, digest string, prior Evidence) (Row, T
 			}
 			r.Head.Phase = PhaseFrozen
 		case RollbackFreeze:
-			if (!old.Phase.open() && old.Phase != PhaseCommittedClosed) || c.Candidate != r.Previous {
+			// The verified owner authorization names this new transfer. A
+			// closed commit can be reversed before the successor confirms.
+			switch old.Phase {
+			case PhaseCommittedClosed, PhaseConfirmed, PhaseAborted:
+			default:
+				return r, t, ErrPhase
+			}
+			if c.Candidate != r.Previous {
 				return r, t, ErrPhase
 			}
 			r.Head.Phase = PhaseFrozen
@@ -133,7 +130,9 @@ func reduce(r Row, t Transfer, c Command, digest string, prior Evidence) (Row, T
 			return r, t, ErrEvidence
 		}
 	} else if prior.Kind != "" {
-		err = t.dispute(&r.Head, &p, prior)
+		if err = correction(&p, prior); err == nil {
+			r.Head.Phase, r.Head.TransferID, t.Disposition = PhaseQuarantined, t.ID, "quarantined"
+		}
 	} else {
 		if c.TransferID != t.ID || c.TransferID != r.LastTransferID {
 			return r, t, ErrStale
@@ -156,8 +155,19 @@ func reduce(r Row, t Transfer, c Command, digest string, prior Evidence) (Row, T
 func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 	h := &r.Head
 	switch c.Kind {
-	case ReceiptReconciled:
-		return t.reconcile(h, c, p)
+	case QuarantineAcknowledged:
+		if h.Phase != PhaseQuarantined || r.QuarantineAcknowledgement != (Evidence{}) {
+			return ErrPhase
+		}
+		if len(*p) != 1 {
+			return ErrEvidence
+		}
+		proof := (*p)[0]
+		if proof.Kind != "owner-disposition" || proof.Issuer != c.Actor || proof.Subject != c.Authorization {
+			return ErrEvidence
+		}
+		r.QuarantineAcknowledgement = proof
+		*p = nil
 	case Inventory:
 		if !h.Phase.precommit() {
 			return ErrPhase
@@ -222,8 +232,7 @@ func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 		h.Phase = PhaseReserved
 		t.Reservation = *h
 	case FenceReceipt:
-		renewing := h.Phase == PhaseCommittedClosed && t.ReconciliationID != ""
-		if !renewing && h.Phase != PhaseReserved && h.Phase != PhasePartiallyFenced {
+		if h.Phase != PhaseReserved && h.Phase != PhasePartiallyFenced {
 			return ErrPhase
 		}
 		var err error
@@ -234,9 +243,7 @@ func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 		if err := t.settle(p, t.Fences[len(t.Fences)-1].Subject); err != nil {
 			return err
 		}
-		if !renewing {
-			h.Phase = PhasePartiallyFenced
-		}
+		h.Phase = PhasePartiallyFenced
 	case Fenced:
 		if h.Phase != PhasePartiallyFenced {
 			return ErrPhase

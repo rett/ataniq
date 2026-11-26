@@ -88,20 +88,20 @@ func (t *Transfer) capture(p *evidenceSet, required []string) error {
 }
 
 func (t *Transfer) inventoryEffects(p *evidenceSet) error {
+	if len(t.Routes) > MaxRoutes {
+		return ErrLimit
+	}
 	effects := p.group("effect", "outstanding")
 	for _, e := range effects {
 		if !slices.Contains(t.Routes, e.Route) {
 			return ErrEvidence
 		}
-	}
-	return t.addEffects(effects)
-}
-
-func (t *Transfer) addEffects(effects []Evidence) error {
-	for _, e := range effects {
 		effect := Effect{e.Subject, e.Route}
 		i := slices.IndexFunc(t.Outstanding, func(x Effect) bool { return x.ID == e.Subject })
 		if i < 0 {
+			if len(t.Outstanding) == MaxOutstandingEffects {
+				return ErrLimit
+			}
 			t.Outstanding = append(t.Outstanding, effect)
 		} else if t.Outstanding[i] != effect {
 			return ErrEvidence
@@ -111,18 +111,6 @@ func (t *Transfer) addEffects(effects []Evidence) error {
 }
 
 func (t *Transfer) settle(p *evidenceSet, route string) error {
-	if err := t.settleBatch(p, route); err != nil {
-		return err
-	}
-	for _, effect := range t.Outstanding {
-		if route == "" || effect.Route == route {
-			return ErrEvidence
-		}
-	}
-	return nil
-}
-
-func (t *Transfer) settleBatch(p *evidenceSet, route string) error {
 	for _, e := range p.group("effect", "settled") {
 		if route != "" && e.Route != route {
 			return ErrEvidence
@@ -132,6 +120,11 @@ func (t *Transfer) settleBatch(p *evidenceSet, route string) error {
 			return ErrEvidence
 		}
 		t.Outstanding = slices.Delete(t.Outstanding, i, i+1)
+	}
+	for _, effect := range t.Outstanding {
+		if route == "" || effect.Route == route {
+			return ErrEvidence
+		}
 	}
 	return nil
 }
@@ -144,78 +137,22 @@ func receipt(p *evidenceSet, routes []string, existing []Evidence, outcome strin
 	return append(existing, es[0]), nil
 }
 
-// dispute recognizes a second attestation for the same sealed or installed
-// route. proofs has already matched every reference to the receipt scope.
-func (t *Transfer) dispute(h *Head, p *evidenceSet, prior Evidence) error {
-	for _, report := range *p {
-		if report.Kind != "route" {
-			continue
-		}
-		if prior.Issuer != report.Issuer || prior.Digest == report.Digest {
-			return ErrEvidence
-		}
-		if _, err := p.take("route", report.Subject, report.Outcome); err != nil {
-			return err
-		}
-		// The acknowledged historical route may already have retired.
-		for _, e := range *p {
-			if e.Kind != "effect" || e.Route != report.Subject {
-				return ErrEvidence
+// The index identifies the accepted receipt at the same event and route.
+// A different verified object from its issuer closes the key. Associated
+// outstanding work stays in the signed command for the owner's disposition.
+func correction(p *evidenceSet, prior Evidence) error {
+	for _, e := range *p {
+		if e.Kind == "route" && e.Subject == prior.Subject && e.Issuer == prior.Issuer && e.Digest != prior.Digest {
+			if _, err := p.take("route", e.Subject, e.Outcome); err != nil {
+				return err
 			}
+			for _, work := range p.group("effect", "outstanding") {
+				if work.Route != prior.Subject {
+					return ErrEvidence
+				}
+			}
+			return nil
 		}
-		if err := t.addEffects(p.group("effect", "outstanding")); err != nil {
-			return err
-		}
-		if h.Phase != PhaseReceiptDisputed {
-			t.BeforeDispute = h.Phase
-		}
-		t.Disputes = append(t.Disputes, report)
-		h.Phase, h.TransferID, t.Disposition = PhaseReceiptDisputed, t.ID, "uncertain"
-		return nil
 	}
 	return ErrEvidence
-}
-
-// A verified resolution identifies each contradictory object and accounts
-// for its work. Rebuild the applicable proofs before admitting either holder.
-func (t *Transfer) reconcile(h *Head, c Command, p *evidenceSet) error {
-	if h.Phase != PhaseReceiptDisputed {
-		return ErrPhase
-	}
-	if c.Authorization != t.Authorization {
-		return ErrEvidence
-	}
-	if len(*p) == 0 {
-		return ErrEvidence
-	}
-	for _, proof := range p.group("reconciliation", "reconciled") {
-		i := slices.IndexFunc(t.Disputes, func(report Evidence) bool {
-			return proof.Subject == report.Digest && proof.Issuer == report.Issuer
-		})
-		if i < 0 {
-			return ErrEvidence
-		}
-		t.Disputes = slices.Delete(t.Disputes, i, i+1)
-	}
-	if err := t.settleBatch(p, ""); err != nil {
-		return err
-	}
-	if len(t.Disputes) != 0 || len(t.Outstanding) != 0 {
-		return nil
-	}
-	switch t.BeforeDispute {
-	case PhaseConfirmed, PhaseCommittedClosed:
-		h.Phase, t.Disposition = PhaseCommittedClosed, "committed"
-		t.Fences, t.Confirmations = nil, nil
-	case PhaseAborted, PhaseAborting:
-		h.Phase, t.Disposition = PhaseAborting, "pending"
-	case PhaseAbortedClosed:
-		h.Phase, h.TransferID, t.Disposition = PhaseAbortedClosed, "", "aborted-closed"
-	default:
-		h.Phase, t.Disposition = PhaseFrozen, "pending"
-		t.Inventory, t.Note, t.Belief, t.Decision = Evidence{}, Evidence{}, Evidence{}, Evidence{}
-		t.Reservation, t.ReservationEventID, t.Fences = Head{}, "", nil
-	}
-	t.BeforeDispute, t.Disputes = "", nil
-	return nil
 }

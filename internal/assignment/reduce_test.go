@@ -18,11 +18,7 @@ func command(r Row, tr Transfer, k Kind, id, route string) Command {
 	scope := r.Head
 	var targetID string
 	add := func(kind, subject, outcome string) {
-		var renewal string
-		if k == FenceReceipt || k == ConfirmReceipt {
-			renewal = tr.ReconciliationID
-		}
-		c.Evidence = append(c.Evidence, Evidence{ReconciliationID: renewal,
+		c.Evidence = append(c.Evidence, Evidence{
 			Kind: kind, Issuer: "source", Subject: subject, Revision: "snapshot", Outcome: outcome,
 			Digest: fmt.Sprintf("%x", sha256.Sum256([]byte(kind+subject+outcome))),
 			Scope:  scope, TransferID: id, ScopeEventID: targetID,
@@ -77,6 +73,10 @@ func command(r Row, tr Transfer, k Kind, id, route string) Command {
 		add("route", route, "installed-stale-refused")
 	case Open:
 		add("enrollment", r.Holder.ID, "current")
+	case QuarantineAcknowledged:
+		targetID = r.QuarantineEventID
+		add("owner-disposition", c.Authorization, "retire and re-enroll")
+		c.Evidence[0].Issuer = c.Actor
 	case HoldStarted:
 		c.HoldStart, c.EarliestRetirement = 100, 100+14*24*3600
 		add("fallback", tr.Predecessor.ID, "stopped-disabled-preserved")

@@ -41,6 +41,18 @@ func addressable(p assignment.PublicEnvelope) bool {
 		!validInstance(p.Home) || !validInstance(p.ExecutingInstance) || !validBinding(p.Binding) {
 		return false
 	}
+	if p.Phase == assignment.PhaseQuarantined {
+		if p.Admission {
+			return false
+		}
+		switch p.Kind {
+		case assignment.FenceReceipt, assignment.ConfirmReceipt, assignment.QuarantineAcknowledged:
+		default:
+			return false
+		}
+	} else if p.Kind == assignment.QuarantineAcknowledged {
+		return false
+	}
 	terminal := p.Phase == assignment.PhaseConfirmed || p.Phase == assignment.PhaseAborted || p.Phase == assignment.PhaseAbortedClosed
 	if (p.ActiveTransferID == "") != terminal {
 		return false
@@ -54,20 +66,23 @@ func addressable(p assignment.PublicEnvelope) bool {
 // Marshal returns the canonical public object without framing. Leave Signature
 // empty for a signing body. The signed envelope carries the unpadded base64url SSHSIG blob.
 func Marshal(p assignment.PublicEnvelope) ([]byte, error) {
+	if p.Format != assignment.Format {
+		return nil, assignment.ErrFormat
+	}
 	if p.Schema != 1 || p.Algorithm != "Ed25519" || p.EvidenceDigests == nil || !addressable(p) {
 		return nil, errProjection
 	}
 	switch p.Kind {
 	case assignment.Seed, assignment.Freeze, assignment.Inventory, assignment.BeliefAccepted,
-		assignment.Reserve, assignment.ReceiptReconciled, assignment.FenceReceipt, assignment.Fenced,
+		assignment.Reserve, assignment.FenceReceipt, assignment.Fenced,
 		assignment.Commit, assignment.ConfirmReceipt, assignment.Open, assignment.HoldStarted,
 		assignment.HoldReviewed, assignment.AbortPrepared, assignment.Aborted, assignment.AbortedClosed,
-		assignment.RollbackFreeze:
+		assignment.RollbackFreeze, assignment.QuarantineAcknowledged:
 	default:
 		return nil, errProjection
 	}
 	switch p.Phase {
-	case assignment.PhaseReceiptDisputed, assignment.PhaseFrozen, assignment.PhaseInventoried,
+	case assignment.PhaseQuarantined, assignment.PhaseFrozen, assignment.PhaseInventoried,
 		assignment.PhaseBeliefVerified, assignment.PhaseReserved, assignment.PhasePartiallyFenced,
 		assignment.PhaseFenced, assignment.PhaseCommittedClosed, assignment.PhaseConfirmed,
 		assignment.PhaseAborting, assignment.PhaseAborted, assignment.PhaseAbortedClosed:

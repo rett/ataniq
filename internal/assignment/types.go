@@ -1,6 +1,13 @@
 // Package assignment reduces verified home assignment commands to immutable
 // ledger values. The caller owns authentication, evidence verification, durable
-// append and the live admission barrier at each actual effect start.
+// append and the live admission barrier at each actual effect start. In
+// particular it verifies owner authorization for the exact command and head.
+//
+// A same-issuer correction of an accepted fence or confirmation permanently
+// quarantines this key in this store, including during a later transfer. Both
+// bindings lose admission. The owner may acknowledge the quarantine once,
+// recording a disposition against its event. Recovery requires retiring the
+// doubtful identity and freshly enrolling in a new store.
 package assignment
 
 import (
@@ -45,7 +52,7 @@ func (b Binding) valid() bool {
 type Phase string
 
 const (
-	PhaseReceiptDisputed Phase = "receipt-disputed"
+	PhaseQuarantined     Phase = "quarantined"
 	PhaseFrozen          Phase = "frozen"
 	PhaseInventoried     Phase = "inventoried"
 	PhaseBeliefVerified  Phase = "belief-verified"
@@ -73,24 +80,28 @@ func (p Phase) precommit() bool {
 type Kind string
 
 const (
-	Seed              Kind = "Seed"
-	Freeze            Kind = "Freeze"
-	Inventory         Kind = "Inventory"
-	BeliefAccepted    Kind = "BeliefAccepted"
-	Reserve           Kind = "Reserve"
-	ReceiptReconciled Kind = "ReceiptReconciled"
-	FenceReceipt      Kind = "FenceReceipt"
-	Fenced            Kind = "Fenced"
-	Commit            Kind = "Commit"
-	ConfirmReceipt    Kind = "ConfirmReceipt"
-	Open              Kind = "Open"
-	HoldStarted       Kind = "HoldStarted"
-	HoldReviewed      Kind = "HoldReviewed"
-	AbortPrepared     Kind = "AbortPrepared"
-	Aborted           Kind = "Aborted"
-	AbortedClosed     Kind = "AbortedClosed"
-	RollbackFreeze    Kind = "RollbackFreeze"
+	Seed           Kind = "Seed"
+	Freeze         Kind = "Freeze"
+	Inventory      Kind = "Inventory"
+	BeliefAccepted Kind = "BeliefAccepted"
+	Reserve        Kind = "Reserve"
+	FenceReceipt   Kind = "FenceReceipt"
+	Fenced         Kind = "Fenced"
+	Commit         Kind = "Commit"
+	ConfirmReceipt Kind = "ConfirmReceipt"
+	Open           Kind = "Open"
+	HoldStarted    Kind = "HoldStarted"
+	HoldReviewed   Kind = "HoldReviewed"
+	AbortPrepared  Kind = "AbortPrepared"
+	Aborted        Kind = "Aborted"
+	AbortedClosed  Kind = "AbortedClosed"
+	RollbackFreeze Kind = "RollbackFreeze"
 )
+
+// QuarantineAcknowledged carries one verified owner-disposition proof. The
+// actor issued it for the command's authorization reference at QuarantineEventID.
+// Outcome records the owner's disposition. It never changes admission.
+const QuarantineAcknowledged Kind = "QuarantineAcknowledged"
 
 type Head struct {
 	BindingID  string `json:"binding_id"`
@@ -102,10 +113,12 @@ type Head struct {
 }
 
 type Row struct {
-	Head           Head
-	CommitRevision uint64
-	PublicDigest   string
-	Holder         Binding
+	QuarantineEventID         string
+	QuarantineAcknowledgement Evidence
+	Head                      Head
+	CommitRevision            uint64
+	PublicDigest              string
+	Holder                    Binding
 	// LastTransferID also identifies the record after its active ID clears.
 	LastTransferID string
 	// Previous is the binding displaced by the most recent commit.
@@ -121,17 +134,16 @@ func (r Row) Permits(h Head) bool { return r.Head == h && h.Phase.open() }
 // TransferID also binds evidence for a new transfer against an older head.
 // The issuer attests the outcome for the subject in that scope.
 type Evidence struct {
-	Digest           string `json:"digest"`
-	Issuer           string `json:"issuer"`
-	Kind             string `json:"kind"`
-	Outcome          string `json:"outcome"`
-	ReconciliationID string `json:"reconciliation_id,omitempty"`
-	Revision         string `json:"revision"`
-	Route            string `json:"route"`
-	Scope            Head   `json:"scope"`
-	ScopeEventID     string `json:"scope_event_id"`
-	Subject          string `json:"subject"`
-	TransferID       string `json:"transfer_id"`
+	Digest       string `json:"digest"`
+	Issuer       string `json:"issuer"`
+	Kind         string `json:"kind"`
+	Outcome      string `json:"outcome"`
+	Revision     string `json:"revision"`
+	Route        string `json:"route"`
+	Scope        Head   `json:"scope"`
+	ScopeEventID string `json:"scope_event_id"`
+	Subject      string `json:"subject"`
+	TransferID   string `json:"transfer_id"`
 }
 
 type Hold struct {
@@ -154,15 +166,12 @@ type Transfer struct {
 	PreviewMismatch                      bool
 	Reservation, Committed               Head
 	ReservationEventID, CommittedEventID string
-	Fences, Confirmations, Disputes      []Evidence
-	ReconciliationID                     string
-	BeforeDispute                        Phase
+	Fences, Confirmations                []Evidence
 	Disposition                          string
 	Hold                                 Hold
 }
 
 func (t Transfer) clone() Transfer {
-	t.Disputes = slices.Clone(t.Disputes)
 	t.Routes = slices.Clone(t.Routes)
 	t.Outstanding = slices.Clone(t.Outstanding)
 	t.Fences = slices.Clone(t.Fences)

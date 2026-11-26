@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -192,6 +193,27 @@ func TestAssignmentWalk(t *testing.T) {
 					}
 				}
 			}
+			// End each independent history with a late correction of the first
+			// route confirmation, whatever state this walk reached.
+			c := s.events[1].Command
+			c.Expected = snapshot.rows[key].Head
+			c.RequestID = "correction"
+			c.Evidence = slices.Clone(c.Evidence)
+			c.Evidence[0].Digest = sha256Hex([]byte("amended"))
+			s.accept(t, c)
+			s.accept(t, next(s.ledger, key, QuarantineAcknowledged, m.id, ""))
+			l, err := Replay(header, s.events, testKey{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			row, _ := l.Row(key)
+			tr, _ := l.Transfer(key, m.id)
+			if row.Head.Generation != m.generation || row.Holder != m.holder ||
+				row.Head.Revision != m.revision+2 || tr.PhaseRevision != m.revision+1 ||
+				tr.Phase != PhaseQuarantined || tr.Disposition != "quarantined" || row.Permits(row.Head) {
+				t.Fatal(seed, row, tr)
+			}
+
 		})
 	}
 }

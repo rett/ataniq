@@ -3,6 +3,11 @@
 `test-key.seed` is a throwaway Ed25519 test key. Its hex seed is public.
 `allowed_signers` pins its OpenSSH public key for the identity `assignment-fixture`.
 
+The header and signed public object use the format
+`ataniq.assignment.schema-1.v2`. This deliberate pre-storage cutover
+keeps schema number 1 and starts new header hashes, pins and cursors.
+Readers refuse the previous format.
+
 Each `.json` file contains the canonical public body with no final LF. Its
 paired `.sig` is an SSHSIG over `ataniq.assignment.event.v1`, a NUL byte and
 the exact body. The numbered files follow a single project through a transfer
@@ -21,7 +26,7 @@ while the independent checkpoint comparison detects the missing commit.
 
 The independent historical-review pair extends the hold at revision 13. Its
 starting journal checkpoint is
-`72446f6adbd7e561e9c8064ba3574ad06b1028b23169503ebba56d5d23e386d2`.
+`b4be73a7ac3f98b44b5e983d095f3cd8ee73c57255651a83d3a9bbb52df0d68a`.
 Three hand-specified commands freeze the reverse transfer, inventory it with
 SHA-256 of the literal `reverse inventory`, and review the original hold.
 The reference used sorted compact ASCII JSON for the private and public
@@ -29,9 +34,14 @@ objects, SHA-256 with each specified domain for commitments, and OpenSSH
 SSHSIG with the public fixture seed. The review at revision 16 names
 `move` and projects the inventory and active ID of `reverse`. Its fixed
 signed-envelope SHA-256 is
-`495b74e904214d94c61c3619d577ec469440fcbada8123659c5acfe4d2da5947`.
+`de1e8d0ab38529b39846d8a4c9421e4fb27ea583b5a81b1f63149d6def8a8c26`.
 
-Regeneration checks the independent body, detached signature and signed cursor
+Run `python3 internal/assignment/wire/testdata/check_vector.py` from the
+repository root to reproduce the historical pair from the header, 16 fixture
+commands and the test key using Python's standard library and OpenSSH. Its
+`--write` option replaces only the independent pair for a deliberate cutover.
+
+Go regeneration checks the independent body, detached signature and signed cursor
 before writing any generated fixture. The historical-review pair is read-only
 in both modes. Regenerate the other fixtures from the repository root with
 `sh scripts/go-tool.sh test ./internal/assignment/wire -run '^TestGoldenEvents$' -update`.

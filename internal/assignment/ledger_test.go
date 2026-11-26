@@ -46,8 +46,8 @@ func TestCanonicalCommitments(t *testing.T) {
 	hash, _ := ledgerDigest(e)
 	// Independently computed SHA-256 over each domain, NUL and its schema-1 bytes.
 	const wantRequest = "16d174bd564a20701b49ea795dffe1ef6974d5c080bcf4a997f0d1747663f3d3"
-	const wantPublic = "5b88a159cdd5a0cbd9d7a677cfbcedb612ebd9e9703d1018ef5ec35e8c65139b"
-	const wantLedger = "5a3d82948af6e54770d337a84773ab34b3b2f3ddc2b30106aaebd7cff1c5d6f8"
+	const wantPublic = "920e1c475b2984a626eade54633f0e0bbac8bcca6a939884c1f047cceba98694"
+	const wantLedger = "368300d1ae5981d0521b595c52751f09107304a996184f1cb8c07c476c277834"
 	if one != wantRequest || e.Result.EventID != wantPublic || hash != wantLedger {
 		t.Fatal("commitment differs from golden", one, e.Result.EventID, hash)
 	}
@@ -475,6 +475,74 @@ func TestExactFrames(t *testing.T) {
 	}
 	e.Signature = "\xff"
 	if _, err = e.RecordBytes(); !errors.Is(err, ErrInvalid) {
+		t.Fatal(err)
+	}
+}
+func TestDecideReservesSignedFrameSpace(t *testing.T) {
+	s := seeded(t)
+	c := next(s.ledger, key, ConfirmReceipt, "seed", "worker")
+	c.Evidence[0].Digest = sha256Hex([]byte("amended"))
+	// Attached observations are journaled with a correction. Fill the record
+	// with distinct, bounded references and then tune the last bytes exactly.
+	work := c.Evidence[0]
+	work.Kind, work.Route, work.Outcome = "effect", "worker", "outstanding"
+	for i := 0; ; i++ {
+		work.Subject = fmt.Sprint("child-", i)
+		c.Evidence = append(c.Evidence, work)
+		e, _, err := Decide(s.ledger, c)
+		if errors.Is(err, ErrLimit) {
+			c.Evidence = c.Evidence[:len(c.Evidence)-1]
+			break
+		}
+		if err != nil || e == nil {
+			t.Fatal(err)
+		}
+	}
+	e, _, err := Decide(s.ledger, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Signature = strings.Repeat("A", 262)
+	raw, err := e.RecordBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	padding := recordLimit - len(raw)
+	for i := 1; padding > 0; i++ {
+		add := min(padding, MaxReferenceBytes-len(c.Evidence[i].Revision))
+		c.Evidence[i].Revision += strings.Repeat("x", add)
+		padding -= add
+	}
+	e, _, err = Decide(s.ledger, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Signature = strings.Repeat("A", 262)
+	raw, err = e.RecordBytes()
+	if err != nil || len(raw) != recordLimit {
+		t.Fatal(len(raw), err)
+	}
+	c.Actor += "x"
+	refused(t, s.ledger, c, ErrLimit)
+}
+
+func TestPreStorageFormatCutover(t *testing.T) {
+	s := fresh(t)
+	e := s.accept(t, next(s.ledger, key, Seed, "seed", ""))
+	root, err := header.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := bytes.Replace(root, []byte(Format), []byte("ataniq.assignment"), 1)
+	if _, err := ReplayFromHeader(old, []Event{e}, testKey{}); !errors.Is(err, ErrFormat) {
+		t.Fatal(err)
+	}
+	raw, err := e.RecordBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old = bytes.Replace(raw, []byte(`"format":"`+Format+`",`), nil, 1)
+	if _, err := DecodeRecord(old); !errors.Is(err, ErrFormat) {
 		t.Fatal(err)
 	}
 }

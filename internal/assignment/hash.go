@@ -3,9 +3,16 @@ package assignment
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"unicode/utf8"
 )
+
+// Format identifies this pre-storage revision of schema 1 in both the header
+// and the signed projection. Enrollment pins and cursors start at this format.
+const Format = "ataniq.assignment.schema-1.v2"
+
+var ErrFormat = errors.New("assignment: unsupported format (expected " + Format + ")")
 
 const recordLimit = 64 << 10
 const (
@@ -109,7 +116,10 @@ func (h Header) Bytes() ([]byte, error) {
 	if h.Schema != 1 || h.Authority == "" || h.Store == "" || h.Incarnation == "" || h.KeyID == "" || h.LedgerID == "" {
 		return nil, ErrInvalid
 	}
-	return frame(headerRecord{"ataniq.assignment", h})
+	if !referencesFit(h.Authority, h.Store, h.Incarnation, h.KeyID, h.LedgerID) {
+		return nil, ErrLimit
+	}
+	return frame(headerRecord{Format, h})
 }
 
 // NewLedgerFromHeader validates and pins the exact bytes presented at recovery.
@@ -121,6 +131,9 @@ func NewLedgerFromHeader(raw []byte) (Ledger, error) {
 	var rec headerRecord
 	if err := json.Unmarshal(raw, &rec); err != nil {
 		return Ledger{}, ErrInvalid
+	}
+	if rec.Format != Format {
+		return Ledger{}, ErrFormat
 	}
 	canonical, err := rec.Header.Bytes()
 	if err != nil {
@@ -169,6 +182,9 @@ func DecodeRecord(raw []byte) (Event, error) {
 	var r journalRecord
 	if err := json.Unmarshal(raw, &r); err != nil || r.Schema != 1 {
 		return Event{}, ErrChain
+	}
+	if r.Public.Format != Format {
+		return Event{}, ErrFormat
 	}
 	e := Event{Schema: r.Schema, Sequence: r.Sequence, PreviousHash: r.PreviousHash, RequestDigest: r.RequestDigest, Command: r.Command, Result: r.Result, Public: r.Public, Signature: r.Public.Signature}
 	e.Public.Signature = ""

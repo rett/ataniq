@@ -1,14 +1,14 @@
 package assignment
 
 import (
-	"slices"
 	"testing"
 )
 
-func TestHistoricalCorrectionFreezesCurrentTransfer(t *testing.T) {
+func TestHistoricalCorrectionQuarantinesCurrentTransfer(t *testing.T) {
 	s := forward(t, len(forwardSteps))
 	old, _ := s.ledger.Transfer(key, "T")
 	s.steps(t, "U", []step{{kind: RollbackFreeze}})
+	begin := s.events[len(s.events)-1]
 	row, _ := s.ledger.Row(key)
 	c := command(row, old, FenceReceipt, "T", "worker")
 	report := &c.Evidence[0]
@@ -18,7 +18,7 @@ func TestHistoricalCorrectionFreezesCurrentTransfer(t *testing.T) {
 	child.Digest = sha256Hex([]byte("late child"))
 	c.Evidence = append(c.Evidence, child)
 	e := s.accept(t, c)
-	if e.Result.Head.TransferID != "U" || e.Result.Head.Phase != PhaseReceiptDisputed {
+	if e.Result.Head.TransferID != "U" || e.Result.Head.Phase != PhaseQuarantined {
 		t.Fatal(e.Result)
 	}
 	l, err := recoverAt(s.events, s.ledger.Checkpoint())
@@ -28,22 +28,17 @@ func TestHistoricalCorrectionFreezesCurrentTransfer(t *testing.T) {
 	if got, ok := Lookup(l, key, "T", c.RequestID); !ok || got != e.Result {
 		t.Fatal(got)
 	}
-	u, _ := l.Transfer(key, "U")
-	if !slices.Contains(u.Disputes, c.Evidence[0]) || !slices.Contains(u.Outstanding, Effect{"late", "worker"}) {
-		t.Fatal(u)
+	active, ok := l.Transfer(key, "U")
+	latest, found := Lookup(l, key, "U", "")
+	if !ok || !found || latest != e.Result || latest.Disposition != active.Disposition ||
+		latest.Head.Phase != active.Phase || latest.Head.Revision != active.PhaseRevision {
+		t.Fatal("historical correction missing from active disposition", active, latest)
 	}
-	refused(t, l, next(l, key, Inventory, "U", ""), ErrEvidence)
-	resolve := next(l, key, ReceiptReconciled, "U", "")
-	proof := c.Evidence[0]
-	proof.Kind, proof.Subject, proof.Outcome = "reconciliation", proof.Digest, "reconciled"
-	proof.Scope, proof.ScopeEventID, proof.TransferID = resolve.Expected, "", "U"
-	resolve.Evidence = []Evidence{proof}
-	for _, work := range u.Outstanding {
-		done := proof
-		done.Kind, done.Subject, done.Route, done.Outcome = "effect", work.ID, work.Route, "settled"
-		resolve.Evidence = append(resolve.Evidence, done)
+	if original, ok := Lookup(l, key, "U", begin.Command.RequestID); !ok || original != begin.Result {
+		t.Fatal(original)
 	}
-	s.accept(t, resolve)
-	s.steps(t, "U", forwardSteps[1:])
-	assertHolder(t, s.ledger, legacy, 3, true)
+	if _, misindexed := Lookup(l, key, "U", c.RequestID); misindexed {
+		t.Fatal("historical request indexed under active transfer")
+	}
+	refused(t, l, next(l, key, Inventory, "U", ""), ErrPhase)
 }
