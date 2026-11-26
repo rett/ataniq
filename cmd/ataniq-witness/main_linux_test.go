@@ -32,12 +32,12 @@ func fixture(t *testing.T) (config, string) {
 	dir := t.TempDir()
 	c := config{Identity: durable.Identity{Witness: "witness", Store: "directory", Incarnation: "first", Epoch: 7},
 		Slot:  cp.Slot{Witness: "witness", Authority: "authority", Store: "ledger"},
-		State: filepath.Join(dir, "state"), Seed: filepath.Join(dir, "seed"), Guard: filepath.Join(dir, "guard"),
+		State: filepath.Join(dir, "state"), Seed: filepath.Join(dir, "seed"),
 		Socket: filepath.Join(dir, "run", "admin.sock"), ServiceTLS: filepath.Join(dir, "tls"), OwnerTLS: filepath.Join(dir, "owner"),
 		Home: "192.0.2.4:7443", HomePin: strings.Repeat("a", 64)}
 	must(t, os.Mkdir(filepath.Dir(c.Socket), 0700))
 	must(t, os.Mkdir(c.State, 0700))
-	must(t, os.Mkdir(c.Guard, 0755))
+	must(t, os.MkdirAll(filepath.Join(dir, guardDirectory), 0755))
 	service, err := seatgate.WriteIdentityFiles(c.ServiceTLS, "witness")
 	must(t, err)
 	owner, err := seatgate.WriteIdentityFiles(c.OwnerTLS, "owner")
@@ -130,11 +130,11 @@ func TestWitnessGuardChangesBetweenRequests(t *testing.T) {
 	w, err := durable.Create(store)
 	must(t, err)
 	defer w.Close()
-	g := &guardedWitness{Witness: w, dir: c.Guard, turn: make(chan struct{}, 1)}
+	g := &guardedWitness{Witness: w, dir: filepath.Join(filepath.Dir(path), guardDirectory), turn: make(chan struct{}, 1)}
 	must(t, w.Grant(c.Slot, store.HomePin, true))
 	a := ownerAdmin{g}
 	ctx := t.Context()
-	guard := filepath.Join(c.Guard, "decisions.inhibit")
+	guard := filepath.Join(g.dir, "decisions.inhibit")
 	must(t, os.WriteFile(guard, nil, 0600))
 	_, err = g.SettleHome(ctx, 7, c.Slot, cp.ID{1}, store.HomePin)
 	if !errors.Is(err, cp.ErrUnavailable) {
@@ -152,7 +152,7 @@ func TestWitnessGuardChangesBetweenRequests(t *testing.T) {
 	if !errors.Is(err, cp.ErrNotApplied) {
 		t.Fatal(err)
 	}
-	must(t, os.Remove(c.Guard))
+	must(t, os.Remove(g.dir))
 	r, err := a.Status(ctx, cp.ID{4})
 	must(t, err)
 	st, err := cp.VerifyDirectoryStatus(store.Pin, 7, cp.ID{4}, r)
@@ -180,7 +180,7 @@ func TestWitnessOwnerSocketRecovery(t *testing.T) {
 		t.Skipf("private Unix socket denied: %v", err)
 	}
 	must(t, err)
-	g := &guardedWitness{Witness: w, dir: c.Guard, recoveryOnly: true, turn: make(chan struct{}, 1)}
+	g := &guardedWitness{Witness: w, dir: filepath.Join(filepath.Dir(path), guardDirectory), recoveryOnly: true, turn: make(chan struct{}, 1)}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- serve(ctx, server, g, ln, c.OwnerPin, uint32(os.Geteuid())) }()
@@ -279,8 +279,8 @@ func TestWitnessOverlappingPaths(t *testing.T) {
 		change func(*config)
 	}{
 		{"socket in state", func(x *config) { x.Socket = filepath.Join(x.State, "s") }},
-		{"guard in state", func(x *config) { x.Guard = filepath.Join(x.State, "g") }},
-		{"guard equals state", func(x *config) { x.Guard = x.State }},
+		{"guard in state", func(x *config) { x.State = filepath.Dir(guardDirectory) }},
+		{"guard equals state", func(x *config) { x.State = guardDirectory }},
 		{"seed in state", func(x *config) { x.Seed = filepath.Join(x.State, "seed") }},
 		{"owner below service TLS", func(x *config) { x.OwnerTLS = filepath.Join(x.ServiceTLS, "owner") }},
 		{"service below owner TLS", func(x *config) { x.ServiceTLS = filepath.Join(x.OwnerTLS, "service") }},
@@ -315,5 +315,30 @@ func TestWitnessIdentityCharacters(t *testing.T) {
 				t.Errorf("%q: %v", value, err)
 			}
 		}
+	}
+}
+
+func TestWitnessPinnedGuard(t *testing.T) {
+	_, configPath := fixture(t)
+	call(t, configPath, "init", 0)
+	dir := filepath.Join(filepath.Dir(configPath), "var/lib/authority-host")
+	must(t, os.Remove(dir))
+	call(t, configPath, "check", 1)
+	must(t, os.WriteFile(dir, nil, 0644))
+	call(t, configPath, "check", 1)
+	must(t, os.Remove(dir))
+	must(t, os.Mkdir(dir, 0755))
+	must(t, os.WriteFile(filepath.Join(dir, "decisions.inhibit"), nil, 0644))
+	call(t, configPath, "check", 0)
+	data, err := os.ReadFile(configPath)
+	must(t, err)
+	var fields map[string]json.RawMessage
+	must(t, json.Unmarshal(data, &fields))
+	fields["guard"] = json.RawMessage(`"/another/guard"`)
+	data, err = json.Marshal(fields)
+	must(t, err)
+	must(t, os.WriteFile(configPath, data, 0600))
+	if got := call(t, configPath, "check", 1); got != "invalid witness configuration\n" {
+		t.Fatal(got)
 	}
 }

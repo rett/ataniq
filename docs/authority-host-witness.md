@@ -20,7 +20,10 @@ reporting storage failure, an unclean end or interrupted publication also exits
 1. The switch's ordinary decision inhibit allows status to succeed. Local
 root needs its own pinned TLS key to administer the witness. The socket's
 parent must be a service-owned 0700 directory. Keep that directory, state,
-seed, guard and both TLS directories at disjoint paths. Before startup,
+seed and both TLS directories separate from each other and from the fixed switch
+guard directory, `/var/lib/authority-host`. Remove the former `guard` key
+from existing configurations. Preflight requires a readable guard directory
+even when the switch has inhibited decisions. Before startup,
 `check` verifies the socket path fits in 107 bytes, its private parent is
 writable and the name is free. It leaves the socket untouched. A bind can
 still fail at startup. Both cases report `owner socket already present or unusable`.
@@ -150,7 +153,6 @@ store, incarnation and authority identifiers. Encode the nonzero activation epoc
   },
   "state": "/var/lib/ataniq-witness/store",
   "seed": "/var/lib/ataniq-witness/seed",
-  "guard": "/var/lib/authority-host",
   "socket": "/run/ataniq-witness/owner.sock",
   "service_tls": "/var/lib/ataniq-witness/tls",
   "owner_tls": "/etc/authority-host/witness/owner-tls",

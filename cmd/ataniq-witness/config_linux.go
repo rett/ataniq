@@ -20,12 +20,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const guardDirectory = "/var/lib/authority-host"
+
 type config struct {
 	Identity   durable.Identity `json:"identity"`
 	Slot       cp.Slot          `json:"slot"`
 	State      string           `json:"state"`
 	Seed       string           `json:"seed"`
-	Guard      string           `json:"guard"`
 	Socket     string           `json:"socket"`
 	ServiceTLS string           `json:"service_tls"`
 	OwnerTLS   string           `json:"owner_tls"`
@@ -130,7 +131,7 @@ func loadConfig(path string) (config, durable.Config, error) {
 	if !utf8.Valid(b) || seatgate.DecodeStrict(b, &c) != nil {
 		return c, store, errConfig
 	}
-	for _, p := range []string{c.State, c.Seed, c.Guard, c.ServiceTLS, c.OwnerTLS, c.Socket} {
+	for _, p := range []string{c.State, c.Seed, c.ServiceTLS, c.OwnerTLS, c.Socket} {
 		if !absolute(p) {
 			return c, store, errConfig
 		}
@@ -146,7 +147,7 @@ func loadConfig(path string) (config, durable.Config, error) {
 		}
 	}
 	// Each storage, key, guard and runtime location has a separate owner or lifecycle.
-	paths := []string{c.State, c.Seed, c.Guard, filepath.Dir(c.Socket), c.ServiceTLS, c.OwnerTLS}
+	paths := []string{c.State, c.Seed, guardDirectory, filepath.Dir(c.Socket), c.ServiceTLS, c.OwnerTLS}
 	for i, p := range paths {
 		if p == "/" {
 			return c, store, errConfig
