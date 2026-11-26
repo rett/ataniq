@@ -4,12 +4,64 @@ import (
 	"maps"
 	"slices"
 	"strings"
-
-	authorityhost "ataniq/deploy/authority-host"
 )
 
 const WitnessUnit = "etc/systemd/system/ataniq-witness.service"
 const WitnessConfig = "/etc/authority-host/witness/config.json"
+
+// Keep the standalone checker independent of the candidate release and the
+// deployment packages. TestWitnessReleaseScan compares this policy with the
+// shipped unit, including all repeated values.
+const witnessUnitPolicy = `[Unit]
+Description=Authority host checkpoint witness
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+[Service]
+Type=exec
+User=ataniq-witness
+Group=ataniq-witness
+ExecStart={release}/bin/ataniq-witness run --config /etc/authority-host/witness/config.json
+Restart=on-failure
+RestartPreventExitStatus=1
+RestartSec=5s
+RuntimeDirectory=ataniq-witness
+RuntimeDirectoryMode=0700
+StateDirectory=ataniq-witness
+StateDirectoryMode=0700
+UMask=0077
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+SocketBindDeny=any
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+MemoryMax=256M
+TasksMax=64
+`
 
 // witnessSettings accepts the literal syntax of the shipped unit. Keep repeated
 // values in order because systemd can accumulate or reset a setting.
@@ -44,7 +96,7 @@ func witnessSettings(text string) (map[string][]string, bool) {
 func WitnessUnitSafe(rel, text, releaseDir string) bool {
 	_, name, drop := releaseUnitName(rel)
 	if rel == WitnessUnit {
-		want, valid := witnessSettings(strings.ReplaceAll(authorityhost.WitnessUnit(), "{release}", releaseDir))
+		want, valid := witnessSettings(strings.ReplaceAll(witnessUnitPolicy, "{release}", releaseDir))
 		got, ok := witnessSettings(text)
 		return valid && ok && maps.EqualFunc(got, want, slices.Equal[[]string])
 	}
