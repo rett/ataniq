@@ -85,6 +85,18 @@ func TestImportRefusals(t *testing.T) {
 		name, code string
 		setup      func(e *env, in string)
 	}{
+		{"user service", "user-service", func(e *env, in string) {
+			e.write(filepath.Join(in, "etc/systemd/user/app.service"), "[Service]\n", 0o644)
+			e.sums(in)
+		}},
+		{"user template drop-in", "user-service", func(e *env, in string) {
+			e.write(filepath.Join(in, "etc/systemd/user/app@.service.d/10-start.conf"), "[Service]\n", 0o644)
+			e.sums(in)
+		}},
+		{"user service type drop-in", "user-service", func(e *env, in string) {
+			e.write(filepath.Join(in, "etc/systemd/user/service.d/env.conf"), "[Service]\n", 0o644)
+			e.sums(in)
+		}},
 		{"symbolic link", CodeBadEntry, func(e *env, in string) {
 			os.Symlink("/etc/passwd", filepath.Join(in, "etc/link"))
 		}},

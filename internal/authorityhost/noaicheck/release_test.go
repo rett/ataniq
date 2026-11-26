@@ -12,12 +12,12 @@ const releaseDir = "opt/authority-host/releases/0008-cd34ef5"
 
 // plantCandidate plants a candidate release beneath the root, not linked
 // into the host: a unit that sets a provider key, one whose EnvironmentFile
-// on the host does, a user unit with a home-relative one, a masked unit,
+// on the host does, a user socket with a home-relative one, a masked unit,
 // and a Caddyfile that names a provider key.
 func plantCandidate(f *fixture) {
 	f.file(releaseDir+"/etc/systemd/app.service", "[Service]\nEnvironment=OPENAI_API_KEY="+secret+"\n")
 	f.file(releaseDir+"/etc/systemd/app.service.d/env.conf", "[Service]\nEnvironmentFile=/etc/app/env\nEnvironmentFile=/etc/app/missing\n")
-	f.file(releaseDir+"/etc/systemd/user/u.service", "[Service]\nEnvironmentFile=-%h/.config/u.env\n")
+	f.file(releaseDir+"/etc/systemd/user/u.socket", "[Socket]\nEnvironmentFile=-%h/.config/u.env\n")
 	f.link(releaseDir+"/etc/systemd/off.service", "/dev/null")
 	f.file(releaseDir+"/etc/caddy/Caddyfile", "example.invalid {\n\treverse_proxy {$UPSTREAM}\n\theader X-Key {env.ANTHROPIC_API_KEY}\n}\n")
 	f.file(releaseDir+"/etc/nftables/rules.nft", "table inet filter {\n\tchain input { type filter hook input priority 0; policy drop; }\n}\n")
@@ -186,9 +186,9 @@ func TestCheckReleaseMergesUnits(t *testing.T) {
 			f.exe(releaseDir + "/bin/app")
 			f.file(unit, "[Service]\nExecStart=/"+releaseDir+"/bin/app\n")
 		}, nil},
-		{"a user unit's drop-in resets it", func(f *fixture) {
-			f.file(releaseDir+"/etc/systemd/user/u.service", "[Service]\nEnvironmentFile=/etc/app/missing\n")
-			f.file(releaseDir+"/etc/systemd/user/u.service.d/env.conf", "[Service]\nEnvironmentFile=\n")
+		{"a user socket's drop-in resets it", func(f *fixture) {
+			f.file(releaseDir+"/etc/systemd/user/u.socket", "[Socket]\nEnvironmentFile=/etc/app/missing\n")
+			f.file(releaseDir+"/etc/systemd/user/u.socket.d/env.conf", "[Socket]\nEnvironmentFile=\n")
 		}, nil},
 		{"a reset before the file keeps it", func(f *fixture) {
 			f.file(drop+"10-reset.conf", "[Service]\nEnvironmentFile=\n")

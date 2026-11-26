@@ -143,13 +143,15 @@ var reasons = map[string]string{
 	CodeNoService:        "no decision service, but the release is not static",
 	CodeInhibitCond:      "a unit gates its start on the decision inhibit",
 	CodeWitness:          "witness isolation, component or health check is invalid",
-	noaicheck.UnitSyntax: "unit contains a continuation, invalid UTF-8 or a forbidden control character",
+	noaicheck.UnitSyntax: "unit contains a continuation, invalid UTF-8, or a forbidden control, whitespace or format character",
 	CodeDecisionExec:     "a decision service does not run a binary of the release",
 	CodeValidatorNone:    "no validator for a shipped file",
 	CodeValidatorTwice:   "more than one validator for a file",
 	CodeValidatorOther:   "a validator names a file the release does not ship there",
 	CodeReloadNone:       "reload.list does not restart or reload what the release ships",
 	CodeStopNone:         "stop.list does not stop a decision service",
+
+	noaicheck.UserService: "release services must use the system manager",
 
 	CodeNoAIStart:   "the shipped no-AI check did not start",
 	CodeNoAITimeout: "the shipped no-AI check did not finish in 60 seconds",

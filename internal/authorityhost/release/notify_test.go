@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"ataniq/internal/authorityhost/noaicheck"
 	"ataniq/internal/authorityhost/switcher"
 )
 
@@ -284,8 +285,8 @@ func TestNotifyUnit(t *testing.T) {
 	// The VAPID subject and any key are the owner's, in an environment file
 	// of the host: nothing like one is in the unit.
 	for _, bad := range []string{"mailto:", "BEGIN", "PRIVATE KEY"} {
-		for _, line := range strings.Split(text, "\n") {
-			if l := strings.TrimSpace(line); l != "" && l[0] != '#' && strings.Contains(l, bad) {
+		for line := range strings.Lines(text) {
+			if l := noaicheck.TrimUnitSpace(line); l != "" && l[0] != '#' && strings.Contains(l, bad) {
 				t.Errorf("the unit holds %q", bad)
 			}
 		}

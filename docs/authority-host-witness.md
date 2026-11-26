@@ -185,6 +185,9 @@ runuser -u ataniq-witness -- WITNESS check --config CONFIG
 ```
 
 Link the release-managed unit and create the firewall drop-in as local root.
+Use ASCII spaces or tabs around directives. The release and host checks report
+`unit-syntax` for non-ASCII whitespace, U+200B–U+200F, U+2060 or U+FEFF
+anywhere in a unit or drop-in.
 
 ```sh
 ln -s /opt/authority-host/current/etc/systemd/system/ataniq-witness.service /etc/systemd/system/ataniq-witness.service
@@ -350,6 +353,9 @@ pins, epoch and signed status before resuming admission. When returning to a
 release without the witness, confirm it is stopped. Keep its single-unit
 stop command in the host list. A stop reporting exit 5 still requires
 the manager to confirm that the canonical unit is inactive or absent.
+Departure checks query the system manager. Release checks and switch import
+refuse services, templates and service drop-ins under `etc/systemd/user/`
+with `user-service`.
 The switch records the verified service names in the transaction journal
 and the current release’s names in `deploy.json`. A shipped service drop-in
 such as `worker.service.d/10-start.conf` records `worker.service`, even if

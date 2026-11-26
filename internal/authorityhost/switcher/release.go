@@ -363,6 +363,9 @@ func (r *release) verify(trust entryCheck) error {
 		if !strings.HasPrefix(p, "etc/systemd/") {
 			continue
 		}
+		if noaicheck.ReleaseUserService(p) {
+			return failf(noaicheck.UserService, "release services must use the system manager: %s", q(p))
+		}
 		name := noaicheck.ReleaseUnitName(p)
 		if !strings.HasSuffix(name, ".service") {
 			continue

@@ -69,7 +69,7 @@ func witnessSettings(text string) (map[string][]string, bool) {
 	settings := make(map[string][]string)
 	section := ""
 	for raw := range strings.Lines(text) {
-		line := strings.Trim(strings.TrimSuffix(raw, "\n"), " \t\r")
+		line := TrimUnitSpace(raw)
 		if line == "" || line[0] == '#' || line[0] == ';' {
 			continue
 		}
@@ -84,8 +84,8 @@ func witnessSettings(text string) (map[string][]string, bool) {
 			if !ok || section == "" || strings.HasPrefix(line, "[") {
 				return nil, false
 			}
-			key = section + strings.Trim(key, " \t")
-			settings[key] = append(settings[key], strings.Trim(value, " \t"))
+			key = section + TrimUnitSpace(key)
+			settings[key] = append(settings[key], TrimUnitSpace(value))
 		}
 	}
 	return settings, true
@@ -109,8 +109,8 @@ func WitnessUnitSafe(rel, text, releaseDir string) bool {
 		return ok && len(settings) == 0
 	}
 	section := ""
-	for line := range strings.SplitSeq(text, "\n") {
-		line = strings.TrimSpace(line)
+	for line := range strings.Lines(text) {
+		line = TrimUnitSpace(line)
 		if strings.HasPrefix(line, "[") {
 			section = line
 			continue
@@ -119,7 +119,7 @@ func WitnessUnitSafe(rel, text, releaseDir string) bool {
 		if !ok {
 			continue
 		}
-		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		k, v = TrimUnitSpace(k), TrimUnitSpace(v)
 		if section == "[Socket]" && k == "Service" && strings.Trim(v, "\"'") == "ataniq-witness.service" {
 			return false
 		}
