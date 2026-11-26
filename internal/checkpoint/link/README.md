@@ -14,7 +14,7 @@ Mutation requests carry the canonical bytes from `checkpoint.Intent.Body`. Home 
 
 A mutation returns one receipt frame. A read returns three ordered frames carrying current state, the fresh signed receipt and the optional historical receipt. Two empty fields in the last frame mean no receipt matched. Each frame fits the same ceiling even when both receipts contain maximum-length identifiers. The client verifies the fresh challenge, slot, guard, epoch and historical evidence before returning the view. A signed inhibited view accompanies `ErrUnavailable`.
 
-A server allows eight simultaneous connections across its listeners. The handshake has five seconds and the complete request and reply have another 30 seconds. Each authenticated principal has a rolling limit of 60 calls per minute for each of mutations, current reads, historical reads and grant checks. Budgets survive reconnects. Closing the listener cancels its workers.
+A server allows eight simultaneous connections across its listeners. The handshake has five seconds and the complete request and reply have another 30 seconds. Each authenticated principal has a rolling limit of 60 calls per minute shared across mutations, current reads and grant checks, plus 60 historical reads per minute. Budgets survive reconnects. Closing the listener cancels its workers.
 
 ## Lost acknowledgements
 

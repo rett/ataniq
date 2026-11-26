@@ -143,12 +143,9 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 			}
 			peer = string(f[1])
 		}
-		pool := ordinaryReads
-		if q.ReceiptID != (cp.ID{}) {
+		pool := ordinary
+		if m.Kind != frame.Connect && q.ReceiptID != (cp.ID{}) {
 			pool = recoveryReads
-		}
-		if m.Kind == frame.Connect {
-			pool = grantChecks
 		}
 		if !s.limits.allow(peer, pool) {
 			return nil, cp.ErrUnavailable
@@ -189,7 +186,7 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 		if err := authenticate(w, slot, f[1], f[2], f[3]); err != nil {
 			return nil, err
 		}
-		if !s.limits.allow(string(f[1]), mutations) {
+		if !s.limits.allow(string(f[1]), ordinary) {
 			return nil, cp.ErrUnavailable
 		}
 		receipt, err = w.RawSubmit(ctx, slot, f[1], operation[m.Kind], f[2], f[3], f[4])
@@ -197,7 +194,7 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 		if a == nil {
 			return nil, cp.ErrRefused
 		}
-		if !s.limits.allow("owner", mutations) {
+		if !s.limits.allow("owner", ordinary) {
 			return nil, cp.ErrUnavailable
 		}
 		intent, parseErr := cp.ParseIntent(operation[m.Kind], s.witnessKeyID, f[0])

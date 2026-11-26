@@ -225,11 +225,11 @@ func TestReadAuthenticationAndOwnerIsolation(t *testing.T) {
 func TestRatesAcrossConnections(t *testing.T) {
 	f := newFixture(t, "witness")
 	e := f.serve(t)
-	f.enroll(t, f.w.Administration())
+	state := f.enroll(t, f.w.Administration())
 	c, err := e.Connect(t.Context(), f.slot, f.home, f.session)
 	must(t, err)
 	q := cp.ReadRequest{Slot: f.slot}
-	for i := 1; i <= 60; i++ {
+	for i := 1; i < 60; i++ {
 		q.Challenge[0] = byte(i)
 		_, err = c.Read(t.Context(), q)
 		must(t, err)
@@ -238,13 +238,26 @@ func TestRatesAcrossConnections(t *testing.T) {
 	if _, err := c.Read(t.Context(), q); !errors.Is(err, cp.ErrUnavailable) {
 		t.Fatalf("read limit: %v", err)
 	}
-	fresh, err := e.Connect(t.Context(), f.slot, f.home, key(t))
-	must(t, err)
+	_, err = c.Claim(t.Context(), cp.Claim{Mutation: cp.Mutation{ID: cp.ID{2}, Expected: state}, NewSessionPublicKey: public(f.session)})
+	if !errors.Is(err, cp.ErrUnavailable) {
+		t.Fatalf("mutation exceeded shared allowance: %v", err)
+	}
+	_, err = e.Connect(t.Context(), f.slot, f.home, key(t))
+	if !errors.Is(err, cp.ErrUnavailable) {
+		t.Fatalf("grant check exceeded shared allowance: %v", err)
+	}
 	q.ReceiptID = cp.ID{1}
-	v, err := fresh.Read(t.Context(), q)
+	v, err := c.Read(t.Context(), q)
 	must(t, err)
 	if v.Prior == nil {
 		t.Fatal("missing recovery receipt")
+	}
+	for range 59 {
+		_, err = c.Read(t.Context(), q)
+		must(t, err)
+	}
+	if _, err = c.Read(t.Context(), q); !errors.Is(err, cp.ErrUnavailable) {
+		t.Fatalf("recovery allowance: %v", err)
 	}
 }
 
