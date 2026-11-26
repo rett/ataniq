@@ -20,3 +20,11 @@ reporting storage failure, an unclean end or interrupted publication also exits
 1. The switch's ordinary decision inhibit allows status to succeed. Local
 root needs its own pinned TLS key to administer the witness. The socket's
 parent must be a service-owned 0700 directory.
+
+Build the witness for Linux with the release toolchain. On the development
+host, compose the base, seat and notifier release trees as described in
+the authority-host README, then copy `deploy/authority-host/witness/.` over the
+result before filling the baseline. Add `--bin build/authority-host/ataniq-witness`
+to the release build and check the resulting release. The switch uses the
+witness's read-only preflight at startup and a challenged local status after
+restart. The witness needs no additional enabled unit, port or package.

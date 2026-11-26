@@ -3,9 +3,11 @@ package release
 import (
 	"os"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 
+	"ataniq/internal/authorityhost/noaicheck"
 	"ataniq/internal/authorityhost/switcher"
 )
 
@@ -108,11 +110,21 @@ func (c *checker) coverage(root *os.Root, m switcher.Manifest, id string, files 
 			ok = false
 		}
 	}
-	units := c.units(root, files)
+	_, hasWitness := files["bin/ataniq-witness"]
+	_, hasUnit := files[noaicheck.WitnessUnit]
+	if hasWitness != hasUnit {
+		c.add(CodeWitness, noaicheck.WitnessUnit)
+	}
+	units := c.units(root, files, relDir, hasWitness || hasUnit)
 	if !ok {
 		return
 	}
 
+	if hasWitness && !slices.ContainsFunc(l.health, func(args []string) bool {
+		return slices.Equal(args, []string{relDir + "/bin/ataniq-witness", "status", "--config", noaicheck.WitnessConfig})
+	}) {
+		c.add(CodeWitness, switcher.HealthCmd)
+	}
 	c.programs(relDir, files, &l)
 
 	if len(l.health) == 0 {
@@ -166,7 +178,7 @@ func excused(name string, units []unit, id string, files map[string]entry) bool 
 
 // units reads every file under etc/systemd and returns those that start a
 // program. It also reports a unit that gates its start on the inhibit.
-func (c *checker) units(root *os.Root, files map[string]entry) []unit {
+func (c *checker) units(root *os.Root, files map[string]entry, relDir string, witness bool) []unit {
 	var out []unit
 	for _, p := range paths(files) {
 		if !strings.HasPrefix(p, systemdDir) {
@@ -181,6 +193,9 @@ func (c *checker) units(root *os.Root, files map[string]entry) []unit {
 			// Not built by Build, which replaces it: systemd would run
 			// the words as they are.
 			c.add(CodeUnitPlacehold, p)
+		}
+		if witness && !noaicheck.WitnessUnitSafe(p, string(data), relDir) {
+			c.add(CodeWitness, p)
 		}
 		execs, gated := parseUnit(string(data))
 		if gated {

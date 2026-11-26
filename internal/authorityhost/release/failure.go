@@ -69,6 +69,7 @@ const (
 	CodeStaticService  = "static-has-service"
 	CodeNoService      = "no-decision-service"
 	CodeInhibitCond    = "inhibit-start-condition"
+	CodeWitness        = "witness-service"
 	CodeDecisionExec   = "decision-exec"
 	CodeValidatorNone  = "validator-missing"
 	CodeValidatorTwice = "validator-twice"
@@ -139,6 +140,7 @@ var reasons = map[string]string{
 	CodeStaticService:  "a static release carries a service unit",
 	CodeNoService:      "no decision service, but the release is not static",
 	CodeInhibitCond:    "a unit gates its start on the decision inhibit",
+	CodeWitness:        "witness isolation, component or health check is invalid",
 	CodeDecisionExec:   "a decision service does not run a binary of the release",
 	CodeValidatorNone:  "no validator for a shipped file",
 	CodeValidatorTwice: "more than one validator for a file",

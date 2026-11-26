@@ -180,10 +180,26 @@ func (c *Checker) CheckRelease(dir string) error {
 	s := c.newEnvScan()
 	units := map[string]*candUnit{}
 	var order []*candUnit
+	_, _, binErr := rt.lstat("bin/ataniq-witness")
+	hasWitness := binErr == nil
+	c.witnessRelease = hasWitness
+	if binErr != nil && !errors.Is(binErr, fs.ErrNotExist) {
+		fail("bin/ataniq-witness", binErr)
+	}
+	seenWitness := false
 	walk(releaseUnits, func(e *wentry) {
 		p, data, ok := read(e)
 		if !ok {
 			return
+		}
+		if e.rel == WitnessUnit {
+			seenWitness = true
+			if !hasWitness {
+				c.hit(KindUnit, at(e.rel), "witness-binary")
+			}
+		}
+		if (hasWitness || e.rel == WitnessUnit) && !WitnessUnitSafe(e.rel, string(data), "/opt/authority-host/releases/"+filepath.Base(filepath.Clean(dir))) {
+			c.hit(KindUnit, at(e.rel), "witness-isolation")
 		}
 		u := parseEnv(syntaxSystemd, string(data), false)
 		for _, n := range u.names {
@@ -218,6 +234,9 @@ func (c *Checker) CheckRelease(dir string) error {
 			ru.main = &f
 		}
 	})
+	if hasWitness && !seenWitness {
+		c.hit(KindUnit, at(WitnessUnit), "witness-unit-missing")
+	}
 	// Each unit's lines are evaluated as systemd merges them, the unit
 	// file and then its drop-ins by file name, before any file they name
 	// is opened: an empty EnvironmentFile= drops those before it. The

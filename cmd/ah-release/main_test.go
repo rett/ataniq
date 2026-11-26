@@ -613,3 +613,16 @@ func TestBaselineUsageAndRefusals(t *testing.T) {
 		t.Errorf("--help: exit %d, %q", code, stdout)
 	}
 }
+
+func TestReleaseCheckRequiresWitnessUnitWithBinary(t *testing.T) {
+	out := t.TempDir()
+	a, b := bins(t)
+	witness := filepath.Join(t.TempDir(), "ataniq-witness")
+	write(t, witness, "#!/bin/sh\nexit 0\n", 0755)
+	if code, stdout, diag := call(buildArgs(out, source(t), a, b, "--bin", witness)...); code != 0 {
+		t.Fatalf("fixture build: %s %s", stdout, diag)
+	}
+	if code, stdout, _ := call("check", "--no-noaicheck", filepath.Join(out, "0003-0123456")); code != 1 || !strings.Contains(stdout, "FAIL: witness-service") {
+		t.Fatalf("incomplete witness release: %d %s", code, stdout)
+	}
+}
