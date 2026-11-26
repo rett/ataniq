@@ -23,12 +23,13 @@ type StorageError string
 func (e StorageError) Error() string { return "durable witness: " + string(e) }
 
 const (
-	ErrPoisoned StorageError = "storage error requires owner check"
-	ErrUnsafe   StorageError = "unsafe path, ownership or permissions"
-	ErrLocked   StorageError = "already locked"
-	ErrIdentity StorageError = "identity or signing key mismatch"
-	ErrCorrupt  StorageError = "corrupt journal or receipt index"
-	ErrTorn     StorageError = "incomplete journal or receipt index"
+	ErrNotInitialized StorageError = "not initialised"
+	ErrPoisoned       StorageError = "storage error requires owner check"
+	ErrUnsafe         StorageError = "unsafe path, ownership or permissions"
+	ErrLocked         StorageError = "already locked"
+	ErrIdentity       StorageError = "identity or signing key mismatch"
+	ErrCorrupt        StorageError = "corrupt journal or receipt index"
+	ErrTorn           StorageError = "incomplete journal or receipt index"
 )
 
 // CapacityError reports the exhausted history allowance. A zero Limit indicates
@@ -83,6 +84,7 @@ type Witness struct {
 	dir, journal, lockFile, keyFile *os.File
 	identity                        Identity
 	pin, homePin                    ed25519.PublicKey
+	stagingPrefix                   string // nonempty only until Create publishes the pair
 	keyID                           string
 	signRecord                      func([]byte) []byte
 	sign                            func([]byte) ([]byte, error)
@@ -173,22 +175,7 @@ func start(c Config, create bool) (*Witness, error) {
 			w.Close()
 		}
 	}()
-	flags := syscall.O_RDWR | syscall.O_APPEND
-	if create {
-		flags |= syscall.O_CREAT | syscall.O_EXCL
-	}
-	w.lockFile, err = openFile(w.dir, lockName, flags)
-	if err != nil {
-		return nil, err
-	}
-	if err = exclusive(w.lockFile); err != nil {
-		return nil, err
-	}
-	if err = exclusive(keyFile); err != nil {
-		return nil, err
-	}
-	w.journal, err = openFile(w.dir, journalName, flags)
-	if err != nil {
+	if err = w.openPair(create, keyFile); err != nil {
 		return nil, err
 	}
 	w.writeFrame = w.journal.Write
@@ -200,9 +187,7 @@ func start(c Config, create bool) (*Witness, error) {
 		}
 		_, err = w.commit(record{Seq: 1, Identity: &id, HomeKeyID: homeID, Op: "create"}, change{})
 	} else {
-		if err = w.checkPoison(); err == nil {
-			err = w.replay(homeID)
-		}
+		err = w.replay(homeID)
 	}
 	if err != nil {
 		return nil, err
@@ -212,6 +197,11 @@ func start(c Config, create bool) (*Witness, error) {
 	sig, err := w.SignDisposition(context.Background(), probe, "startup-probe")
 	if err != nil || !cp.VerifyDisposition(c.Pin, id.Epoch, probe, "startup-probe", sig) {
 		return nil, ErrIdentity
+	}
+	if create {
+		if err = w.publishPair(); err != nil {
+			return nil, err
+		}
 	}
 	w.keyFile, keyFile = keyFile, nil
 	ok = true

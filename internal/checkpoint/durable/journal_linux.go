@@ -87,7 +87,7 @@ func (w *Witness) commit(r record, c change) (cp.Receipt, error) {
 	if err := w.reserve(r, c, int64(len(frame))); err != nil {
 		return cp.Receipt{}, err
 	}
-	err = w.appendBytes(w.journal, w.writeFrame, frame)
+	err = w.appendBytes(journalName, w.journal, w.writeFrame, frame)
 	if err == nil {
 		err = w.after("appended")
 	}
@@ -144,7 +144,7 @@ func (w *Witness) finish(r record, c change, digest [32]byte) ([]byte, error) {
 	}
 	entry := binary.BigEndian.AppendUint16(digest[:], uint16(len(sig)))
 	entry = append(entry, sig...)
-	if err := w.appendBytes(w.lockFile, w.writeEntry, entry); err != nil {
+	if err := w.appendBytes(lockName, w.lockFile, w.writeEntry, entry); err != nil {
 		return nil, err
 	}
 	if err := w.after("receipt-appended"); err != nil {
@@ -260,7 +260,7 @@ func (w *Witness) replay(homeID string) error {
 				return ErrCorrupt
 			}
 			if w.seq == 0 {
-				return ErrTorn
+				return ErrNotInitialized
 			}
 			return w.proveTail(frame.Bytes(), entry.Bytes())
 		}

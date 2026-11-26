@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -784,4 +785,65 @@ func TestSettleSyncBarrier(t *testing.T) {
 	if !errors.Is(err, cp.ErrNotApplied) || last != "receipt-directory-synced" {
 		t.Fatalf("settlement returned at %q: %v", last, err)
 	}
+}
+
+func TestCreateOwnerUmask(t *testing.T) {
+	c := config(t, testKey("umask"))
+	old := syscall.Umask(0777)
+	defer syscall.Umask(old)
+	w := create(t, c)
+	must(t, w.Close())
+	reopen(t, c)
+}
+
+func TestHalfMadeStore(t *testing.T) {
+	for _, present := range []string{"", journalName, lockName} {
+		t.Run("only "+present, func(t *testing.T) {
+			c := config(t, testKey("half made"))
+			if present != "" {
+				must(t, os.WriteFile(filepath.Join(c.Directory, present), nil, 0600))
+			}
+			if _, err := Open(c); !errors.Is(err, ErrNotInitialized) {
+				t.Fatalf("Open: %v", err)
+			}
+		})
+	}
+}
+
+func TestConcurrentOpenDuringCreate(t *testing.T) {
+	c := config(t, testKey("provisioning"))
+	var wg sync.WaitGroup
+	ready := make(chan struct{}, 8)
+	stop := make(chan struct{})
+	for range cap(ready) {
+		wg.Go(func() {
+			ready <- struct{}{}
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				other, err := Open(c)
+				if other != nil {
+					other.Close()
+					t.Error("opened unpublished store")
+					return
+				}
+				if !errors.Is(err, ErrNotInitialized) && !errors.Is(err, ErrLocked) {
+					t.Errorf("Open: %v", err)
+					return
+				}
+			}
+		})
+	}
+	for range cap(ready) {
+		<-ready
+	}
+	w, err := Create(c)
+	close(stop)
+	wg.Wait()
+	must(t, err)
+	must(t, w.Close())
+	reopen(t, c)
 }

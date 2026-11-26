@@ -2,8 +2,11 @@
 // filesystem supporting flock, keep-size fallocate and durable file and directory fsync.
 //
 // Create provisions a journal and a lock file in an existing service-owned
-// 0700 directory. Open requires both files. The lock file also records the
-// digest of each committed frame and its exact acknowledgement signature.
+// 0700 directory. Create sets the private temporary files to mode 0600,
+// syncs genesis and its index entry, renames the files into place under the
+// directory lock and syncs the directory. Publishing the journal completes
+// the pair. Open reports ErrNotInitialized for an unfinished pair. The lock
+// file records each committed frame digest and its exact acknowledgement signature.
 // Losing a complete journal suffix alone is therefore detectable. Replay
 // verifies every frame, receipt and predecessor before serving. A complete
 // final transition left by a crash can finish its missing acknowledgement.
@@ -27,8 +30,8 @@
 // keep admission inhibited while the owner reconciles surviving evidence and
 // provisions a fresh identity and higher epoch.
 //
-// The index flock excludes concurrent writers to one directory instance.
-// A second flock covers the signing key file while the witness is open.
+// The directory and index flocks exclude concurrent writers to one directory
+// instance. A separate flock covers the signing key file while the witness is open.
 // A copy of both the directory and key file has independent locks and can
 // serve the same identity. Retained signed sequences and head digests permit
 // detection when the copies present conflicting evidence.

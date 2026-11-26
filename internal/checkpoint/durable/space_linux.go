@@ -71,7 +71,7 @@ func (w *Witness) reserve(r record, c change, frameBytes int64) error {
 // Only the writer that observed the failed append knows the pre-write EOF.
 // Replay never truncates evidence. A failed index append leaves a complete
 // pending journal frame that can be proved and signed during owner recovery.
-func (w *Witness) appendBytes(file *os.File, write func([]byte) (int, error), data []byte) error {
+func (w *Witness) appendBytes(name string, file *os.File, write func([]byte) (int, error), data []byte) error {
 	before, err := file.Stat()
 	if err != nil {
 		return err
@@ -83,7 +83,7 @@ func (w *Witness) appendBytes(file *os.File, write func([]byte) (int, error), da
 	if err == nil {
 		err = io.ErrShortWrite
 	}
-	repair, openErr := openFile(w.dir, file.Name(), syscall.O_RDWR)
+	repair, openErr := openFile(w.dir, w.stagingPrefix+name, syscall.O_RDWR)
 	if openErr != nil {
 		return errors.Join(err, openErr)
 	}
