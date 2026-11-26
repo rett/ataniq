@@ -103,17 +103,51 @@ func (p projectionTxn) install(e Event, receipt Command) (projectionTxn, error) 
 	return projectionTxn{e.Result.Head, digest, e.Public.EventID, receipt}, nil
 }
 
-type releaseJournal map[string]Evidence
+type featureLease struct {
+	feature, holder, revision string
+}
+
+type releaseRequest struct {
+	id       string
+	expected featureLease
+}
+
+type releaseResult struct {
+	request     releaseRequest
+	disposition string
+}
+
+type releaseJournal struct {
+	lease   featureLease
+	results map[string]releaseResult
+}
+
+// The Qargi fixture atomically releases the exact lease and retains the
+// disposition before the transport can lose the reply.
+func (j *releaseJournal) release(r releaseRequest) error {
+	if prior, ok := j.results[r.id]; ok {
+		if prior.request != r {
+			return ErrConflict
+		}
+		return nil
+	}
+	if r.id == "" || j.lease.holder == "" || j.lease != r.expected {
+		return ErrStale
+	}
+	j.lease.holder = ""
+	j.results[r.id] = releaseResult{r, "released"}
+	return nil
+}
 
 var errUnavailable = errors.New("fixture unavailable")
 
-func (j releaseJournal) query(id string, available bool) (Evidence, error) {
+func (j releaseJournal) query(id string, available bool) (releaseResult, error) {
 	if !available {
-		return Evidence{}, errUnavailable
+		return releaseResult{}, errUnavailable
 	}
-	e, ok := j[id]
+	e, ok := j.results[id]
 	if !ok {
-		return Evidence{}, ErrEvidence
+		return releaseResult{}, ErrEvidence
 	}
 	return e, nil
 }
