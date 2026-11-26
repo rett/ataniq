@@ -88,9 +88,6 @@ func (t *Transfer) capture(p *evidenceSet, required []string) error {
 }
 
 func (t *Transfer) inventoryEffects(p *evidenceSet) error {
-	if len(t.Routes) > MaxRoutes {
-		return ErrLimit
-	}
 	effects := p.group("effect", "outstanding")
 	for _, e := range effects {
 		if !slices.Contains(t.Routes, e.Route) {
@@ -99,15 +96,12 @@ func (t *Transfer) inventoryEffects(p *evidenceSet) error {
 		effect := Effect{e.Subject, e.Route}
 		i := slices.IndexFunc(t.Outstanding, func(x Effect) bool { return x.ID == e.Subject })
 		if i < 0 {
-			if len(t.Outstanding) == MaxOutstandingEffects {
-				return ErrLimit
-			}
 			t.Outstanding = append(t.Outstanding, effect)
 		} else if t.Outstanding[i] != effect {
 			return ErrEvidence
 		}
 	}
-	return nil
+	return checkCount("outstanding effects", len(t.Outstanding), MaxOutstandingEffects)
 }
 
 func (t *Transfer) settle(p *evidenceSet, route string) error {

@@ -66,19 +66,9 @@ func reduce(r Row, t Transfer, c Command, digest string, prior Evidence) (Row, T
 		return r, t, err
 	}
 	r.Head.Revision++
-	if c.Kind == HoldReviewed {
-		if t.ID != c.TransferID {
-			return r, t, ErrStale
-		}
-		if t.Hold.Preservation == (Evidence{}) || t.Hold.Review != (Evidence{}) {
-			return r, t, ErrPhase
-		}
-		review, err := p.take("fallback", t.Hold.Preservation.Digest, "reviewed")
-		if err != nil || len(p) != 0 {
-			return r, t, ErrEvidence
-		}
-		t.Hold.Review = review
-		return r, t, nil
+	if c.Kind == HoldStarted || c.Kind == HoldReviewed {
+		err := updateHold(r, &t, c, &p)
+		return r, t, err
 	}
 	begin := c.Kind == Seed || c.Kind == Freeze || c.Kind == RollbackFreeze
 	if begin {
@@ -330,8 +320,21 @@ func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 			h.Phase, t.Disposition = PhaseAbortedClosed, "aborted-closed"
 		}
 		h.TransferID = ""
-	case HoldStarted:
-		if h.Phase != PhaseConfirmed || t.Predecessor.Kind != "legacy" || t.Hold.Preservation != (Evidence{}) {
+	default:
+		return ErrInvalid
+	}
+	return nil
+}
+
+// A hold belongs to the transfer that displaced the fallback. Updating it
+// leaves the phase and disposition of both that transfer and the latest one intact.
+func updateHold(r Row, t *Transfer, c Command, p *evidenceSet) error {
+	if t.ID != c.TransferID {
+		return ErrStale
+	}
+	if c.Kind == HoldStarted {
+		if !r.Head.Phase.open() || t.Committed.Revision != r.CommitRevision || t.Candidate != r.Holder ||
+			t.Predecessor != r.Previous || t.Predecessor.Kind != "legacy" || t.Hold.Preservation != (Evidence{}) {
 			return ErrPhase
 		}
 		const fortnight = 14 * 24 * 60 * 60
@@ -339,13 +342,23 @@ func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 			return ErrEvidence
 		}
 		e, err := p.take("fallback", t.Predecessor.ID, "stopped-disabled-preserved")
-		if err != nil {
-			return err
+		if err != nil || len(*p) != 0 {
+			return ErrEvidence
 		}
 		t.Hold = Hold{Start: c.HoldStart, EarliestRetirement: c.EarliestRetirement, Preservation: e}
-	default:
-		return ErrInvalid
+		return nil
 	}
+	if t.Hold.Preservation == (Evidence{}) || t.Hold.Review != (Evidence{}) {
+		return ErrPhase
+	}
+	if r.Head.Phase.open() && r.Holder == t.Predecessor {
+		return ErrPhase
+	}
+	review, err := p.take("fallback", t.Hold.Preservation.Digest, "reviewed")
+	if err != nil || len(*p) != 0 {
+		return ErrEvidence
+	}
+	t.Hold.Review = review
 	return nil
 }
 

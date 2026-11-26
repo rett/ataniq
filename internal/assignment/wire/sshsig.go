@@ -124,15 +124,16 @@ func Verify(pub ed25519.PublicKey, body []byte, sig string) error {
 	if err != nil {
 		return err
 	}
+	if !validPublic(pub) {
+		return errKey
+	}
 	return verifyBlob(pub, body, blob)
 }
 
+// pub has already passed validation at enrollment or at entry to Verify.
 func verifyBlob(pub ed25519.PublicKey, body, blob []byte) error {
 	if len(body) > recordLimit {
 		return assignment.ErrLimit
-	}
-	if len(pub) != ed25519.PublicKeySize {
-		return errKey
 	}
 	raw, ok := bytes.CutPrefix(blob, signaturePrefix(pub))
 	if !ok || len(raw) != ed25519.SignatureSize || !ed25519.Verify(pub, signedData(body), raw) {
@@ -175,7 +176,7 @@ func LoadPublicKey(line string) (ed25519.PublicKey, string, error) {
 	}
 	header := binary.BigEndian.AppendUint32(sshString(nil, []byte(keyType)), ed25519.PublicKeySize)
 	key, ok := bytes.CutPrefix(blob, header)
-	if !ok || len(key) != ed25519.PublicKeySize {
+	if !ok || !validPublic(key) {
 		return nil, "", errKey
 	}
 	pub := ed25519.PublicKey(key)

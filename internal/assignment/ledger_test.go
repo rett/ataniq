@@ -309,6 +309,31 @@ func TestReceiptNamesExactEvent(t *testing.T) {
 	}
 }
 
+func TestStartHoldAfterLaterAbort(t *testing.T) {
+	s := forward(t, len(forwardSteps))
+	confirmed, _ := s.ledger.Transfer(key, "T")
+	s.steps(t, "U", []step{{kind: RollbackFreeze}, {kind: AbortPrepared}, {kind: Aborted}})
+	aborted, _ := s.ledger.Transfer(key, "U")
+	row, _ := s.ledger.Row(key)
+	refused(t, s.ledger, command(row, aborted, HoldStarted, "U", ""), ErrPhase)
+	c := command(row, confirmed, HoldStarted, "T", "")
+	s.accept(t, c)
+	l, err := recoverAt(s.events, s.ledger.Checkpoint())
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, _ := l.Transfer(key, "T")
+	confirmed.Hold = Hold{Start: c.HoldStart, EarliestRetirement: c.EarliestRetirement, Preservation: c.Evidence[0]}
+	latest, _ := l.Transfer(key, "U")
+	current, _ := l.Row(key)
+	if !reflect.DeepEqual(held, confirmed) || !reflect.DeepEqual(latest, aborted) ||
+		current.LastTransferID != "U" || current.Head.Phase != PhaseAborted || !current.Permits(current.Head) {
+		t.Fatal(held, latest, current)
+	}
+	refused(t, l, command(current, held, HoldStarted, "T", ""), ErrPhase)
+	s.accept(t, command(current, held, HoldReviewed, "T", ""))
+}
+
 func TestReviewHistoricalHold(t *testing.T) {
 	s := forward(t, len(forwardSteps))
 	s.steps(t, "T", []step{{kind: HoldStarted}})
@@ -340,6 +365,24 @@ func TestReviewHistoricalHold(t *testing.T) {
 		t.Fatal(result, err)
 	}
 	s.steps(t, "U", forwardSteps[1:])
+}
+
+func TestRefuseHoldReviewOfReopenedFallback(t *testing.T) {
+	s := forward(t, len(forwardSteps))
+	s.steps(t, "T", []step{{kind: HoldStarted}})
+	held, _ := s.ledger.Transfer(key, "T")
+	s.steps(t, "U", appendSteps([]step{{kind: RollbackFreeze}}, forwardSteps[1:]...))
+	review := func() {
+		t.Helper()
+		row, _ := s.ledger.Row(key)
+		if row.Holder != held.Predecessor || !row.Permits(row.Head) {
+			t.Fatal(row)
+		}
+		refused(t, s.ledger, command(row, held, HoldReviewed, "T", ""), ErrPhase)
+	}
+	review()
+	s.steps(t, "V", []step{{kind: Freeze}, {kind: AbortPrepared}, {kind: Aborted}})
+	review()
 }
 
 func TestUnsignedDecisionCannotAdvanceCheckpoint(t *testing.T) {
@@ -478,52 +521,29 @@ func TestExactFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-func TestDecideReservesSignedFrameSpace(t *testing.T) {
+func TestSignedFrameReservationBoundary(t *testing.T) {
 	s := seeded(t)
-	c := next(s.ledger, key, ConfirmReceipt, "seed", "worker")
-	c.Evidence[0].Digest = sha256Hex([]byte("amended"))
-	// Attached observations are journaled with a correction. Fill the record
-	// with distinct, bounded references and then tune the last bytes exactly.
-	work := c.Evidence[0]
-	work.Kind, work.Route, work.Outcome = "effect", "worker", "outstanding"
-	for i := 0; ; i++ {
-		work.Subject = fmt.Sprint("child-", i)
-		c.Evidence = append(c.Evidence, work)
-		e, _, err := Decide(s.ledger, c)
-		if errors.Is(err, ErrLimit) {
-			c.Evidence = c.Evidence[:len(c.Evidence)-1]
-			break
-		}
-		if err != nil || e == nil {
-			t.Fatal(err)
-		}
-	}
+	c := next(s.ledger, key, Freeze, "move", "")
 	e, _, err := Decide(s.ledger, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.Signature = strings.Repeat("A", 262)
-	raw, err := e.RecordBytes()
+	// Capacity bounds every intake. Exercise the independent byte guard on
+	// a synthetic event at the exact boundary of the signed LF frame.
+	signed := *e
+	signed.Signature = strings.Repeat("A", 262)
+	raw, err := signed.RecordBytes()
 	if err != nil {
 		t.Fatal(err)
 	}
-	padding := recordLimit - len(raw)
-	for i := 1; padding > 0; i++ {
-		add := min(padding, MaxReferenceBytes-len(c.Evidence[i].Revision))
-		c.Evidence[i].Revision += strings.Repeat("x", add)
-		padding -= add
-	}
-	e, _, err = Decide(s.ledger, c)
-	if err != nil {
+	e.Command.Actor += strings.Repeat("x", recordLimit-len(raw))
+	if err := e.checkSignedFrameSize(); err != nil {
 		t.Fatal(err)
 	}
-	e.Signature = strings.Repeat("A", 262)
-	raw, err = e.RecordBytes()
-	if err != nil || len(raw) != recordLimit {
-		t.Fatal(len(raw), err)
+	e.Command.Actor += "x"
+	if err := e.checkSignedFrameSize(); !errors.Is(err, ErrLimit) {
+		t.Fatal(err)
 	}
-	c.Actor += "x"
-	refused(t, s.ledger, c, ErrLimit)
 }
 
 func TestPreStorageFormatCutover(t *testing.T) {

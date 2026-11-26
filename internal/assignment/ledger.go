@@ -113,7 +113,8 @@ func (l Ledger) Transfer(key Key, id string) (Transfer, bool) {
 
 // Lookup with an empty request ID returns the latest result recorded for, or
 // applied to, the transfer. A correction of a historical receipt is requested
-// under its original ID and changes the disposition of the current transfer.
+// under its original transfer ID and a fresh request ID, and changes the
+// disposition of the current transfer.
 func Lookup(l Ledger, key Key, transferID, requestID string) (Result, bool) {
 	t := transferKey{key, transferID}
 	if requestID == "" {
@@ -149,7 +150,7 @@ func decideNew(l Ledger, c Command, digest string) (change, error) {
 		}
 	}
 	id := r.LastTransferID
-	if c.Kind == HoldReviewed {
+	if c.Kind == HoldStarted || c.Kind == HoldReviewed {
 		id = c.TransferID
 	}
 	tr := l.transfers[transferKey{key, id}]
@@ -180,7 +181,7 @@ func decideNew(l Ledger, c Command, digest string) (change, error) {
 // Refused commands consume no ID. Recorded evidence of uncertainty or a
 // rejected belief does consume the operation ID.
 func Decide(l Ledger, c Command) (*Event, Result, error) {
-	digest, err := requestDigest(c)
+	digest, err := l.intakeDigest(c)
 	op := operation{transferKey{c.Expected.Key, c.TransferID}, c.RequestID}
 	if old, ok := l.history[op]; ok {
 		if err != nil || old.digest != digest {
@@ -195,16 +196,23 @@ func Decide(l Ledger, c Command) (*Event, Result, error) {
 	if err != nil {
 		return nil, Result{}, err
 	}
-	// Size the exact LF-framed journal with the schema-1 SSHSIG field.
-	// Its 196-byte container occupies 262 unescaped base64url characters.
-	frame, err := ch.event.recordFrame()
-	if err != nil {
+	if err := ch.event.checkSignedFrameSize(); err != nil {
 		return nil, Result{}, err
 	}
-	if len(frame)+len(`,"signature":""`)+262 > recordLimit {
-		return nil, Result{}, ErrLimit
-	}
 	return &ch.event, ch.event.Result, nil
+}
+
+// Size the exact LF-framed journal with the schema-1 SSHSIG field.
+// Its 196-byte container occupies 262 unescaped base64url characters.
+func (e Event) checkSignedFrameSize() error {
+	frame, err := e.recordFrame()
+	if err != nil {
+		return err
+	}
+	if len(frame)+len(`,"signature":""`)+262 > recordLimit {
+		return ErrLimit
+	}
+	return nil
 }
 
 // Apply checks the chain and reproduces the decision from the prior row.
@@ -225,7 +233,10 @@ func apply(l Ledger, e Event, privateIndexes bool) (Ledger, error) {
 	if err != nil {
 		return l, err
 	}
-	digest, err := requestDigest(e.Command)
+	digest, err := l.intakeDigest(e.Command)
+	if errors.Is(err, ErrCapacity) {
+		return l, err
+	}
 	if err != nil || digest != e.RequestDigest {
 		return l, ErrChain
 	}

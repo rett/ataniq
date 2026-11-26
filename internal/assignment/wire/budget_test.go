@@ -143,7 +143,9 @@ func TestLargestRequiredSignedRecords(t *testing.T) {
 		appendSigned()
 	}
 	id = fullRef("seed")
-	capture(a.Seed, binding("old"), first, nil)
+	fallback := binding("old")
+	fallback.Kind = "legacy"
+	capture(a.Seed, fallback, first, nil)
 	open(first)
 	id = fullRef("forward")
 	capture(a.Freeze, binding("new"), second, first[1:])
@@ -152,6 +154,9 @@ func TestLargestRequiredSignedRecords(t *testing.T) {
 	add("handoff", key.Project, "verified", "")
 	for _, r := range second {
 		add("route", r, "frozen", "")
+	}
+	for i := 0; i < a.MaxOutstandingEffects; i++ {
+		add("effect", fullRef(fmt.Sprint("effect", i)), "outstanding", second[1])
 	}
 	appendSigned()
 	tr, _ := l.Transfer(key, id)
@@ -200,9 +205,17 @@ func TestLargestRequiredSignedRecords(t *testing.T) {
 	appendSigned()
 	committed, commitPrefix := l, slices.Clone(events)
 	open(second)
+	start(a.HoldStarted)
+	c.HoldStart, c.EarliestRetirement = 1, 1+14*24*60*60
+	add("fallback", fallback.ID, "stopped-disabled-preserved", "")
+	appendSigned()
+	preservation := c.Evidence[0].Digest
+	start(a.HoldReviewed)
+	add("fallback", preservation, "reviewed", "")
+	appendSigned()
 	l, events = committed, commitPrefix
 	id = fullRef("rollback")
-	capture(a.RollbackFreeze, binding("old"), first, second[1:])
+	capture(a.RollbackFreeze, fallback, first, second[1:])
 
 	// The historical correction and the acknowledgement combine identifiers
 	// from different transfers. Both may have reached their full budget.
@@ -212,6 +225,10 @@ func TestLargestRequiredSignedRecords(t *testing.T) {
 	amended := events[2].Command.Evidence[0]
 	amended.Outcome, amended.Digest = fullRef("amended"), fmt.Sprintf("%x", sha256.Sum256([]byte("amended")))
 	c.Evidence = []a.Evidence{amended}
+	for i := 0; i < a.MaxOutstandingEffects; i++ {
+		add("effect", fullRef(fmt.Sprint("late", i)), "outstanding", amended.Subject)
+		c.Evidence[i+1].Scope, c.Evidence[i+1].ScopeEventID = amended.Scope, amended.ScopeEventID
+	}
 	appendSigned()
 	id = ackID
 	start(a.QuarantineAcknowledged)

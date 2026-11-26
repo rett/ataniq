@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -55,23 +56,59 @@ func TestRejectUnfinishableIntake(t *testing.T) {
 	c := next(s.ledger, key, Freeze, "move", "")
 	c.Candidate.Conversation = strings.Repeat("x", MaxReferenceBytes+1)
 	refused(t, s.ledger, c, ErrLimit)
-	c = next(s.ledger, key, Freeze, "move", "")
-	for i := 0; i < MaxRoutes; i++ {
-		e := c.Evidence[len(c.Evidence)-1]
-		e.Subject = fmt.Sprint("extra-", i)
-		c.Evidence = append(c.Evidence, e)
-	}
-	refused(t, s.ledger, c, ErrLimit)
-	s.steps(t, "move", forwardSteps[:1])
-	c = next(s.ledger, key, Inventory, "move", "")
-	for i := 0; i < MaxOutstandingEffects; i++ {
-		e := c.Evidence[0]
-		e.Kind, e.Subject, e.Route, e.Outcome = "effect", fmt.Sprint(i), "worker", "outstanding"
-		c.Evidence = append(c.Evidence, e)
-	}
-	refused(t, s.ledger, c, ErrLimit)
-	s.steps(t, "move", forwardSteps[1:4])
+	s.steps(t, "move", forwardSteps[:4])
 	c = next(s.ledger, key, FenceReceipt, "move", "worker")
 	c.Evidence[0].Issuer = strings.Repeat("i", 40000)
 	refused(t, s.ledger, c, ErrLimit)
+}
+
+func TestIntakeCapacityIsAtomic(t *testing.T) {
+	for _, kind := range []Kind{Freeze, Inventory, ConfirmReceipt} {
+		for _, resource := range []string{"routes", "outstanding effects"} {
+			t.Run(string(kind)+"/"+resource, func(t *testing.T) {
+				s := seeded(t)
+				id := "move"
+				if kind == Inventory {
+					s.steps(t, id, forwardSteps[:1])
+				} else if kind == ConfirmReceipt {
+					id = "seed"
+				}
+				c := next(s.ledger, key, kind, id, "worker")
+				if kind == ConfirmReceipt {
+					c.Evidence[0].Digest = sha256Hex([]byte("amended"))
+				}
+				proof := c.Evidence[len(c.Evidence)-1]
+				var extra int
+				if resource == "routes" {
+					// Capture and refresh start with two routes, correction with one.
+					extra = MaxRoutes - 1
+					if kind == ConfirmReceipt {
+						extra++
+					}
+				} else {
+					proof.Kind, proof.Route, proof.Outcome = "effect", "worker", "outstanding"
+					// Freeze and refresh already have the captured child.
+					extra = MaxOutstandingEffects
+					if kind == ConfirmReceipt {
+						extra++
+					}
+				}
+				for i := 0; i < extra; i++ {
+					proof.Subject = fmt.Sprint("extra-", i)
+					c.Evidence = append(c.Evidence, proof)
+				}
+				before, err := recoverAt(s.events, s.ledger.Checkpoint())
+				if err != nil {
+					t.Fatal(err)
+				}
+				e, _, err := Decide(s.ledger, c)
+				if e != nil || !errors.Is(err, ErrCapacity) || !strings.Contains(err.Error(), resource+": observed 9, limit 8") {
+					t.Fatal(e, err)
+				}
+				if !reflect.DeepEqual(before, s.ledger) {
+					t.Fatal("capacity refusal changed the ledger")
+				}
+			})
+		}
+	}
 }

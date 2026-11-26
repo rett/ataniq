@@ -3,9 +3,21 @@
 // append and the live admission barrier at each actual effect start. In
 // particular it verifies owner authorization for the exact command and head.
 //
+// A project supports up to eight enabled routes and eight outstanding effects.
+// Capture, inventory refresh and receipt correction report ErrCapacity with
+// the observed count and operating limit when either budget is exceeded.
+//
+// Adapter obligation: authenticate each issuer and enroll exactly one issuer
+// identity per route per transfer. The ledger records that identity as a
+// string. A contradictory receipt from a different issuer returns ErrEvidence.
+// The adapter must report the refused contradiction to the owner out of band.
+//
 // A same-issuer correction of an accepted fence or confirmation permanently
 // quarantines this key in this store, including during a later transfer. Both
-// bindings lose admission. The owner may acknowledge the quarantine once,
+// bindings lose admission. Submit the correction at the current head with a
+// fresh outer request ID, the original transfer ID and the original receipt
+// scope. The original request ID is an idempotency key for the exact command.
+// The owner may acknowledge the quarantine once,
 // recording a disposition against its event. Recovery requires retiring the
 // doubtful identity and freshly enrolling in a new store.
 package assignment
@@ -22,6 +34,7 @@ var (
 	ErrPhase    = errors.New("assignment: transition refused")
 	ErrEvidence = errors.New("assignment: missing or incompatible evidence")
 	ErrOverflow = errors.New("assignment: counter exhausted")
+	ErrCapacity = errors.New("assignment: capacity exceeded")
 )
 
 type Key struct {
@@ -179,6 +192,10 @@ func (t Transfer) clone() Transfer {
 	return t
 }
 
+// Command carries a request against Expected. RequestID is an idempotency key
+// within the key and transfer. A historical receipt correction needs a fresh
+// RequestID and the current Expected head. Its TransferID and the evidence's
+// Scope and ScopeEventID still identify the original transfer and receipt target.
 type Command struct {
 	Actor              string     `json:"actor"`
 	Authorization      string     `json:"authorization"`
