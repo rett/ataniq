@@ -31,27 +31,32 @@ func readFixture(t *testing.T, path string) []byte {
 	return b
 }
 
-func golden(t *testing.T, name string, want []byte) {
+type pendingGoldens map[string][]byte
+
+func (pending pendingGoldens) check(t *testing.T, name string, want []byte) {
 	t.Helper()
 	path := filepath.Join("testdata", name)
 	if *update {
-		if err := os.WriteFile(path, want, 0644); err != nil {
-			t.Fatal(err)
-		}
+		pending[path] = bytes.Clone(want)
+		return
 	}
 	if !bytes.Equal(readFixture(t, path), want) {
 		t.Fatalf("%s differs from golden", name)
 	}
 }
 
-func goldenEvent(t *testing.T, name string, e assignment.Event) {
+func (pending pendingGoldens) event(t *testing.T, name string, e assignment.Event) {
 	t.Helper()
 	body, err := Marshal(e.Public)
 	if err != nil {
 		t.Fatal(err)
 	}
-	golden(t, name+".json", body)
-	golden(t, name+".sig", []byte(e.Signature))
+	pending.check(t, name+".json", body)
+	blob, err := base64.RawURLEncoding.Strict().DecodeString(e.Signature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending.check(t, name+".sig", []byte(armor(blob)))
 	p, err := Unmarshal(body)
 	if err != nil || !reflect.DeepEqual(p, e.Public) {
 		t.Fatal(name, err)
@@ -77,12 +82,15 @@ func fixtureCommand(l assignment.Ledger, k assignment.Kind, id string) assignmen
 			Scope: scope, ScopeEventID: eventID, TransferID: id})
 	}
 	switch k {
-	case assignment.Seed, assignment.Freeze:
+	case assignment.Seed, assignment.Freeze, assignment.RollbackFreeze:
 		c.Candidate = assignment.Binding{Kind: "legacy", ID: "old", Authority: "fixture-a", Store: "store-a", Incarnation: "one", Conversation: "a"}
 		if k == assignment.Seed {
 			add("enrollment", c.Candidate.ID, "verified")
 		} else {
 			c.Candidate = assignment.Binding{Kind: "managed", ID: "new", Authority: "fixture-b", Store: "store-b", Incarnation: "two", Conversation: "b"}
+			if k == assignment.RollbackFreeze {
+				c.Candidate = r.Previous
+			}
 			add("barrier", r.Holder.ID, "captured")
 		}
 		add("route", "qargi", "enabled")
@@ -111,6 +119,9 @@ func fixtureCommand(l assignment.Ledger, k assignment.Kind, id string) assignmen
 	case assignment.HoldStarted:
 		c.HoldStart, c.EarliestRetirement = 10, 10+14*24*3600
 		add("fallback", tr.Predecessor.ID, "stopped-disabled-preserved")
+	case assignment.HoldReviewed:
+		held, _ := l.Transfer(rowKey, id)
+		add("fallback", held.Hold.Preservation.Digest, "reviewed")
 	case assignment.AbortPrepared:
 		add("candidate", tr.Candidate.ID, "never-executed")
 	case assignment.Aborted:
@@ -119,14 +130,34 @@ func fixtureCommand(l assignment.Ledger, k assignment.Kind, id string) assignmen
 	return c
 }
 
+func TestRegenerationWaitsForIndependentCheck(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.Mkdir("testdata", 0755); err != nil {
+		t.Fatal(err)
+	}
+	const path = "testdata/01-seed.json"
+	if err := os.WriteFile(path, []byte("original"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	old := *update
+	*update = true
+	t.Cleanup(func() { *update = old })
+	pending := make(pendingGoldens)
+	pending.check(t, "01-seed.json", []byte("projection error"))
+	if string(readFixture(t, path)) != "original" {
+		t.Fatal("regeneration wrote before the independent projection check")
+	}
+}
+
 func TestGoldenEvents(t *testing.T) {
+	pending := make(pendingGoldens)
 	seed, err := hex.DecodeString(strings.TrimSpace(string(readFixture(t, "testdata/test-key.seed"))))
 	if err != nil || len(seed) != ed25519.SeedSize {
 		t.Fatal("invalid test seed", err)
 	}
 	key := ed25519.NewKeyFromSeed(seed)
 	pub := key.Public().(ed25519.PublicKey)
-	golden(t, "allowed_signers", []byte(identity+" "+keyType+" "+base64.StdEncoding.EncodeToString(keyBlob(pub))+"\n"))
+	pending.check(t, "allowed_signers", []byte(identity+" "+keyType+" "+base64.StdEncoding.EncodeToString(keyBlob(pub))+"\n"))
 	pin, id, err := LoadPublicKey(string(readFixture(t, "testdata/allowed_signers")))
 	if err != nil {
 		t.Fatal(err)
@@ -158,7 +189,9 @@ func TestGoldenEvents(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		goldenEvent(t, name, *e)
+		if name != "" {
+			pending.event(t, name, *e)
+		}
 		after, err := assignment.Apply(before, *e)
 		if err != nil {
 			t.Fatal(err)
@@ -199,7 +232,7 @@ func TestGoldenEvents(t *testing.T) {
 			branch, _ := apply(l, fixtureCommand(l, assignment.AbortPrepared, transfer), "abort-prepared")
 			apply(branch, fixtureCommand(branch, assignment.Aborted, transfer), "abort")
 		case assignment.Fenced:
-			goldenEvent(t, "cut", e)
+			pending.event(t, "cut", e)
 			short, err := assignment.Replay(h, events, v)
 			if err != nil {
 				t.Fatal(err)
@@ -214,9 +247,42 @@ func TestGoldenEvents(t *testing.T) {
 	if e, r, err := assignment.Decide(l, begin.Command); err != nil || e != nil || r != begin.Result {
 		t.Fatal("duplicate", err)
 	}
-	goldenEvent(t, "duplicate", begin)
+	pending.event(t, "duplicate", begin)
+	for _, kind := range []assignment.Kind{assignment.RollbackFreeze, assignment.Inventory, assignment.HoldReviewed} {
+		id := "reverse"
+		if kind == assignment.HoldReviewed {
+			id = "move"
+		}
+		c := fixtureCommand(l, kind, id)
+		if kind == assignment.Inventory {
+			c.Evidence[0].Digest = fmt.Sprintf("%x", sha256.Sum256([]byte("reverse inventory")))
+		}
+		var e assignment.Event
+		l, e = apply(l, c, "")
+		events = append(events, e)
+	}
 	replayed, err := assignment.Replay(h, events, v)
 	if err != nil || replayed.Checkpoint() != l.Checkpoint() {
 		t.Fatal("replay", err)
+	}
+	// Independently constructed rollback/hold-review projection and signed cursor.
+	// This comparison also runs during -update; its inputs are read-only.
+	last := events[len(events)-1]
+	body, err := Marshal(last.Public)
+	if err != nil || !bytes.Equal(body, readFixture(t, "testdata/historical-review.json")) {
+		t.Fatal("historical review differs from independent body", err)
+	}
+	blob, err := unarmor(string(readFixture(t, "testdata/historical-review.sig")))
+	if err != nil || base64.RawURLEncoding.EncodeToString(blob) != last.Signature {
+		t.Fatal("historical review differs from OpenSSH signature", err)
+	}
+	row, _ := replayed.Row(rowKey)
+	if row.PublicDigest != "495b74e904214d94c61c3619d577ec469440fcbada8123659c5acfe4d2da5947" {
+		t.Fatal("historical review differs from independent signed cursor", row.PublicDigest)
+	}
+	for path, contents := range pending {
+		if err := os.WriteFile(path, contents, 0644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

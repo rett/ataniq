@@ -69,7 +69,7 @@ func TestPublicKeyLine(t *testing.T) {
 	pub := testKey().Public().(ed25519.PublicKey)
 	encoded := base64.StdEncoding.EncodeToString(keyBlob(pub))
 	key := keyType + " " + encoded
-	for _, line := range []string{key, "fixture\t" + key + " fixture key\n", key + " comment\r\n"} {
+	for _, line := range []string{key, keyType + " " + key, "fixture\t" + key + " fixture key\n", key + " comment\r\n"} {
 		got, id, err := LoadPublicKey(line)
 		if err != nil || !got.Equal(pub) || id != keyID(pub) {
 			t.Fatal(id, err)
@@ -101,6 +101,15 @@ func TestLedgerAdapters(t *testing.T) {
 	p := sample()
 	p.Home = assignment.Instance{Authority: h.Authority, Store: h.Store, Incarnation: h.Incarnation}
 	p.KeyID = h.KeyID
+	badSeed := p
+	badSeed.ProjectID = ""
+	unaddressable, err := (assignment.Event{Public: badSeed}).SigningBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Sign(h, unaddressable); err == nil {
+		t.Fatal("signed unaddressable seed")
+	}
 	message, err := (assignment.Event{Public: p}).SigningBytes()
 	if err != nil {
 		t.Fatal(err)
@@ -113,14 +122,28 @@ func TestLedgerAdapters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	rawWire, err := base64.RawURLEncoding.DecodeString(sig)
+	if err != nil || !bytes.HasPrefix(rawWire, []byte("SSHSIG")) {
+		t.Fatal("undecodable wire signature", err)
+	}
 	want, err := Sign(testKey(), body)
-	if err != nil || sig != want {
+	if err != nil || armor(rawWire) != want {
 		t.Fatal("signature or domain prefix differs", err)
 	}
 	if err := v.Verify(h, message, sig); err != nil {
 		t.Fatal(err)
 	}
-	for _, bad := range [][]byte{body, append([]byte(domain), message...), bytes.Replace(message, []byte("home\""), []byte("else\""), 1),
+	for _, alt := range []string{sig[:20] + "\n" + sig[20:], sig + "\r\n", sig + "=", want} {
+		if v.Verify(h, message, alt) == nil {
+			t.Fatal("verified alternate signature spelling")
+		}
+		p.Signature = alt
+		if _, err := Marshal(p); err == nil {
+			t.Fatal("marshaled alternate signature spelling")
+		}
+	}
+	p.Signature = ""
+	for _, bad := range [][]byte{body, append([]byte(domain), message...), bytes.Replace(message, []byte(`"home":{"authority":"home"`), []byte(`"home":{"authority":"else"`), 1),
 		bytes.Replace(message, []byte(p.KeyID), []byte("new"), 1), bytes.Replace(message, []byte(":"), []byte(": "), 1)} {
 		if _, err := s.Sign(h, bad); err == nil || v.Verify(h, bad, sig) == nil {
 			t.Fatal("accepted unbound message")

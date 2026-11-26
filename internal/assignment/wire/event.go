@@ -28,10 +28,33 @@ func validDigest(s string) bool {
 	return true
 }
 
+func validInstance(i assignment.Instance) bool {
+	return i.Authority != "" && i.Incarnation != "" && i.Store != ""
+}
+
+func validBinding(b assignment.PublicBinding) bool {
+	return b.ID != "" && (b.Kind == "managed" || b.Kind == "legacy")
+}
+
+func addressable(p assignment.PublicEnvelope) bool {
+	if p.ProjectID == "" || p.RoleID == "" || p.RequestID == "" || p.TransferID == "" || p.KeyID == "" ||
+		!validInstance(p.Home) || !validInstance(p.ExecutingInstance) || !validBinding(p.Binding) {
+		return false
+	}
+	terminal := p.Phase == assignment.PhaseConfirmed || p.Phase == assignment.PhaseAborted || p.Phase == assignment.PhaseAbortedClosed
+	if (p.ActiveTransferID == "") != terminal {
+		return false
+	}
+	if p.Kind == assignment.Seed {
+		return p.OldBinding == (assignment.PublicBinding{}) && p.ActiveTransferID == p.TransferID
+	}
+	return validBinding(p.OldBinding)
+}
+
 // Marshal returns the canonical public object without framing. Leave Signature
-// empty for a signing body. Set it to the armor to encode the signed envelope.
+// empty for a signing body. The signed envelope carries the unpadded base64url SSHSIG blob.
 func Marshal(p assignment.PublicEnvelope) ([]byte, error) {
-	if p.Schema != 1 || p.Algorithm != "Ed25519" || p.EvidenceDigests == nil {
+	if p.Schema != 1 || p.Algorithm != "Ed25519" || p.EvidenceDigests == nil || !addressable(p) {
 		return nil, errProjection
 	}
 	switch p.Kind {
@@ -71,6 +94,9 @@ func Marshal(p assignment.PublicEnvelope) ([]byte, error) {
 	}
 	e := assignment.Event{Public: p, Signature: p.Signature}
 	if p.Signature != "" {
+		if _, err := decodeSignature(p.Signature); err != nil {
+			return nil, err
+		}
 		return e.SignedPublicBytes()
 	}
 	message, err := e.SigningBytes()

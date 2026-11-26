@@ -3,6 +3,7 @@ package wire
 import (
 	"bytes"
 	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"slices"
 
@@ -72,7 +73,11 @@ func (s signer) Sign(h assignment.Header, message []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return Sign(s.key, body)
+	blob, err := signBlob(s.key, body)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(blob), nil
 }
 
 func (v verifier) Verify(h assignment.Header, message []byte, sig string) error {
@@ -80,5 +85,22 @@ func (v verifier) Verify(h assignment.Header, message []byte, sig string) error 
 	if err != nil {
 		return err
 	}
-	return Verify(v.key, body, sig)
+	blob, err := decodeSignature(sig)
+	if err != nil {
+		return err
+	}
+	return verifyBlob(v.key, body, blob)
+}
+
+// Strict decoding still ignores embedded CR and LF. Round-trip equality
+// gives every authenticated envelope a single signed-chain digest.
+func decodeSignature(sig string) ([]byte, error) {
+	if len(sig) > recordLimit {
+		return nil, assignment.ErrLimit
+	}
+	blob, err := base64.RawURLEncoding.Strict().DecodeString(sig)
+	if err != nil || len(blob) == 0 || base64.RawURLEncoding.EncodeToString(blob) != sig {
+		return nil, errSignature
+	}
+	return blob, nil
 }

@@ -121,16 +121,17 @@ func (r Row) Permits(h Head) bool { return r.Head == h && h.Phase.open() }
 // TransferID also binds evidence for a new transfer against an older head.
 // The issuer attests the outcome for the subject in that scope.
 type Evidence struct {
-	Digest       string `json:"digest"`
-	Issuer       string `json:"issuer"`
-	Kind         string `json:"kind"`
-	Outcome      string `json:"outcome"`
-	Revision     string `json:"revision"`
-	Route        string `json:"route"`
-	Scope        Head   `json:"scope"`
-	ScopeEventID string `json:"scope_event_id"`
-	Subject      string `json:"subject"`
-	TransferID   string `json:"transfer_id"`
+	Digest           string `json:"digest"`
+	Issuer           string `json:"issuer"`
+	Kind             string `json:"kind"`
+	Outcome          string `json:"outcome"`
+	ReconciliationID string `json:"reconciliation_id,omitempty"`
+	Revision         string `json:"revision"`
+	Route            string `json:"route"`
+	Scope            Head   `json:"scope"`
+	ScopeEventID     string `json:"scope_event_id"`
+	Subject          string `json:"subject"`
+	TransferID       string `json:"transfer_id"`
 }
 
 type Hold struct {
@@ -154,6 +155,7 @@ type Transfer struct {
 	Reservation, Committed               Head
 	ReservationEventID, CommittedEventID string
 	Fences, Confirmations, Disputes      []Evidence
+	ReconciliationID                     string
 	BeforeDispute                        Phase
 	Disposition                          string
 	Hold                                 Hold

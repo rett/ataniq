@@ -460,20 +460,44 @@ func TestCrashAndPartitionTable(t *testing.T) {
 			refused(t, s.ledger, c, ErrEvidence)
 			s.steps(t, "T", forwardSteps[1:5])
 			refused(t, s.ledger, next(s.ledger, key, Fenced, "T", ""), ErrEvidence)
-			release := next(s.ledger, key, FenceReceipt, "T", "qargi")
-			journal := releaseJournal{release.RequestID: release.Evidence[0]}
-			if _, err := journal.query(release.RequestID, false); err != errUnavailable {
+			lease := featureLease{"feature-A", legacy.ID, "lease-r7"}
+			request := releaseRequest{"release-feature-A", lease}
+			journal := releaseJournal{lease: lease, results: make(map[string]releaseResult)}
+			pending := Effect{request.id, "qargi"}
+			route := routeJournal{intent: pending}
+			if err := journal.release(request); err != nil {
+				t.Fatal(err)
+			}
+			// The durable mutation succeeds, then the reply is lost.
+			seal := next(s.ledger, key, FenceReceipt, "T", "qargi")
+			route.sealed = true
+			if _, ok := route.fence(seal); ok {
+				t.Fatal("sealed over uncertain release")
+			}
+			if _, err := journal.query(request.id, false); err != errUnavailable {
 				t.Fatal("partition resolved release")
 			}
 			if _, err := journal.query("new-attempt", true); err != ErrEvidence {
 				t.Fatal("wrong release request")
 			}
-			proof, err := journal.query(release.RequestID, true)
-			if err != nil || proof != release.Evidence[0] {
-				t.Fatal("original release unavailable")
+			got, err := journal.query(request.id, true)
+			if err != nil || got.request != request || got.disposition != "released" || journal.lease.holder != "" {
+				t.Fatal("original release unavailable", got, err)
 			}
-			release.Evidence = []Evidence{proof}
-			s.accept(t, release)
+			if err := journal.release(request); err != nil {
+				t.Fatal("release retry", err)
+			}
+			changed := request
+			changed.expected.revision = "lease-r8"
+			if err := journal.release(changed); err != ErrConflict {
+				t.Fatal("release ID reused", err)
+			}
+			route.outcome = Effect{got.request.id, "qargi"}
+			receipt, ok := route.fence(seal)
+			if !ok || receipt.RequestID == got.request.id {
+				t.Fatal("missing distinct seal")
+			}
+			s.accept(t, receipt)
 			s.steps(t, "T", forwardSteps[6:8])
 			s.steps(t, "T", forwardSteps[9:10])
 			refused(t, s.ledger, next(s.ledger, key, Open, "T", ""), ErrEvidence)
@@ -527,6 +551,7 @@ func TestCrashAndPartitionTable(t *testing.T) {
 			resolve := next(home, key, ReceiptReconciled, "T", "")
 			resolve.Evidence = []Evidence{{Kind: "reconciliation", Issuer: dispute.Evidence[0].Issuer, Subject: dispute.Evidence[0].Digest, Scope: closed.Head, TransferID: "T", Digest: sha256Hex([]byte("old executor stopped and work accounted for")), Revision: "review", Outcome: "reconciled"}}
 			s.accept(t, resolve)
+			s.steps(t, "T", forwardSteps[4:6])
 			refused(t, s.ledger, next(s.ledger, key, Open, "T", ""), ErrEvidence)
 			s.steps(t, "T", forwardSteps[8:])
 			assertHolder(t, s.ledger, managed, 2, true)

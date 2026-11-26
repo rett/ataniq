@@ -65,14 +65,21 @@ func validPrivate(priv ed25519.PrivateKey) bool {
 // Sign signs the domain prefix, NUL and the exact supplied body. Pass the
 // output of Marshal with an empty Signature. The returned armor ends in LF.
 func Sign(priv ed25519.PrivateKey, body []byte) (string, error) {
+	blob, err := signBlob(priv, body)
+	if err != nil {
+		return "", err
+	}
+	return armor(blob), nil
+}
+
+func signBlob(priv ed25519.PrivateKey, body []byte) ([]byte, error) {
 	if len(body) > recordLimit {
-		return "", assignment.ErrLimit
+		return nil, assignment.ErrLimit
 	}
 	if !validPrivate(priv) {
-		return "", errKey
+		return nil, errKey
 	}
-	blob := append(signaturePrefix(priv.Public().(ed25519.PublicKey)), ed25519.Sign(priv, signedData(body))...)
-	return armor(blob), nil
+	return append(signaturePrefix(priv.Public().(ed25519.PublicKey)), ed25519.Sign(priv, signedData(body))...), nil
 }
 
 func armor(blob []byte) string {
@@ -113,15 +120,19 @@ func unarmor(sig string) ([]byte, error) {
 // Verify authenticates the exact body bytes against an independently pinned
 // public key and the assignment namespace. It does not enroll a key from sig.
 func Verify(pub ed25519.PublicKey, body []byte, sig string) error {
+	blob, err := unarmor(sig)
+	if err != nil {
+		return err
+	}
+	return verifyBlob(pub, body, blob)
+}
+
+func verifyBlob(pub ed25519.PublicKey, body, blob []byte) error {
 	if len(body) > recordLimit {
 		return assignment.ErrLimit
 	}
 	if len(pub) != ed25519.PublicKeySize {
 		return errKey
-	}
-	blob, err := unarmor(sig)
-	if err != nil {
-		return err
 	}
 	raw, ok := bytes.CutPrefix(blob, signaturePrefix(pub))
 	if !ok || len(raw) != ed25519.SignatureSize || !ed25519.Verify(pub, signedData(body), raw) {
@@ -152,7 +163,7 @@ func LoadPublicKey(line string) (ed25519.PublicKey, string, error) {
 	if len(fields) < 2 || strings.HasPrefix(fields[0], "#") {
 		return nil, "", errKey
 	}
-	if fields[0] != keyType {
+	if len(fields) >= 3 && fields[1] == keyType {
 		fields = fields[1:]
 	}
 	if len(fields) < 2 || fields[0] != keyType {

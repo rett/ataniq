@@ -6,7 +6,7 @@ import (
 
 // reduce takes a private copy of the transfer. The caller installs both
 // projections together only after checking all evidence and the event.
-func reduce(r Row, t Transfer, c Command, digest string) (Row, Transfer, error) {
+func reduce(r Row, t Transfer, c Command, digest string, prior Evidence) (Row, Transfer, error) {
 	old := r.Head
 	if old != c.Expected {
 		return r, t, ErrStale
@@ -44,8 +44,26 @@ func reduce(r Row, t Transfer, c Command, digest string) (Row, Transfer, error) 
 	case ConfirmReceipt:
 		scope, targetID = t.Committed, t.CommittedEventID
 	}
+	if prior.Kind != "" {
+		if c.TransferID != prior.TransferID || old.Key != prior.Scope.Key {
+			return r, t, ErrEvidence
+		}
+		scope, targetID = prior.Scope, prior.ScopeEventID
+	}
 	if (c.Kind == FenceReceipt || c.Kind == ConfirmReceipt) && !validDigest(targetID) {
 		return r, t, ErrEvidence
+	}
+	var renewal string
+	if c.Kind == FenceReceipt || c.Kind == ConfirmReceipt {
+		renewal = t.ReconciliationID
+		if prior.Kind != "" {
+			renewal = prior.ReconciliationID
+		}
+	}
+	for _, e := range c.Evidence {
+		if e.ReconciliationID != renewal {
+			return r, t, ErrEvidence
+		}
 	}
 	p, err := proofs(c, scope, targetID)
 	if err != nil {
@@ -71,6 +89,9 @@ func reduce(r Row, t Transfer, c Command, digest string) (Row, Transfer, error) 
 		return r, t, ErrEvidence
 	}
 	if begin {
+		if old.Phase == PhaseCommittedClosed && t.ReconciliationID != "" {
+			return r, t, ErrEvidence
+		}
 		required := t.Routes
 		t = Transfer{ID: c.TransferID, Original: old, Predecessor: r.Holder,
 			Candidate: c.Candidate, BeginDigest: digest, Authorization: c.Authorization, Disposition: "pending"}
@@ -111,6 +132,8 @@ func reduce(r Row, t Transfer, c Command, digest string) (Row, Transfer, error) 
 		if c.Kind == Seed && len(t.Outstanding) != 0 {
 			return r, t, ErrEvidence
 		}
+	} else if prior.Kind != "" {
+		err = t.dispute(&r.Head, &p, prior)
 	} else {
 		if c.TransferID != t.ID || c.TransferID != r.LastTransferID {
 			return r, t, ErrStale
@@ -132,17 +155,6 @@ func reduce(r Row, t Transfer, c Command, digest string) (Row, Transfer, error) 
 
 func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 	h := &r.Head
-	// A later report from the same issuer about an acknowledged route can
-	// arrive even after fencing or opening. Retain it before checking phase.
-	if c.Kind == FenceReceipt || c.Kind == ConfirmReceipt {
-		existing := t.Fences
-		if c.Kind == ConfirmReceipt {
-			existing = t.Confirmations
-		}
-		if found, err := t.dispute(h, p, existing); found || err != nil {
-			return err
-		}
-	}
 	switch c.Kind {
 	case ReceiptReconciled:
 		return t.reconcile(h, c, p)
@@ -210,7 +222,8 @@ func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 		h.Phase = PhaseReserved
 		t.Reservation = *h
 	case FenceReceipt:
-		if h.Phase != PhaseReserved && h.Phase != PhasePartiallyFenced {
+		renewing := h.Phase == PhaseCommittedClosed && t.ReconciliationID != ""
+		if !renewing && h.Phase != PhaseReserved && h.Phase != PhasePartiallyFenced {
 			return ErrPhase
 		}
 		var err error
@@ -221,7 +234,9 @@ func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 		if err := t.settle(p, t.Fences[len(t.Fences)-1].Subject); err != nil {
 			return err
 		}
-		h.Phase = PhasePartiallyFenced
+		if !renewing {
+			h.Phase = PhasePartiallyFenced
+		}
 	case Fenced:
 		if h.Phase != PhasePartiallyFenced {
 			return ErrPhase
@@ -261,6 +276,9 @@ func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 	case Open:
 		if h.Phase != PhaseCommittedClosed {
 			return ErrPhase
+		}
+		if t.ReservationEventID != "" && !covers(subjects(t.Fences), t.Routes) {
+			return ErrEvidence
 		}
 		if !covers(subjects(t.Confirmations), t.Routes) || len(t.Outstanding) != 0 ||
 			c.Authorization != t.Authorization {
