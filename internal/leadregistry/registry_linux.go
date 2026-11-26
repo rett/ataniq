@@ -150,10 +150,16 @@ func openDir(dir string) (int, error) {
 		if err := os.MkdirAll(parent, 0o700); err != nil {
 			return -1, fmt.Errorf("leadregistry: create folder: %w", err)
 		}
-		if err := unix.Mkdir(dir, 0o700); err != nil && err != unix.EEXIST {
+		pfd, err := unix.Open(parent, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		if err != nil {
+			return -1, fmt.Errorf("leadregistry: open parent folder: %w", err)
+		}
+		defer unix.Close(pfd)
+		name := filepath.Base(dir)
+		if err := unix.Mkdirat(pfd, name, 0o700); err != nil && err != unix.EEXIST {
 			return -1, fmt.Errorf("leadregistry: create folder: %w", err)
 		}
-		fd, err = unix.Open(dir, flags, 0)
+		fd, err = unix.Openat(pfd, name, flags, 0)
 		if err != nil {
 			return -1, fmt.Errorf("leadregistry: open folder: %w", err)
 		}
@@ -161,13 +167,9 @@ func openDir(dir string) (int, error) {
 			unix.Close(fd)
 			return -1, fmt.Errorf("leadregistry: chmod folder: %w", err)
 		}
-		if pfd, perr := unix.Open(parent, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0); perr == nil {
-			serr := syncFD(pfd)
-			unix.Close(pfd)
-			if serr != nil {
-				unix.Close(fd)
-				return -1, fmt.Errorf("leadregistry: sync parent folder: %w", serr)
-			}
+		if err := syncFD(pfd); err != nil {
+			unix.Close(fd)
+			return -1, fmt.Errorf("leadregistry: sync parent folder: %w", err)
 		}
 	} else if err == unix.ELOOP || err == unix.ENOTDIR {
 		return -1, fmt.Errorf("%w: %s is a symlink or not a folder", ErrInsecure, dir)

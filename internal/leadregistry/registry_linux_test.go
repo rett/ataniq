@@ -41,6 +41,27 @@ func TestOpenCreatesFolderAndFile(t *testing.T) {
 	}
 }
 
+func TestCreateRequiresReadableParent(t *testing.T) {
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(parent, 0o700) })
+	if f, err := os.Open(parent); err == nil {
+		f.Close()
+		t.Skip("process can bypass directory read permissions")
+	} else if !errors.Is(err, os.ErrPermission) {
+		t.Fatal(err)
+	}
+	r, err := Open(filepath.Join(parent, "registry"), Options{})
+	if r != nil {
+		r.Close()
+	}
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("create with unreadable parent: got %v, want permission error", err)
+	}
+}
+
 func TestDefineNewRole(t *testing.T) {
 	ok := okf(t)
 	r := openReg(t, regDir(t))
