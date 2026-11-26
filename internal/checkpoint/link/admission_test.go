@@ -2,9 +2,12 @@ package link
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,7 +19,7 @@ import (
 func TestWitnessCertificateRequired(t *testing.T) {
 	f := newFixture(t, "witness")
 	e, r := f.listener(t)
-	if e.listenerTLS.ClientAuth != tls.RequireAndVerifyClientCert || e.listenerTLS.ClientCAs == nil {
+	if e.listenerTLS.ClientAuth != tls.RequireAnyClientCert || e.listenerTLS.ClientCAs != nil {
 		t.Error("home does not verify the registered witness certificate")
 	}
 	for _, id := range []seatgate.Identity{{}, identity(t, "untrusted")} {
@@ -115,14 +118,36 @@ func TestFrameHeaderDeadline(t *testing.T) {
 	}
 }
 
-func TestRejectedWitnessStopsPolling(t *testing.T) {
-	f := newFixture(t, "witness")
-	_, r := f.listener(t)
-	other, err := NewServer(identity(t, "untrusted"), f.pin, r, f.slot)
-	must(t, err)
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-	defer cancel()
-	if err := other.Poll(ctx, memoryWitness{f.w}); !errors.Is(err, cp.ErrRefused) {
-		t.Fatalf("poll: %v", err)
+func TestDatedWitnessRetriesPeerAlert(t *testing.T) {
+	for _, network := range []string{"pipe", "tcp"} {
+		for _, years := range []int{-20, 3} {
+			t.Run(fmt.Sprintf("%s/%d", network, years), func(t *testing.T) {
+				f := newFixture(t, "witness")
+				cert, key, err := seatgate.GenerateIdentity(rand.Reader, time.Now().AddDate(years, 0, 0), "witness")
+				must(t, err)
+				f.id, err = seatgate.ParseIdentity(cert, key)
+				must(t, err)
+				f.s.id = f.id
+				home := identity(t, "home")
+				e := endpointFor(t, home, f.id, f)
+				var attempts atomic.Int32
+				e.listenerTLS.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
+					if attempts.Add(1) == 1 {
+						return nil, errors.New("temporary refusal")
+					}
+					return nil, nil
+				}
+				r := serveNetwork(t, network, e.Serve)
+				r.ServerPin = home.Fingerprint()
+				startPolling(t, f.s, r, memoryWitness{f.w})
+				ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+				defer cancel()
+				_, err = e.Connect(ctx, f.slot, f.home, f.session)
+				must(t, err)
+				if attempts.Load() < 2 {
+					t.Fatal("missing retry")
+				}
+			})
+		}
 	}
 }

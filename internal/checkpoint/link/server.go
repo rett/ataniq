@@ -45,7 +45,7 @@ type Server struct {
 func NewServer(id seatgate.Identity, witnessPin ed25519.PublicKey, home Remote, slot cp.Slot) (*Server, error) {
 	wid, err := cp.KeyID(witnessPin)
 	if err != nil || id.Fingerprint() == "" || !validSlot(slot) || home.Address == "" || !seatgate.ValidFingerprint(home.ServerPin) {
-		return nil, cp.ErrRefused
+		return nil, &ConfigError{"invalid home, enrollment, or witness identity"}
 	}
 	return &Server{
 		id: id, witnessKeyID: wid, witnessPin: slices.Clone(witnessPin),

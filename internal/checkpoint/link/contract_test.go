@@ -94,7 +94,23 @@ func loopback(t *testing.T) (net.Listener, dialFunc) {
 
 func serve(t *testing.T, run func(net.Listener) error) Remote {
 	t.Helper()
-	l, dial := loopback(t)
+	return serveNetwork(t, "auto", run)
+}
+
+func serveNetwork(t *testing.T, network string, run func(net.Listener) error) Remote {
+	t.Helper()
+	var l net.Listener
+	var dial dialFunc
+	switch network {
+	case "tcp":
+		l = tcpListener(t)
+		dial = (&net.Dialer{}).DialContext
+	case "pipe":
+		p := &pipeListener{incoming: make(chan net.Conn), closed: make(chan struct{})}
+		l, dial = p, p.dial
+	default:
+		l, dial = loopback(t)
+	}
 	done := make(chan error, 1)
 	go func() { done <- run(l) }()
 	t.Cleanup(func() {

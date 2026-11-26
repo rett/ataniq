@@ -10,7 +10,6 @@ import (
 	"errors"
 	"net"
 	"slices"
-
 	"sync/atomic"
 
 	cp "ataniq/internal/checkpoint"
@@ -36,9 +35,6 @@ func NewEndpoint(id seatgate.Identity, witnessCertDER []byte, signingKey ed25519
 	}
 	pin := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
 	cfg := serverTLS(id, hex.EncodeToString(pin[:]))
-	cfg.ClientAuth = tls.RequireAndVerifyClientCert
-	cfg.ClientCAs = x509.NewCertPool()
-	cfg.ClientCAs.AddCert(leaf)
 	q := &requestQueue{
 		calls:  make(chan pendingCall),
 		closed: make(chan struct{}),
