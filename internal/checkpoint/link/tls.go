@@ -5,9 +5,8 @@
 //
 // Each configured endpoint has 60 ordinary calls and 60 recovery reads per
 // rolling minute. Only a read naming a committed receipt in its slot history
-// can use recovery capacity. Missing IDs, current reads, grant checks,
-// settlements and mutations use ordinary capacity. Each historical read also
-// returns current state, for an effective ceiling of 120 views per minute.
+// can use historical read capacity. Settlements and signed reads for the home's
+// retained ID share a separate allowance of ten requests per rolling minute.
 package link
 
 import (

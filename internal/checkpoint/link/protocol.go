@@ -143,7 +143,7 @@ func decodeError(b []byte) error {
 }
 
 var operation = [...]string{
-	frame.Settle: "settle", frame.OwnerSettle: "settle", frame.Connect: "connect", frame.Read: "read", frame.OwnerRead: "read",
+	frame.Settle: "settle", frame.OwnerSettle: "settle", frame.Connect: "connect", frame.Read: "read", frame.PendingRead: "pending_read", frame.OwnerRead: "read",
 	frame.Claim: "claim", frame.Advance: "advance", frame.Enroll: "enroll",
 	frame.Release: "release", frame.Retire: "retire",
 }

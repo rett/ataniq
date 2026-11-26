@@ -132,3 +132,48 @@ func TestStaleOwnerCannotFenceNewEpoch(t *testing.T) {
 		t.Fatalf("epoch-2 claim after epoch-1 settlement: %v", err)
 	}
 }
+
+func TestReconcileAfterOrdinaryWindowFull(t *testing.T) {
+	f := newFixture(t, "witness")
+	e, r := f.listener(t)
+	w := &continuingWitness{memoryWitness: memoryWitness{f.w}, resume: make(chan struct{}), result: make(chan error, 1)}
+	defer close(w.resume)
+	startPolling(t, f.s, r, w)
+	s := f.enroll(t, f.w.Administration())
+	c, err := e.Connect(t.Context(), f.slot, f.home, f.session)
+	must(t, err)
+	claim := cp.Claim{Mutation: cp.Mutation{ID: cp.ID{2}, Expected: s}, NewSessionPublicKey: public(f.session)}
+	_, err = c.Claim(t.Context(), claim)
+	if !errors.Is(err, cp.ErrUnknownOutcome) {
+		t.Fatal(err)
+	}
+	q := cp.ReadRequest{Slot: f.slot}
+	for i := 1; i <= 58; i++ {
+		q.Challenge[0] = byte(i)
+		_, err = c.Read(t.Context(), q)
+		must(t, err)
+	}
+	q.Challenge[0]++
+	if _, err = c.Read(t.Context(), q); !errors.Is(err, cp.ErrUnavailable) {
+		t.Fatalf("ordinary budget: %v", err)
+	}
+	q.ReceiptID = claim.ID
+	for range 9 {
+		q.Challenge[0]++
+		v, err := c.Read(t.Context(), q)
+		if err != nil || v.Prior != nil {
+			t.Fatalf("pending recovery read: prior=%v err=%v", v.Prior != nil, err)
+		}
+	}
+	_, err = c.Settle(t.Context(), 1, f.slot, claim.ID)
+	if !errors.Is(err, cp.ErrNotApplied) {
+		t.Fatalf("settle after 60 ordinary calls: %v", err)
+	}
+	if _, ok := e.PendingMutation(); ok {
+		t.Fatal("fence did not resolve intent")
+	}
+	_, err = c.Settle(t.Context(), 1, f.slot, claim.ID)
+	if !errors.Is(err, cp.ErrUnavailable) {
+		t.Fatalf("reconcile limit: %v", err)
+	}
+}

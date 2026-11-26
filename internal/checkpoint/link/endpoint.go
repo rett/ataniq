@@ -46,8 +46,9 @@ func NewEndpoint(id seatgate.Identity, witnessCertDER []byte, signingKey ed25519
 	pin := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
 	cfg := serverTLS(id, hex.EncodeToString(pin[:]))
 	q := &requestQueue{
-		calls:  make(chan pendingCall),
-		closed: make(chan struct{}),
+		calls:         make(chan pendingCall),
+		recoveryCalls: make(chan pendingCall),
+		closed:        make(chan struct{}),
 	}
 	t := transport{Remote: Remote{WitnessPin: slices.Clone(signingKey), Epoch: epoch}, queue: q, wid: wid}
 	return &Endpoint{slices.Clone(trust), slot, t, cfg}, nil
@@ -85,7 +86,9 @@ func NewEndpointWithPending(id seatgate.Identity, cert []byte, pin ed25519.Publi
 
 // PendingMutation returns a snapshot of the retained intent, if any.
 func (e *Endpoint) PendingMutation() (PendingMutation, bool) {
-	q := e.home.queue
+	return e.home.queue.pendingMutation()
+}
+func (q *requestQueue) pendingMutation() (PendingMutation, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.pending == nil {
@@ -95,14 +98,15 @@ func (e *Endpoint) PendingMutation() (PendingMutation, bool) {
 }
 
 type requestQueue struct {
-	mu         sync.Mutex
-	submitting bool
-	pending    *PendingMutation
-	calls      chan pendingCall
-	closed     chan struct{}
-	serving    atomic.Bool
-	ordinary   atomic.Bool
-	recovery   atomic.Bool
+	mu            sync.Mutex
+	submitting    bool
+	pending       *PendingMutation
+	calls         chan pendingCall
+	recoveryCalls chan pendingCall
+	closed        chan struct{}
+	serving       atomic.Bool
+	ordinary      atomic.Bool
+	recovery      atomic.Bool
 }
 
 func (q *requestQueue) exchange(ctx context.Context, k frame.Kind, data []byte, recovery bool) (answer, error) {
@@ -110,9 +114,11 @@ func (q *requestQueue) exchange(ctx context.Context, k frame.Kind, data []byte, 
 	if k.Mutation() {
 		unsent = ErrNotSent
 	}
+	calls := q.calls
 	lane := &q.ordinary
 	if recovery {
 		lane = &q.recovery
+		calls = q.recoveryCalls
 	}
 	if !lane.CompareAndSwap(false, true) {
 		return answer{}, errors.Join(unsent, cp.ErrBusy)
@@ -120,7 +126,7 @@ func (q *requestQueue) exchange(ctx context.Context, k frame.Kind, data []byte, 
 	defer lane.Store(false)
 	call := pendingCall{ctx, k, data, make(chan callResult, 1)}
 	select {
-	case q.calls <- call:
+	case calls <- call:
 		// The worker observes cancellation on the socket and classifies how
 		// much of the request was written before releasing this reservation.
 		r := <-call.result
@@ -129,6 +135,23 @@ func (q *requestQueue) exchange(ctx context.Context, k frame.Kind, data []byte, 
 		return answer{}, errors.Join(unsent, ctx.Err())
 	case <-q.closed:
 		return answer{}, unsent
+	}
+}
+
+// Take an already waiting recovery call before considering the ordinary lane.
+func (q *requestQueue) nextCall() (pendingCall, bool) {
+	select {
+	case call := <-q.recoveryCalls:
+		return call, true
+	default:
+	}
+	select {
+	case call := <-q.calls:
+		return call, true
+	case call := <-q.recoveryCalls:
+		return call, true
+	default:
+		return pendingCall{}, false
 	}
 }
 
@@ -144,14 +167,13 @@ func (e *Endpoint) Serve(l net.Listener) error {
 		if m.Kind != frame.Poll {
 			return
 		}
-		select {
-		case call := <-q.calls:
+		if call, ready := q.nextCall(); ready {
 			deadline, _ := ctx.Deadline()
 			exchange, cancel := context.WithDeadline(call.ctx, deadline)
 			a, err := e.home.exchangeOn(exchange, c, call.kind, call.data, false)
 			cancel()
 			call.result <- callResult{a, err}
-		default:
+		} else {
 			_ = frame.New(frame.Idle).WriteToStream(c)
 		}
 	})

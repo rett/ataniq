@@ -87,5 +87,16 @@ func (s *Server) pollOnce(parent context.Context, t transport, w Witness) (bool,
 	if m.Kind == frame.Idle {
 		return false, nil
 	}
+	// A slow ordinary backend call must yield the serial poller in time
+	// for a waiting recovery exchange. Bound both the backend and its I/O.
+	if m.Kind != frame.Settle && m.Kind != frame.PendingRead {
+		ctx, done := context.WithTimeout(ctx, 2*time.Second)
+		defer done()
+		deadline, _ := ctx.Deadline()
+		if err := raw.SetDeadline(deadline); err != nil {
+			return true, err
+		}
+		return true, s.reply(ctx, conn, w, nil, w, m)
+	}
 	return true, s.reply(ctx, conn, w, nil, w, m)
 }

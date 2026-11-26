@@ -202,7 +202,7 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, e
 	var receipt cp.Receipt
 	var err error
 	switch m.Kind {
-	case frame.Connect, frame.Read, frame.OwnerRead, frame.Settle, frame.OwnerSettle:
+	case frame.Connect, frame.Read, frame.PendingRead, frame.OwnerRead, frame.Settle, frame.OwnerSettle:
 		ownerOp := m.Kind == frame.OwnerRead || m.Kind == frame.OwnerSettle
 		if ownerOp != (a != nil) {
 			return nil, cp.ErrRefused
@@ -215,6 +215,12 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, e
 			return nil, cp.ErrRefused
 		}
 		pool := ordinary
+		if m.Kind == frame.Settle || m.Kind == frame.OwnerSettle || m.Kind == frame.PendingRead {
+			if q.ReceiptID == (cp.ID{}) {
+				return nil, frame.ErrProtocol
+			}
+			pool = reconcile
+		}
 		if (m.Kind == frame.Read || m.Kind == frame.OwnerRead) && q.ReceiptID != (cp.ID{}) {
 			found, err := evidence.HasReceipt(ctx, q.Slot, q.ReceiptID)
 			if err != nil {

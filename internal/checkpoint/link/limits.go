@@ -10,6 +10,7 @@ type allowance byte
 const (
 	ordinary allowance = iota
 	recoveryReads
+	reconcile
 )
 
 type minute struct {
@@ -17,12 +18,12 @@ type minute struct {
 	next  int
 }
 
-func (m *minute) take(now time.Time) bool {
+func (m *minute) take(now time.Time, capacity int) bool {
 	if now.Sub(m.times[m.next]) < time.Minute {
 		return false
 	}
 	m.times[m.next] = now
-	m.next = (m.next + 1) % len(m.times)
+	m.next = (m.next + 1) % capacity
 	return true
 }
 
@@ -30,7 +31,7 @@ func (m *minute) take(now time.Time) bool {
 type limiter struct {
 	now         func() time.Time
 	mu          sync.Mutex
-	home, owner [2]minute
+	home, owner [3]minute
 }
 
 func (l *limiter) allow(owner bool, pool allowance) bool {
@@ -40,8 +41,12 @@ func (l *limiter) allow(owner bool, pool allowance) bool {
 	if l.now != nil {
 		now = l.now()
 	}
-	if owner {
-		return l.owner[pool].take(now)
+	capacity := 60
+	if pool == reconcile {
+		capacity = 10
 	}
-	return l.home[pool].take(now)
+	if owner {
+		return l.owner[pool].take(now, capacity)
+	}
+	return l.home[pool].take(now, capacity)
 }

@@ -2,6 +2,7 @@ package link
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"net"
 	"testing"
@@ -94,7 +95,7 @@ func TestOneOutstandingMutationPerEnrollment(t *testing.T) {
 	read := make(chan error, 1)
 	go func() { _, err := q.exchange(ctx, frame.Read, nil, true); read <- err }()
 	select {
-	case call := <-q.calls:
+	case call := <-q.recoveryCalls:
 		call.result <- callResult{}
 	case <-ctx.Done():
 		t.Fatal("recovery read was not admitted")
@@ -132,6 +133,49 @@ func TestPermanentPollConfigurationError(t *testing.T) {
 		var config *ConfigError
 		if !errors.As(err, &config) {
 			t.Fatalf("invalid configuration: %v", err)
+		}
+	}
+}
+
+type slowCurrentRead struct {
+	memoryWitness
+	entered chan struct{}
+}
+
+func (w slowCurrentRead) ReadHome(ctx context.Context, q cp.ReadRequest, key ed25519.PublicKey) (cp.View, error) {
+	if q.ReceiptID == (cp.ID{}) {
+		close(w.entered)
+		<-ctx.Done()
+		return cp.View{}, ctx.Err()
+	}
+	return w.Memory.ReadHome(ctx, q, key)
+}
+func TestRecoveryBehindSlowOrdinaryRead(t *testing.T) {
+	f := newFixture(t, "witness")
+	e, r := f.listener(t)
+	w := slowCurrentRead{memoryWitness{f.w}, make(chan struct{})}
+	startPolling(t, f.s, r, w)
+	f.enroll(t, f.w.Administration())
+	c, err := e.Connect(t.Context(), f.slot, f.home, f.session)
+	must(t, err)
+	go c.Read(t.Context(), cp.ReadRequest{Slot: f.slot, Challenge: cp.ID{1}})
+	<-w.entered
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	defer cancel()
+	_, err = c.Settle(ctx, 1, f.slot, cp.ID{2})
+	if !errors.Is(err, cp.ErrNotApplied) {
+		t.Fatalf("settlement behind blocked ordinary read: %v", err)
+	}
+}
+
+func TestNextPollServesRecoveryFirst(t *testing.T) {
+	q := requestQueue{calls: make(chan pendingCall, 1), recoveryCalls: make(chan pendingCall, 1)}
+	q.calls <- pendingCall{kind: frame.Connect}
+	q.recoveryCalls <- pendingCall{kind: frame.Settle}
+	for _, kind := range []frame.Kind{frame.Settle, frame.Connect} {
+		call, ready := q.nextCall()
+		if !ready || call.kind != kind {
+			t.Fatalf("next poll got %v, want %v", call.kind, kind)
 		}
 	}
 }

@@ -372,7 +372,11 @@ func (c *client) Read(ctx context.Context, q cp.ReadRequest) (cp.View, error) {
 	if q.Slot != c.slot {
 		return cp.View{}, &cp.Reason{Kind: cp.Unauthorized}
 	}
-	m, err := c.signedRead(frame.Read, q)
+	kind := frame.Read
+	if pending, ok := c.queue.pendingMutation(); ok && pending.ID == q.ReceiptID {
+		kind = frame.PendingRead
+	}
+	m, err := c.signedRead(kind, q)
 	if err != nil {
 		return cp.View{}, err
 	}
