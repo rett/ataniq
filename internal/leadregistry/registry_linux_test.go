@@ -41,6 +41,62 @@ func TestOpenCreatesFolderAndFile(t *testing.T) {
 	}
 }
 
+func TestCreateRequiresReadableParent(t *testing.T) {
+	t.Run("sync failures", checkEntrySyncAndRetry)
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(parent, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	if f, err := os.Open(parent); err == nil {
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		t.Skip("process can bypass directory read permissions")
+	} else if !errors.Is(err, os.ErrPermission) {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(parent, "registry")
+	r, err := Open(dir, Options{})
+	if r != nil {
+		if err := r.Close(); err != nil {
+			t.Error(err)
+		}
+	}
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("create with unreadable parent: got %v, want permission error", err)
+	}
+	if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("registry after unreadable parent refusal: %v", err)
+	}
+}
+
+func TestOpenExistingRegistryUnderSearchOnlyAncestor(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "reg")
+	r := openReg(t, dir)
+	okf(t)(r.Define(lead(t, "proj"), ManagerAtaniq, goodProfile()))
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0100); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(parent, 0700); err != nil {
+			t.Error(err)
+		}
+	})
+	r = openReg(t, dir)
+	if rev, err := r.Revision(); err != nil || rev != 1 {
+		t.Fatalf("replayed revision = %d, err = %v", rev, err)
+	}
+}
+
 func TestDefineNewRole(t *testing.T) {
 	ok := okf(t)
 	r := openReg(t, regDir(t))
@@ -686,5 +742,95 @@ func TestSupervisorRole(t *testing.T) {
 	in, err := r.BeginLaunch(leadrole.Supervisor())
 	if err != nil || in.UnitName != "ataniq-supervisor.service" {
 		t.Fatalf("%+v %v", in, err)
+	}
+}
+
+// Match the actual descriptor passed to fsync, including a pre-existing
+// directory left by an interrupted creation.
+func isSyncTarget(fd int, path string) bool {
+	var held, named unix.Stat_t
+	return unix.Fstat(fd, &held) == nil && unix.Stat(path, &named) == nil && held.Dev == named.Dev && held.Ino == named.Ino
+}
+
+func checkEntrySyncAndRetry(t *testing.T) {
+	for _, target := range []string{".", "a", "a/b", "a/b/reg/" + FileName, "a/b/reg"} {
+		t.Run(target, func(t *testing.T) {
+			root := t.TempDir()
+			reg := filepath.Join(root, "a", "b", "reg")
+			path := filepath.Join(root, target)
+			syncTarget := func(fd int) error {
+				if isSyncTarget(fd, path) {
+					var child string
+					switch target {
+					case ".":
+						child = "a"
+					case "a":
+						child = "b"
+					case "a/b":
+						child = "reg"
+					default:
+						if b, err := os.ReadFile(filepath.Join(reg, FileName)); err != nil || len(b) == 0 {
+							t.Fatalf("sync before header write: %v", err)
+						}
+					}
+					if child != "" {
+						if _, err := os.Stat(filepath.Join(path, child)); err != nil {
+							t.Fatalf("sync before mkdir: %v", err)
+						}
+					}
+					return unix.EIO
+				}
+				return syncFD(fd)
+			}
+			for range 2 {
+				r, err := open(reg, Options{}, syncTarget)
+				if r != nil {
+					r.Close()
+					t.Fatal("admitted despite failed sync")
+				}
+				if !errors.Is(err, unix.EIO) {
+					t.Fatalf("sync error: %v", err)
+				}
+			}
+			// Each ancestor was synced before attempting its child. A failed
+			// insertion with no concurrent user leaves no unconfirmed child.
+			child := map[string]string{".": "a", "a": "b", "a/b": "reg"}[target]
+			if child != "" {
+				if _, err := os.Lstat(filepath.Join(path, child)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("child after failed parent sync: %v", err)
+				}
+			}
+			r, err := Open(reg, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = r.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if child != "" {
+				// A healthy registry can reopen through search-only ancestors.
+				r, err = open(reg, Options{}, syncTarget)
+				if err != nil {
+					t.Fatalf("reopen through confirmed ancestor: %v", err)
+				}
+				if err := r.Close(); err != nil {
+					t.Fatal(err)
+				}
+				// Leave the child as a creator killed between mkdir and its
+				// parent fsync would: visible, with no next entry yet.
+				next := map[string]string{".": "b", "a": "reg", "a/b": FileName}[target]
+				if err := os.RemoveAll(filepath.Join(path, child, next)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r, err = open(reg, Options{}, syncTarget)
+			if r != nil {
+				r.Close()
+				t.Fatal("existing entry bypassed sync")
+			}
+			if !errors.Is(err, unix.EIO) {
+				t.Fatalf("existing entry: %v", err)
+			}
+		})
 	}
 }

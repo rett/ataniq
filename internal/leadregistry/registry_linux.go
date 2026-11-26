@@ -5,11 +5,13 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -101,6 +103,10 @@ type Registry struct {
 // an unfinished final line. An unfinished final line is cut off and counted
 // in Recovery.
 func Open(dir string, opts Options) (*Registry, error) {
+	return open(dir, opts, syncFD)
+}
+
+func open(dir string, opts Options, syncFile func(int) error) (*Registry, error) {
 	r := &Registry{roles: map[leadrole.Role]Entry{}, now: opts.Now, rand: opts.Rand}
 	if r.now == nil {
 		r.now = time.Now
@@ -108,7 +114,7 @@ func Open(dir string, opts Options) (*Registry, error) {
 	if r.rand == nil {
 		r.rand = rand.Reader
 	}
-	dirFD, err := openDir(dir)
+	dirFD, err := openDir(dir, syncFile)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +124,7 @@ func Open(dir string, opts Options) (*Registry, error) {
 		return nil, err
 	}
 	r.f = f
-	if err := r.start(dirFD); err != nil {
+	if err := r.start(dirFD, syncFile); err != nil {
 		f.Close()
 		return nil, err
 	}
@@ -141,38 +147,36 @@ func checkOwner(st *unix.Stat_t, path string) error {
 	return nil
 }
 
-func openDir(dir string) (int, error) {
-	dir = filepath.Clean(dir)
-	flags := unix.O_RDONLY | unix.O_DIRECTORY | unix.O_NOFOLLOW | unix.O_CLOEXEC
-	fd, err := unix.Open(dir, flags, 0)
-	if err == unix.ENOENT {
-		parent := filepath.Dir(dir)
-		if err := os.MkdirAll(parent, 0o700); err != nil {
-			return -1, fmt.Errorf("leadregistry: create folder: %w", err)
+const dirFlags = unix.O_DIRECTORY | unix.O_CLOEXEC
+
+func openDir(dir string, syncFile func(int) error) (int, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return -1, err
+	}
+	flags := unix.O_PATH | dirFlags
+	if abs == "/" {
+		flags = unix.O_RDONLY | dirFlags
+	}
+	fd, err := unix.Open("/", flags, 0)
+	if err != nil {
+		return -1, err
+	}
+	names := strings.FieldsFunc(abs, func(c rune) bool { return c == '/' })
+	for i, name := range names {
+		childFlags := unix.O_PATH | dirFlags
+		nextName := FileName
+		if i+1 < len(names) {
+			nextName = names[i+1]
+		} else {
+			childFlags = unix.O_RDONLY | dirFlags | unix.O_NOFOLLOW
 		}
-		if err := unix.Mkdir(dir, 0o700); err != nil && err != unix.EEXIST {
-			return -1, fmt.Errorf("leadregistry: create folder: %w", err)
-		}
-		fd, err = unix.Open(dir, flags, 0)
+		next, err := openSyncedChild(fd, name, nextName, childFlags, syncFile)
+		_ = unix.Close(fd)
 		if err != nil {
-			return -1, fmt.Errorf("leadregistry: open folder: %w", err)
+			return -1, err
 		}
-		if err := unix.Fchmod(fd, 0o700); err != nil {
-			unix.Close(fd)
-			return -1, fmt.Errorf("leadregistry: chmod folder: %w", err)
-		}
-		if pfd, perr := unix.Open(parent, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0); perr == nil {
-			serr := syncFD(pfd)
-			unix.Close(pfd)
-			if serr != nil {
-				unix.Close(fd)
-				return -1, fmt.Errorf("leadregistry: sync parent folder: %w", serr)
-			}
-		}
-	} else if err == unix.ELOOP || err == unix.ENOTDIR {
-		return -1, fmt.Errorf("%w: %s is a symlink or not a folder", ErrInsecure, dir)
-	} else if err != nil {
-		return -1, fmt.Errorf("leadregistry: open folder: %w", err)
+		fd = next
 	}
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
@@ -188,6 +192,77 @@ func openDir(dir string) (int, error) {
 		return -1, fmt.Errorf("%w: folder %s has group or other permission bits (want 0700)", ErrInsecure, dir)
 	}
 	return fd, nil
+}
+
+// Each creator confirms a directory's entry before adding the next path
+// component (or journal). If the next entry already exists, we can traverse
+// this one with search permission alone. A missing next entry can be a crash
+// between mkdir and fsync, so confirm the containing directory on that retry.
+func openSyncedChild(parent int, name, nextName string, flags int, syncFile func(int) error) (int, error) {
+	fd, err := unix.Openat(parent, name, flags, 0)
+	if err == nil {
+		var st unix.Stat_t
+		err = unix.Fstatat(fd, nextName, &st, unix.AT_SYMLINK_NOFOLLOW)
+		if err == unix.ENOENT {
+			err = syncDirectoryAt(parent, syncFile)
+		}
+		if err != nil {
+			_ = unix.Close(fd)
+			return -1, fmt.Errorf("leadregistry: confirm folder %s: %w", name, err)
+		}
+		return fd, nil
+	}
+	created := false
+	if err == unix.ENOENT {
+		err = unix.Mkdirat(parent, name, 0700)
+		created = err == nil
+		if err != nil && err != unix.EEXIST {
+			return -1, fmt.Errorf("leadregistry: create folder %s: %w", name, err)
+		}
+		if created {
+			flags = flags &^ unix.O_PATH | unix.O_RDONLY
+		}
+		fd, err = unix.Openat(parent, name, flags, 0)
+	}
+	if err == unix.ELOOP || err == unix.ENOTDIR {
+		return -1, fmt.Errorf("%w: %s is a symlink or not a folder", ErrInsecure, name)
+	}
+	if err != nil {
+		return -1, fmt.Errorf("leadregistry: open folder %s: %w", name, err)
+	}
+	if created {
+		if err := unix.Fchmod(fd, 0700); err != nil {
+			_ = unix.Close(fd)
+			return -1, fmt.Errorf("leadregistry: chmod folder: %w", err)
+		}
+	}
+	if err := syncDirectoryAt(parent, syncFile); err != nil {
+		// Roll back only our own still-named empty directory. A concurrent
+		// creator may have populated it. Preserve those entries for retry.
+		if created {
+			var held, named unix.Stat_t
+			if unix.Fstat(fd, &held) == nil && unix.Fstatat(parent, name, &named, unix.AT_SYMLINK_NOFOLLOW) == nil && held.Dev == named.Dev && held.Ino == named.Ino {
+				rmErr := unix.Unlinkat(parent, name, unix.AT_REMOVEDIR)
+				if rmErr != unix.ENOTEMPTY && rmErr != unix.ENOENT {
+					err = errors.Join(err, rmErr)
+				}
+			}
+		}
+		_ = unix.Close(fd)
+		return -1, fmt.Errorf("leadregistry: sync parent of %s: %w", name, err)
+	}
+	return fd, nil
+}
+
+// Reopen the held parent for fsync. An O_PATH descriptor pins the directory
+// across renames but cannot itself be passed to fsync.
+func syncDirectoryAt(parent int, syncFile func(int) error) error {
+	fd, err := unix.Openat(parent, ".", unix.O_RDONLY|dirFlags, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+	return syncFile(fd)
 }
 
 func openFile(dirFD int, path string) (*os.File, error) {
@@ -245,7 +320,7 @@ func openFile(dirFD int, path string) (*os.File, error) {
 
 // start replays the journal, cuts an unfinished tail and writes the header of
 // an empty journal.
-func (r *Registry) start(dirFD int) error {
+func (r *Registry) start(dirFD int, syncFile func(int) error) error {
 	rd := bufio.NewReaderSize(r.f, MaxLineBytes+1)
 	var offset int64
 	var tail int
@@ -293,15 +368,13 @@ func (r *Registry) start(dirFD int) error {
 			return err
 		}
 	}
-	if tail > 0 || lines == 0 {
-		if err := r.f.Sync(); err != nil {
-			return fmt.Errorf("leadregistry: sync after recovery: %w", err)
-		}
+	// The header and its directory entry may only be visible in cache after
+	// a previous failed Open. Establish both durability boundaries on retry.
+	if err := syncFile(int(r.f.Fd())); err != nil {
+		return fmt.Errorf("leadregistry: sync journal: %w", err)
 	}
-	if lines == 0 {
-		if err := syncFD(dirFD); err != nil {
-			return fmt.Errorf("leadregistry: sync folder: %w", err)
-		}
+	if err := syncFile(dirFD); err != nil {
+		return fmt.Errorf("leadregistry: sync folder: %w", err)
 	}
 	return nil
 }
