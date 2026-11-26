@@ -178,7 +178,7 @@ func apply(l Ledger, e Event, privateIndexes bool) (Ledger, error) {
 	if l.checkpoint.Sequence == math.MaxUint64 {
 		return l, ErrOverflow
 	}
-	if e.Schema != 1 || e.Sequence != l.checkpoint.Sequence+1 || e.PreviousHash != l.checkpoint.Digest {
+	if e.Signature == "" || e.Schema != 1 || e.Sequence != l.checkpoint.Sequence+1 || e.PreviousHash != l.checkpoint.Digest {
 		return l, ErrChain
 	}
 	hash, err := ledgerDigest(e)

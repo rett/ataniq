@@ -15,7 +15,7 @@ func Replay(h Header, events []Event, v Verifier) (Ledger, error) {
 	}
 	for i, e := range events {
 		if e.Signature == "" {
-			return Ledger{}, fmt.Errorf("record %d: missing signature", i+1)
+			return Ledger{}, fmt.Errorf("record %d: missing signature: %w", i+1, ErrChain)
 		}
 		if err := v.Verify(h, e); err != nil {
 			return Ledger{}, fmt.Errorf("record %d: %w", i+1, err)

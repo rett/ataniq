@@ -324,3 +324,22 @@ func TestReviewHistoricalHold(t *testing.T) {
 	}
 	s.steps(t, "U", forwardSteps[1:])
 }
+
+func TestUnsignedDecisionCannotAdvanceCheckpoint(t *testing.T) {
+	s := seeded(t)
+	c := next(s.ledger, key, Freeze, "T", "")
+	e, _, err := Decide(s.ledger, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Apply(s.ledger, *e)
+	if !errors.Is(err, ErrChain) || !reflect.DeepEqual(got, s.ledger) {
+		t.Fatal("unsigned decision advanced checkpoint", err)
+	}
+	if _, ok := Lookup(got, key, "T", ""); ok {
+		t.Fatal("unsigned disposition")
+	}
+	if _, err = Replay(header, append(s.events, *e), testKey{}); !errors.Is(err, ErrChain) {
+		t.Fatal(err)
+	}
+}
