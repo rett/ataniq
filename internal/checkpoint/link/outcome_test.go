@@ -55,7 +55,7 @@ func TestMutationWriteProgress(t *testing.T) {
 
 func TestPermanentHandshakeRefusal(t *testing.T) {
 	f := newFixture(t, "witness")
-	e := f.serve(t)
+	_, e := f.listener(t)
 	tr, err := e.transport(f.id)
 	must(t, err)
 	tr.tls.NextProtos = []string{"different"}
@@ -115,7 +115,7 @@ func TestTCPOwnerCertificateRefusal(t *testing.T) {
 	identityPin := identity(t, "owner").Fingerprint()
 	go func() { done <- f.s.ServeOwner(l, f.w.Administration(), identityPin) }()
 	defer func() { l.Close(); <-done }()
-	e := f.endpoint(Endpoint{Network: "tcp4", Address: l.Addr().String()})
+	e := f.endpoint(Remote{Network: "tcp4", Address: l.Addr().String()})
 	tr, err := e.transport(identity(t, "untrusted"))
 	must(t, err)
 	_, err = tr.exchange(t.Context(), frame.New(frame.Enroll, []byte("{}"), nil))

@@ -46,15 +46,6 @@ func NewServer(id seatgate.Identity, witnessPin ed25519.PublicKey) (*Server, err
 	return &Server{id: id, witnessKeyID: wid, witnessPin: slices.Clone(witnessPin), timeout: requestTimeout, connections: make(chan struct{}, 8)}, nil
 }
 
-// Serve accepts home-signed requests. Close the listener to stop serving.
-// It returns after all exchanges have finished or been cancelled.
-func (s *Server) Serve(l net.Listener, w Witness) error {
-	if w == nil {
-		return cp.ErrRefused
-	}
-	return s.serve(l, serverTLS(s.id, ""), w, nil)
-}
-
 // ServeOwner is a separate owner endpoint. Supply a private local listener
 // and an independently provisioned client-certificate SPKI pin. Enrollment,
 // release, retirement and owner reads exist only on this authenticated endpoint.
@@ -71,7 +62,7 @@ func (s *Server) ServeOwner(l net.Listener, a cp.Administration, ownerPin string
 	default:
 		return cp.ErrRefused
 	}
-	return s.serve(l, serverTLS(s.id, ownerPin), nil, a)
+	return serveListener(l, serverTLS(s.id, ownerPin), s.connections, s.timeout, func(ctx context.Context, conn *tls.Conn, m frame.Message) { _ = s.reply(ctx, conn, nil, a, m) })
 }
 
 func transientAccept(err error) bool {
@@ -81,7 +72,7 @@ func transientAccept(err error) bool {
 		errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM))
 }
 
-func (s *Server) serve(l net.Listener, cfg *tls.Config, w Witness, a cp.Administration) error {
+func serveListener(l net.Listener, cfg *tls.Config, connections chan struct{}, timeout time.Duration, handle func(context.Context, *tls.Conn, frame.Message)) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	var workers sync.WaitGroup
 	defer func() { cancel(); workers.Wait() }()
@@ -98,21 +89,21 @@ func (s *Server) serve(l net.Listener, cfg *tls.Config, w Witness, a cp.Administ
 		}
 		delay = 5 * time.Millisecond
 		select {
-		case s.connections <- struct{}{}:
+		case connections <- struct{}{}:
 		default:
 			c.Close()
 			continue
 		}
 		workers.Go(func() {
-			defer func() { <-s.connections }()
+			defer func() { <-connections }()
 			defer c.Close()
 			stop := context.AfterFunc(ctx, func() { c.Close() })
 			defer stop()
-			conn := tls.Server(c, cfg)
+			conn := tls.Server(&countedConn{Conn: c}, cfg)
 			if c.SetDeadline(time.Now().Add(handshakeTimeout)) != nil || conn.HandshakeContext(ctx) != nil {
 				return
 			}
-			reqCtx, done := context.WithTimeout(ctx, s.timeout)
+			reqCtx, done := context.WithTimeout(ctx, timeout)
 			defer done()
 			deadline, _ := reqCtx.Deadline()
 			if c.SetDeadline(deadline) != nil {
@@ -122,20 +113,24 @@ func (s *Server) serve(l net.Listener, cfg *tls.Config, w Witness, a cp.Administ
 			if err != nil {
 				return
 			}
-			replies, err := s.dispatch(reqCtx, w, a, m)
-			if errors.Is(err, frame.ErrProtocol) {
-				return
-			}
-			if err != nil {
-				replies = []frame.Message{encodeError(err)}
-			}
-			for _, reply := range replies {
-				if reply.WriteToStream(conn) != nil {
-					return
-				}
-			}
+			handle(reqCtx, conn, m)
 		})
 	}
+}
+func (s *Server) reply(ctx context.Context, conn *tls.Conn, w Witness, a cp.Administration, m frame.Message) error {
+	replies, err := s.dispatch(ctx, w, a, m)
+	if errors.Is(err, frame.ErrProtocol) {
+		return err
+	}
+	if err != nil {
+		replies = []frame.Message{encodeError(err)}
+	}
+	for _, reply := range replies {
+		if err := reply.WriteToStream(conn); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m frame.Message) ([]frame.Message, error) {

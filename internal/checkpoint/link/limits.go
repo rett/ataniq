@@ -34,6 +34,7 @@ type peerBudget struct {
 	last    time.Time
 }
 type limiter struct {
+	now   func() time.Time
 	mu    sync.Mutex
 	peers map[string]*peerBudget
 	owner peerBudget
@@ -43,6 +44,9 @@ func (l *limiter) allow(key string, pool allowance) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
+	if l.now != nil {
+		now = l.now()
+	}
 	if key == "owner" {
 		return l.owner.windows[pool].take(now)
 	}

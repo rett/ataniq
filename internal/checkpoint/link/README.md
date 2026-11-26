@@ -1,10 +1,12 @@
 # Checkpoint witness link v1
 
-The home dials the authority. Configure an `Endpoint` with its address, the SHA-256 fingerprint of the server's P-256 SubjectPublicKeyInfo, the independent Ed25519 witness public key and the expected epoch. `Connect` takes the exact slot, the enrolled home private key and the process session private key. Its signed grant check can succeed before enrollment. Each subsequent call opens its own outbound TLS 1.3 connection with ALPN `ataniq-checkpoint/1`. The certificate usage and pin checks come from `seatgate`. Provision separate checkpoint identities.
+The witness dials the home over TLS 1.3 with ALPN `ataniq-checkpoint/1`. At the home, construct a `NewEndpoint` with the home TLS identity, independently provisioned witness client certificate (DER), witness Ed25519 public key and expected epoch. Run `Endpoint.Serve` on the home's listener. `Endpoint.Connect` takes the exact slot, home private key and process session private key. Its signed grant check can succeed before enrollment.
 
-`NewServer` takes the server TLS identity and the witness signing public key. `Server.Serve` accepts a raw listener and a `Witness`. Implementations check the provisioned key in `CheckHome` under the request context (including cancellation and shutdown), recheck the live grant while taking the read snapshot in `ReadHome`, and verify the signed claim or advance and current write grant as part of the transaction in `RawSubmit`. A successful mutation returns its committed receipt. A backend that loses certainty about commit returns `checkpoint.ErrUnknownOutcome`.
+On the authority host, construct a `NewServer` with the witness TLS identity and signing public key. Run `Server.Poll(ctx, home, witness)` with the home address and pinned home TLS SPKI fingerprint in a `Remote`. Each connection carries a poll followed by one signed home request or an idle indication. The witness returns the result on the same connection. Cancellation stops polling. The home bounds waiting and active calls to eight and hands off at most one mutation at a time per enrollment.
 
-For owner calls, use `ServeOwner` on a separate Unix-domain or loopback listener. Supply the administrative capability and the pinned SPKI fingerprint of the owner's client certificate. Dial that endpoint with `Endpoint.Administration` and the matching TLS identity. The authenticated owner can read, enroll, release and retire. Enrollment also carries the home's proof of possession.
+Implementations check the provisioned key in `CheckHome` under the request context (including cancellation and shutdown), recheck the live grant while taking the read snapshot in `ReadHome`, and verify the signed claim or advance and current write grant as part of the transaction in `RawSubmit`. A successful mutation returns its committed receipt. A backend that loses certainty about commit returns `checkpoint.ErrUnknownOutcome`.
+
+For owner calls, use `ServeOwner` on a separate Unix-domain or loopback listener. Supply the administrative capability and the pinned SPKI fingerprint of the owner's client certificate. Dial that endpoint with `Remote.Administration` and the matching TLS identity. The authenticated owner can read, enroll, release and retire. Enrollment also carries the home's proof of possession.
 
 ## Framing and bounds
 
@@ -14,7 +16,7 @@ Mutation requests carry the canonical bytes from `checkpoint.Intent.Body`. Home 
 
 A mutation returns one receipt frame. A read returns three ordered frames carrying current state, the fresh signed receipt and the optional historical receipt. Two empty fields in the last frame mean no receipt matched. Each frame fits the same ceiling even when both receipts contain maximum-length identifiers. The client verifies the fresh challenge, slot, guard, epoch and historical evidence before returning the view. A signed inhibited view accompanies `ErrUnavailable`.
 
-A server allows eight simultaneous connections across its listeners. The handshake has five seconds and the complete request and reply have another 30 seconds. Each authenticated principal has a rolling limit of 60 calls per minute shared across mutations, current reads and grant checks, plus 60 historical reads per minute. Budgets survive reconnects. Closing the listener cancels its workers.
+The home and owner listeners each allow eight simultaneous connections. The handshake has five seconds and the complete request and reply have another 30 seconds. Each authenticated principal has a rolling limit of 60 calls per minute shared across mutations, current reads and grant checks, plus 60 historical reads per minute. Budgets survive reconnects. Closing the listener cancels its workers.
 
 ## Lost acknowledgements
 

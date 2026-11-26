@@ -10,7 +10,6 @@ import (
 	"errors"
 	"net"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -57,14 +56,23 @@ func newFixture(t *testing.T, name string) *fixture {
 	must(t, w.Grant(f.slot, public(f.home), true))
 	return f
 }
-func (f *fixture) endpoint(e Endpoint) Endpoint {
+func (f *fixture) endpoint(e Remote) Remote {
 	e.ServerPin = f.id.Fingerprint()
 	e.WitnessPin = f.pin
 	e.Epoch = 1
 	return e
 }
-func (f *fixture) serve(t *testing.T) Endpoint {
-	return f.endpoint(serve(t, func(l net.Listener) error { return f.s.Serve(l, memoryWitness{f.w}) }))
+func (f *fixture) listener(t *testing.T) (*Endpoint, Remote) {
+	id := identity(t, "home")
+	e := endpointFor(t, id, f.id, f)
+	r := f.endpoint(serve(t, e.Serve))
+	r.ServerPin = id.Fingerprint()
+	return e, r
+}
+func (f *fixture) serve(t *testing.T) *Endpoint {
+	e, r := f.listener(t)
+	startPolling(t, f.s, r, memoryWitness{f.w})
+	return e
 }
 func (f *fixture) enroll(t *testing.T, a cp.Administration) cp.State {
 	t.Helper()
@@ -85,13 +93,15 @@ func (f *fixture) enroll(t *testing.T, a cp.Administration) cp.State {
 
 func TestPinAndDowngrade(t *testing.T) {
 	f := newFixture(t, "witness")
-	e := f.serve(t)
+	_, e := f.listener(t)
 	t.Run("wrong pinned server", func(t *testing.T) {
 		bad := e
 		bad.ServerPin = identity(t, "other").Fingerprint()
 		calls := 0
 		bad.DialContext = func(ctx context.Context, n, a string) (net.Conn, error) { calls++; return e.DialContext(ctx, n, a) }
-		_, err := bad.Connect(t.Context(), f.slot, f.home, f.session)
+		tr, err := bad.transport(f.id)
+		must(t, err)
+		_, err = tr.connect(t.Context())
 		if !errors.Is(err, cp.ErrRefused) || calls != 1 {
 			t.Fatalf("pin mismatch: calls %d, err %v", calls, err)
 		}
@@ -108,7 +118,7 @@ func TestPinAndDowngrade(t *testing.T) {
 			must(t, err)
 			defer raw.Close()
 			raw.SetDeadline(time.Now().Add(2 * time.Second))
-			cfg := clientTLS(e.ServerPin, seatgate.Identity{})
+			cfg := clientTLS(e.ServerPin, f.id)
 			cfg.MinVersion = tc.version
 			cfg.MaxVersion = tc.version
 			cfg.VerifyConnection = nil // model a peer willing to downgrade
@@ -132,8 +142,8 @@ func TestPinAndDowngrade(t *testing.T) {
 func TestMalformedAndSlowFramesClose(t *testing.T) {
 	f := newFixture(t, "witness")
 	f.s.timeout = 75 * time.Millisecond
-	e := f.serve(t)
-	tr, err := e.transport(seatgate.Identity{})
+	e := f.endpoint(serve(t, func(l net.Listener) error { return f.s.ServeOwner(l, f.w.Administration(), f.id.Fingerprint()) }))
+	tr, err := e.transport(f.id)
 	must(t, err)
 	for _, tc := range []struct {
 		name  string
@@ -163,8 +173,8 @@ func TestMalformedAndSlowFramesClose(t *testing.T) {
 func TestConnectionCap(t *testing.T) {
 	f := newFixture(t, "witness")
 	f.s.connections = make(chan struct{}, 1)
-	e := f.serve(t)
-	tr, err := e.transport(seatgate.Identity{})
+	e := f.endpoint(serve(t, func(l net.Listener) error { return f.s.ServeOwner(l, f.w.Administration(), f.id.Fingerprint()) }))
+	tr, err := e.transport(f.id)
 	must(t, err)
 	// Occupy the one permitted connection through its handshake.
 	busy, err := tr.connect(t.Context())
@@ -308,8 +318,8 @@ func (w waitingWitness) RawSubmit(ctx context.Context, slot cp.Slot, h ed25519.P
 func TestCancelAfterCommit(t *testing.T) {
 	f := newFixture(t, "witness")
 	w := waitingWitness{memoryWitness{f.w}, make(chan struct{}), make(chan struct{})}
-	e := f.endpoint(serve(t, func(l net.Listener) error { return f.s.Serve(l, w) }))
-	defer close(w.release)
+	e, r := f.listener(t)
+	startPolling(t, f.s, r, w)
 	s := f.enroll(t, f.w.Administration())
 	c, err := e.Connect(t.Context(), f.slot, f.home, f.session)
 	must(t, err)
@@ -332,6 +342,7 @@ func TestCancelAfterCommit(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("cancel did not interrupt response read")
 	}
+	close(w.release)
 	v, err := c.Read(t.Context(), cp.ReadRequest{Slot: f.slot, Challenge: cp.ID{3}, ReceiptID: q.ID})
 	must(t, err)
 	if v.Prior == nil || v.Current.Revision != 2 {
@@ -341,56 +352,25 @@ func TestCancelAfterCommit(t *testing.T) {
 
 func TestReconnectAfterRestart(t *testing.T) {
 	f := newFixture(t, "witness")
-	l, dial := loopback(t)
-	done := make(chan error, 1)
-	go func() { done <- f.s.Serve(l, memoryWitness{f.w}) }()
-	var mu sync.Mutex
-	attempted := make(chan struct{})
-	var once sync.Once
-	route := func(ctx context.Context, network, address string) (net.Conn, error) {
-		mu.Lock()
-		d := dial
-		mu.Unlock()
-		c, err := d(ctx, network, address)
-		if err != nil {
-			once.Do(func() { close(attempted) })
-		}
-		return c, err
-	}
-	e := f.endpoint(Endpoint{Network: l.Addr().Network(), Address: l.Addr().String(), DialContext: route})
+	e, r := f.listener(t)
+	stop := startPolling(t, f.s, r, memoryWitness{f.w})
 	f.enroll(t, f.w.Administration())
 	c, err := e.Connect(t.Context(), f.slot, f.home, f.session)
 	must(t, err)
-	l.Close()
-	if !errors.Is(<-done, net.ErrClosed) {
-		t.Fatal("old server did not stop")
-	}
-	q := cp.ReadRequest{Slot: f.slot, Challenge: cp.ID{3}, ReceiptID: cp.ID{1}}
+	stop()
 	read := make(chan error, 1)
-	go func() { _, err := c.Read(t.Context(), q); read <- err }()
-	select {
-	case <-attempted:
-	case <-time.After(2 * time.Second):
-		t.Fatal("client did not attempt reconnect")
-	}
-	var newListener net.Listener
-	if _, ok := l.(*net.TCPListener); ok {
-		newListener, err = net.Listen(e.Network, e.Address)
-		must(t, err)
-	} else {
-		mu.Lock()
-		newListener, dial = loopback(t)
-		mu.Unlock()
-	}
+	go func() {
+		_, err := c.Read(t.Context(), cp.ReadRequest{Slot: f.slot, Challenge: cp.ID{3}, ReceiptID: cp.ID{1}})
+		read <- err
+	}()
 	restarted, err := NewServer(f.id, f.pin)
 	must(t, err)
-	go func() { done <- restarted.Serve(newListener, memoryWitness{f.w}) }()
-	defer func() { newListener.Close(); <-done }()
+	startPolling(t, restarted, r, memoryWitness{f.w})
 	select {
 	case err := <-read:
 		must(t, err)
 	case <-time.After(3 * time.Second):
-		t.Fatal("reconnect did not finish")
+		t.Fatal("read did not survive witness restart")
 	}
 }
 

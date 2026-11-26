@@ -21,9 +21,9 @@ import (
 	"ataniq/internal/seatgate"
 )
 
-// Endpoint pins the authority's transport key and its independent witness
+// Remote pins the authority's transport key and its independent witness
 // signing key and epoch. DialContext defaults to net.Dialer.DialContext.
-type Endpoint struct {
+type Remote struct {
 	Network, Address string
 	ServerPin        string
 	WitnessPin       ed25519.PublicKey
@@ -32,12 +32,14 @@ type Endpoint struct {
 }
 
 type transport struct {
-	Endpoint
-	tls *tls.Config
-	wid string
+	Remote
+	queue        *requestQueue
+	mutationSlot cp.Slot
+	tls          *tls.Config
+	wid          string
 }
 
-func (e Endpoint) transport(owner seatgate.Identity) (transport, error) {
+func (e Remote) transport(owner seatgate.Identity) (transport, error) {
 	wid, err := cp.KeyID(e.WitnessPin)
 	if err != nil || e.Epoch == 0 || !seatgate.ValidFingerprint(e.ServerPin) || e.Address == "" {
 		return transport{}, cp.ErrRefused
@@ -49,7 +51,7 @@ func (e Endpoint) transport(owner seatgate.Identity) (transport, error) {
 		e.DialContext = (&net.Dialer{}).DialContext
 	}
 	e.WitnessPin = slices.Clone(e.WitnessPin)
-	return transport{e, clientTLS(e.ServerPin, owner), wid}, nil
+	return transport{Remote: e, tls: clientTLS(e.ServerPin, owner), wid: wid}, nil
 }
 
 type client struct {
@@ -69,9 +71,9 @@ func validPrivate(k ed25519.PrivateKey) bool {
 // Connect verifies the home grant with a signed grant check. A grant
 // can already exist when the owner has yet to enroll the slot.
 func (e Endpoint) Connect(ctx context.Context, slot cp.Slot, home, session ed25519.PrivateKey) (cp.Client, error) {
-	t, err := e.transport(seatgate.Identity{})
-	if err != nil {
-		return nil, err
+	t := e.home
+	if t.queue == nil {
+		return nil, cp.ErrRefused
 	}
 	if !validSlot(slot) || !validPrivate(home) || !validPrivate(session) {
 		return nil, &cp.Reason{Kind: cp.InvalidRequest}
@@ -97,7 +99,7 @@ type owner struct{ transport }
 
 // Administration dials the separately served owner endpoint with its pinned
 // client certificate. An owner read requires neither a home nor a session key.
-func (e Endpoint) Administration(id seatgate.Identity) (cp.Administration, error) {
+func (e Remote) Administration(id seatgate.Identity) (cp.Administration, error) {
 	if id.Fingerprint() == "" {
 		return nil, cp.ErrRefused
 	}
@@ -211,6 +213,9 @@ func (t transport) exchange(ctx context.Context, m frame.Message) (answer, error
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	mutation := m.Kind != frame.Connect && m.Kind != frame.Read && m.Kind != frame.OwnerRead
+	if t.queue != nil {
+		return t.queue.exchange(ctx, m.Kind, data, t.mutationSlot)
+	}
 	conn, err := t.connect(ctx)
 	if err != nil {
 		if mutation && errors.Is(err, cp.ErrUnavailable) {
@@ -218,8 +223,13 @@ func (t transport) exchange(ctx context.Context, m frame.Message) (answer, error
 		}
 		return answer{}, err
 	}
+	defer conn.NetConn().Close()
+	return exchangeOn(ctx, conn, m.Kind, data, true)
+}
+
+func exchangeOn(ctx context.Context, conn *tls.Conn, kind frame.Kind, data []byte, dialed bool) (answer, error) {
+	mutation := kind != frame.Connect && kind != frame.Read && kind != frame.OwnerRead
 	raw := conn.NetConn()
-	defer raw.Close()
 	stop := context.AfterFunc(ctx, func() { raw.Close() })
 	defer stop()
 	deadline, _ := ctx.Deadline()
@@ -246,7 +256,10 @@ func (t transport) exchange(ctx context.Context, m frame.Message) (answer, error
 	first := io.LimitedReader{R: conn, N: cp.MaxFrame + 4}
 	reply, err := frame.ReadMessage(&first)
 	if err != nil {
-		return answer{}, errors.Join(replyReadError(err, cp.MaxFrame+4-first.N, result), ctx.Err())
+		if dialed {
+			result = replyReadError(err, cp.MaxFrame+4-first.N, result)
+		}
+		return answer{}, errors.Join(result, ctx.Err())
 	}
 	if reply.Kind == frame.Failure {
 		err := decodeError(reply.Fields[0])
@@ -255,7 +268,7 @@ func (t transport) exchange(ctx context.Context, m frame.Message) (answer, error
 		}
 		return answer{}, err
 	}
-	if m.Kind == frame.Connect {
+	if kind == frame.Connect {
 		if reply.Kind != frame.Granted {
 			return answer{}, result
 		}
@@ -363,6 +376,7 @@ func (c *client) submit(ctx context.Context, k frame.Kind, s cp.State, q cp.Inte
 	return c.rawSubmit(ctx, k, c.slot, c.home.Public().(ed25519.PublicKey), b, hs, ss)
 }
 func (t transport) rawSubmit(ctx context.Context, k frame.Kind, slot cp.Slot, home ed25519.PublicKey, b, hs, ss []byte) (cp.Receipt, error) {
+	t.mutationSlot = slot
 	route, err := json.Marshal(slot)
 	if err != nil {
 		return cp.Receipt{}, err
@@ -374,9 +388,9 @@ func (t transport) rawSubmit(ctx context.Context, k frame.Kind, slot cp.Slot, ho
 // witness. It forwards an existing claim or advance and its detached proofs
 // verbatim through the same exchange and receipt checks as the home client.
 func (e Endpoint) RawSubmit(ctx context.Context, slot cp.Slot, home ed25519.PublicKey, op string, body, homeSig, sessionSig []byte) (cp.Receipt, error) {
-	t, err := e.transport(seatgate.Identity{})
-	if err != nil {
-		return cp.Receipt{}, err
+	t := e.home
+	if t.queue == nil {
+		return cp.Receipt{}, cp.ErrRefused
 	}
 	switch op {
 	case "claim":

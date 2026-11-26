@@ -29,11 +29,13 @@ const (
 	Failure                   // one closed-set error code
 	Connect                   // signed home grant check, same fields as Read
 	Granted                   // empty response to Connect
+	Poll                      // witness requests one home request
+	Idle                      // no home request waiting
 )
 
 var arity = [...]int{
 	Read: 3, OwnerRead: 1, Claim: 5, Advance: 5, Enroll: 2, Release: 1, Retire: 1,
-	Receipt: 2, View: 1, Fresh: 2, Prior: 2, Failure: 1, Connect: 3, Granted: 0,
+	Receipt: 2, View: 1, Fresh: 2, Prior: 2, Failure: 1, Connect: 3, Granted: 0, Poll: 0, Idle: 0,
 }
 var ErrProtocol = errors.New("checkpoint link: invalid frame")
 
