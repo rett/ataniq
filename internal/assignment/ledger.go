@@ -15,8 +15,12 @@ var (
 )
 
 type Header struct {
-	Schema                                         uint64
-	Authority, Store, Incarnation, KeyID, LedgerID string
+	Authority   string `json:"authority"`
+	Incarnation string `json:"incarnation"`
+	KeyID       string `json:"key_id"`
+	LedgerID    string `json:"ledger_id"`
+	Schema      uint64 `json:"schema"`
+	Store       string `json:"store"`
 }
 
 type Checkpoint struct {
@@ -59,16 +63,14 @@ type Ledger struct {
 
 // NewLedger starts at the header hash. The caller establishes enrollment.
 func NewLedger(h Header) (Ledger, error) {
-	if h.Schema != 1 || h.Authority == "" || h.Store == "" || h.Incarnation == "" || h.KeyID == "" || h.LedgerID == "" {
-		return Ledger{}, ErrInvalid
-	}
-	var w encoding
-	w.number(h.Schema)
-	w.strings(h.Authority, h.Store, h.Incarnation, h.KeyID, h.LedgerID)
-	hash, err := w.digest("ataniq.assignment.header.v1")
+	raw, err := h.Bytes()
 	if err != nil {
 		return Ledger{}, err
 	}
+	return initialLedger(h, raw), nil
+}
+func initialLedger(h Header, raw []byte) Ledger {
+	hash := sha256Hex(raw)
 	return Ledger{
 		header:     h,
 		checkpoint: Checkpoint{h.Authority, h.Store, h.Incarnation, h.LedgerID, hash, 0},
@@ -76,7 +78,7 @@ func NewLedger(h Header) (Ledger, error) {
 		transfers:  make(map[transferKey]Transfer),
 		history:    make(map[operation]disposition),
 		latest:     make(map[transferKey]Result),
-	}, nil
+	}
 }
 
 func (l Ledger) Checkpoint() Checkpoint { return l.checkpoint }

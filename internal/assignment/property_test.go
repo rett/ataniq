@@ -170,8 +170,8 @@ func TestAssignmentWalk(t *testing.T) {
 				if m.admitted || m.phase == PhaseAbortedClosed {
 					active = ""
 				}
-				expected := Head{key, m.generation, m.revision, m.holder.ID, active, m.phase}
-				want := Result{expected, c.RequestID, m.disposition, e.Result.EventID}
+				expected := Head{Key: key, Generation: m.generation, Revision: m.revision, BindingID: m.holder.ID, TransferID: active, Phase: m.phase}
+				want := Result{Head: expected, RequestID: c.RequestID, Disposition: m.disposition, EventID: e.Result.EventID}
 				history[[2]string{m.id, c.RequestID}], latest[m.id] = want, want
 				replayed, err := Replay(header, s.events, testKey{})
 				if err != nil || !reflect.DeepEqual(s.ledger, replayed) {

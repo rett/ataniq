@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"reflect"
 	"strconv"
 )
 
@@ -66,6 +67,10 @@ func project(h Header, prior, row Row, tr Transfer, e Event) PublicEnvelope {
 // canonicalJSON accepts fixed schemas with members in key order. RFC 8785
 // emits U+2028/2029 literally. Preserve escaped backslashes before a "u".
 func canonicalJSON(v any) ([]byte, error) {
+	remaining := recordLimit
+	if err := checkStrings(reflect.ValueOf(v), &remaining); err != nil {
+		return nil, err
+	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -73,7 +78,11 @@ func canonicalJSON(v any) ([]byte, error) {
 		return nil, err
 	}
 	b := bytes.TrimSuffix(buf.Bytes(), []byte{'\n'})
+	// The stock encoder only over-escapes U+2028/2029 here.
 	if !bytes.Contains(b, []byte("\\u202")) {
+		if len(b) > recordLimit {
+			return nil, ErrLimit
+		}
 		return b, nil
 	}
 	out := make([]byte, 0, len(b))
@@ -94,6 +103,9 @@ func canonicalJSON(v any) ([]byte, error) {
 			out = append(out, b[i:i+2]...)
 			i += 2
 		}
+	}
+	if len(out) > recordLimit {
+		return nil, ErrLimit
 	}
 	return out, nil
 }

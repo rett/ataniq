@@ -17,12 +17,21 @@ var (
 	ErrOverflow = errors.New("assignment: counter exhausted")
 )
 
-type Key struct{ Home, Project, Role string }
+type Key struct {
+	Home    string `json:"home"`
+	Project string `json:"project"`
+	Role    string `json:"role"`
+}
 
 type Binding struct {
-	Kind, ID, Authority, Store, Incarnation string
-	Conversation, LaunchIntent              string
-	RoleEpoch                               uint64
+	Authority    string `json:"authority"`
+	Conversation string `json:"conversation"`
+	ID           string `json:"id"`
+	Incarnation  string `json:"incarnation"`
+	Kind         string `json:"kind"`
+	LaunchIntent string `json:"launch_intent"`
+	RoleEpoch    uint64 `json:"role_epoch,string"`
+	Store        string `json:"store"`
 }
 
 func (b Binding) valid() bool {
@@ -81,10 +90,12 @@ const (
 )
 
 type Head struct {
-	Key                   Key
-	Generation, Revision  uint64
-	BindingID, TransferID string
-	Phase                 Phase
+	BindingID  string `json:"binding_id"`
+	Generation uint64 `json:"generation,string"`
+	Key        Key    `json:"key"`
+	Phase      Phase  `json:"phase"`
+	Revision   uint64 `json:"revision,string"`
+	TransferID string `json:"transfer_id"`
 }
 
 type Row struct {
@@ -107,10 +118,16 @@ func (r Row) Permits(h Head) bool { return r.Head == h && h.Phase.open() }
 // TransferID also binds evidence for a new transfer against an older head.
 // The issuer attests the outcome for the subject in that scope.
 type Evidence struct {
-	Route                                            string // Owning route for an effect reference.
-	Kind, Issuer, Subject, Revision, Digest, Outcome string
-	Scope                                            Head
-	TransferID, ScopeEventID                         string
+	Digest       string `json:"digest"`
+	Issuer       string `json:"issuer"`
+	Kind         string `json:"kind"`
+	Outcome      string `json:"outcome"`
+	Revision     string `json:"revision"`
+	Route        string `json:"route"`
+	Scope        Head   `json:"scope"`
+	ScopeEventID string `json:"scope_event_id"`
+	Subject      string `json:"subject"`
+	TransferID   string `json:"transfer_id"`
 }
 
 type Hold struct {
@@ -149,17 +166,23 @@ func (t Transfer) clone() Transfer {
 }
 
 type Command struct {
-	Expected                                    Head
-	Kind                                        Kind
-	TransferID, RequestID, Actor, Authorization string
-	Candidate                                   Binding
-	Evidence                                    []Evidence
-	HoldStart, EarliestRetirement               uint64
+	Actor              string     `json:"actor"`
+	Authorization      string     `json:"authorization"`
+	Candidate          Binding    `json:"candidate"`
+	EarliestRetirement uint64     `json:"earliest_retirement,string"`
+	Evidence           []Evidence `json:"evidence"`
+	Expected           Head       `json:"expected"`
+	HoldStart          uint64     `json:"hold_start,string"`
+	Kind               Kind       `json:"kind"`
+	RequestID          string     `json:"request_id"`
+	TransferID         string     `json:"transfer_id"`
 }
 
 type Result struct {
-	Head                            Head
-	RequestID, Disposition, EventID string
+	Disposition string `json:"disposition"`
+	EventID     string `json:"event_id"`
+	Head        Head   `json:"head"`
+	RequestID   string `json:"request_id"`
 }
 
 type Event struct {

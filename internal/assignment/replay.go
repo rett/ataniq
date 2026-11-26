@@ -10,6 +10,18 @@ func Replay(h Header, events []Event, v Verifier) (Ledger, error) {
 	if err != nil {
 		return Ledger{}, err
 	}
+	return replay(l, events, v)
+}
+
+// ReplayFromHeader starts recovery at the exact stored schema-1 header.
+func ReplayFromHeader(raw []byte, events []Event, v Verifier) (Ledger, error) {
+	l, err := NewLedgerFromHeader(raw)
+	if err != nil {
+		return Ledger{}, err
+	}
+	return replay(l, events, v)
+}
+func replay(l Ledger, events []Event, v Verifier) (Ledger, error) {
 	if v == nil {
 		return Ledger{}, ErrInvalid
 	}
@@ -21,7 +33,7 @@ func Replay(h Header, events []Event, v Verifier) (Ledger, error) {
 		if err != nil {
 			return Ledger{}, err
 		}
-		if err := v.Verify(h, b, e.Signature); err != nil {
+		if err := v.Verify(l.header, b, e.Signature); err != nil {
 			return Ledger{}, fmt.Errorf("record %d: %w", i+1, err)
 		}
 		l, err = apply(l, e, true)

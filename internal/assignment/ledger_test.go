@@ -13,7 +13,7 @@ import (
 	"testing"
 )
 
-var header = Header{1, "home", "store", "incarnation", "enrolled-key", "ledger"}
+var header = Header{Schema: 1, Authority: "home", Store: "store", Incarnation: "incarnation", KeyID: "enrolled-key", LedgerID: "ledger"}
 var errSignature = errors.New("test signature mismatch")
 
 type testKey struct{}
@@ -394,6 +394,79 @@ func TestSignerHasStandalonePerRowProjection(t *testing.T) {
 	}
 	l, err := Replay(header, s.events, testKey{})
 	if err != nil || !reflect.DeepEqual(l, s.ledger) {
+		t.Fatal(err)
+	}
+}
+
+func TestJournalEncodingBoundary(t *testing.T) {
+	s := fresh(t)
+	c := next(s.ledger, key, Seed, "T", "")
+	t.Run("invalid UTF-8", func(t *testing.T) { c := c; c.Actor = "bad\xff"; refused(t, s.ledger, c, ErrInvalid) })
+	t.Run("escaped record", func(t *testing.T) {
+		c := c
+		c.Actor = strings.Repeat("\x00", recordLimit/6)
+		refused(t, s.ledger, c, ErrLimit)
+	})
+	t.Run("signed frame", func(t *testing.T) {
+		e, _, err := Decide(s.ledger, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.Signature = strings.Repeat("\x01", recordLimit/6)
+		if _, err := Apply(s.ledger, *e); !errors.Is(err, ErrLimit) {
+			t.Fatal("oversize signed record", err)
+		}
+	})
+	t.Run("exact header", func(t *testing.T) {
+		frame, err := header.Bytes()
+		if err != nil || sha256Hex(frame) != s.ledger.Checkpoint().Digest {
+			t.Fatal("wrong root commitment", err)
+		}
+	})
+}
+
+func TestExactFrames(t *testing.T) {
+	s := fresh(t)
+	c := next(s.ledger, key, Seed, "T", "")
+	c.Actor = "line separator\u2028and literal\\u2028<&"
+	e := s.accept(t, c)
+	raw, err := e.RecordBytes()
+	if err != nil || !bytes.Contains(raw, []byte(c.Actor[:14])) {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeRecord(raw)
+	if err != nil || !reflect.DeepEqual(decoded, e) {
+		t.Fatal("event round trip", err)
+	}
+	root, err := header.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := ReplayFromHeader(root, []Event{decoded}, testKey{})
+	if err != nil || recovered.Checkpoint() != s.ledger.Checkpoint() {
+		t.Fatal(err)
+	}
+	for _, bad := range [][]byte{root[:len(root)-1], append([]byte(" "), root...), bytes.Replace(root, []byte("{"), []byte("{\"format\":\"other\","), 1)} {
+		if _, err := NewLedgerFromHeader(bad); err == nil {
+			t.Fatal("accepted different header")
+		}
+	}
+	for _, bad := range [][]byte{raw[:len(raw)-1], append([]byte(" "), raw...), bytes.Replace(raw, []byte("{"), []byte("{\"schema\":1,"), 1)} {
+		if _, err := DecodeRecord(bad); err == nil {
+			t.Fatal("accepted different record")
+		}
+	}
+	e.Signature += strings.Repeat("s", recordLimit-len(raw))
+	full, err := e.RecordBytes()
+	if err != nil || len(full) != recordLimit {
+		t.Fatal(len(full), err)
+	}
+	e.Signature += "s"
+	if _, err = e.RecordBytes(); !errors.Is(err, ErrLimit) {
+		t.Fatal(err)
+	}
+	e.Signature = "\xff"
+	if _, err = e.RecordBytes(); !errors.Is(err, ErrInvalid) {
 		t.Fatal(err)
 	}
 }
