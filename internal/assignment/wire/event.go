@@ -41,6 +41,18 @@ func addressable(p assignment.PublicEnvelope) bool {
 		!validInstance(p.Home) || !validInstance(p.ExecutingInstance) || !validBinding(p.Binding) {
 		return false
 	}
+	if p.Phase == assignment.PhaseQuarantined {
+		if p.Admission {
+			return false
+		}
+		switch p.Kind {
+		case assignment.FenceReceipt, assignment.ConfirmReceipt, assignment.QuarantineAcknowledged:
+		default:
+			return false
+		}
+	} else if p.Kind == assignment.QuarantineAcknowledged {
+		return false
+	}
 	terminal := p.Phase == assignment.PhaseConfirmed || p.Phase == assignment.PhaseAborted || p.Phase == assignment.PhaseAbortedClosed
 	if (p.ActiveTransferID == "") != terminal {
 		return false
@@ -54,6 +66,9 @@ func addressable(p assignment.PublicEnvelope) bool {
 // Marshal returns the canonical public object without framing. Leave Signature
 // empty for a signing body. The signed envelope carries the unpadded base64url SSHSIG blob.
 func Marshal(p assignment.PublicEnvelope) ([]byte, error) {
+	if p.Format != assignment.Format {
+		return nil, assignment.ErrFormat
+	}
 	if p.Schema != 1 || p.Algorithm != "Ed25519" || p.EvidenceDigests == nil || !addressable(p) {
 		return nil, errProjection
 	}

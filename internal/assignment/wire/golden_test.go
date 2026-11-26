@@ -277,7 +277,7 @@ func TestGoldenEvents(t *testing.T) {
 		t.Fatal("historical review differs from OpenSSH signature", err)
 	}
 	row, _ := replayed.Row(rowKey)
-	if row.PublicDigest != "495b74e904214d94c61c3619d577ec469440fcbada8123659c5acfe4d2da5947" {
+	if row.PublicDigest != "de1e8d0ab38529b39846d8a4c9421e4fb27ea583b5a81b1f63149d6def8a8c26" {
 		t.Fatal("historical review differs from independent signed cursor", row.PublicDigest)
 	}
 	for path, contents := range pending {

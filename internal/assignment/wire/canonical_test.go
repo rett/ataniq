@@ -31,7 +31,7 @@ func TestCanonicalJSON(t *testing.T) {
 
 func sample() assignment.PublicEnvelope {
 	instance := assignment.Instance{Authority: "home", Incarnation: "instance", Store: "store"}
-	return assignment.PublicEnvelope{Schema: 1, Algorithm: "Ed25519", EvidenceDigests: []string{},
+	return assignment.PublicEnvelope{Format: assignment.Format, Schema: 1, Algorithm: "Ed25519", EvidenceDigests: []string{},
 		Home: instance, ExecutingInstance: instance, KeyID: "pin", ProjectID: "project", RoleID: "role",
 		TransferID: "seed", ActiveTransferID: "seed", RequestID: "request", Binding: assignment.PublicBinding{ID: "holder", Kind: "legacy"},
 		EventID: strings.Repeat("a", 64), Kind: assignment.Seed, Phase: assignment.PhaseCommittedClosed,
@@ -154,4 +154,34 @@ func FuzzCanonicalDecoder(f *testing.F) {
 			}
 		}
 	})
+}
+
+func TestOldSchemaOneProjectionRefused(t *testing.T) {
+	body, err := Marshal(sample())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := bytes.Replace(body, []byte(`"format":"`+assignment.Format+`",`), nil, 1)
+	if _, err := Unmarshal(old); !errors.Is(err, assignment.ErrFormat) {
+		t.Fatal(err)
+	}
+}
+
+func TestQuarantineProjection(t *testing.T) {
+	p := sample()
+	p.Kind, p.Phase, p.OldBinding = assignment.QuarantineAcknowledged, assignment.PhaseQuarantined, p.Binding
+	if _, err := Marshal(p); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []func(*assignment.PublicEnvelope){
+		func(p *assignment.PublicEnvelope) { p.Admission = true },
+		func(p *assignment.PublicEnvelope) { p.Kind = assignment.Open },
+		func(p *assignment.PublicEnvelope) { p.Phase = assignment.PhaseCommittedClosed },
+	} {
+		bad := p
+		change(&bad)
+		if _, err := Marshal(bad); err == nil {
+			t.Fatal("accepted incompatible quarantine projection", bad)
+		}
+	}
 }

@@ -16,7 +16,7 @@ func TestFollowupFrameBudget(t *testing.T) {
 	dec := fmt.Sprint(n)
 	head := Head{Generation: n, Revision: n, Phase: PhasePartiallyFenced}
 	b := Binding{Kind: "managed", RoleEpoch: n}
-	p := PublicEnvelope{Algorithm: "Ed25519", Binding: PublicBinding{Kind: "managed"}, OldBinding: PublicBinding{Kind: "managed"},
+	p := PublicEnvelope{Format: Format, Algorithm: "Ed25519", Binding: PublicBinding{Kind: "managed"}, OldBinding: PublicBinding{Kind: "managed"},
 		CommitRevision: dec, EventID: digest, EvidenceDigests: []string{}, Generation: dec, InventoryDigest: digest,
 		Kind: QuarantineAcknowledged, Phase: PhasePartiallyFenced, PreviousGeneration: dec, PreviousPublicDigest: digest, PreviousRevision: dec,
 		Revision: dec, Schema: 1}

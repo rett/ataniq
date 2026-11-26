@@ -46,8 +46,8 @@ func TestCanonicalCommitments(t *testing.T) {
 	hash, _ := ledgerDigest(e)
 	// Independently computed SHA-256 over each domain, NUL and its schema-1 bytes.
 	const wantRequest = "16d174bd564a20701b49ea795dffe1ef6974d5c080bcf4a997f0d1747663f3d3"
-	const wantPublic = "5b88a159cdd5a0cbd9d7a677cfbcedb612ebd9e9703d1018ef5ec35e8c65139b"
-	const wantLedger = "5a3d82948af6e54770d337a84773ab34b3b2f3ddc2b30106aaebd7cff1c5d6f8"
+	const wantPublic = "920e1c475b2984a626eade54633f0e0bbac8bcca6a939884c1f047cceba98694"
+	const wantLedger = "368300d1ae5981d0521b595c52751f09107304a996184f1cb8c07c476c277834"
 	if one != wantRequest || e.Result.EventID != wantPublic || hash != wantLedger {
 		t.Fatal("commitment differs from golden", one, e.Result.EventID, hash)
 	}
@@ -524,4 +524,25 @@ func TestDecideReservesSignedFrameSpace(t *testing.T) {
 	}
 	c.Actor += "x"
 	refused(t, s.ledger, c, ErrLimit)
+}
+
+func TestPreStorageFormatCutover(t *testing.T) {
+	s := fresh(t)
+	e := s.accept(t, next(s.ledger, key, Seed, "seed", ""))
+	root, err := header.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := bytes.Replace(root, []byte(Format), []byte("ataniq.assignment"), 1)
+	if _, err := ReplayFromHeader(old, []Event{e}, testKey{}); !errors.Is(err, ErrFormat) {
+		t.Fatal(err)
+	}
+	raw, err := e.RecordBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old = bytes.Replace(raw, []byte(`"format":"`+Format+`",`), nil, 1)
+	if _, err := DecodeRecord(old); !errors.Is(err, ErrFormat) {
+		t.Fatal(err)
+	}
 }

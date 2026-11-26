@@ -14,7 +14,7 @@ const (
 	// allowances cover JSON members, hashes, enums, full-width counters,
 	// evidence_digests and the SSHSIG. TestFollowupFrameBudget measures both
 	// against the encoded schema with empty variable slots.
-	baseFrameAllowance  = 2250
+	baseFrameAllowance  = 2300
 	proofFrameAllowance = 610
 	MaxReferenceBytes   = (recordLimit - baseFrameAllowance - maxFollowupProofs*proofFrameAllowance) / (35 + 11*maxFollowupProofs)
 )
