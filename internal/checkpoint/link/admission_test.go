@@ -151,3 +151,58 @@ func TestDatedWitnessRetriesPeerAlert(t *testing.T) {
 		}
 	}
 }
+
+func TestTCPReservedWitnessHandshake(t *testing.T) {
+	f := newFixture(t, "witness")
+	id := identity(t, "home")
+	e := endpointFor(t, id, f.id, f)
+	r := serveNetwork(t, "tcp", e.Serve)
+	r.ServerPin = id.Fingerprint()
+	var silent []net.Conn
+	for _, ip := range []string{"127.0.0.2", "127.0.0.3"} {
+		d := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(ip)}}
+		for range 2 {
+			c, err := d.DialContext(t.Context(), "tcp4", r.Address)
+			must(t, err)
+			defer c.Close()
+			silent = append(silent, c)
+		}
+	}
+	startPolling(t, f.s, r, memoryWitness{f.w})
+	ctx, cancel := context.WithTimeout(t.Context(), 450*time.Millisecond)
+	defer cancel()
+	_, err := e.Connect(ctx, f.slot, f.home, f.session)
+	must(t, err)
+	silent[0].SetReadDeadline(time.Now().Add(time.Second))
+	_, err = silent[0].Read(make([]byte, 1))
+	var timeout net.Error
+	if err == nil || errors.As(err, &timeout) && timeout.Timeout() {
+		t.Fatal("silent peer exceeded first-byte window", err)
+	}
+}
+
+type sourceConn struct {
+	net.Conn
+	source net.IP
+}
+
+func (c sourceConn) RemoteAddr() net.Addr { return &net.TCPAddr{IP: c.source} }
+
+func TestConfiguredSourcesHaveReservedSlots(t *testing.T) {
+	admit := homeAdmission(loopbackTrust())
+	for _, ip := range []string{"127.0.0.2", "127.0.0.2", "127.0.0.3", "127.0.0.3"} {
+		release := admit(sourceConn{source: net.ParseIP(ip)})
+		if release == nil {
+			t.Fatal("missing ordinary capacity")
+		}
+		defer release()
+	}
+	if admit(sourceConn{source: net.ParseIP("127.0.0.4")}) != nil {
+		t.Fatal("ordinary limit exceeded")
+	}
+	release := admit(sourceConn{source: net.ParseIP("127.0.0.1")})
+	if release == nil {
+		t.Fatal("reserved capacity unavailable")
+	}
+	release()
+}

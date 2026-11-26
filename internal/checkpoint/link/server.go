@@ -70,7 +70,7 @@ func (s *Server) ServeOwner(l net.Listener, a cp.Administration, ownerPin string
 	default:
 		return cp.ErrRefused
 	}
-	return serveListener(l, serverTLS(s.id, ownerPin), s.ownerCapacity, s.timeout, func(ctx context.Context, conn *tls.Conn, m frame.Message) {
+	return serveListener(l, serverTLS(s.id, ownerPin), s.ownerCapacity, s.timeout, homeAdmission(nil), func(ctx context.Context, conn *tls.Conn, m frame.Message) {
 		_ = s.reply(ctx, conn, nil, a, m)
 	})
 }
@@ -82,9 +82,8 @@ func transientAccept(err error) bool {
 		errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM))
 }
 
-func serveListener(l net.Listener, cfg *tls.Config, capacity int, timeout time.Duration, handle func(context.Context, *tls.Conn, frame.Message)) error {
+func serveListener(l net.Listener, cfg *tls.Config, capacity int, timeout time.Duration, admit admission, handle func(context.Context, *tls.Conn, frame.Message)) error {
 	connections := make(chan struct{}, capacity)
-	var pending handshakes
 	ctx, cancel := context.WithCancel(context.Background())
 	var workers sync.WaitGroup
 	defer func() { cancel(); workers.Wait() }()
@@ -100,8 +99,8 @@ func serveListener(l net.Listener, cfg *tls.Config, capacity int, timeout time.D
 			continue
 		}
 		delay = 5 * time.Millisecond
-		source := peerSource(c)
-		if !pending.acquire(source) {
+		release := admit(c)
+		if release == nil {
 			c.Close()
 			continue
 		}
@@ -109,9 +108,11 @@ func serveListener(l net.Listener, cfg *tls.Config, capacity int, timeout time.D
 			defer c.Close()
 			stop := context.AfterFunc(ctx, func() { c.Close() })
 			defer stop()
-			conn := tls.Server(&countedConn{Conn: c}, cfg)
-			authenticated := c.SetDeadline(time.Now().Add(handshakeTimeout)) == nil && conn.HandshakeContext(ctx) == nil
-			pending.release(source)
+			now := time.Now()
+			deadline := now.Add(handshakeTimeout)
+			conn := tls.Server(&countedConn{Conn: &firstByteConn{Conn: c, deadline: deadline}}, cfg)
+			authenticated := c.SetDeadline(deadline) == nil && c.SetReadDeadline(now.Add(500*time.Millisecond)) == nil && conn.HandshakeContext(ctx) == nil
+			release()
 			if !authenticated {
 				return
 			}
@@ -123,7 +124,7 @@ func serveListener(l net.Listener, cfg *tls.Config, capacity int, timeout time.D
 			}
 			reqCtx, done := context.WithTimeout(ctx, timeout)
 			defer done()
-			deadline, _ := reqCtx.Deadline()
+			deadline, _ = reqCtx.Deadline()
 			if c.SetDeadline(time.Now().Add(min(timeout, 2*time.Second))) != nil {
 				return
 			}

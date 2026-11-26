@@ -2,7 +2,9 @@ package link
 
 import (
 	"net"
+	"net/netip"
 	"sync"
+	"time"
 )
 
 // Each listener owns its pre-authentication budget. Only active sources
@@ -43,4 +45,49 @@ func peerSource(c net.Conn) string {
 		return unixPeer(unix)
 	}
 	return "local"
+}
+
+// TrustSources are the witness source networks provisioned by the owner.
+// A source match reserves handshake capacity. TLS authenticates the peer.
+type TrustSources []netip.Prefix
+
+type admission func(net.Conn) (release func())
+
+func homeAdmission(trust TrustSources) admission {
+	var ordinary, reserved handshakes
+	return func(c net.Conn) func() {
+		source := peerSource(c)
+		pool := &ordinary
+		if addr, ok := c.RemoteAddr().(*net.TCPAddr); ok {
+			ip := addr.AddrPort().Addr().Unmap()
+			for _, prefix := range trust {
+				if prefix.Contains(ip) {
+					pool = &reserved
+					break
+				}
+			}
+		}
+		if !pool.acquire(source) {
+			return nil
+		}
+		return func() { pool.release(source) }
+	}
+}
+
+// TLS consumes the first byte normally. Once it arrives, restore the absolute
+// handshake deadline for subsequent reads.
+type firstByteConn struct {
+	net.Conn
+	deadline time.Time
+}
+
+func (c *firstByteConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	if n > 0 && !c.deadline.IsZero() {
+		if e := c.Conn.SetReadDeadline(c.deadline); e != nil {
+			return n, e
+		}
+		c.deadline = time.Time{}
+	}
+	return n, err
 }

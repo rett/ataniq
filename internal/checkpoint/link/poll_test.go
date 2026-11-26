@@ -15,7 +15,7 @@ import (
 func endpointFor(t *testing.T, home, witness seatgate.Identity, f *fixture) *Endpoint {
 	t.Helper()
 	cert := seatgate.ServerTLS(witness, nil).Certificates[0].Certificate[0]
-	e, err := NewEndpoint(home, cert, f.pin, 1, f.slot)
+	e, err := NewEndpoint(home, cert, f.pin, 1, f.slot, loopbackTrust())
 	must(t, err)
 	return e
 }

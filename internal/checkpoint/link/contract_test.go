@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"net"
+	"net/netip"
 	"sync"
 	"syscall"
 	"testing"
@@ -197,7 +198,7 @@ func TestWitnessContract(t *testing.T) {
 		endpoints := map[cp.Slot]*Endpoint{}
 		provision := func(slot cp.Slot, key ed25519.PublicKey, write bool) error {
 			if endpoints[slot] == nil {
-				e, err := NewEndpoint(homeID, seatgate.ServerTLS(serverID, nil).Certificates[0].Certificate[0], pin, 1, slot)
+				e, err := NewEndpoint(homeID, seatgate.ServerTLS(serverID, nil).Certificates[0].Certificate[0], pin, 1, slot, loopbackTrust())
 				must(t, err)
 				addr := serve(t, e.Serve)
 				addr.ServerPin, addr.WitnessPin, addr.Epoch = homeID.Fingerprint(), pin, 1
@@ -271,3 +272,5 @@ func startPolling(t *testing.T, s *Server, r Remote, w Witness) context.CancelFu
 	t.Cleanup(stop)
 	return stop
 }
+
+func loopbackTrust() TrustSources { return TrustSources{netip.MustParsePrefix("127.0.0.1/32")} }

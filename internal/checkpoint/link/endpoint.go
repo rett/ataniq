@@ -19,15 +19,24 @@ import (
 
 // Endpoint listens at the home. Its clients share one bounded handoff queue.
 type Endpoint struct {
+	trust       TrustSources
 	slot        cp.Slot
 	home        transport
 	listenerTLS *tls.Config
 }
 
-func NewEndpoint(id seatgate.Identity, witnessCertDER []byte, signingKey ed25519.PublicKey, epoch uint64, slot cp.Slot) (*Endpoint, error) {
+func NewEndpoint(id seatgate.Identity, witnessCertDER []byte, signingKey ed25519.PublicKey, epoch uint64, slot cp.Slot, trust TrustSources) (*Endpoint, error) {
 	leaf, err := x509.ParseCertificate(slices.Clone(witnessCertDER))
 	if err != nil || id.Fingerprint() == "" || epoch == 0 || !validSlot(slot) {
 		return nil, cp.ErrRefused
+	}
+	if len(trust) == 0 {
+		return nil, &ConfigError{"missing witness source prefixes"}
+	}
+	for _, prefix := range trust {
+		if !prefix.IsValid() {
+			return nil, &ConfigError{"invalid witness source prefix"}
+		}
 	}
 	wid, err := cp.KeyID(signingKey)
 	if err != nil {
@@ -40,7 +49,7 @@ func NewEndpoint(id seatgate.Identity, witnessCertDER []byte, signingKey ed25519
 		closed: make(chan struct{}),
 	}
 	t := transport{Remote: Remote{WitnessPin: slices.Clone(signingKey), Epoch: epoch}, queue: q, wid: wid}
-	return &Endpoint{slot, t, cfg}, nil
+	return &Endpoint{slices.Clone(trust), slot, t, cfg}, nil
 }
 
 type pendingCall struct {
@@ -96,7 +105,7 @@ func (e *Endpoint) Serve(l net.Listener) error {
 		return cp.ErrRefused
 	}
 	defer close(q.closed)
-	return serveListener(l, e.listenerTLS, 1, requestTimeout, func(ctx context.Context, c *tls.Conn, m frame.Message) {
+	return serveListener(l, e.listenerTLS, 1, requestTimeout, homeAdmission(e.trust), func(ctx context.Context, c *tls.Conn, m frame.Message) {
 		if m.Kind != frame.Poll {
 			return
 		}
