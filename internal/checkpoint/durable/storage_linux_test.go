@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/binary"
 	"errors"
 	"os"
 	"os/exec"
@@ -288,6 +289,8 @@ func TestRefuseDamagedFiles(t *testing.T) {
 	must(t, w.Close())
 	original, anchors := readFile(t, journal), readFile(t, lock)
 	swapped := bytes.Join([][]byte{original[:genesis], original[enrolled:], original[genesis:enrolled]}, nil)
+	middleLength := bytes.Clone(original)
+	binary.BigEndian.PutUint32(middleLength[genesis:], maxRecord)
 	damagedSig := bytes.Clone(original)
 	damagedSig[len(damagedSig)-1] ^= 0x80
 	wrongReceipt := bytes.Clone(anchors)
@@ -297,8 +300,12 @@ func TestRefuseDamagedFiles(t *testing.T) {
 		frames, entries []byte
 		want            error
 	}{
-		{"empty", nil, anchors, ErrTorn}, {"short prefix", original[:2], anchors, ErrTorn},
-		{"partial frame", original[:len(original)-1], anchors, ErrTorn}, {"whole frame removed", original[:enrolled], anchors, ErrTorn},
+		{"empty", nil, anchors, ErrCorrupt}, {"short prefix", original[:2], anchors, ErrCorrupt},
+		{"middle length", middleLength, anchors, ErrCorrupt},
+		{"zero tail", append(bytes.Clone(original), make([]byte, 8192)...), anchors, ErrTorn},
+		{"nonzero after zeros", append(append(bytes.Clone(original), make([]byte, 8192)...), 1), anchors, ErrCorrupt},
+		{"unindexed partial frame", original[:len(original)-1], anchors[:len(anchors)-34], ErrTorn},
+		{"partial frame", original[:len(original)-1], anchors, ErrCorrupt}, {"whole frame removed", original[:enrolled], anchors, ErrCorrupt},
 		{"changed signature", damagedSig, anchors, ErrCorrupt}, {"receipt signature", original, wrongReceipt, ErrCorrupt},
 		{"duplicated frame", append(bytes.Clone(original), original[enrolled:]...), anchors, ErrCorrupt},
 		{"reordered frames", swapped, anchors, ErrCorrupt}, {"partial entry", original, anchors[:len(anchors)-1], ErrTorn},

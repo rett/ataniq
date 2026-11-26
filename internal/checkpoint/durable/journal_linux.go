@@ -217,18 +217,49 @@ func (w *Witness) proveTail(frame, entry []byte) error {
 	return nil
 }
 
+// A zero length followed solely by zeros can be the unwritten end of a
+// newly extended file. Scan it in bounded chunks, only at an unindexed tail.
+func classifyFrameError(err error, prefix []byte, frames, entries *bufio.Reader) error {
+	zeroLength := errors.Is(err, ErrCorrupt) && len(prefix) == 4 && binary.BigEndian.Uint32(prefix) == 0
+	if !errors.Is(err, ErrTorn) && !zeroLength {
+		return err
+	}
+	if _, e := entries.Peek(1); e != io.EOF {
+		if e != nil {
+			return e
+		}
+		return ErrCorrupt
+	}
+	if zeroLength {
+		var b [4096]byte
+		for {
+			n, e := frames.Read(b[:])
+			if len(bytes.Trim(b[:n], "\x00")) != 0 {
+				return ErrCorrupt
+			}
+			if e == io.EOF {
+				break
+			}
+			if e != nil {
+				return e
+			}
+		}
+	}
+	return ErrTorn
+}
+
 func (w *Witness) replay(homeID string) error {
 	frames, entries := bufio.NewReader(w.journal), bufio.NewReader(w.lockFile)
 	var frame, entry bytes.Buffer
 	for {
 		if _, err := frames.Peek(1); err == io.EOF {
-			if w.seq == 0 {
-				return ErrTorn
-			}
 			if _, err := entries.Peek(1); err != io.EOF {
 				if err != nil {
 					return err
 				}
+				return ErrCorrupt
+			}
+			if w.seq == 0 {
 				return ErrTorn
 			}
 			return w.proveTail(frame.Bytes(), entry.Bytes())
@@ -236,7 +267,7 @@ func (w *Witness) replay(homeID string) error {
 		frame.Reset()
 		r, digest, err := decode(io.TeeReader(frames, &frame), w.pin)
 		if err != nil {
-			return fmt.Errorf("frame %d: %w", w.seq+1, err)
+			return fmt.Errorf("frame %d: %w", w.seq+1, classifyFrameError(err, frame.Bytes(), frames, entries))
 		}
 		if r.Seq != w.seq+1 || r.Previous != hex.EncodeToString(w.previous[:]) {
 			return ErrCorrupt
@@ -282,6 +313,13 @@ func (w *Witness) replay(homeID string) error {
 			w.apply(r, c, sig)
 			w.seq, w.previous = r.Seq, digest
 			return nil
+		}
+		if errors.Is(err, ErrTorn) {
+			if _, e := frames.Peek(1); e == nil {
+				return ErrCorrupt
+			} else if e != io.EOF {
+				return e
+			}
 		}
 		if err != nil {
 			return err
