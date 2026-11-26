@@ -85,7 +85,8 @@ func (w *Memory) LoseNextReply() {
 }
 
 // SetReceiptLimit bounds the number of accepted mutations across the
-// directory. Zero is unlimited. Recovery reads and retries consume no space.
+// directory. Owner release and retirement may exceed this budget to fence a
+// writer. Zero is unlimited. Recovery reads and retries consume no space.
 func (w *Memory) SetReceiptLimit(limit uint64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -208,7 +209,7 @@ func (e *enrollment) retry(id ID, b []byte) (Receipt, bool, error) {
 // The signed result links to the previous receipt. The new receipt digest
 // then becomes part of the next mutation's exact CAS predecessor.
 func (w *Memory) commit(e *enrollment, op string, id ID, body []byte, s State, session ed25519.PublicKey) (Receipt, error) {
-	if w.receiptLimit != 0 && w.receiptCount >= w.receiptLimit {
+	if op != "release" && op != "retire" && w.receiptLimit != 0 && w.receiptCount >= w.receiptLimit {
 		return Receipt{}, ErrUnavailable
 	}
 	a := ackRecord{recordHeader{1, op, s.Slot.Authority, w.keyID}, idString(id), RequestDigest(body), recordState(s)}

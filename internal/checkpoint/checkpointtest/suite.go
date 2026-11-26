@@ -249,6 +249,31 @@ func Run(t *testing.T, newWitness Factory) {
 			t.Fatal("foreign grant affected east")
 		}
 	})
+	for _, op := range []string{"release", "retire"} {
+		t.Run("capacity owner "+op, func(t *testing.T) {
+			f := start(t, newWitness)
+			h := f.home(t, "west", "s", "one", true)
+			s := f.claim(t, h, f.enroll(t, h), "claim")
+			f.SetReceiptLimit(2)
+			_, err := h.c.Advance(f.ctx, advance(s, "full"))
+			want(t, err, cp.ErrUnavailable)
+			m := mutation(s, "owner")
+			var r cp.Receipt
+			status := cp.Active
+			if op == "release" {
+				r, err = f.Admin.Release(f.ctx, m)
+			} else {
+				status = cp.Retired
+				r, err = f.Admin.Retire(f.ctx, cp.Retirement{Mutation: m, DispositionDigest: digest("dispose")})
+			}
+			check(t, err)
+			a, err := cp.VerifyReceipt(f.pin, r)
+			check(t, err)
+			if a.State.Fence != s.Fence+1 || a.State.SessionKeyID != "" || a.State.Status != status || a.State != f.state(t, h, "fenced") {
+				t.Fatal("wrong fencing receipt")
+			}
+		})
+	}
 	t.Run("capacity preserves recovery", func(t *testing.T) {
 		f := start(t, newWitness)
 		h := f.home(t, "west", "s", "one", true)
