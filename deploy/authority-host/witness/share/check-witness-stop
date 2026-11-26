@@ -1,0 +1,3 @@
+#!/bin/sh
+# The host list is the only executable stop list if release verification fails.
+exec grep -Fxq 'systemctl stop ataniq-witness.service' "$1"

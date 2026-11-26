@@ -26,6 +26,7 @@ func TestWitnessRelease(t *testing.T) {
 		{"unit override", noaicheck.WitnessUnit + ".d/user.conf", "", "[Service]\nUser=seat\n", CodeWitness},
 		{"global override", "etc/systemd/system/service.d/account.conf", "", "[Service]\nUser=seat\n", CodeWitness},
 		{"link target unchecked", "share/validators.list", "sh {release}/share/check-witness-unit-link /" + noaicheck.WitnessUnit, "test -L /" + noaicheck.WitnessUnit, CodeWitness},
+		{"host stop unchecked", "share/validators.list", "sh {release}/share/check-witness-stop /etc/authority-host/stop.list", "", CodeWitness},
 		{"missing health", "share/health.cmd", "{release}/bin/ataniq-witness status --config " + noaicheck.WitnessConfig, "", CodeWitness},
 		{"missing stop", "share/stop.list", "systemctl stop ataniq-witness.service", "", CodeStopNone},
 		{"missing restart", "share/reload.list", "systemctl restart ataniq-witness.service", "", CodeReloadNone},
@@ -152,6 +153,23 @@ func TestWitnessInstalledUnitLink(t *testing.T) {
 			if err := os.Remove(unit); err != nil {
 				t.Fatal(err)
 			}
+		}
+	}
+}
+
+func TestWitnessHostStopValidator(t *testing.T) {
+	src := filepath.Join(baseTree, "witness")
+	const validator = "sh {release}/share/check-witness-stop /etc/authority-host/stop.list"
+	if !slices.Contains(strings.Split(string(mustRead(t, filepath.Join(src, "share/validators.list"))), "\n"), validator) {
+		t.Fatal("missing host stop validator")
+	}
+	const stop = "systemctl stop ataniq-witness.service"
+	list := filepath.Join(t.TempDir(), "stop.list")
+	for _, line := range []string{"", "# " + stop, stop + "-other", stop + " ", strings.Replace(stop, "witness", "witnes", 1), stop} {
+		writeTestFile(t, list, "systemctl stop ataniq-seat.service\n"+line+"\n", 0644)
+		err := exec.Command("sh", filepath.Join(src, "share/check-witness-stop"), list).Run()
+		if (err == nil) != (line == stop) {
+			t.Errorf("line %q: %v", line, err)
 		}
 	}
 }

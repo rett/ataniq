@@ -10,7 +10,9 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -193,6 +195,7 @@ type release struct {
 	b     *budget // nil: no limit (a test's look at a release)
 	sums  []byte
 	files int
+	units []string // canonical file names, from the verified tree
 	// digest is the tree's digest (see treeDigest), set by verify.
 	digest string
 	// Set by checkRelease.
@@ -354,6 +357,18 @@ func (r *release) verify(trust entryCheck) error {
 		e.sum = sum
 		entries[SignatureFile] = e
 	}
+	r.units = []string{}
+	for _, p := range paths {
+		if strings.HasPrefix(p, "etc/systemd/") && strings.HasSuffix(p, ".service") {
+			name := filepath.Base(p)
+			if !serviceName.MatchString(name) || len(name) > 255 {
+				return failf(CodeBadEntry, "invalid service unit name %s", q(name))
+			}
+			r.units = append(r.units, name)
+		}
+	}
+	slices.Sort(r.units)
+	r.units = slices.Compact(r.units)
 	r.sums = sums
 	r.files = len(paths)
 	r.digest = treeDigest(entries)

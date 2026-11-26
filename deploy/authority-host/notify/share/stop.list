@@ -1,0 +1,3 @@
+# Stop every service shipped by the seat and notifier release before reloading.
+systemctl stop ataniq-seat.service
+systemctl stop ataniq-seat-notify.service

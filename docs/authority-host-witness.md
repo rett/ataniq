@@ -190,6 +190,14 @@ Link the release-managed unit and create the firewall drop-in as local root.
 ln -s /opt/authority-host/current/etc/systemd/system/ataniq-witness.service /etc/systemd/system/ataniq-witness.service
 ```
 
+Before activation, add this exact line to the host emergency stop list
+`/etc/authority-host/stop.list`, retaining the other service stops. The
+witness validator requires the line even on the first switch.
+
+```text
+systemctl stop ataniq-witness.service
+```
+
 Activate the signed release with the existing switch procedure. Leave the
 unit disabled in systemd. The switch's validator checks the unit and its
 exact link target under `/opt/authority-host/current`, even on the first
@@ -199,9 +207,7 @@ verifies signed local status over the owner socket even if the home is offline.
 Neither operation calls `systemctl`. The post-switch host no-AI check queries
 systemd for the loaded unit's effective grants before decisions resume. Without the egress drop-in the service can pass this local health
 check while the unit denies all IP traffic. The host no-AI check reports
-`NOTE witness egress drop-in missing: home unreachable`. Once the first switch succeeds, add
-`systemctl stop ataniq-witness.service` to the host emergency stop list
-`/etc/authority-host/stop.list`, retaining the other decision services.
+`NOTE witness egress drop-in missing: home unreachable`.
 Verify the effective account and restrictions, the output filter and the
 absence of a witness IP listener. Run `WITNESS status --config CONFIG` as
 local root. Fresh genesis reports sequence 1, zero slots, receipts and fences.
@@ -329,6 +335,12 @@ Before rolling back across the change that pinned the guard directory, edit
 key before switching to the older witness. Remove it before switching back
 to the binary with the pinned guard.
 
+For an upgrade or downgrade, keep the seat, notifier and witness stops
+in the host list. This includes `systemctl stop ataniq-seat-notify.service`
+when departing an older release whose own list omitted the notifier.
+Use the updated host switch helper throughout rollback and recovery. Older
+helpers use a strict JSON reader and cannot read the new inventory fields.
+
 For a software rollback use the signed switch procedure
 `ah-switch --rollback-to previous`. The switch runs the host stop list before reloading the target.
 It also runs the departing release’s stop list when that release still verifies. If a stop fails, decisions
@@ -336,9 +348,11 @@ stay inhibited. Correct the cause and retry the rollback. A target that carries 
 binary against the existing store. Verify storage-format compatibility,
 pins, epoch and signed status before resuming admission. When returning to a
 release without the witness, confirm it is stopped. Keep its single-unit
-stop command in the host list. Once the target's daemon-reload unloads
-the unit, the switch accepts systemctl exit 5 on that stop, including
-when retrying an interrupted rollback. Preserve witness state and keep dependent homes
+stop command in the host list. A stop reporting exit 5 still requires
+the manager to confirm that the canonical unit is inactive or absent.
+The switch records the verified service names in the transaction journal
+and the current release’s names in `deploy.json`. Older state can use the
+installed release unit links. A retry repeats the stops and checks. Preserve witness state and keep dependent homes
 suspended until an appropriate release is active again. The no-AI listener
 check continues to check the witness account after its unit link is removed.
 

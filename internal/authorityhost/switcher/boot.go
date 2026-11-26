@@ -159,7 +159,7 @@ func (s *Switcher) Boot(ctx context.Context) int {
 		err = s.openReleases()
 	}
 	if err == nil {
-		_, err = s.qualifyAgain(ctx, checkRef{}, cur, curOK, "boot: since the boot, ")
+		_, _, err = s.qualifyAgain(ctx, checkRef{}, cur, curOK, "boot: since the boot, ")
 	}
 	if errors.Is(err, errCrashed) {
 		return ExitFailed

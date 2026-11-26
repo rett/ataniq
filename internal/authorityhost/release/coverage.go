@@ -80,7 +80,7 @@ type unit struct {
 //     has at least one, which runs a binary of the release
 //     (/opt/authority-host/current/bin/NAME or its own releases/<id>/bin/NAME,
 //     shipped with an execute bit), is stopped in stop.list ("systemctl stop",
-//     but for the units of notStopped, which decide nothing) and restarted in
+//     for every shipped service) and restarted in
 //     reload.list, and no unit gates its start on
 //     decisions.inhibit (the decision inhibit contract in the README: the
 //     inhibit is the one guard file, the journal txn.json never being there
@@ -121,12 +121,16 @@ func (c *checker) coverage(root *os.Root, m switcher.Manifest, id string, files 
 	}
 
 	if hasWitness {
-		const validator = "share/check-witness-unit-link"
-		_, included := files[validator]
-		if !included || !slices.ContainsFunc(l.validators, func(args []string) bool {
-			return slices.Equal(args, []string{"sh", relDir + "/" + validator, "/" + noaicheck.WitnessUnit})
-		}) {
-			c.add(CodeWitness, switcher.ValidatorsList)
+		for _, v := range []struct{ script, arg string }{
+			{"share/check-witness-unit-link", "/" + noaicheck.WitnessUnit},
+			{"share/check-witness-stop", "/etc/authority-host/stop.list"},
+		} {
+			_, included := files[v.script]
+			if !included || !slices.ContainsFunc(l.validators, func(args []string) bool {
+				return slices.Equal(args, []string{"sh", relDir + "/" + v.script, v.arg})
+			}) {
+				c.add(CodeWitness, switcher.ValidatorsList)
+			}
 		}
 	}
 	if hasWitness && !slices.ContainsFunc(l.health, func(args []string) bool {
@@ -150,26 +154,10 @@ func (c *checker) coverage(root *os.Root, m switcher.Manifest, id string, files 
 	c.reloadsAndStops(static, relDir, id, files, l, units)
 }
 
-// notStopped names the units that start a program and need no line in
-// stop.list. stop.list stops the decision services (see the README, "Layout");
-// the notifier of the seat's notices decides nothing: it is told how many
-// cards wait and tells the phone, and the decision stays with the seat's
-// own refusals. It is restarted by the reload list like any unit. The key is
-// the unit's name, without ".service"; no other unit is excused. The value is
-// the one binary of the release the unit may run: "decides nothing" is a
-// property of that binary, not of a name, so a unit of this name whose
-// ExecStart runs another program is not excused, and is stopped like any.
-var notStopped = map[string]string{"ataniq-seat-notify": "ataniq-seat-notify"}
-
-// excused reports whether the units of this name, the file and its drop-ins,
-// need no stop line: the name is in notStopped, and every ExecStart of every
-// one of them runs the release's binary that name is excused for, and no
-// other. An ExecStart that runs no binary of the release at all is refused on
-// its own (decision-exec), so it does not need the stop line to be refused
-// again.
-func excused(name string, units []unit, id string) bool {
-	bin, ok := notStopped[name]
-	if !ok {
+// The notifier counts separately from decision services only when every
+// executable in its unit and drop-ins is the release's notifier binary.
+func notifierOnly(name string, units []unit, id string) bool {
+	if name != "ataniq-seat-notify" {
 		return false
 	}
 	for _, u := range units {
@@ -177,7 +165,7 @@ func excused(name string, units []unit, id string) bool {
 			continue
 		}
 		for _, exec := range u.execs {
-			if n := noaicheck.ReleaseProgram(exec, hostRelDir+id); n != "" && n != bin {
+			if n := noaicheck.ReleaseProgram(exec, hostRelDir+id); n != "" && n != "ataniq-seat-notify" {
 				return false
 			}
 		}
@@ -512,7 +500,7 @@ func (c *checker) reloadsAndStops(static bool, relDir, id string, files map[stri
 	// decision service, which the notifier is not.
 	service := false
 	for _, u := range units {
-		service = service || !excused(u.name, units, id)
+		service = service || !notifierOnly(u.name, units, id)
 	}
 	if !service {
 		c.add(CodeNoService, "")
@@ -523,7 +511,7 @@ func (c *checker) reloadsAndStops(static bool, relDir, id string, files map[stri
 			continue
 		}
 		seen[u.name] = true
-		if !excused(u.name, units, id) && !does(l.stops, u.name, "stop") {
+		if !does(l.stops, u.name, "stop") {
 			c.add(CodeStopNone, u.name)
 		}
 		if !does(l.reloads, u.name, "restart") {

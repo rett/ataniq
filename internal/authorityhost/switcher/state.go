@@ -15,6 +15,8 @@ import (
 
 // Record is the content of deploy.json: the outcome of the last switch.
 type Record struct {
+	CurrentUnits []string `json:"current_units,omitzero"` // nil in older records
+
 	ID              string `json:"id"`               // the release the switch was asked for
 	PreviousID      string `json:"previous_id"`      // what current pointed at before it
 	CurrentID       string `json:"current_id"`       // what current points at after it

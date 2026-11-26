@@ -23,3 +23,4 @@ test -L /etc/systemd/system/ataniq-seat-notify.service
 # Verify the witness unit and the link that will load it.
 systemd-analyze verify {release}/etc/systemd/system/ataniq-witness.service
 sh {release}/share/check-witness-unit-link /etc/systemd/system/ataniq-witness.service
+sh {release}/share/check-witness-stop /etc/authority-host/stop.list
