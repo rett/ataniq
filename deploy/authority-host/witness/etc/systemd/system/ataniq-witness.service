@@ -2,14 +2,16 @@
 [Unit]
 Description=Authority host checkpoint witness
 After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=exec
 User=ataniq-witness
 Group=ataniq-witness
-ExecStartPre={release}/bin/ataniq-witness check --config /etc/authority-host/witness/config.json
 ExecStart={release}/bin/ataniq-witness run --config /etc/authority-host/witness/config.json
 Restart=on-failure
+RestartPreventExitStatus=1
 RestartSec=5s
 RuntimeDirectory=ataniq-witness
 RuntimeDirectoryMode=0700

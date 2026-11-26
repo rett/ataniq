@@ -27,7 +27,12 @@ the authority-host README, then copy `deploy/authority-host/witness/.` over the
 result before filling the baseline. Add `--bin build/authority-host/ataniq-witness`
 to the release build and check the resulting release. The switch uses the
 witness's read-only preflight at startup and a challenged local status after
-restart. The witness needs no additional enabled unit, port or package.
+restart. The main process performs preflight before opening the store. A refusal
+(exit 1), including a bad configuration, unsafe files, a pin mismatch or a
+poisoned store, leaves the service failed. Other failures eligible for restart
+are limited to five starts in 300 seconds. After repairing the cause, perform
+any required storage recovery, then run `systemctl reset-failed ataniq-witness.service`
+and `systemctl restart ataniq-witness.service` by hand. The witness needs no additional enabled unit, port or package.
 
 ## Firewall and home listener
 

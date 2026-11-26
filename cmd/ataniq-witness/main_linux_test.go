@@ -226,5 +226,9 @@ func TestWitnessCheckEgress(t *testing.T) {
 	call(t, configPath, "check", 0)
 	c.Home = "192.0.2.5:7443"
 	writeConfig(t, configPath, c)
-	call(t, configPath, "check", 1)
+	for _, op := range []string{"check", "run"} {
+		if got := call(t, configPath, op, 1); got != "invalid witness egress drop-in\n" {
+			t.Fatal(got)
+		}
+	}
 }

@@ -78,7 +78,7 @@ func execute(ctx context.Context, hostRoot, op, path string, out io.Writer) (ret
 	if err != nil {
 		return err
 	}
-	if op == "check" {
+	if op == "check" || op == "run" {
 		address, err := noaicheck.WitnessEgressAddress(hostRoot)
 		want, _ := noaicheck.WitnessHomeAddress(c.Home)
 		if err != nil || address.IsValid() && address != want {
@@ -87,8 +87,10 @@ func execute(ctx context.Context, hostRoot, op, path string, out io.Writer) (ret
 		if err := checkState(store.Directory); err != nil {
 			return err
 		}
-		_, err = fmt.Fprintln(out, "witness check ok")
-		return err
+		if op == "check" {
+			_, err = fmt.Fprintln(out, "witness check ok")
+			return err
+		}
 	}
 	open := durable.Open
 	switch op {

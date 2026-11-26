@@ -18,7 +18,7 @@ func TestWitnessRelease(t *testing.T) {
 		{"privileged user", noaicheck.WitnessUnit, "User=ataniq-witness", "User=root", CodeWitness},
 		{"shared group", noaicheck.WitnessUnit, "Group=ataniq-witness", "Group=seat", CodeWitness},
 		{"bind exemption", noaicheck.WitnessUnit, "SocketBindDeny=any", "SocketBindDeny=any\nSocketBindAllow=ipv4:tcp:9000", CodeWitness},
-		{"wrong preflight", noaicheck.WitnessUnit, " check --config ", " run --config ", CodeWitness},
+		{"extra preflight", noaicheck.WitnessUnit, "Type=exec", "Type=exec\nExecStartPre=/bin/true", CodeWitness},
 		{"wrong executable", noaicheck.WitnessUnit, "/bin/ataniq-witness run", "/bin/ataniq-seat run", CodeWitness},
 		{"socket activation", "etc/systemd/system/ataniq-witness.socket", "", "[Socket]\nListenStream=9000\n", CodeWitness},
 		{"indirect socket", "etc/systemd/system/other.socket", "", "[Socket]\nListenStream=9000\nService=ataniq-witness.service\n", CodeWitness},
@@ -83,5 +83,18 @@ func TestWitnessUnitHardening(t *testing.T) {
 				t.Errorf("unexpected grant in %s", name)
 			}
 		}
+	}
+}
+
+func TestWitnessRestartPolicy(t *testing.T) {
+	keys := unitKeys(string(mustRead(t, filepath.Join(baseTree, "witness", noaicheck.WitnessUnit))))
+	for k, v := range map[string]string{"Unit.StartLimitIntervalSec": "300", "Unit.StartLimitBurst": "5", "Service.RestartPreventExitStatus": "1"} {
+		if !slices.Equal(keys[k], []string{v}) {
+			t.Errorf("%s = %q", k, keys[k])
+		}
+	}
+	// RestartPreventExitStatus only applies to the main process.
+	if len(keys["Service.ExecStartPre"]) != 0 {
+		t.Error("preflight refusal bypasses RestartPreventExitStatus")
 	}
 }
