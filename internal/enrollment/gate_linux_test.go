@@ -484,3 +484,13 @@ func TestRetainedReceiptPosition(t *testing.T) {
 		t.Fatal("older receipt replaced the latest advance")
 	}
 }
+
+func TestStartReportsWitnessCapacity(t *testing.T) {
+	f := enrolled(t)
+	f.w.SetReceiptLimit(1) // Enrollment consumed the single ordinary receipt.
+	s, err := f.start(nil)
+	if s != nil || !errors.Is(err, cp.ErrCapacity) {
+		t.Fatalf("claim at capacity: store=%v err=%v", s, err)
+	}
+	want(t, err, Capacity)
+}
