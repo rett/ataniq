@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"encoding/json"
+
 	"math"
 	"slices"
 	"sync"
@@ -102,7 +102,6 @@ type client struct {
 	slot          Slot
 	home, session ed25519.PrivateKey
 	witnessPin    ed25519.PublicKey
-	sessionID     string
 }
 
 // Both ends of a claim require three independently held key roles.
@@ -129,11 +128,11 @@ func (w *Memory) Connect(slot Slot, home, session ed25519.PrivateKey, witnessPin
 	if err := checkSessionRole(session.Public().(ed25519.PublicKey), g.key, witnessPin); err != nil {
 		return nil, err
 	}
-	sessionID, err := KeyID(session.Public().(ed25519.PublicKey))
+	_, err := KeyID(session.Public().(ed25519.PublicKey))
 	if err != nil {
 		return nil, err
 	}
-	return &client{w, slot, slices.Clone(home), slices.Clone(session), slices.Clone(witnessPin), sessionID}, nil
+	return &client{w, slot, slices.Clone(home), slices.Clone(session), slices.Clone(witnessPin)}, nil
 }
 func cloneReceipt(r Receipt) Receipt { return Receipt{slices.Clone(r.Body), slices.Clone(r.Signature)} }
 
@@ -143,11 +142,11 @@ func (w *Memory) available(ctx context.Context) error {
 	}
 	return nil
 }
-func (c *client) authorized(slot Slot, write bool) (*enrollment, error) {
-	g, ok := c.w.grants[slot]
-	e := c.w.slots[slot]
-	if !ok || slot != c.slot || e == nil || write && !g.write ||
-		!bytes.Equal(g.key, e.home) || !bytes.Equal(g.key, c.home.Public().(ed25519.PublicKey)) {
+func (w *Memory) authorized(slot Slot, home ed25519.PublicKey, write bool) (*enrollment, error) {
+	g, ok := w.grants[slot]
+	e := w.slots[slot]
+	if !ok || e == nil || write && !g.write ||
+		!bytes.Equal(g.key, e.home) || !bytes.Equal(g.key, home) {
 		return nil, ErrRefused
 	}
 	if write && e.state.Status == Retired {
@@ -163,7 +162,10 @@ func (c *client) Read(ctx context.Context, q ReadRequest) (View, error) {
 	if ctx.Err() != nil {
 		return View{}, ErrUnavailable
 	}
-	e, err := c.authorized(q.Slot, false)
+	if q.Slot != c.slot {
+		return View{}, ErrRefused
+	}
+	e, err := w.authorized(q.Slot, c.home.Public().(ed25519.PublicKey), false)
 	if err != nil {
 		return View{}, err
 	}
@@ -229,7 +231,7 @@ func (w *Memory) commit(e *enrollment, op string, id ID, body []byte, s State, s
 	}
 	e.state = s
 	e.session = slices.Clone(session)
-	e.history[id] = accepted{body, r}
+	e.history[id] = accepted{slices.Clone(body), r}
 	w.slots[s.Slot] = e
 	if w.loseReply {
 		w.loseReply = false
@@ -265,20 +267,11 @@ func (a admin) Enroll(ctx context.Context, q Enrollment) (Receipt, error) {
 		}
 		return Receipt{}, ErrStale
 	}
-	ledger, err := assignment.NewLedgerFromHeader(q.HeaderBytes)
+	s, err := enrollmentState(q, g.keyID, w.epoch)
 	if err != nil {
-		return Receipt{}, ErrRefused
+		return Receipt{}, err
 	}
-	// Assignment validated the exact header frame, including its LF and
-	// format. Retrieve the pinned fields without regenerating those bytes.
-	var frame struct{ Header assignment.Header }
-	if json.Unmarshal(q.HeaderBytes, &frame) != nil {
-		return Receipt{}, ErrRefused
-	}
-	h := frame.Header
-	if h.KeyID != g.keyID || h.Authority != q.Slot.Authority || h.Store != q.Slot.Store {
-		return Receipt{}, ErrRefused
-	}
+	h := s.Header
 	for slot, old := range w.slots {
 		if slot.Authority == q.Slot.Authority && (old.state.Status == Active || h.LedgerID == old.state.Header.LedgerID ||
 			h.Incarnation == old.state.Header.Incarnation || h.KeyID == old.state.HomeKeyID) {
@@ -286,7 +279,6 @@ func (a admin) Enroll(ctx context.Context, q Enrollment) (Receipt, error) {
 		}
 	}
 	e := &enrollment{headerBytes: slices.Clone(q.HeaderBytes), home: slices.Clone(g.key), history: make(map[ID]accepted), claimed: make(map[string]bool)}
-	s := State{Slot: q.Slot, Header: h, Head: ledger.Checkpoint(), Epoch: w.epoch, Revision: 1, HomeKeyID: g.keyID, Status: Active}
 	return w.commit(e, "enroll", q.ID, b, s, nil)
 }
 
@@ -294,70 +286,80 @@ func (c *client) Claim(ctx context.Context, q Claim) (Receipt, error) {
 	if !bytes.Equal(q.NewSessionPublicKey, c.session.Public().(ed25519.PublicKey)) {
 		return Receipt{}, ErrRefused
 	}
-	b, err := mutationBody("claim", q.Expected.HomeKeyID, q.Mutation, q.NewSessionPublicKey, nil, "")
+	b, err := q.Body("")
 	if err != nil {
 		return Receipt{}, err
 	}
-	result := q.Expected
-	result.Fence++
-	result.SessionKeyID = c.sessionID
-	return c.mutate(ctx, "claim", q.Mutation, b, result)
+	return c.mutate(ctx, "claim", q.Mutation, b)
 }
 func (c *client) Advance(ctx context.Context, q Advance) (Receipt, error) {
 	b, err := AdvanceBody(q)
 	if err != nil {
 		return Receipt{}, err
 	}
-	result := q.Expected
-	result.Head = q.Next
-	return c.mutate(ctx, "advance", q.Mutation, b, result)
+	return c.mutate(ctx, "advance", q.Mutation, b)
 }
-func (c *client) mutate(ctx context.Context, op string, m Mutation, b []byte, result State) (Receipt, error) {
-	homeSig, err := homeProfile.sign(c.home, b)
+func (c *client) mutate(ctx context.Context, op string, m Mutation, b []byte) (Receipt, error) {
+	if m.Expected.Slot != c.slot {
+		return Receipt{}, ErrRefused
+	}
+	homeSig, err := Sign(HomeNamespace, c.home, b)
 	if err != nil {
 		return Receipt{}, err
 	}
-	sessionSig, err := sessionProfile.sign(c.session, b)
+	sessionSig, err := Sign(SessionNamespace, c.session, b)
 	if err != nil {
 		return Receipt{}, err
 	}
-	r, err := c.accept(ctx, op, b, homeSig, sessionSig)
+	r, err := c.w.accept(ctx, c.slot, c.home.Public().(ed25519.PublicKey), op, b, homeSig, sessionSig)
 	if err != nil {
 		return Receipt{}, err
 	}
-	a, err := verifyReceipt(c.witnessPin, c.w.keyID, r)
-	result.Revision++
-	result.LastReceiptDigest = ReceiptDigest(r)
-	if err != nil || a.Operation != op || a.ID != m.ID || a.RequestDigest != RequestDigest(b) ||
-		a.PredecessorDigest != m.Expected.LastReceiptDigest || a.State != result {
-		return Receipt{}, ErrUnknownOutcome
+	if err := MatchReceipt(c.witnessPin, m.Expected.Epoch, op, b, r); err != nil {
+		return Receipt{}, err
 	}
 	return r, nil
 }
 
 // accept consumes only the signed bytes and independently pinned identities.
 // The method selects the operation before interpreting its record.
-func (c *client) accept(ctx context.Context, op string, b, homeSig, sessionSig []byte) (Receipt, error) {
-	w := c.w
-	record, err := parseHomeMutation(op, b)
+func (w *Memory) accept(ctx context.Context, slot Slot, home ed25519.PublicKey, op string, b, homeSig, sessionSig []byte) (Receipt, error) {
+	intent, err := ParseIntent(op, w.keyID, b)
 	if err != nil {
 		return Receipt{}, err
 	}
-	m := record.mutation
+	var m Mutation
+	var claimed ed25519.PublicKey
+	var successor assignment.Checkpoint
+	switch q := intent.(type) {
+	case Claim:
+		m = q.Mutation
+		claimed = q.NewSessionPublicKey
+	case Advance:
+		m = q.Mutation
+		successor = q.Next
+	default:
+		return Receipt{}, ErrRefused
+	}
+	if m.Expected.Slot != slot {
+		return Receipt{}, ErrRefused
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	e, err := c.authorized(m.Expected.Slot, true)
+	e, err := w.authorized(slot, home, true)
 	if err != nil {
 		return Receipt{}, err
 	}
 	session := e.session
+	sessionID := e.state.SessionKeyID
 	if op == "claim" {
-		session = record.session
+		session = claimed
 		if err := checkSessionRole(session, e.home, w.key.Public().(ed25519.PublicKey)); err != nil {
 			return Receipt{}, err
 		}
-		if !bytes.Equal(session, c.session.Public().(ed25519.PublicKey)) {
-			return Receipt{}, ErrRefused
+		sessionID, err = KeyID(session)
+		if err != nil {
+			return Receipt{}, err
 		}
 	}
 	if len(session) == 0 || !homeProfile.verify(e.home, b, homeSig) || !sessionProfile.verify(session, b, sessionSig) {
@@ -373,7 +375,7 @@ func (c *client) accept(ctx context.Context, op string, b, homeSig, sessionSig [
 		if op == "claim" {
 			fence++
 		}
-		if fence != e.state.Fence || e.state.SessionKeyID != c.sessionID {
+		if fence != e.state.Fence || e.state.SessionKeyID != sessionID {
 			return Receipt{}, ErrStale
 		}
 		return r, nil
@@ -387,22 +389,22 @@ func (c *client) accept(ctx context.Context, op string, b, homeSig, sessionSig [
 	s := e.state
 	s.Revision++
 	if op == "claim" {
-		if len(e.session) != 0 || e.claimed[c.sessionID] || s.Fence == math.MaxUint64 {
+		if len(e.session) != 0 || e.claimed[sessionID] || s.Fence == math.MaxUint64 {
 			return Receipt{}, ErrStale
 		}
 		s.Fence++
-		s.SessionKeyID = c.sessionID
+		s.SessionKeyID = sessionID
 	} else {
 		if s.Head.Sequence == math.MaxUint64 {
 			return Receipt{}, ErrStale
 		}
 		expected := s.Head
 		expected.Sequence++
-		expected.Digest = record.next.Digest
-		if expected != record.next {
+		expected.Digest = successor.Digest
+		if expected != successor {
 			return Receipt{}, ErrStale
 		}
-		s.Head = record.next
+		s.Head = successor
 	}
 	return w.commit(e, op, m.ID, b, s, session)
 }

@@ -52,3 +52,26 @@ func (p profile) sign(key ed25519.PrivateKey, body []byte) ([]byte, error) {
 	}
 	return []byte(base64.RawURLEncoding.EncodeToString(raw)), nil
 }
+
+// Sign produces the protocol signature for one of the three fixed namespaces.
+func Sign(namespace string, key ed25519.PrivateKey, body []byte) ([]byte, error) {
+	switch namespace {
+	case HomeNamespace, SessionNamespace, WitnessNamespace:
+		return profile(namespace).sign(key, body)
+	}
+	return nil, ErrRefused
+}
+
+// VerifySignature authenticates a profile signature against an independent pin.
+func VerifySignature(namespace string, pin ed25519.PublicKey, body, sig []byte) error {
+	if _, err := KeyID(pin); err != nil {
+		return err
+	}
+	switch namespace {
+	case HomeNamespace, SessionNamespace, WitnessNamespace:
+		if profile(namespace).verify(pin, body, sig) {
+			return nil
+		}
+	}
+	return ErrRefused
+}

@@ -216,47 +216,6 @@ func mutationBody(op, keyID string, m Mutation, session []byte, next *assignment
 	return encode(r)
 }
 
-type homeMutation struct {
-	mutation Mutation
-	session  ed25519.PublicKey
-	next     assignment.Checkpoint
-}
-
-func parseHomeMutation(op string, body []byte) (homeMutation, error) {
-	var r mutationRecord
-	if decode(body, &r) != nil || r.Schema != 1 || r.Operation != op || r.KeyID != r.Expected.HomeKeyID ||
-		r.Audience != r.Expected.Slot.Witness || !digestOK(r.ID) || r.DispositionDigest != "" {
-		return homeMutation{}, ErrRefused
-	}
-	var request homeMutation
-	if _, err := hex.Decode(request.mutation.ID[:], []byte(r.ID)); err != nil {
-		return homeMutation{}, ErrRefused
-	}
-	request.mutation.Expected = r.Expected.state()
-	if request.mutation.ID == (ID{}) || !validState(request.mutation.Expected) {
-		return homeMutation{}, ErrRefused
-	}
-	switch op {
-	case "claim":
-		raw, err := base64.RawURLEncoding.Strict().DecodeString(r.SessionPublicKey)
-		if err != nil || len(raw) != ed25519.PublicKeySize || base64.RawURLEncoding.EncodeToString(raw) != r.SessionPublicKey || r.Next != nil {
-			return homeMutation{}, ErrRefused
-		}
-		if _, err := KeyID(raw); err != nil {
-			return homeMutation{}, err
-		}
-		request.session = raw
-	case "advance":
-		if r.Next == nil || r.SessionPublicKey != "" || !digestOK(r.Next.Digest) {
-			return homeMutation{}, ErrRefused
-		}
-		request.next = assignment.Checkpoint(*r.Next)
-	default:
-		return homeMutation{}, ErrRefused
-	}
-	return request, nil
-}
-
 // AdvanceBody is the saved intent signed by both the home and its session.
 // Its Expected field binds the predecessor receipt, complete head and fence.
 func AdvanceBody(a Advance) ([]byte, error) {

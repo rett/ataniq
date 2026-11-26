@@ -3,6 +3,7 @@ package checkpoint
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
@@ -240,7 +241,7 @@ func TestRejectMalformedSignedRecords(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := parseHomeMutation("advance", edit(b)); err != ErrRefused {
+			if _, err := ParseIntent("advance", "", edit(b)); err != ErrRefused {
 				t.Fatal(err)
 			}
 		})
@@ -292,13 +293,15 @@ func TestCounterExhaustion(t *testing.T) {
 
 func TestWitnessChecksBothSignaturesAndOperation(t *testing.T) {
 	f := newSetup(t)
-	c := f.c.(*client)
+	accept := func(ctx context.Context, op string, b, hs, ss []byte) (Receipt, error) {
+		return f.w.accept(ctx, f.e.Slot, public(f.home), op, b, hs, ss)
+	}
 	v := vectors(t)
 	ctx := t.Context()
 	_, err := f.w.Administration().Enroll(ctx, f.e)
 	requireOK(t, err)
 	claim := v["claim"]
-	_, err = c.accept(ctx, "claim", claim.Body, []byte(claim.Signatures["home"]), []byte(claim.Signatures["session"]))
+	_, err = accept(ctx, "claim", claim.Body, []byte(claim.Signatures["home"]), []byte(claim.Signatures["session"]))
 	requireOK(t, err)
 	advance := v["advance"]
 	hs, ss := []byte(advance.Signatures["home"]), []byte(advance.Signatures["session"])
@@ -315,11 +318,11 @@ func TestWitnessChecksBothSignaturesAndOperation(t *testing.T) {
 		{"advance", advance.Body, hs, nil},
 		{"advance", claim.Body, []byte(claim.Signatures["home"]), []byte(claim.Signatures["session"])},
 	} {
-		if _, err := c.accept(ctx, tc.op, tc.body, tc.home, tc.session); err != ErrRefused {
+		if _, err := accept(ctx, tc.op, tc.body, tc.home, tc.session); err != ErrRefused {
 			t.Fatal("invalid proof accepted", tc.op, err)
 		}
 	}
-	r, err := c.accept(ctx, "advance", advance.Body, hs, ss)
+	r, err := accept(ctx, "advance", advance.Body, hs, ss)
 	requireOK(t, err)
 	if !bytes.Equal(r.Body, v["advance-ack"].Body) {
 		t.Fatal("refusal consumed the mutation")

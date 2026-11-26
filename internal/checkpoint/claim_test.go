@@ -12,7 +12,7 @@ func TestParseClaimValidatesSessionPin(t *testing.T) {
 	identity := make([]byte, 32)
 	identity[0] = 1
 	malformed := bytes.Replace(body, []byte(base64.RawURLEncoding.EncodeToString(public(fixtureKey("session")))), []byte(base64.RawURLEncoding.EncodeToString(identity)), 1)
-	if _, err := parseHomeMutation("claim", malformed); !errors.Is(err, ErrRefused) {
+	if _, err := ParseIntent("claim", "", malformed); !errors.Is(err, ErrRefused) {
 		t.Fatalf("invalid session pin parsed: %v", err)
 	}
 }
