@@ -68,6 +68,11 @@ func (m Message) Marshal() ([]byte, error) {
 }
 
 func ReadMessage(r io.Reader) (Message, error) {
+	return ReadAfterHeader(r, nil)
+}
+
+// ReadAfterHeader invokes ready once after validating the length prefix.
+func ReadAfterHeader(r io.Reader, ready func() error) (Message, error) {
 	var prefix [4]byte
 	if _, err := io.ReadFull(r, prefix[:]); err != nil {
 		return Message{}, err
@@ -75,6 +80,11 @@ func ReadMessage(r io.Reader) (Message, error) {
 	size := binary.BigEndian.Uint32(prefix[:])
 	if size < 2 || size > checkpoint.MaxFrame {
 		return Message{}, ErrProtocol
+	}
+	if ready != nil {
+		if err := ready(); err != nil {
+			return Message{}, err
+		}
 	}
 	b := make([]byte, size)
 	if _, err := io.ReadFull(r, b); err != nil {

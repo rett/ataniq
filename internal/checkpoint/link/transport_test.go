@@ -172,7 +172,7 @@ func TestMalformedAndSlowFramesClose(t *testing.T) {
 }
 func TestConnectionCap(t *testing.T) {
 	f := newFixture(t, "witness")
-	f.s.connections = make(chan struct{}, 1)
+	f.s.ownerCapacity = 1
 	e := f.endpoint(serve(t, func(l net.Listener) error { return f.s.ServeOwner(l, f.w.Administration(), f.id.Fingerprint()) }))
 	tr, err := e.transport(f.id)
 	must(t, err)
@@ -180,9 +180,11 @@ func TestConnectionCap(t *testing.T) {
 	busy, err := tr.connect(t.Context())
 	must(t, err)
 	defer busy.NetConn().Close()
-	c, err := e.DialContext(t.Context(), e.Network, e.Address)
+	_, err = busy.Write([]byte{0})
 	must(t, err)
-	defer c.Close()
+	c, err := tr.connect(t.Context())
+	must(t, err)
+	defer c.NetConn().Close()
 	c.SetDeadline(time.Now().Add(time.Second))
 	_, err = c.Read(make([]byte, 1))
 	var timeout net.Error
@@ -226,8 +228,8 @@ func TestReadAuthenticationAndOwnerIsolation(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 		_, err = tr.exchange(ctx, frame.New(frame.OwnerRead, m.Fields[0]))
 		cancel()
-		if err == nil {
-			t.Fatal("owner read accepted without owner certificate")
+		if !errors.Is(err, cp.ErrRefused) {
+			t.Fatalf("owner read without owner certificate: %v", err)
 		}
 	}
 }

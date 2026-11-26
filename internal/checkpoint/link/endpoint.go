@@ -35,6 +35,9 @@ func NewEndpoint(id seatgate.Identity, witnessCertDER []byte, signingKey ed25519
 	}
 	pin := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
 	cfg := serverTLS(id, hex.EncodeToString(pin[:]))
+	cfg.ClientAuth = tls.RequireAndVerifyClientCert
+	cfg.ClientCAs = x509.NewCertPool()
+	cfg.ClientCAs.AddCert(leaf)
 	q := &requestQueue{
 		calls:     make(chan pendingCall),
 		closed:    make(chan struct{}),
@@ -130,13 +133,16 @@ func (e *Endpoint) Serve(l net.Listener) error {
 		return cp.ErrRefused
 	}
 	defer close(q.closed)
-	return serveListener(l, e.listenerTLS, make(chan struct{}, 8), requestTimeout, func(ctx context.Context, c *tls.Conn, m frame.Message) {
+	return serveListener(l, e.listenerTLS, 8, requestTimeout, func(ctx context.Context, c *tls.Conn, m frame.Message) {
 		if m.Kind != frame.Poll {
 			return
 		}
 		select {
 		case call := <-q.calls:
-			a, err := exchangeOn(call.ctx, c, call.kind, call.data, false)
+			deadline, _ := ctx.Deadline()
+			exchange, cancel := context.WithDeadline(call.ctx, deadline)
+			a, err := exchangeOn(exchange, c, call.kind, call.data, false)
+			cancel()
 			call.result <- callResult{a, err}
 		default:
 			_ = frame.New(frame.Idle).WriteToStream(c)

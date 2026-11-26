@@ -203,6 +203,38 @@ type answer struct {
 	view    cp.View
 }
 
+// TLS 1.3 can deliver the peer's client-certificate rejection after the
+// dialer's handshake returns. Read while writing the first record so an
+// unbuffered stream can carry that alert even if the peer never reads data.
+func sendFirst(conn *tls.Conn, data []byte, dialed bool) (reply frame.Message, writeErr, readErr error) {
+	write := func() error {
+		n, err := conn.Write(data)
+		if err == nil && n != len(data) {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
+			conn.NetConn().Close()
+		}
+		return err
+	}
+	if !dialed {
+		if err := write(); err != nil {
+			return frame.Message{}, err, nil
+		}
+		reply, err := frame.ReadMessage(conn)
+		return reply, nil, err
+	}
+	written := make(chan error, 1)
+	go func() { written <- write() }()
+	first := io.LimitedReader{R: conn, N: cp.MaxFrame + 4}
+	reply, err := frame.ReadMessage(&first)
+	if err != nil {
+		conn.NetConn().Close()
+		err = replyReadError(err, cp.MaxFrame+4-first.N, err)
+	}
+	return reply, <-written, err
+}
+
 // After a write starts, a mutation may have committed even on a write error.
 // Only a recognized witness refusal or a matching signed receipt resolves it.
 func (t transport) exchange(ctx context.Context, m frame.Message) (answer, error) {
@@ -246,19 +278,14 @@ func exchangeOn(ctx context.Context, conn *tls.Conn, kind frame.Kind, data []byt
 	}
 	counter := raw.(*countedConn)
 	before := counter.written.Load()
-	n, err := conn.Write(data)
-	if err != nil || n != len(data) {
-		if mutation && counter.written.Load() == before {
-			return answer{}, errors.Join(ErrNotSent, ctx.Err())
-		}
-		return answer{}, errors.Join(result, ctx.Err())
+	reply, writeErr, readErr := sendFirst(conn, data, dialed)
+	if errors.Is(readErr, cp.ErrRefused) {
+		return answer{}, cp.ErrRefused
 	}
-	first := io.LimitedReader{R: conn, N: cp.MaxFrame + 4}
-	reply, err := frame.ReadMessage(&first)
-	if err != nil {
-		if dialed {
-			result = replyReadError(err, cp.MaxFrame+4-first.N, result)
-		}
+	if writeErr != nil && mutation && counter.written.Load() == before {
+		return answer{}, errors.Join(ErrNotSent, ctx.Err())
+	}
+	if writeErr != nil || readErr != nil {
 		return answer{}, errors.Join(result, ctx.Err())
 	}
 	if reply.Kind == frame.Failure {

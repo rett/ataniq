@@ -27,12 +27,8 @@ func checkpointTLS(cfg *tls.Config) *tls.Config {
 	return cfg
 }
 
-func serverTLS(id seatgate.Identity, ownerPin string) *tls.Config {
-	cfg := seatgate.ServerTLS(id, []string{ownerPin})
-	if ownerPin == "" {
-		cfg.ClientAuth = tls.NoClientCert
-		cfg.VerifyPeerCertificate = nil
-	}
+func serverTLS(id seatgate.Identity, peerPin string) *tls.Config {
+	cfg := seatgate.ServerTLS(id, []string{peerPin})
 	return checkpointTLS(cfg)
 }
 

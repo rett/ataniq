@@ -30,12 +30,13 @@ const requestTimeout = 30 * time.Second
 const handshakeTimeout = 5 * time.Second
 
 type Server struct {
-	id           seatgate.Identity
-	witnessKeyID string
-	witnessPin   ed25519.PublicKey
-	timeout      time.Duration
-	connections  chan struct{}
-	limits       limiter
+	id            seatgate.Identity
+	witnessKeyID  string
+	witnessPin    ed25519.PublicKey
+	timeout       time.Duration
+	ownerCapacity int
+	polls         chan struct{}
+	limits        limiter
 }
 
 func NewServer(id seatgate.Identity, witnessPin ed25519.PublicKey) (*Server, error) {
@@ -43,7 +44,10 @@ func NewServer(id seatgate.Identity, witnessPin ed25519.PublicKey) (*Server, err
 	if err != nil || id.Fingerprint() == "" {
 		return nil, cp.ErrRefused
 	}
-	return &Server{id: id, witnessKeyID: wid, witnessPin: slices.Clone(witnessPin), timeout: requestTimeout, connections: make(chan struct{}, 8)}, nil
+	return &Server{
+		id: id, witnessKeyID: wid, witnessPin: slices.Clone(witnessPin),
+		timeout: requestTimeout, ownerCapacity: 2, polls: make(chan struct{}, 6),
+	}, nil
 }
 
 // ServeOwner is a separate owner endpoint. Supply a private local listener
@@ -62,7 +66,9 @@ func (s *Server) ServeOwner(l net.Listener, a cp.Administration, ownerPin string
 	default:
 		return cp.ErrRefused
 	}
-	return serveListener(l, serverTLS(s.id, ownerPin), s.connections, s.timeout, func(ctx context.Context, conn *tls.Conn, m frame.Message) { _ = s.reply(ctx, conn, nil, a, m) })
+	return serveListener(l, serverTLS(s.id, ownerPin), s.ownerCapacity, s.timeout, func(ctx context.Context, conn *tls.Conn, m frame.Message) {
+		_ = s.reply(ctx, conn, nil, a, m)
+	})
 }
 
 func transientAccept(err error) bool {
@@ -72,7 +78,9 @@ func transientAccept(err error) bool {
 		errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM))
 }
 
-func serveListener(l net.Listener, cfg *tls.Config, connections chan struct{}, timeout time.Duration, handle func(context.Context, *tls.Conn, frame.Message)) error {
+func serveListener(l net.Listener, cfg *tls.Config, capacity int, timeout time.Duration, handle func(context.Context, *tls.Conn, frame.Message)) error {
+	connections := make(chan struct{}, capacity)
+	var pending handshakes
 	ctx, cancel := context.WithCancel(context.Background())
 	var workers sync.WaitGroup
 	defer func() { cancel(); workers.Wait() }()
@@ -88,28 +96,34 @@ func serveListener(l net.Listener, cfg *tls.Config, connections chan struct{}, t
 			continue
 		}
 		delay = 5 * time.Millisecond
-		select {
-		case connections <- struct{}{}:
-		default:
+		source := peerSource(c)
+		if !pending.acquire(source) {
 			c.Close()
 			continue
 		}
 		workers.Go(func() {
-			defer func() { <-connections }()
 			defer c.Close()
 			stop := context.AfterFunc(ctx, func() { c.Close() })
 			defer stop()
 			conn := tls.Server(&countedConn{Conn: c}, cfg)
-			if c.SetDeadline(time.Now().Add(handshakeTimeout)) != nil || conn.HandshakeContext(ctx) != nil {
+			authenticated := c.SetDeadline(time.Now().Add(handshakeTimeout)) == nil && conn.HandshakeContext(ctx) == nil
+			pending.release(source)
+			if !authenticated {
+				return
+			}
+			select {
+			case connections <- struct{}{}:
+				defer func() { <-connections }()
+			default:
 				return
 			}
 			reqCtx, done := context.WithTimeout(ctx, timeout)
 			defer done()
 			deadline, _ := reqCtx.Deadline()
-			if c.SetDeadline(deadline) != nil {
+			if c.SetDeadline(time.Now().Add(min(timeout, 2*time.Second))) != nil {
 				return
 			}
-			m, err := frame.ReadMessage(conn)
+			m, err := frame.ReadAfterHeader(conn, func() error { return c.SetDeadline(deadline) })
 			if err != nil {
 				return
 			}

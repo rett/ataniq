@@ -46,6 +46,12 @@ func (s *Server) Poll(ctx context.Context, home Remote, w Witness) error {
 func (s *Server) pollOnce(parent context.Context, t transport, w Witness) (bool, error) {
 	ctx, cancel := context.WithTimeout(parent, s.timeout)
 	defer cancel()
+	select {
+	case s.polls <- struct{}{}:
+		defer func() { <-s.polls }()
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
 	conn, err := t.connect(ctx)
 	if err != nil {
 		return false, err
@@ -58,15 +64,16 @@ func (s *Server) pollOnce(parent context.Context, t transport, w Witness) (bool,
 	if err = raw.SetDeadline(deadline); err != nil {
 		return false, err
 	}
-	if err = frame.New(frame.Poll).WriteToStream(conn); err != nil {
+	poll, err := frame.New(frame.Poll).Marshal()
+	if err != nil {
 		return false, err
 	}
-	m, err := frame.ReadMessage(conn)
-	if err != nil {
-		if handshakeRefusal(err) {
-			return false, cp.ErrRefused
-		}
-		return false, err
+	m, writeErr, readErr := sendFirst(conn, poll, true)
+	if readErr != nil {
+		return false, readErr
+	}
+	if writeErr != nil {
+		return false, writeErr
 	}
 	if m.Kind == frame.Idle {
 		return false, nil
