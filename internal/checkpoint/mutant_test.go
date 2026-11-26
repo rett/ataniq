@@ -132,3 +132,46 @@ func TestOwnerCASMutant(t *testing.T) {
 		})
 	}
 }
+
+func TestTombstoneMutants(t *testing.T) {
+	for _, op := range []string{"release", "retire", "ledger", "incarnation", "key"} {
+		t.Run(op, func(t *testing.T) {
+			expected := "got <nil>, want checkpoint: stale"
+			if op == "release" || op == "retire" {
+				expected = "got <nil>, want checkpoint: retired"
+			}
+			rejectMutant(t, "tombstone_"+op, expected, func(h *checkpointtest.Harness) {
+				a := ownerAdapter{Administration: h.Admin}
+				var tombstone cp.Receipt
+				a.retire = func(ctx context.Context, q cp.Retirement) (cp.Receipt, error) {
+					if op == "retire" && tombstone.Body != nil {
+						return tombstone, nil
+					}
+					r, err := a.Administration.Retire(ctx, q)
+					if err == nil {
+						tombstone = r
+					}
+					return r, err
+				}
+				if op == "release" {
+					a.release = func(ctx context.Context, q cp.Mutation) (cp.Receipt, error) {
+						if tombstone.Body != nil {
+							return tombstone, nil
+						}
+						return a.Administration.Release(ctx, q)
+					}
+				}
+				if op != "release" && op != "retire" {
+					a.enroll = func(ctx context.Context, q cp.Enrollment) (cp.Receipt, error) {
+						r, err := a.Administration.Enroll(ctx, q)
+						if tombstone.Body != nil && errors.Is(err, cp.ErrStale) {
+							return tombstone, nil
+						}
+						return r, err
+					}
+				}
+				h.Admin = a
+			})
+		})
+	}
+}
