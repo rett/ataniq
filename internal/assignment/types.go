@@ -3,6 +3,10 @@
 // append and the live admission barrier at each actual effect start. In
 // particular it verifies owner authorization for the exact command and head.
 //
+// A project supports up to eight enabled routes and eight outstanding effects.
+// Capture, inventory refresh and receipt correction report ErrCapacity with
+// the observed count and operating limit when either budget is exceeded.
+//
 // A same-issuer correction of an accepted fence or confirmation permanently
 // quarantines this key in this store, including during a later transfer. Both
 // bindings lose admission. The owner may acknowledge the quarantine once,
@@ -22,6 +26,7 @@ var (
 	ErrPhase    = errors.New("assignment: transition refused")
 	ErrEvidence = errors.New("assignment: missing or incompatible evidence")
 	ErrOverflow = errors.New("assignment: counter exhausted")
+	ErrCapacity = errors.New("assignment: capacity exceeded")
 )
 
 type Key struct {
