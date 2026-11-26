@@ -22,7 +22,7 @@ func (w *Memory) SignDisposition(ctx context.Context, digest [32]byte, result st
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return witnessProfile.sign(w.key, dispositionBody(w.epoch, digest, result))
+	return w.key.sign(dispositionBody(w.epoch, digest, result))
 }
 
 // VerifyDisposition uses the independently provisioned epoch and public key.

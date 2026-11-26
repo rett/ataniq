@@ -57,10 +57,28 @@ func (e Remote) transport(owner seatgate.Identity) (transport, error) {
 
 type client struct {
 	transport
-	slot          cp.Slot
-	home, session ed25519.PrivateKey
+	slot cp.Slot
+	keys *signingCapability
 }
 
+type signingCapability struct {
+	home, session         ed25519.PublicKey
+	signHome, signSession func([]byte) ([]byte, error)
+}
+
+func newSigningCapability(home, session ed25519.PrivateKey) *signingCapability {
+	home, session = slices.Clone(home), slices.Clone(session)
+	return &signingCapability{
+		home: home.Public().(ed25519.PublicKey), session: session.Public().(ed25519.PublicKey),
+		signHome:    func(b []byte) ([]byte, error) { return cp.Sign(cp.HomeNamespace, home, b) },
+		signSession: func(b []byte) ([]byte, error) { return cp.Sign(cp.SessionNamespace, session, b) },
+	}
+}
+func (signingCapability) String() string                 { return "[redacted checkpoint keys]" }
+func (k signingCapability) GoString() string             { return k.String() }
+func (k signingCapability) Format(out fmt.State, _ rune) { io.WriteString(out, k.String()) }
+
+func (c client) MarshalText() ([]byte, error)    { return []byte(c.String()), nil }
 func (client) String() string                    { return "[redacted checkpoint client]" }
 func (c client) GoString() string                { return c.String() }
 func (c client) Format(out fmt.State, verb rune) { io.WriteString(out, c.String()) }
@@ -86,7 +104,7 @@ func (e Endpoint) Connect(ctx context.Context, slot cp.Slot, home, session ed255
 	if bytes.Equal(h, s) || bytes.Equal(h, t.WitnessPin) || bytes.Equal(s, t.WitnessPin) {
 		return nil, &cp.Reason{Kind: cp.KeyRoleConflict}
 	}
-	c := &client{t, slot, slices.Clone(home), slices.Clone(session)}
+	c := &client{t, slot, newSigningCapability(home, session)}
 	q := cp.ReadRequest{Slot: slot}
 	rand.Read(q.Challenge[:])
 	m, err := c.signedRead(frame.Connect, q)
@@ -357,11 +375,11 @@ func (c *client) signedRead(kind frame.Kind, q cp.ReadRequest) (frame.Message, e
 	if err != nil {
 		return frame.Message{}, err
 	}
-	sig, err := cp.Sign(cp.HomeNamespace, c.home, b)
+	sig, err := c.keys.signHome(b)
 	if err != nil {
 		return frame.Message{}, err
 	}
-	return frame.New(kind, b, c.home.Public().(ed25519.PublicKey), sig), nil
+	return frame.New(kind, b, c.keys.home, sig), nil
 }
 func (c *owner) Read(ctx context.Context, q cp.ReadRequest) (cp.View, error) {
 	b, err := readBody(q, c.wid, "read")
@@ -393,7 +411,7 @@ func (t transport) read(ctx context.Context, q cp.ReadRequest, m frame.Message) 
 }
 
 func (c *client) Claim(ctx context.Context, q cp.Claim) (cp.Receipt, error) {
-	if !bytes.Equal(q.NewSessionPublicKey, c.session.Public().(ed25519.PublicKey)) {
+	if !bytes.Equal(q.NewSessionPublicKey, c.keys.session) {
 		return cp.Receipt{}, &cp.Reason{Kind: cp.InvalidRequest}
 	}
 	return c.submit(ctx, frame.Claim, q.Expected, q)
@@ -409,15 +427,15 @@ func (c *client) submit(ctx context.Context, k frame.Kind, s cp.State, q cp.Inte
 	if err != nil {
 		return cp.Receipt{}, err
 	}
-	hs, err := cp.Sign(cp.HomeNamespace, c.home, b)
+	hs, err := c.keys.signHome(b)
 	if err != nil {
 		return cp.Receipt{}, err
 	}
-	ss, err := cp.Sign(cp.SessionNamespace, c.session, b)
+	ss, err := c.keys.signSession(b)
 	if err != nil {
 		return cp.Receipt{}, err
 	}
-	return c.rawSubmit(ctx, k, c.slot, c.home.Public().(ed25519.PublicKey), b, hs, ss)
+	return c.rawSubmit(ctx, k, c.slot, c.keys.home, b, hs, ss)
 }
 func (t transport) rawSubmit(ctx context.Context, k frame.Kind, slot cp.Slot, home ed25519.PublicKey, b, hs, ss []byte) (cp.Receipt, error) {
 

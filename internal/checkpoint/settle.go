@@ -16,7 +16,7 @@ func (c *client) Settle(ctx context.Context, slot Slot, id ID) (Receipt, error) 
 	if slot != c.slot {
 		return Receipt{}, &Reason{Kind: Unauthorized}
 	}
-	return c.w.SettleHome(ctx, slot, id, c.home.Public().(ed25519.PublicKey))
+	return c.w.SettleHome(ctx, slot, id, c.home.public)
 }
 
 // SettleHome requires a live write grant because fencing an ID changes what
