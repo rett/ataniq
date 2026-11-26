@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"io"
+	"reflect"
 	"slices"
 	"sync"
 
@@ -17,16 +18,17 @@ import (
 
 // Store owns the local writer lock and the admitted witness session.
 type Store struct {
-	mu       sync.Mutex
-	files    LockedLedger
-	b        Binding
-	client   checkpoint.Client
-	session  ed25519.PrivateKey
-	verifier assignment.Verifier
-	ledger   assignment.Ledger
-	state    checkpoint.State
-	fault    Fault
-	stopped  bool
+	mu          sync.Mutex
+	files       lockedLedger
+	b           Binding
+	client      checkpoint.Client
+	session     ed25519.PrivateKey
+	verifier    assignment.Verifier
+	ledger      assignment.Ledger
+	lastReceipt *AdvanceReceipt
+	state       checkpoint.State
+	fault       Fault
+	stopped     bool
 }
 
 // Ledger returns the last admitted projection, for preparing a signed event.
@@ -46,7 +48,7 @@ func (s *Store) Close() error {
 	if s.files == nil {
 		return nil
 	}
-	err := s.files.Close()
+	err := s.files.close()
 	s.files = nil
 	clear(s.session)
 	return err
@@ -109,13 +111,12 @@ func (s *Store) confirm(ctx context.Context, op string, q checkpoint.Intent, r c
 	return v.Current, nil
 }
 
-// Start takes ownership of a locked ledger on success. A fresh client/session
-// must claim the witness even after an interrupted advance is completed.
-// Only a caller still holding the original session capability can retry its
-// outstanding CAS. Loss or release of that key leaves a pending suffix closed.
-// A committed advance with a lost reply can be verified by its receipt even
-// after the owner releases the old session.
+// Start authenticates the ledger and any staged evidence before claiming a
+// fresh session. A committed advance can be verified by its historical receipt.
 func Start(ctx context.Context, root LedgerStore, b Binding, client checkpoint.Client, session ed25519.PrivateKey, fault Fault) (*Store, error) {
+	if c := reflect.ValueOf(client); !c.IsValid() || (c.Kind() == reflect.Pointer && c.IsNil()) {
+		return nil, refuse(Unreachable, errors.New("missing witness client"))
+	}
 	if len(session) != ed25519.PrivateKeySize {
 		return nil, refuse(Unknown, checkpoint.ErrRefused)
 	}
@@ -134,7 +135,7 @@ func Start(ctx context.Context, root LedgerStore, b Binding, client checkpoint.C
 	if err != nil {
 		return nil, refuse(IdentityMismatch, err)
 	}
-	f, err := root.Lock(fault)
+	f, err := root.lock(fault)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +148,7 @@ func Start(ctx context.Context, root LedgerStore, b Binding, client checkpoint.C
 }
 
 func (s *Store) start(ctx context.Context, header []byte) error {
-	r, identity, err := s.files.Ledger()
+	r, identity, err := s.files.readLedger()
 	if err != nil {
 		return err
 	}
@@ -158,7 +159,7 @@ func (s *Store) start(ctx context.Context, header []byte) error {
 	if err != nil {
 		return err
 	}
-	stage, err := s.files.Stage()
+	stage, err := s.files.stage()
 	if err != nil {
 		return err
 	}
@@ -169,11 +170,12 @@ func (s *Store) start(ctx context.Context, header []byte) error {
 	if v.Prior == nil || checkpoint.ReceiptDigest(*v.Prior) != checkpoint.ReceiptDigest(s.b.Receipt) {
 		return refuse(Unknown, errors.New("original enrollment receipt missing or changed"))
 	}
-	if err := s.files.Check(); err != nil {
+	if err := s.files.check(); err != nil {
 		return err
 	}
+	var recovered *AdvanceReceipt
 	if stage != nil {
-		v, err = s.finishStage(ctx, stage, last, ledger.Checkpoint(), v)
+		recovered, err = s.inspectStage(ctx, stage, last, ledger.Checkpoint(), v)
 		if err != nil {
 			return err
 		}
@@ -181,10 +183,19 @@ func (s *Store) start(ctx context.Context, header []byte) error {
 	if err := compare(ledger.Checkpoint(), v.Current); err != nil {
 		return err
 	}
+	if err := s.loadReceipt(ctx, ledger.Checkpoint(), last, recovered); err != nil {
+		return err
+	}
+	if err := s.files.check(); err != nil {
+		return err
+	}
 	q := checkpoint.Claim{Mutation: checkpoint.Mutation{ID: id(), Expected: v.Current}, NewSessionPublicKey: s.session.Public().(ed25519.PublicKey)}
 	rct, err := s.client.Claim(ctx, q)
 	if err != nil {
 		return witnessError(err)
+	}
+	if err := after(s.fault, "start.claimed"); err != nil {
+		return refuse(ClaimUncertain, err)
 	}
 	s.state, err = s.confirm(ctx, "claim", q, rct)
 	if err != nil {
@@ -193,13 +204,21 @@ func (s *Store) start(ctx context.Context, header []byte) error {
 	if err = compare(ledger.Checkpoint(), s.state); err != nil {
 		return err
 	}
-	if err := s.files.Check(); err != nil {
+	if err := s.files.check(); err != nil {
 		return err
 	}
+	if recovered != nil {
+		if err := s.saveReceipt(*recovered); err != nil {
+			return err
+		}
+	}
 	if stage != nil {
-		if err := s.files.ClearStage(); err != nil {
+		if err := s.files.clearStage(); err != nil {
 			return refuse(Interrupted, err)
 		}
+	}
+	if err := s.files.check(); err != nil {
+		return err
 	}
 	s.ledger = ledger
 	return nil
@@ -207,6 +226,9 @@ func (s *Store) start(ctx context.Context, header []byte) error {
 
 func equalHeader(raw, expected []byte) error {
 	if _, err := assignment.NewLedgerFromHeader(raw); err != nil {
+		if _, eventErr := assignment.DecodeRecord(raw); eventErr == nil {
+			return refuse(MissingHeader, nil)
+		}
 		return ledgerError(err)
 	}
 	if !bytes.Equal(raw, expected) {

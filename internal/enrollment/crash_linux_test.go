@@ -81,14 +81,14 @@ func TestAdvanceCuts(t *testing.T) {
 			if tc.point == "lost reply" {
 				f.w.LoseNextReply()
 			}
-			err := AppendAndAdvance(f.ctx, s, e)
+			err := appendOnly(f.ctx, s, e)
 			want(t, err, Interrupted)
 			if tc.point != "lost reply" && !errors.Is(err, errCut) {
 				t.Fatal("missed boundary", err)
 			}
 			_, err = s.Ledger()
 			want(t, err, Closed)
-			want(t, AppendAndAdvance(f.ctx, s, e), Closed)
+			want(t, appendOnly(f.ctx, s, e), Closed)
 			check(t, s.Close())
 			state := f.state(t)
 			if (state.Head.Sequence == 1) != tc.committed {
@@ -101,9 +101,20 @@ func TestAdvanceCuts(t *testing.T) {
 			}
 
 			if !tc.appended {
-				f.refused(t, Interrupted)
-				if f.state(t) != state {
-					t.Fatal("promoted or discarded an unappended intent")
+				before := contents(t, p)
+				f.refused(t, Occupied)
+				if f.state(t) != state || !bytes.Equal(before, contents(t, p)) {
+					t.Fatal("changed unappended intent before claim")
+				}
+				f.release(t)
+				if tc.point != "stage.created" {
+					// Release changed the full Expected state of this intact intent.
+					f.refused(t, Interrupted)
+					return
+				}
+				f.open(t, nil)
+				if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) || f.state(t).Head != state.Head {
+					t.Fatal("empty stage survived admission or changed head", err)
 				}
 				return
 			}
@@ -119,14 +130,22 @@ func TestAdvanceCuts(t *testing.T) {
 				f.session = saved
 				f.connect(t)
 			}
-			// The original client can finish the exact staged CAS. A second
-			// Start cannot take over the occupied session, even with its key.
+			// A refused claim cannot commit even the original session's CAS.
+			stageBefore, stageErr := os.ReadFile(p)
 			f.refused(t, Occupied)
 			current := f.state(t)
-			if current.Head.Sequence != 1 || current.Revision != 3 {
-				t.Fatal("advance must commit exactly once", current)
+			if current != state {
+				t.Fatal("occupied start mutated witness", current)
+			}
+			stageAfter, err := os.ReadFile(p)
+			if !bytes.Equal(stageBefore, stageAfter) || (err == nil) != (stageErr == nil) {
+				t.Fatal("occupied start mutated stage")
 			}
 			f.release(t)
+			if !tc.committed {
+				f.refused(t, Interrupted)
+				return
+			}
 			s = f.open(t, nil)
 			l, err := s.Ledger()
 			check(t, err)
@@ -145,7 +164,7 @@ func TestInvalidStageNeverAdvances(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			f := enrolled(t)
 			s := f.open(t, cut("append.dir-synced"))
-			want(t, AppendAndAdvance(f.ctx, s, f.seed(t, s, "project")), Interrupted)
+			want(t, appendOnly(f.ctx, s, f.seed(t, s, "project")), Interrupted)
 			check(t, s.Close())
 			path := filepath.Join(f.root.Path, stageName)
 			var p staged
@@ -184,6 +203,162 @@ func TestInvalidStageNeverAdvances(t *testing.T) {
 			f.refused(t, reason)
 			if f.state(t).Head.Sequence != 0 {
 				t.Fatal("invalid stage advanced witness")
+			}
+		})
+	}
+}
+
+type boundaryHook func(string) error
+
+func (fn boundaryHook) After(point string) error { return fn(point) }
+
+func swapAt(t *testing.T, f *fixture, boundary string) Fault {
+	t.Helper()
+	hit := false
+	t.Cleanup(func() {
+		if !hit {
+			t.Errorf("missed %s", boundary)
+		}
+	})
+	return boundaryHook(func(point string) error {
+		if point == boundary {
+			hit = true
+			check(t, os.Rename(f.root.Path, f.root.Path+".old"))
+			check(t, os.Mkdir(f.root.Path, 0700))
+		}
+		return nil
+	})
+}
+
+func TestSwappedDirectoryNeverAdmitted(t *testing.T) {
+	for _, point := range []string{"header.created", "header.written", "header.file-synced", "header.dir-synced", "enroll.registered"} {
+		t.Run(point, func(t *testing.T) {
+			f := setup(t)
+			want(t, f.enroll(swapAt(t, f, point)), EnrollmentFailed)
+		})
+	}
+	for _, point := range []string{"stage.created", "stage.written", "stage.file-synced", "stage.dir-synced", "append.written", "append.file-synced", "append.dir-synced", "advance.committed", "receipt.created", "receipt.written", "receipt.file-synced", "receipt.dir-synced", "receipt.renamed", "receipt.rename-synced", "stage.removed", "stage.removal-synced"} {
+		t.Run(point, func(t *testing.T) {
+			f := enrolled(t)
+			s := f.open(t, swapAt(t, f, point))
+			if err := appendOnly(f.ctx, s, f.seed(t, s, "row")); err == nil {
+				t.Fatal("published after directory replacement")
+			}
+		})
+	}
+	for _, point := range []string{"start.claimed", "receipt.created", "receipt.written", "receipt.file-synced", "receipt.dir-synced", "receipt.renamed", "receipt.rename-synced", "stage.removed", "stage.removal-synced"} {
+		t.Run("start-"+point, func(t *testing.T) {
+			f := enrolled(t)
+			s := f.open(t, cut("advance.committed"))
+			want(t, appendOnly(f.ctx, s, f.seed(t, s, "row")), Interrupted)
+			check(t, s.Close())
+			f.release(t)
+			s, err := f.start(swapAt(t, f, point))
+			if s != nil {
+				check(t, s.Close())
+			}
+			want(t, err, IdentityMismatch)
+		})
+	}
+}
+
+func TestTornStageNeedsCleanEqualLedger(t *testing.T) {
+	for _, kind := range []string{"equal", "ahead", "torn ledger"} {
+		t.Run(kind, func(t *testing.T) {
+			f := enrolled(t)
+			s := f.open(t, cut("append.dir-synced"))
+			header := contents(t, f.ledgerPath())
+			want(t, appendOnly(f.ctx, s, f.seed(t, s, "row")), Interrupted)
+			check(t, s.Close())
+			f.release(t)
+			path := filepath.Join(f.root.Path, stageName)
+			put(t, path, []byte("{"))
+			head := f.state(t).Head
+			switch kind {
+			case "equal":
+				put(t, f.ledgerPath(), header)
+				f.open(t, nil)
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("stage remains", err)
+				}
+			case "ahead":
+				f.refused(t, Interrupted)
+			case "torn ledger":
+				put(t, f.ledgerPath(), append(header, '{'))
+				f.refused(t, Truncated)
+			}
+			if f.state(t).Head != head {
+				t.Fatal("changed witness head")
+			}
+		})
+	}
+}
+
+func TestAdvanceReceiptSurvivesClose(t *testing.T) {
+	f := enrolled(t)
+	s := f.open(t, nil)
+	first, err := AppendAndAdvance(f.ctx, s, f.seed(t, s, "one"))
+	check(t, err)
+	ack, err := cp.VerifyReceipt(f.b.WitnessPin, first.Receipt)
+	check(t, err)
+	if ack.ID != first.ID || ack.State != f.state(t) {
+		t.Fatal("returned wrong evidence")
+	}
+	prior := contents(t, filepath.Join(f.root.Path, receiptName))
+	second, err := AppendAndAdvance(f.ctx, s, f.seed(t, s, "two"))
+	check(t, err)
+	check(t, s.Close())
+	f.release(t)
+	s = f.open(t, nil)
+	got, err := s.LastReceipt()
+	check(t, err)
+	if got.ID != second.ID || cp.ReceiptDigest(got.Receipt) != cp.ReceiptDigest(second.Receipt) {
+		t.Fatal("lost last verified advance")
+	}
+	files, err := os.ReadDir(f.root.Path)
+	check(t, err)
+	if len(files) != 2 {
+		t.Fatal("receipt history grew", files)
+	}
+	check(t, s.Close())
+	f.release(t)
+	state := f.state(t)
+	for _, raw := range [][]byte{prior, []byte("{")} {
+		put(t, filepath.Join(f.root.Path, receiptName), raw)
+		f.refused(t, Interrupted)
+		if f.state(t) != state {
+			t.Fatal("claimed before checking receipt")
+		}
+	}
+}
+
+func TestReceiptReplacementCuts(t *testing.T) {
+	for _, point := range []string{"receipt.created", "receipt.written", "receipt.file-synced", "receipt.dir-synced", "receipt.renamed", "receipt.rename-synced"} {
+		t.Run(point, func(t *testing.T) {
+			f := enrolled(t)
+			var fault cut
+			s := f.open(t, boundaryHook(func(boundary string) error { return fault.After(boundary) }))
+			check(t, appendOnly(f.ctx, s, f.seed(t, s, "one")))
+			fault = cut(point)
+			r, err := AppendAndAdvance(f.ctx, s, f.seed(t, s, "two"))
+			want(t, err, Interrupted)
+			if r != nil || !errors.Is(err, errCut) {
+				t.Fatal("published or missed boundary", err)
+			}
+			check(t, s.Close())
+			f.release(t)
+			s = f.open(t, nil)
+			last, err := s.LastReceipt()
+			check(t, err)
+			ack, err := cp.VerifyReceipt(f.b.WitnessPin, last.Receipt)
+			check(t, err)
+			if ack.State.Head.Sequence != 2 || ack.ID != last.ID {
+				t.Fatal("failed to recover receipt")
+			}
+			files, err := os.ReadDir(f.root.Path)
+			check(t, err)
+			if len(files) != 2 {
+				t.Fatal("replacement debris", files)
 			}
 		})
 	}
