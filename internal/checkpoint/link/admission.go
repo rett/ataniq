@@ -48,6 +48,25 @@ func peerSource(c net.Conn) string {
 // A source match reserves handshake capacity. TLS authenticates the peer.
 type TrustSources []netip.Prefix
 
+func (sources TrustSources) normalized() (TrustSources, error) {
+	if len(sources) == 0 {
+		return nil, &ConfigError{"missing witness source prefixes"}
+	}
+	trust := make(TrustSources, len(sources))
+	for i, prefix := range sources {
+		addr, bits := prefix.Addr().WithZone(""), prefix.Bits()
+		if addr.Is4In6() {
+			addr = addr.Unmap()
+			bits -= 96
+		}
+		if !prefix.IsValid() || bits <= 0 {
+			return nil, &ConfigError{"invalid or unrestricted witness source prefix"}
+		}
+		trust[i] = netip.PrefixFrom(addr, bits).Masked()
+	}
+	return trust, nil
+}
+
 type admission func(net.Conn) (release func())
 
 func homeAdmission(trust TrustSources) admission {
@@ -56,7 +75,7 @@ func homeAdmission(trust TrustSources) admission {
 		source := peerSource(c)
 		pool := &ordinary
 		if addr, ok := c.RemoteAddr().(*net.TCPAddr); ok {
-			ip := addr.AddrPort().Addr().Unmap()
+			ip := addr.AddrPort().Addr().WithZone("").Unmap()
 			for _, prefix := range trust {
 				if prefix.Contains(ip) {
 					pool = &reserved

@@ -31,13 +31,9 @@ func NewEndpoint(id seatgate.Identity, witnessCertDER []byte, signingKey ed25519
 	if err != nil || id.Fingerprint() == "" || epoch == 0 || !validSlot(slot) {
 		return nil, cp.ErrRefused
 	}
-	if len(trust) == 0 {
-		return nil, &ConfigError{"missing witness source prefixes"}
-	}
-	for _, prefix := range trust {
-		if !prefix.IsValid() {
-			return nil, &ConfigError{"invalid witness source prefix"}
-		}
+	trust, err = trust.normalized()
+	if err != nil {
+		return nil, err
 	}
 	wid, err := cp.KeyID(signingKey)
 	if err != nil {
@@ -51,7 +47,7 @@ func NewEndpoint(id seatgate.Identity, witnessCertDER []byte, signingKey ed25519
 		closed:        make(chan struct{}),
 	}
 	t := transport{Remote: Remote{WitnessPin: slices.Clone(signingKey), Epoch: epoch}, queue: q, wid: wid}
-	return &Endpoint{slices.Clone(trust), slot, t, cfg}, nil
+	return &Endpoint{trust, slot, t, cfg}, nil
 }
 
 type pendingCall struct {
