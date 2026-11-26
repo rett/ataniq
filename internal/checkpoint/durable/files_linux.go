@@ -356,3 +356,39 @@ func (w *Witness) publishPair() error {
 	}
 	return nil
 }
+
+// Keep the original append descriptors and index flock. A replacement with
+// identical bytes would otherwise leave the signer writing to an unlinked file.
+func (w *Witness) reopenPublished(name string, original *os.File) (*os.File, error) {
+	f, err := openFile(w.dir, name, syscall.O_RDONLY)
+	if err != nil {
+		return nil, errors.Join(ErrPublication, err)
+	}
+	old, oldErr := original.Stat()
+	current, statErr := f.Stat()
+	if oldErr != nil || statErr != nil || !os.SameFile(old, current) {
+		return nil, errors.Join(ErrPublication, oldErr, statErr, f.Close())
+	}
+	return f, nil
+}
+
+func (w *Witness) verifyPublishedGenesis() error {
+	journal, err := w.reopenPublished(journalName, w.journal)
+	if err != nil {
+		return err
+	}
+	defer journal.Close()
+	index, err := w.reopenPublished(lockName, w.lockFile)
+	if err != nil {
+		return err
+	}
+	defer index.Close()
+	_, digest, err := w.readGenesis(journal, index)
+	if err != nil {
+		return err
+	}
+	if digest != w.previous {
+		return ErrPublication
+	}
+	return nil
+}

@@ -9,8 +9,10 @@
 // A lone published file or interrupted publication has a distinct recovery
 // error. Create preserves these files. The local owner can CompletePublication
 // only with one unambiguous staged pair (or staged journal and published
-// index) matching the pinned signed genesis and exactly its index entry. The lock
-// file records each committed frame digest and its exact acknowledgement signature.
+// index) matching the pinned signed genesis and exactly its index entry. Under
+// the directory lock it reopens the published names and verifies both files
+// still refer to that same signed pair before returning the witness.
+// The lock file records each committed frame digest and its exact acknowledgement signature.
 // Losing a complete journal suffix alone is therefore detectable. Replay
 // verifies every frame, receipt and predecessor before serving. A complete
 // final transition left by a crash can finish its missing acknowledgement.
@@ -74,7 +76,9 @@
 // including before enrollment. AcknowledgeStorageError clears the poison
 // marker and recovery inhibition after re-proof. The service guard is independent.
 // OpenForRecovery can also inspect a provable interrupted genesis without
-// publishing it. Completing publication requires the offline owner call. On every Open, replay rewrites the last
+// publishing it. The offline CompletePublication call clears the interrupted
+// publication reason after verifying the published genesis. Status then reports
+// the ordinary service guard. On every Open, replay rewrites the last
 // validated frame and index entry in place and syncs both files and the directory
 // before signing or serving. Torn or corrupt evidence still prevents Open.
 package durable

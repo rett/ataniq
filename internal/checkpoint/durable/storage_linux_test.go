@@ -903,15 +903,67 @@ func TestCompleteInterruptedPublication(t *testing.T) {
 	}
 	before := readFile(t, matches[0])
 	index := readFile(t, filepath.Join(c.Directory, lockName))
+	dir, err := os.Open(c.Directory)
+	must(t, err)
+	must(t, exclusive(dir))
+	if w, err := CompletePublication(c); w != nil || !errors.Is(err, ErrLocked) {
+		t.Fatalf("completion while directory locked: %v", err)
+	}
+	must(t, dir.Close())
 	w, err := CompletePublication(c)
 	must(t, err)
+	checkStatus := func(w *Witness, challenge cp.ID, want cp.Inhibition) {
+		t.Helper()
+		r, err := w.Administration().Status(t.Context(), challenge)
+		must(t, err)
+		s, err := cp.VerifyDirectoryStatus(c.Pin, c.Identity.Epoch, challenge, r)
+		must(t, err)
+		if s.Inhibition != want || s.Sequence != 1 || s.Digest != hex.EncodeToString(index[:32]) {
+			t.Fatalf("status after completion: %+v, want %q at genesis", s, want)
+		}
+	}
+	checkStatus(w, cp.ID{1}, cp.ServiceInhibited)
+	w.Inhibit(false)
+	checkStatus(w, cp.ID{2}, cp.Ready)
 	must(t, w.Close())
-	reopen(t, c)
+	checkStatus(reopen(t, c), cp.ID{3}, cp.ServiceInhibited)
 	if !bytes.Equal(before, readFile(t, filepath.Join(c.Directory, journalName))) ||
 		!bytes.Equal(index, readFile(t, filepath.Join(c.Directory, lockName))) {
 		t.Fatal("recovery changed genesis")
 	}
 }
+
+func TestCompletePublicationRechecksPublishedPair(t *testing.T) {
+	for _, name := range []string{journalName, lockName} {
+		for _, change := range []string{"replace", "truncate", "extend"} {
+			t.Run(name+"/"+change, func(t *testing.T) {
+				c := config(t, testKey("process"))
+				child(t, c, "published-"+lockName, 79)
+				w, err := start(c, completeStore, func(stage string) error {
+					if stage != "published-"+journalName {
+						return nil
+					}
+					path := filepath.Join(c.Directory, name)
+					switch change {
+					case "replace":
+						other := filepath.Join(c.Directory, "replacement")
+						must(t, os.WriteFile(other, readFile(t, path), 0600))
+						must(t, os.Rename(other, path))
+					case "truncate":
+						must(t, os.Truncate(path, 0))
+					case "extend":
+						must(t, os.WriteFile(path, append(readFile(t, path), 0), 0600))
+					}
+					return nil
+				})
+				if w != nil || !errors.Is(err, ErrPublication) {
+					t.Fatalf("completed after %s of %s: %v", change, name, err)
+				}
+			})
+		}
+	}
+}
+
 func TestPreserveAcknowledgedPublication(t *testing.T) {
 	for _, missing := range []string{lockName, journalName} {
 		t.Run(missing, func(t *testing.T) {
@@ -1032,8 +1084,24 @@ func TestDecodeErrorWithFinalBytes(t *testing.T) {
 		_, _, err := decode(in, c.Pin)
 		if end == io.EOF {
 			must(t, err)
-		} else if !errors.Is(err, end) {
+		} else if !errors.Is(err, end) || errors.Is(err, ErrTorn) {
 			t.Errorf("final bytes with %v: got %v", end, err)
 		}
+	}
+}
+
+func TestReplayUnexpectedEOFInFrame(t *testing.T) {
+	// The last read supplies three bytes of the four-byte length and its error.
+	partial := func() io.Reader {
+		return iotest.DataErrReader(io.MultiReader(bytes.NewReader([]byte{0, 0, 0}), iotest.ErrReader(io.ErrUnexpectedEOF)))
+	}
+	w := new(Witness)
+	err := w.replay("", partial(), bytes.NewReader(nil))
+	if !errors.Is(err, ErrTorn) || !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("unindexed partial frame: %v", err)
+	}
+	err = w.replay("", partial(), bytes.NewReader([]byte{1}))
+	if !errors.Is(err, ErrCorrupt) {
+		t.Errorf("index outlives partial frame: %v", err)
 	}
 }

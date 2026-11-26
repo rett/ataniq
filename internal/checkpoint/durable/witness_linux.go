@@ -228,6 +228,12 @@ func start(c Config, mode startMode, fault func(string) error) (*Witness, error)
 			return nil, err
 		}
 	}
+	if mode == completeStore {
+		if err := w.verifyPublishedGenesis(); err != nil {
+			return nil, err
+		}
+		w.recovery = "" // Genesis has no acknowledgement to reconcile.
+	}
 	w.keyFile, keyFile = keyFile, nil
 	ok = true
 	return w, nil
