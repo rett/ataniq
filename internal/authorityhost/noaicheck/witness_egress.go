@@ -90,6 +90,9 @@ func (c *Checker) checkWitnessEgress() {
 		return
 	}
 	if !address.IsValid() {
+		if c.witnessExpected() {
+			c.note("witness egress drop-in missing: home unreachable")
+		}
 		return
 	}
 	_, data, err := c.t.readFile(WitnessConfig, 64<<10)

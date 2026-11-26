@@ -179,7 +179,9 @@ Activate the signed release with the existing switch procedure. Leave the
 unit disabled in systemd. The switch's validator checks the unit and its
 link, then its reload list starts the unit under the decision inhibit.
 The health command verifies signed local status even if the home is
-offline. Once the first switch succeeds, add
+offline. Without the egress drop-in the service can pass this local health
+check while the unit denies all IP traffic. The host no-AI check reports
+`NOTE witness egress drop-in missing: home unreachable`. Once the first switch succeeds, add
 `systemctl stop ataniq-witness.service` to the host emergency stop list
 `/etc/authority-host/stop.list`, retaining the other decision services.
 Verify the effective account and restrictions, the output filter and the

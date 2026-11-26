@@ -84,3 +84,12 @@ func WitnessUnitSafe(rel, text, releaseDir string) bool {
 	}
 	return true
 }
+
+func (c *Checker) witnessExpected() bool {
+	if c.witnessRelease {
+		return true
+	}
+	_, _, err := c.t.lstat(WitnessUnit)
+	c.unreadable(WitnessUnit, err)
+	return err == nil
+}

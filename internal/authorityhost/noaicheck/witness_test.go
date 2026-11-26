@@ -3,6 +3,7 @@ package noaicheck
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -120,5 +121,20 @@ func TestWitnessHostEgress(t *testing.T) {
 				t.Fatal(hits)
 			}
 		})
+	}
+}
+
+func TestWitnessMissingEgressNote(t *testing.T) {
+	for _, installed := range []bool{true, false} {
+		f := cleanFixture(t)
+		if installed {
+			f.link(WitnessUnit, "/opt/authority-host/current/"+WitnessUnit)
+		}
+		c := f.checker(testLists())
+		c.CheckUnits()
+		note := slices.Contains(c.Report().Notes, "witness egress drop-in missing: home unreachable")
+		if note != installed {
+			t.Fatalf("installed %v: %v", installed, c.Report())
+		}
 	}
 }
