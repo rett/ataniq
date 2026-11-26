@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"net"
+	"slices"
 	"testing"
 	"time"
 
@@ -177,5 +178,37 @@ func TestNextPollServesRecoveryFirst(t *testing.T) {
 		if !ready || call.kind != kind {
 			t.Fatalf("next poll got %v, want %v", call.kind, kind)
 		}
+	}
+}
+
+func TestIdlePollAfterRefusalsResetsDelay(t *testing.T) {
+	f := newFixture(t, "witness")
+	_, r := f.listener(t)
+	dial := r.DialContext
+	attempt := 0
+	r.DialContext = func(ctx context.Context, n, a string) (net.Conn, error) {
+		attempt++
+		if attempt <= 5 {
+			return nil, cp.ErrRefused
+		}
+		return dial(ctx, n, a)
+	}
+	f.s.home = r
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var delays []time.Duration
+	f.s.pollDelay = func(d time.Duration) time.Duration {
+		delays = append(delays, d)
+		if len(delays) == 7 {
+			cancel()
+		}
+		return 0
+	}
+	if err := f.s.Poll(ctx, memoryWitness{f.w}); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 25 * time.Millisecond, 50 * time.Millisecond}
+	if !slices.Equal(delays, want) {
+		t.Fatalf("refusal and idle delays: %v", delays)
 	}
 }

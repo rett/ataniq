@@ -34,7 +34,9 @@ func (s *Server) Poll(ctx context.Context, w Witness) error {
 		home.DialContext = (&net.Dialer{}).DialContext
 	}
 	t := transport{Remote: home, tls: clientTLS(home.ServerPin, s.id)}
-	delay := 25 * time.Millisecond
+	const initialDelay = 25 * time.Millisecond
+	delay := initialDelay
+	var previousFailure bool
 	for ctx.Err() == nil {
 		worked, err := s.pollOnce(ctx, t, w)
 		capDelay := time.Second
@@ -45,8 +47,11 @@ func (s *Server) Poll(ctx context.Context, w Witness) error {
 			delay = max(delay, time.Second)
 			capDelay = 30 * time.Second
 		}
+		if err == nil && (previousFailure || worked) {
+			delay = initialDelay
+		}
+		previousFailure = err != nil
 		if worked && err == nil {
-			delay = 25 * time.Millisecond
 			continue
 		}
 		select {
