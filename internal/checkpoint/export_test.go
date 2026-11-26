@@ -1,13 +1,6 @@
 package checkpoint
 
-import (
-	"context"
-	"crypto/ed25519"
-)
-
-func (w *Memory) RawSubmit(ctx context.Context, slot Slot, home ed25519.PublicKey, op string, body, homeSig, sessionSig []byte) (Receipt, error) {
-	return w.accept(ctx, slot, home, op, body, homeSig, sessionSig)
-}
+import "crypto/ed25519"
 
 // KeepLastClaim models a witness that remembers only the current writer.
 func (w *Memory) KeepLastClaim(slot Slot) {

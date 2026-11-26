@@ -18,6 +18,9 @@ import (
 // escape each byte as six ASCII bytes before canonicalization. Reserve 2 KiB
 // for member names, punctuation, fingerprints, digests and full-width counters.
 const maxFrame = 16*6*assignment.MaxReferenceBytes + 2048
+
+// MaxFrame is the byte ceiling shared by signed records and link frames.
+const MaxFrame = maxFrame
 const maxDepth = 8
 
 func textOK(s string) bool {
