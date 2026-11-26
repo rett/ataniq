@@ -45,8 +45,11 @@ func (s *Store) inspectStage(ctx context.Context, raw, last []byte, head assignm
 		return nil, refuse(Interrupted, err)
 	}
 	q, err := p.advance()
-	if err == nil && equal && q.Expected == v.Current && !bytes.Equal(last, p.Record) {
-		// Only local cleanup is eligible, and only after a successful claim.
+	if err == nil && equal && q.Next != head && !bytes.Equal(last, p.Record) &&
+		q.Expected.Head == v.Current.Head && q.Expected.Header == v.Current.Header &&
+		q.Expected.Slot == v.Current.Slot && q.Expected.Epoch == v.Current.Epoch {
+		// Release can change the session and fence at the same predecessor.
+		// Start clears this unappended intent only after confirming its claim.
 		return nil, nil
 	}
 	if err != nil || q.Next != head || !bytes.Equal(last, p.Record) {
