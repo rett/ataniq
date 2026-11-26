@@ -240,11 +240,14 @@ func TestJournalStorageFaults(t *testing.T) {
 			must(t, w.Close())
 			requirePoison(t, c)
 			if site == 0 {
-				if _, err := Open(c); !errors.Is(err, ErrTorn) {
-					t.Fatal("accepted partial frame", err)
+				if !bytes.Equal(readFile(t, path), before) {
+					t.Fatal("short write left a partial journal frame")
 				}
-				if !bytes.Equal(readFile(t, path), append(before, partial...)) {
-					t.Fatal("partial write evidence changed")
+				again := reopen(t, c)
+				found, err := again.HasReceipt(t.Context(), q.Slot, q.ID)
+				must(t, err)
+				if found {
+					t.Fatal("rolled back write became a receipt")
 				}
 				return
 			}
@@ -655,4 +658,41 @@ func TestOpenRewritesTails(t *testing.T) {
 			t.Errorf("Open did not rewrite %s", name)
 		}
 	}
+}
+
+func TestReserveBeforeAppend(t *testing.T) {
+	c := config(t, testKey("blocks"))
+	w := create(t, c)
+	q := fixtureEnrollment(t, w)
+	receipt, err := w.Administration().Enroll(t.Context(), q)
+	must(t, err)
+	ack, err := cp.VerifyReceipt(c.Pin, receipt)
+	must(t, err)
+	before := readFile(t, filepath.Join(c.Directory, journalName))
+	w.allocate = func(*os.File, int64, int64) error { return syscall.EDQUOT }
+	_, err = w.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{7})
+	var capacity *CapacityError
+	if !errors.As(err, &capacity) || !errors.Is(err, syscall.EDQUOT) || !bytes.Equal(before, readFile(t, filepath.Join(c.Directory, journalName))) {
+		t.Fatal("quota did not refuse before append", err)
+	}
+	_, err = w.Administration().Retire(t.Context(), cp.Retirement{Mutation: cp.Mutation{ID: cp.ID{8}, Expected: ack.State}, DispositionDigest: ack.State.Head.Digest})
+	must(t, err)
+}
+
+func TestShortIndexWrite(t *testing.T) {
+	c := config(t, testKey("index"))
+	w := create(t, c)
+	q := fixtureEnrollment(t, w)
+	path := filepath.Join(c.Directory, lockName)
+	before := readFile(t, path)
+	w.writeEntry = func(entry []byte) (int, error) { return w.lockFile.Write(entry[:7]) }
+	_, err := w.Administration().Enroll(t.Context(), q)
+	if !errors.Is(err, cp.ErrUnknownOutcome) || !bytes.Equal(before, readFile(t, path)) {
+		t.Fatal("partial index after short write", err)
+	}
+	must(t, w.Close())
+	requirePoison(t, c)
+	again := reopen(t, c)
+	_, err = again.Administration().Settle(t.Context(), 1, q.Slot, q.ID)
+	must(t, err)
 }

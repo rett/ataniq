@@ -84,10 +84,10 @@ func (w *Witness) commit(r record, c change) (cp.Receipt, error) {
 	if err = w.after("before-append"); err != nil {
 		return cp.Receipt{}, errors.Join(cp.ErrUnavailable, err)
 	}
-	n, err := w.writeFrame(frame)
-	if n != len(frame) && err == nil {
-		err = io.ErrShortWrite
+	if err := w.reserve(r, c, int64(len(frame))); err != nil {
+		return cp.Receipt{}, err
 	}
+	err = w.appendBytes(w.journal, w.writeFrame, frame)
 	if err == nil {
 		err = w.after("appended")
 	}
@@ -144,7 +144,7 @@ func (w *Witness) finish(r record, c change, digest [32]byte) ([]byte, error) {
 	}
 	entry := binary.BigEndian.AppendUint16(digest[:], uint16(len(sig)))
 	entry = append(entry, sig...)
-	if _, err := w.lockFile.Write(entry); err != nil {
+	if err := w.appendBytes(w.lockFile, w.writeEntry, entry); err != nil {
 		return nil, err
 	}
 	if err := w.after("receipt-appended"); err != nil {

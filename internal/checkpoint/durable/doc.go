@@ -1,5 +1,5 @@
 // Package durable implements the checkpoint witness on a local Linux
-// filesystem supporting flock and durable file and directory fsync.
+// filesystem supporting flock, keep-size fallocate and durable file and directory fsync.
 //
 // Create provisions a journal and a lock file in an existing service-owned
 // 0700 directory. Open requires both files. The lock file also records the
@@ -24,7 +24,9 @@
 // into genesis and Open checks it against Config.HomePin. The per-store limit
 // is 65,536 ordinary receipts and fences by default. ReceiptLimit may reduce
 // admission. Release and retirement retain room for one entry per claim and
-// enrollment. At the ordinary limit the owner has a separate allowance of
+// enrollment. Before ordinary appends, both files reserve disk space for
+// these closing operations. A failed append is truncated to its original EOF
+// and synced by its writer before service stops. At the ordinary limit the owner has a separate allowance of
 // ReceiptLimit new settlement fences (65,536 by default). An exact settlement
 // lookup spends no credit. The absolute maximum is 196,608 entries plus genesis.
 // There is no compaction, on purpose: prior receipts and fences are permanent.

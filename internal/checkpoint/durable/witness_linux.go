@@ -31,7 +31,8 @@ const (
 	ErrTorn     StorageError = "incomplete journal or receipt index"
 )
 
-// CapacityError reports which per-store history allowance was exhausted.
+// CapacityError reports the exhausted history allowance. A zero Limit indicates
+// that the filesystem could not reserve space for the transition.
 type CapacityError struct{ Limit uint64 }
 
 func (*CapacityError) Error() string { return "durable witness: history capacity exhausted" }
@@ -93,6 +94,10 @@ type Witness struct {
 	history                    map[item]accepted // a zero receipt denotes a permanent Settle fence
 	grants                     map[cp.Slot]bool
 	fault                      func(string) error
+	closingRecords             int64 // one retirement per live slot and one release per active writer
+	journalSpace, indexSpace   int64 // ends of ranges reserved on these descriptors
+	allocate                   func(*os.File, int64, int64) error
+	writeEntry                 func([]byte) (int, error)
 	writeFrame                 func([]byte) (int, error)
 	syncFile                   func(*os.File) error
 	armed, recoveryRequired    bool
@@ -177,6 +182,8 @@ func start(c Config, create bool) (*Witness, error) {
 		return nil, err
 	}
 	w.writeFrame = w.journal.Write
+	w.writeEntry = w.lockFile.Write
+	w.allocate = keepSize
 	if create {
 		if err = w.arm(); err != nil {
 			return nil, err
