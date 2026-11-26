@@ -199,75 +199,86 @@ func proxied(t *testing.T, e Remote, id, owner seatgate.Identity, p *linktest.Pr
 func TestWitnessContract(t *testing.T) {
 	serverID, ownerID, proxyID := identity(t, "witness"), identity(t, "owner"), identity(t, "proxy")
 	checkpointtest.Run(t, func(t *testing.T, k ed25519.PrivateKey) checkpointtest.Harness {
-		pin := k.Public().(ed25519.PublicKey)
 		w, err := cp.NewMemory("witness", 1, k)
 		if err != nil {
 			t.Fatal(err)
 		}
-		homeID := identity(t, "home")
-		placeholder := Remote{Address: "localhost:1", ServerPin: homeID.Fingerprint()}
-		s, err := NewServer(serverID, pin, placeholder, cp.Slot{Witness: "witness", Authority: "owner", Store: "owner"})
-		must(t, err)
-		advanceClock := func(s *Server) {
-			s.pollDelay = func(time.Duration) time.Duration { return 25 * time.Millisecond }
-			now := time.Now()
-			s.limits.now = func() time.Time { now = now.Add(2 * time.Second); return now }
-		}
-		advanceClock(s)
-		admin := testOwner(t, s, w, w.Administration(), ownerID.Fingerprint())
-		admin.ServerPin, admin.WitnessPin, admin.Epoch = serverID.Fingerprint(), pin, 1
-		var proxy linktest.Proxy
-		admin = proxied(t, admin, proxyID, ownerID, &proxy, false)
-		endpoints := map[cp.Slot]*Endpoint{}
-		provision := func(slot cp.Slot, key ed25519.PublicKey, write bool) error {
-			if endpoints[slot] == nil {
-				e, err := NewEndpoint(homeID, seatgate.ServerTLS(serverID, nil).Certificates[0].Certificate[0], pin, 1, slot, loopbackTrust())
-				must(t, err)
-				addr := serve(t, e.Serve)
-				addr.ServerPin, addr.WitnessPin, addr.Epoch = homeID.Fingerprint(), pin, 1
-				addr = proxied(t, addr, proxyID, serverID, &proxy, true)
-				poller, err := NewServer(serverID, pin, addr, slot)
-				must(t, err)
-				advanceClock(poller)
-				startPolling(t, poller, addr, memoryWitness{w})
-				endpoints[slot] = e
-			}
-			return w.Grant(slot, key, write)
-		}
-		a, err := admin.Administration(ownerID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// The contract callback also saves the original receipt in the test
-		// goroutine's fixture. A subsequent recovery read must synchronize
-		// with that write even when kernel TCP carries the reply.
-		var delivery sync.Mutex
-		return checkpointtest.Harness{
-			Admin: a, Grant: provision, Revoke: w.Revoke, Inhibit: w.Inhibit, SetReceiptLimit: w.SetReceiptLimit,
-			LoseNextReply: proxy.DropNextReply,
-			TransformNextReply: func(change func(cp.Receipt) cp.Receipt) {
-				w.TransformNextReply(func(r cp.Receipt) cp.Receipt {
-					delivery.Lock()
-					defer delivery.Unlock()
-					return change(r)
-				})
-			},
-			Connect: func(slot cp.Slot, h, s ed25519.PrivateKey, p ed25519.PublicKey) (cp.Client, error) {
-				e := endpoints[slot]
-				if !ed25519.PublicKey(p).Equal(e.home.WitnessPin) {
-					return nil, &cp.Reason{Kind: cp.Unauthorized}
-				}
-				c, err := e.Connect(t.Context(), slot, h, s)
-				if err != nil {
-					return nil, err
-				}
-				return synchronizedClient{c, &delivery}, nil
-			},
-			RawSubmit: func(ctx context.Context, slot cp.Slot, key ed25519.PublicKey, op string, b, hs, ss []byte) (cp.Receipt, error) {
-				return endpoints[slot].RawSubmit(ctx, slot, key, op, b, hs, ss)
-			},
-		}
+		return linkHarness(t, public(k), w, serverID, ownerID, proxyID)
 	})
+}
+
+// Recreate the transport services around the memory witness directory.
+func linkHarness(t *testing.T, pin ed25519.PublicKey, w *cp.Memory, serverID, ownerID, proxyID seatgate.Identity) checkpointtest.Harness {
+	homeID := identity(t, "home")
+	placeholder := Remote{Address: "localhost:1", ServerPin: homeID.Fingerprint()}
+	s, err := NewServer(serverID, pin, placeholder, cp.Slot{Witness: "witness", Authority: "owner", Store: "owner"})
+	must(t, err)
+	advanceClock := func(s *Server) {
+		s.pollDelay = func(time.Duration) time.Duration { return 25 * time.Millisecond }
+		now := time.Now()
+		s.limits.now = func() time.Time { now = now.Add(2 * time.Second); return now }
+	}
+	advanceClock(s)
+	admin := testOwner(t, s, w, w.Administration(), ownerID.Fingerprint())
+	admin.ServerPin, admin.WitnessPin, admin.Epoch = serverID.Fingerprint(), pin, 1
+	var proxy linktest.Proxy
+	admin = proxied(t, admin, proxyID, ownerID, &proxy, false)
+	endpoints := map[cp.Slot]*Endpoint{}
+	var pollers []context.CancelFunc
+	endpoint := func(slot cp.Slot) *Endpoint {
+		if endpoints[slot] == nil {
+			e, err := NewEndpoint(homeID, seatgate.ServerTLS(serverID, nil).Certificates[0].Certificate[0], pin, 1, slot, loopbackTrust())
+			must(t, err)
+			addr := serve(t, e.Serve)
+			addr.ServerPin, addr.WitnessPin, addr.Epoch = homeID.Fingerprint(), pin, 1
+			addr = proxied(t, addr, proxyID, serverID, &proxy, true)
+			poller, err := NewServer(serverID, pin, addr, slot)
+			must(t, err)
+			advanceClock(poller)
+			pollers = append(pollers, startPolling(t, poller, addr, memoryWitness{w}))
+			endpoints[slot] = e
+		}
+		return endpoints[slot]
+	}
+	a, err := admin.Administration(ownerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The contract callback also saves the original receipt in the test
+	// goroutine's fixture. A subsequent recovery read must synchronize
+	// with that write even when kernel TCP carries the reply.
+	var delivery sync.Mutex
+	return checkpointtest.Harness{
+		Restart: func() checkpointtest.Harness {
+			for _, stop := range pollers {
+				stop()
+			}
+			return linkHarness(t, pin, w, serverID, ownerID, proxyID)
+		},
+		Admin: a, Grant: w.Grant, Revoke: w.Revoke, Inhibit: w.Inhibit, SetReceiptLimit: w.SetReceiptLimit,
+		LoseNextReply: proxy.DropNextReply,
+		TransformNextReply: func(change func(cp.Receipt) cp.Receipt) {
+			w.TransformNextReply(func(r cp.Receipt) cp.Receipt {
+				delivery.Lock()
+				defer delivery.Unlock()
+				return change(r)
+			})
+		},
+		Connect: func(slot cp.Slot, h, s ed25519.PrivateKey, p ed25519.PublicKey) (cp.Client, error) {
+			e := endpoint(slot)
+			if !ed25519.PublicKey(p).Equal(e.home.WitnessPin) {
+				return nil, &cp.Reason{Kind: cp.Unauthorized}
+			}
+			c, err := e.Connect(t.Context(), slot, h, s)
+			if err != nil {
+				return nil, err
+			}
+			return synchronizedClient{c, &delivery}, nil
+		},
+		RawSubmit: func(ctx context.Context, slot cp.Slot, key ed25519.PublicKey, op string, b, hs, ss []byte) (cp.Receipt, error) {
+			return endpoint(slot).RawSubmit(ctx, slot, key, op, b, hs, ss)
+		},
+	}
 }
 
 type synchronizedClient struct {

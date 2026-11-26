@@ -177,3 +177,49 @@ func TestReconcileAfterOrdinaryWindowFull(t *testing.T) {
 		t.Fatalf("reconcile limit: %v", err)
 	}
 }
+
+type pausedSubmit struct {
+	memoryWitness
+	entered, resume chan struct{}
+}
+
+func (w pausedSubmit) RawSubmit(ctx context.Context, s cp.Slot, key ed25519.PublicKey, op string, b, hs, ss []byte) (cp.Receipt, error) {
+	close(w.entered)
+	select {
+	case <-ctx.Done():
+		return cp.Receipt{}, ctx.Err()
+	case <-w.resume:
+		return w.Memory.RawSubmit(ctx, s, key, op, b, hs, ss)
+	}
+}
+
+// The independent owner route can fence a synchronous home submission
+// that has reached the witness but has not entered its commit transaction.
+func TestOwnerSettleWhileSubmitInFlight(t *testing.T) {
+	f := newFixture(t, "witness")
+	e, r := f.listener(t)
+	w := pausedSubmit{memoryWitness{f.w}, make(chan struct{}), make(chan struct{})}
+	startPolling(t, f.s, r, w)
+	ownerID := identity(t, "owner")
+	a, err := f.endpoint(testOwner(t, f.s, f.w, f.w.Administration(), ownerID.Fingerprint())).Administration(ownerID)
+	must(t, err)
+	s := f.enroll(t, a)
+	c, err := e.Connect(t.Context(), f.slot, f.home, f.session)
+	must(t, err)
+	q := cp.Claim{Mutation: cp.Mutation{ID: cp.ID{2}, Expected: s}, NewSessionPublicKey: public(f.session)}
+	result := make(chan error, 1)
+	go func() { _, err := c.Claim(t.Context(), q); result <- err }()
+	select {
+	case <-w.entered:
+	case err := <-result:
+		t.Fatalf("claim did not reach backend: %v", err)
+	}
+	_, settled := a.Settle(t.Context(), 1, f.slot, q.ID)
+	close(w.resume)
+	if !errors.Is(settled, cp.ErrNotApplied) {
+		t.Fatal(settled)
+	}
+	if err := <-result; !errors.Is(err, cp.ErrNotApplied) {
+		t.Fatalf("in-flight commit escaped fence: %v", err)
+	}
+}

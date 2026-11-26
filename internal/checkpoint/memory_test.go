@@ -24,9 +24,14 @@ func newMemoryHarness(t *testing.T, key ed25519.PrivateKey) (checkpointtest.Harn
 	if err != nil {
 		t.Fatal(err)
 	}
+	return harnessForMemory(w), w
+}
+
+func harnessForMemory(w *checkpoint.Memory) checkpointtest.Harness {
 	return checkpointtest.Harness{
-		Admin: w.Administration(), Grant: w.Grant, Connect: w.Connect, Revoke: w.Revoke,
+		Restart: func() checkpointtest.Harness { return harnessForMemory(w.ReopenForTest()) },
+		Admin:   w.Administration(), Grant: w.Grant, Connect: w.Connect, Revoke: w.Revoke,
 		Inhibit: w.Inhibit, LoseNextReply: w.LoseNextReply, SetReceiptLimit: w.SetReceiptLimit,
 		TransformNextReply: w.TransformNextReply, RawSubmit: w.RawSubmit,
-	}, w
+	}
 }
