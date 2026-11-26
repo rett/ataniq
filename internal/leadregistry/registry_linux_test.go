@@ -46,16 +46,24 @@ func TestCreateRequiresReadableParent(t *testing.T) {
 	if err := os.Chmod(parent, 0o300); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(parent, 0o700) })
+	t.Cleanup(func() {
+		if err := os.Chmod(parent, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
 	if f, err := os.Open(parent); err == nil {
-		f.Close()
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
 		t.Skip("process can bypass directory read permissions")
 	} else if !errors.Is(err, os.ErrPermission) {
 		t.Fatal(err)
 	}
 	r, err := Open(filepath.Join(parent, "registry"), Options{})
 	if r != nil {
-		r.Close()
+		if err := r.Close(); err != nil {
+			t.Error(err)
+		}
 	}
 	if !errors.Is(err, os.ErrPermission) {
 		t.Fatalf("create with unreadable parent: got %v, want permission error", err)

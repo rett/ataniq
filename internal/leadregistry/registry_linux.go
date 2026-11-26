@@ -154,7 +154,7 @@ func openDir(dir string) (int, error) {
 		if err != nil {
 			return -1, fmt.Errorf("leadregistry: open parent folder: %w", err)
 		}
-		defer unix.Close(pfd)
+		defer func() { _ = unix.Close(pfd) }()
 		name := filepath.Base(dir)
 		if err := unix.Mkdirat(pfd, name, 0o700); err != nil && err != unix.EEXIST {
 			return -1, fmt.Errorf("leadregistry: create folder: %w", err)
@@ -168,7 +168,7 @@ func openDir(dir string) (int, error) {
 			return -1, fmt.Errorf("leadregistry: chmod folder: %w", err)
 		}
 		if err := syncFD(pfd); err != nil {
-			unix.Close(fd)
+			_ = unix.Close(fd)
 			return -1, fmt.Errorf("leadregistry: sync parent folder: %w", err)
 		}
 	} else if err == unix.ELOOP || err == unix.ENOTDIR {
