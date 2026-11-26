@@ -237,6 +237,29 @@ func linkText(target string) string {
 	return q(target)
 }
 
+// stopDeparting runs both lists even if one of their commands fails. Keep
+// the journal in its current phase on failure so a retry repeats the stops
+// before the target's reload list can start any shared service again.
+func (s *Switcher) stopDeparting(ctx context.Context, t *txn) error {
+	var failures []string
+	host, err := s.hostStopList()
+	if err != nil {
+		failures = append(failures, "host stop list: "+describe(err))
+	} else {
+		failures = s.runStops(ctx, "host", host)
+	}
+	departing, err := s.fallback(ctx, t)
+	if err != nil {
+		failures = append(failures, "departing release: "+describe(err))
+	} else {
+		failures = append(failures, s.runStops(ctx, departing.id.Name, departing.stops)...)
+	}
+	if len(failures) > 0 {
+		return failf(CodeStopFailed, "rollback stops failed (%s); decisions stay inhibited", joinFailures(failures))
+	}
+	return nil
+}
+
 // activate is the activating phase: the links point at the new release
 // (made so again, and synced, when resumed), its reload list runs and it
 // must be healthy. A failure goes back (restoring), or stops the decision
@@ -257,6 +280,11 @@ func (s *Switcher) activate(ctx context.Context, t *txn) error {
 	}
 	if err := s.ensureLink("current", "releases/"+t.j.ID); err != nil {
 		return failf(CodeLinkFailed, "current: %s", q(err.Error()))
+	}
+	if !t.forward() {
+		if err := s.stopDeparting(ctx, t); err != nil {
+			return err
+		}
 	}
 	if err := s.reload(ctx, cand.reloads); err != nil {
 		return s.toRecovery(ctx, t, "reload", err)
@@ -509,6 +537,11 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 		return unresolved("current cannot be read", err)
 	}
 	if t.requalify && t.healthy() && !t.j.RequalifyFailed {
+		if !t.forward() && t.j.Result == ResultOK {
+			if err := s.stopDeparting(ctx, t); err != nil {
+				return unresolved("rollback stops before requalification", err)
+			}
+		}
 		if err := s.requalifyCurrent(ctx, t, cur, curOK); err != nil {
 			if errors.Is(err, errCrashed) {
 				return ExitFailed, false
