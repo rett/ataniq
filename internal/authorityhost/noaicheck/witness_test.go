@@ -91,3 +91,34 @@ func TestWitnessOtherUnitCommand(t *testing.T) {
 		t.Fatal("refused unrelated binary")
 	}
 }
+
+func TestWitnessHostEgress(t *testing.T) {
+	for _, tc := range []struct {
+		name, endpoint, grant, extra string
+		valid                        bool
+	}{
+		{"v4", "192.0.2.4:80", "192.0.2.4/32", "", true},
+		{"v6", "[2001:db8::5]:443", "2001:db8::5/128", "", true},
+		{"bare host", "192.0.2.4:80", "192.0.2.4", "", true},
+		{"subnet", "192.0.2.4:80", "192.0.2.0/24", "", false},
+		{"reset", "192.0.2.4:80", "", "", false},
+		{"wrong host", "192.0.2.4:80", "192.0.2.5/32", "", false},
+		{"extra grant", "192.0.2.4:80", "192.0.2.4/32", "IPAddressAllow=192.0.2.4", false},
+		{"extra key", "192.0.2.4:80", "192.0.2.4/32", "PrivateNetwork=no", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := cleanFixture(t)
+			f.file(WitnessConfig, "{\"home_endpoint\":\""+tc.endpoint+"\"}")
+			f.file(WitnessUnit+".d/egress.conf", "[Service]\nIPAddressAllow="+tc.grant+"\n")
+			if tc.extra != "" {
+				f.file(WitnessUnit+".d/another.conf", "[Service]\n"+tc.extra+"\n")
+			}
+			c := f.checker(testLists())
+			c.CheckUnits()
+			hits := c.Report().Hits
+			if tc.valid && len(hits) != 0 || !tc.valid && (len(hits) != 1 || hits[0].Detail != "witness-egress") {
+				t.Fatal(hits)
+			}
+		})
+	}
+}

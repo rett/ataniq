@@ -476,6 +476,7 @@ func (c *Checker) scanManager(m manager, scan func(files []string, m manager)) {
 // the root is a hit of kind "unit-link". An empty units.allow allows none;
 // with RequirePolicy it is also the hit "policy units.allow empty".
 func (c *Checker) CheckUnits() {
+	c.checkWitnessEgress()
 	if len(c.lists.UnitsAllow) == 0 && c.RequirePolicy {
 		c.notEnforced(FileUnitsAllow, DetailEmpty, "")
 	}

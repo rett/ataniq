@@ -52,7 +52,13 @@ IPAddressAllow=HOME_ADDRESS
 ```
 
 Configure `home_endpoint` as that literal address and decimal port, bracketing
-IPv6. Both `check` and `run` validate it locally. The owner verifies the live
+IPv6. Use the canonical address spelling and decimal port without leading
+zeros. Use a unicast destination outside loopback and link-local space.
+IPv4-mapped IPv6 addresses and zones are refused. Only the firewall restricts
+the TCP port. The host no-AI check and witness `check` read the owner’s unit
+drop-ins and compare their single `IPAddressAllow` to the configured address.
+After reload, inspect `systemctl show ataniq-witness.service -p IPAddressAllow`
+to confirm the effective setting. The owner verifies the live
 rules, their order and counters, then records the reviewed ruleset digest
 with the release baseline. No DNS allowance is needed.
 

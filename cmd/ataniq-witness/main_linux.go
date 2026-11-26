@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"ataniq/internal/authorityhost/noaicheck"
 	cp "ataniq/internal/checkpoint"
 	"ataniq/internal/checkpoint/durable"
 	"ataniq/internal/checkpoint/link"
@@ -24,12 +25,12 @@ const ownerUID = 0 // The owner administers this private socket locally as root.
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	code := run(ctx, "/", os.Args[1:], os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
 }
 
-func run(ctx context.Context, args []string, out, diag io.Writer) int {
+func run(ctx context.Context, hostRoot string, args []string, out, diag io.Writer) int {
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "help") {
 		fmt.Fprintln(out, usage)
 		return 0
@@ -44,7 +45,7 @@ func run(ctx context.Context, args []string, out, diag io.Writer) int {
 		fmt.Fprintln(diag, usage)
 		return 2
 	}
-	if err := execute(ctx, args[0], args[2], out); err != nil {
+	if err := execute(ctx, hostRoot, args[0], args[2], out); err != nil {
 		// OS and codec errors can contain paths or input. Only fixed diagnoses
 		// cross this boundary.
 		var storage durable.StorageError
@@ -55,7 +56,7 @@ func run(ctx context.Context, args []string, out, diag io.Writer) int {
 			fmt.Fprintln(diag, "witness store or socket already exists")
 		case errors.Is(err, cp.ErrUnknownOutcome):
 			fmt.Fprintln(diag, "witness outcome unknown; check signed status")
-		case errors.Is(err, errConfig), errors.Is(err, errFiles), errors.Is(err, errIdentity):
+		case errors.Is(err, errEgress), errors.Is(err, errConfig), errors.Is(err, errFiles), errors.Is(err, errIdentity):
 			fmt.Fprintln(diag, err)
 		default:
 			fmt.Fprintln(diag, "witness operation refused")
@@ -65,7 +66,7 @@ func run(ctx context.Context, args []string, out, diag io.Writer) int {
 	return 0
 }
 
-func execute(ctx context.Context, op, path string, out io.Writer) (retErr error) {
+func execute(ctx context.Context, hostRoot, op, path string, out io.Writer) (retErr error) {
 	c, store, err := loadConfig(path)
 	if err != nil {
 		return err
@@ -78,6 +79,11 @@ func execute(ctx context.Context, op, path string, out io.Writer) (retErr error)
 		return err
 	}
 	if op == "check" {
+		address, err := noaicheck.WitnessEgressAddress(hostRoot)
+		want, _ := noaicheck.WitnessHomeAddress(c.Home)
+		if err != nil || address.IsValid() && address != want {
+			return errEgress
+		}
 		if err := checkState(store.Directory); err != nil {
 			return err
 		}

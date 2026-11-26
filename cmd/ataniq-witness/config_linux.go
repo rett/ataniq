@@ -6,13 +6,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
 	"ataniq/internal/assignment"
+	"ataniq/internal/authorityhost/noaicheck"
 	cp "ataniq/internal/checkpoint"
 	"ataniq/internal/checkpoint/durable"
 	"ataniq/internal/checkpoint/link"
@@ -38,6 +38,7 @@ type config struct {
 }
 
 var (
+	errEgress   = errors.New("invalid witness egress drop-in")
 	errConfig   = errors.New("invalid witness configuration")
 	errFiles    = errors.New("unsafe or missing witness file or directory")
 	errIdentity = errors.New("witness identity or pin mismatch")
@@ -150,8 +151,7 @@ func loadConfig(path string) (config, durable.Config, error) {
 		return c, store, errConfig
 	}
 	// Use the same single numeric destination as the account's firewall rule.
-	home, err := netip.ParseAddrPort(c.Home)
-	if err != nil || home.Port() == 0 || home.Addr().Unmap().IsUnspecified() || home.Addr().IsMulticast() || home.Addr().Zone() != "" {
+	if _, ok := noaicheck.WitnessHomeAddress(c.Home); !ok {
 		return c, store, errConfig
 	}
 	store = durable.Config{Identity: c.Identity, Directory: c.State, KeyPath: c.Seed}

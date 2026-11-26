@@ -17,7 +17,8 @@ StateDirectory=ataniq-witness
 StateDirectoryMode=0700
 UMask=0077
 
-# The owner's drop-in allows the home address. nftables restricts the port.
+# IPAddressAllow grants the home address on every port. Only the owner's
+# nftables output rules restrict the witness to the configured TCP port.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 IPAddressDeny=any
 SocketBindDeny=any

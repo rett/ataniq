@@ -62,7 +62,7 @@ func writeConfig(t *testing.T, path string, c config) {
 func call(t *testing.T, path, op string, want int) string {
 	t.Helper()
 	var b bytes.Buffer
-	if code := run(t.Context(), []string{op, "--config", path}, &b, &b); code != want {
+	if code := run(t.Context(), filepath.Dir(path), []string{op, "--config", path}, &b, &b); code != want {
 		t.Fatalf("%s: exit %d, %s", op, code, &b)
 	}
 	return b.String()
@@ -203,7 +203,8 @@ func TestWitnessHomeFirewallEndpoint(t *testing.T) {
 		writeConfig(t, path, c)
 		call(t, path, "check", 0)
 	}
-	for _, addr := range []string{"*:7443", ":7443", "0.0.0.0:7443", "[::]:7443", "[::ffff:0.0.0.0]:7443",
+	for _, addr := range []string{"192.0.2.5:07443", "192.000.2.5:7443", "[2001:0db8::5]:7443", "[::ffff:192.0.2.4]:7443",
+		"255.255.255.255:7443", "0.1.2.3:7443", "127.0.0.1:7443", "[::1]:7443", "169.254.1.2:7443", "[fe80::1]:7443", "224.0.0.1:7443", "[ff02::1]:7443", "*:7443", ":7443", "0.0.0.0:7443", "[::]:7443", "[::ffff:0.0.0.0]:7443",
 		"HOME:7443", "192.0.2.5:https", "192.0.2.5:0", "192.0.2.5:65536", "192.0.2.0/24:7443", "[2001:db8::5%if]:7443"} {
 		c.Home = addr
 		writeConfig(t, path, c)
@@ -213,4 +214,17 @@ func TestWitnessHomeFirewallEndpoint(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestWitnessCheckEgress(t *testing.T) {
+	c, configPath := fixture(t)
+	call(t, configPath, "init", 0)
+	dir := filepath.Join(filepath.Dir(configPath), "etc/systemd/system/ataniq-witness.service.d")
+	must(t, os.MkdirAll(dir, 0755))
+	rule := filepath.Join(dir, "egress.conf")
+	must(t, os.WriteFile(rule, []byte("[Service]\nIPAddressAllow=192.0.2.4/32\n"), 0644))
+	call(t, configPath, "check", 0)
+	c.Home = "192.0.2.5:7443"
+	writeConfig(t, configPath, c)
+	call(t, configPath, "check", 1)
 }
