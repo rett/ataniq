@@ -98,3 +98,32 @@ func TestWitnessRestartPolicy(t *testing.T) {
 		t.Error("preflight refusal bypasses RestartPreventExitStatus")
 	}
 }
+
+func TestWitnessOverlayLists(t *testing.T) {
+	composed := notifySource(t)
+	for _, name := range []string{"validators.list", "reload.list", "stop.list", "health.cmd"} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join("share", name)
+			parent := string(mustRead(t, filepath.Join(composed, path)))
+			overlay := string(mustRead(t, filepath.Join(baseTree, "witness", path)))
+			if !strings.HasPrefix(overlay, "#") {
+				t.Error("missing overlay explanation")
+			}
+			var remaining []string
+			for line := range strings.Lines(parent) {
+				line = strings.TrimSpace(line)
+				if line != "" && !strings.HasPrefix(line, "#") {
+					remaining = append(remaining, line)
+				}
+			}
+			for line := range strings.Lines(overlay) {
+				if len(remaining) > 0 && strings.TrimSpace(line) == remaining[0] {
+					remaining = remaining[1:]
+				}
+			}
+			if len(remaining) > 0 {
+				t.Errorf("first missing or out-of-order command: %s", remaining[0])
+			}
+		})
+	}
+}
