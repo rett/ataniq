@@ -225,7 +225,7 @@ func TestCheckCoverage(t *testing.T) {
 		}, want: []string{"decision-exec: etc/systemd/system/ataniq-seat.service"}},
 		{name: "an ExecStart continued over two lines", mutate: func(t *testing.T, s string) {
 			replace(t, s, "etc/systemd/system/ataniq-seat.service", "ExecStart=/opt", "ExecStart=\\\n  /opt")
-		}},
+		}, want: []string{"unit-syntax: etc/systemd/system/ataniq-seat.service"}},
 		{name: "a unit gated on the inhibit", mutate: func(t *testing.T, s string) {
 			replace(t, s, "etc/systemd/system/ataniq-seat.service", "[Service]", "ConditionPathExists=!/var/lib/authority-host/decisions.inhibit\n\n[Service]")
 		}, want: []string{"inhibit-start-condition: etc/systemd/system/ataniq-seat.service"}},

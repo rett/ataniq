@@ -202,6 +202,10 @@ func (c *Checker) CheckRelease(dir string) error {
 			}
 		}
 		text := string(data)
+		if !UnitTextSafe(text) {
+			c.hit(KindUnit, at(p), UnitSyntax)
+			return
+		}
 		if !ReleaseExecsSafe(text, relDir, shipped) {
 			c.hit(KindUnit, at(e.rel), "decision-exec")
 		}

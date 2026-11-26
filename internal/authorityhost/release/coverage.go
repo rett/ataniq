@@ -115,8 +115,8 @@ func (c *checker) coverage(root *os.Root, m switcher.Manifest, id string, files 
 	if hasWitness != hasUnit {
 		c.add(CodeWitness, noaicheck.WitnessUnit)
 	}
-	units := c.units(root, files, relDir, hasWitness || hasUnit)
-	if !ok {
+	units, complete := c.units(root, files, relDir, hasWitness || hasUnit)
+	if !ok || !complete {
 		return
 	}
 
@@ -187,8 +187,9 @@ func excused(name string, units []unit, id string) bool {
 
 // units reads every file under etc/systemd and returns those that start a
 // program. It also reports a unit that gates its start on the inhibit.
-func (c *checker) units(root *os.Root, files map[string]entry, relDir string, witness bool) []unit {
+func (c *checker) units(root *os.Root, files map[string]entry, relDir string, witness bool) ([]unit, bool) {
 	var out []unit
+	complete := true
 	for _, p := range paths(files) {
 		if !strings.HasPrefix(p, systemdDir) {
 			continue
@@ -198,21 +199,27 @@ func (c *checker) units(root *os.Root, files map[string]entry, relDir string, wi
 			c.add(CodeUnitUnreadable, p)
 			continue
 		}
-		if strings.Contains(string(data), ReleasePlaceholder) {
+		text := string(data)
+		if !noaicheck.UnitTextSafe(text) {
+			c.add(noaicheck.UnitSyntax, p)
+			complete = false
+			continue
+		}
+		if strings.Contains(text, ReleasePlaceholder) {
 			// Not built by Build, which replaces it: systemd would run
 			// the words as they are.
 			c.add(CodeUnitPlacehold, p)
 		}
-		if !noaicheck.ReleaseExecsSafe(string(data), relDir, func(name string) bool {
+		if !noaicheck.ReleaseExecsSafe(text, relDir, func(name string) bool {
 			e, ok := files["bin/"+name]
 			return ok && e.nlink == 1 && e.mode&0o111 != 0
 		}) {
 			c.add(CodeDecisionExec, p)
 		}
-		if witness && !noaicheck.WitnessUnitSafe(p, string(data), relDir) {
+		if witness && !noaicheck.WitnessUnitSafe(p, text, relDir) {
 			c.add(CodeWitness, p)
 		}
-		execs, gated := parseUnit(string(data))
+		execs, gated := parseUnit(text)
 		if gated {
 			c.add(CodeInhibitCond, p)
 		}
@@ -221,7 +228,7 @@ func (c *checker) units(root *os.Root, files map[string]entry, relDir string, wi
 		}
 		out = append(out, unit{path: p, name: unitName(p), execs: execs})
 	}
-	return out
+	return out, complete
 }
 
 // unitName is the name of the unit a file under etc/systemd belongs to,
@@ -235,30 +242,12 @@ func unitName(p string) string {
 	return strings.TrimSuffix(base, ".service")
 }
 
-// parseUnit reads a unit file as systemd does, enough for this check: lines
-// joined at a trailing backslash, comments skipped, sections, and in
-// [Service] the ExecStart values (an empty one resets the list). gated is
-// true for a Condition or Assert line that names the decision inhibit.
+// parseUnit reads the physical lines of a unit that passed UnitTextSafe.
+// It collects ExecStart values and checks for conditions on the inhibit.
 func parseUnit(text string) (execs []string, gated bool) {
-	var joined []string
-	var cur string
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if cur != "" {
-			line = cur + " " + line
-			cur = ""
-		}
-		if strings.HasSuffix(line, `\`) {
-			cur = strings.TrimSpace(strings.TrimSuffix(line, `\`))
-			continue
-		}
-		joined = append(joined, line)
-	}
-	if cur != "" {
-		joined = append(joined, cur)
-	}
 	inService := false
-	for _, line := range joined {
+	for line := range strings.SplitSeq(text, "\n") {
+		line = strings.TrimSpace(line)
 		if line == "" || line[0] == '#' || line[0] == ';' {
 			continue
 		}

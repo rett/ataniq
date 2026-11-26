@@ -12,6 +12,7 @@ import (
 
 const witnessDropIns = WitnessUnit + ".d"
 
+var errUnitSyntax = errors.New(UnitSyntax)
 var errWitnessEgress = errors.New("invalid witness egress drop-in")
 
 // WitnessHomeAddress extracts the address of a canonical unicast TCP endpoint.
@@ -56,12 +57,17 @@ func (t *tree) scanWitnessDropIns(dir string, address *netip.Addr) (bool, error)
 			return false
 		}
 		found = true
-		_, data, err := t.readFile(e.rel, 64<<10)
+		p, data, err := t.readFile(e.rel, 64<<10)
 		if err != nil {
 			problem = err
 			return false
 		}
-		settings, ok := witnessSettings(string(data))
+		text := string(data)
+		if !UnitTextSafe(text) {
+			problem = &fs.PathError{Op: "check", Path: show(p), Err: errUnitSyntax}
+			return false
+		}
+		settings, ok := witnessSettings(text)
 		if ok && len(settings) == 0 {
 			return false
 		}
@@ -110,6 +116,11 @@ func (t *tree) witnessEgressAddress(liveRoot, expected, requireLoaded bool) (net
 func (c *Checker) checkWitnessEgress(requireLoaded bool) {
 	expected := c.witnessExpected()
 	address, err := c.t.witnessEgressAddress(c.rootAbs == "/", expected, requireLoaded)
+	var pe *fs.PathError
+	if errors.As(err, &pe) && errors.Is(err, errUnitSyntax) {
+		c.hit(KindUnit, pe.Path, UnitSyntax)
+		return
+	}
 	if err != nil {
 		c.hit(KindUnit, show(witnessDropIns), "witness-egress")
 		return

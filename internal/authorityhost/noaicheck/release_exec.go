@@ -4,7 +4,32 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
+
+// UnitSyntax is the finding for a unit or drop-in outside the supported text format.
+const UnitSyntax = "unit-syntax"
+
+// UnitTextSafe accepts UTF-8 physical lines with LF or CRLF endings.
+// Check comments too, before any parser can discard or join a directive.
+func UnitTextSafe(text string) bool {
+	for raw := range strings.Lines(text) {
+		line, ended := strings.CutSuffix(raw, "\n")
+		if ended {
+			line = strings.TrimSuffix(line, "\r")
+		}
+		if strings.HasSuffix(line, "\\") || !utf8.ValidString(line) {
+			return false
+		}
+		for _, r := range line {
+			if r != '\t' && unicode.IsControl(r) {
+				return false
+			}
+		}
+	}
+	return true
+}
 
 // ReleaseProgram maps a literal systemd executable word to its file in bin/.
 // The current link names this release when the unit is active. Strip only
@@ -32,7 +57,7 @@ func ReleaseExecsSafe(text, releaseDir string, shipped func(string) bool) bool {
 		return true
 	}
 	section := ""
-	for _, line := range logicalLines(text) {
+	for line := range strings.SplitSeq(text, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "[") {
 			section = line

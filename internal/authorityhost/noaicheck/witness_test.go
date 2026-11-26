@@ -300,3 +300,33 @@ func TestWitnessSystemctlQuery(t *testing.T) {
 		}
 	}
 }
+
+func TestWitnessUnitSyntax(t *testing.T) {
+	const unit = "etc/systemd/system/example.service"
+	for _, prefix := range []string{"Environment=LANG=C \\\n  # a comment\n  OPENAI_API_KEY=x\n", "# comment\\\n", "Description=example\\\n", "# comment\r", "# comment\x00", "# comment\x1b", "# comment\x7f", "# comment\u0085", "# comment\\\r\n"} {
+		for _, file := range []string{unit, unit + ".d/example.conf"} {
+			f := cleanFixture(t)
+			body := "[Service]\n" + prefix + "ExecStartPre=/opt/authority-host/current/bin/example\n"
+			f.exe(releaseDir + "/bin/example")
+			f.file(releaseDir+"/"+file, body)
+			c := f.checker(testLists())
+			if err := c.CheckRelease(f.abs(releaseDir)); err != nil {
+				t.Fatal(err)
+			}
+			want := Hit{KindUnit, "/" + releaseDir + "/" + file, "unit-syntax"}
+			if hits := c.Report().Hits; !slices.Equal(hits, []Hit{want}) {
+				t.Errorf("release %s with %q: got %v, want %v", file, prefix, hits, want)
+			}
+		}
+		f := cleanFixture(t)
+		file := witnessDropIns + "/egress.conf"
+		f.file(file, "[Service]\nIPAddressAllow=192.0.2.4\n"+prefix+"# end\n")
+		c := f.checker(testLists())
+		c.CheckEnv()
+		c.CheckUnits()
+		want := Hit{KindUnit, "/" + file, "unit-syntax"}
+		if hits := c.Report().Hits; !slices.Equal(hits, []Hit{want}) {
+			t.Errorf("host drop-in with %q: got %v, want %v", prefix, hits, want)
+		}
+	}
+}
