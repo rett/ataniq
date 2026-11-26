@@ -86,12 +86,31 @@ func decode(in io.Reader, pin ed25519.PublicKey) (record, [32]byte, error) {
 	return r, sha256.Sum256(sig), nil
 }
 
+// Read a signed genesis candidate and its empty-ack index entry through EOF.
+func (w *Witness) readGenesis(journal, index *os.File) (record, [32]byte, error) {
+	r, digest, err := decode(journal, w.pin)
+	if err != nil {
+		return r, digest, errors.Join(ErrPublication, err)
+	}
+	sig, err := readEntry(index, digest)
+	if err != nil || len(sig) != 0 {
+		return r, digest, errors.Join(ErrPublication, err)
+	}
+	for _, f := range []*os.File{journal, index} {
+		var extra [1]byte
+		if n, err := f.Read(extra[:]); n != 0 || err != io.EOF {
+			return r, digest, errors.Join(ErrPublication, err)
+		}
+	}
+	return r, digest, nil
+}
+
 // Prove both files end exactly at genesis before any recovery write or rename.
 // Comparing the canonical record covers every field, including both pins.
 func (w *Witness) verifyStagedGenesis(homeID string) error {
-	r, digest, err := decode(w.journal, w.pin)
+	r, digest, err := w.readGenesis(w.journal, w.lockFile)
 	if err != nil {
-		return errors.Join(ErrPublication, err)
+		return err
 	}
 	want := record{Seq: 1, Previous: hex.EncodeToString(w.previous[:]), Op: "create", Identity: &w.identity, HomeKeyID: homeID}
 	body, err := canonical(r)
@@ -104,16 +123,6 @@ func (w *Witness) verifyStagedGenesis(homeID string) error {
 	}
 	if !bytes.Equal(body, expected) {
 		return ErrPublication
-	}
-	sig, err := readEntry(w.lockFile, digest)
-	if err != nil || len(sig) != 0 {
-		return errors.Join(ErrPublication, err)
-	}
-	for _, f := range []*os.File{w.journal, w.lockFile} {
-		var extra [1]byte
-		if n, err := f.Read(extra[:]); n != 0 || err != io.EOF {
-			return errors.Join(ErrPublication, err)
-		}
 	}
 	if err := w.arm(); err != nil {
 		return err

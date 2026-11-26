@@ -9,8 +9,10 @@
 // A lone published file or interrupted publication has a distinct recovery
 // error. Create preserves these files. The local owner can CompletePublication
 // only with one unambiguous staged pair (or staged journal and published
-// index) matching the pinned signed genesis and exactly its index entry. The lock
-// file records each committed frame digest and its exact acknowledgement signature.
+// index) matching the pinned signed genesis and exactly its index entry. Under
+// the directory lock it reopens the published names and verifies both files
+// still refer to that same signed pair before returning the witness.
+// The lock file records each committed frame digest and its exact acknowledgement signature.
 // Losing a complete journal suffix alone is therefore detectable. Replay
 // verifies every frame, receipt and predecessor before serving. A complete
 // final transition left by a crash can finish its missing acknowledgement.

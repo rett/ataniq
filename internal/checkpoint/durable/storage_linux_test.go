@@ -903,6 +903,13 @@ func TestCompleteInterruptedPublication(t *testing.T) {
 	}
 	before := readFile(t, matches[0])
 	index := readFile(t, filepath.Join(c.Directory, lockName))
+	dir, err := os.Open(c.Directory)
+	must(t, err)
+	must(t, exclusive(dir))
+	if w, err := CompletePublication(c); w != nil || !errors.Is(err, ErrLocked) {
+		t.Fatalf("completion while directory locked: %v", err)
+	}
+	must(t, dir.Close())
 	w, err := CompletePublication(c)
 	must(t, err)
 	must(t, w.Close())
@@ -912,6 +919,38 @@ func TestCompleteInterruptedPublication(t *testing.T) {
 		t.Fatal("recovery changed genesis")
 	}
 }
+
+func TestCompletePublicationRechecksPublishedPair(t *testing.T) {
+	for _, name := range []string{journalName, lockName} {
+		for _, change := range []string{"replace", "truncate", "extend"} {
+			t.Run(name+"/"+change, func(t *testing.T) {
+				c := config(t, testKey("process"))
+				child(t, c, "published-"+lockName, 79)
+				w, err := start(c, completeStore, func(stage string) error {
+					if stage != "published-"+journalName {
+						return nil
+					}
+					path := filepath.Join(c.Directory, name)
+					switch change {
+					case "replace":
+						other := filepath.Join(c.Directory, "replacement")
+						must(t, os.WriteFile(other, readFile(t, path), 0600))
+						must(t, os.Rename(other, path))
+					case "truncate":
+						must(t, os.Truncate(path, 0))
+					case "extend":
+						must(t, os.WriteFile(path, append(readFile(t, path), 0), 0600))
+					}
+					return nil
+				})
+				if w != nil || !errors.Is(err, ErrPublication) {
+					t.Fatalf("completed after %s of %s: %v", change, name, err)
+				}
+			})
+		}
+	}
+}
+
 func TestPreserveAcknowledgedPublication(t *testing.T) {
 	for _, missing := range []string{lockName, journalName} {
 		t.Run(missing, func(t *testing.T) {
