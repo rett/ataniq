@@ -33,6 +33,7 @@ func (b Binding) valid() bool {
 type Phase string
 
 const (
+	PhaseReceiptDisputed Phase = "receipt-disputed"
 	PhaseFrozen          Phase = "frozen"
 	PhaseInventoried     Phase = "inventoried"
 	PhaseBeliefVerified  Phase = "belief-verified"
@@ -60,22 +61,23 @@ func (p Phase) precommit() bool {
 type Kind string
 
 const (
-	Seed           Kind = "Seed"
-	Freeze         Kind = "Freeze"
-	Inventory      Kind = "Inventory"
-	BeliefAccepted Kind = "BeliefAccepted"
-	Reserve        Kind = "Reserve"
-	FenceReceipt   Kind = "FenceReceipt"
-	Fenced         Kind = "Fenced"
-	Commit         Kind = "Commit"
-	ConfirmReceipt Kind = "ConfirmReceipt"
-	Open           Kind = "Open"
-	HoldStarted    Kind = "HoldStarted"
-	HoldReviewed   Kind = "HoldReviewed"
-	AbortPrepared  Kind = "AbortPrepared"
-	Aborted        Kind = "Aborted"
-	AbortedClosed  Kind = "AbortedClosed"
-	RollbackFreeze Kind = "RollbackFreeze"
+	Seed              Kind = "Seed"
+	Freeze            Kind = "Freeze"
+	Inventory         Kind = "Inventory"
+	BeliefAccepted    Kind = "BeliefAccepted"
+	Reserve           Kind = "Reserve"
+	ReceiptReconciled Kind = "ReceiptReconciled"
+	FenceReceipt      Kind = "FenceReceipt"
+	Fenced            Kind = "Fenced"
+	Commit            Kind = "Commit"
+	ConfirmReceipt    Kind = "ConfirmReceipt"
+	Open              Kind = "Open"
+	HoldStarted       Kind = "HoldStarted"
+	HoldReviewed      Kind = "HoldReviewed"
+	AbortPrepared     Kind = "AbortPrepared"
+	Aborted           Kind = "Aborted"
+	AbortedClosed     Kind = "AbortedClosed"
+	RollbackFreeze    Kind = "RollbackFreeze"
 )
 
 type Head struct {
@@ -128,12 +130,14 @@ type Transfer struct {
 	Inventory, Note, Belief, Decision Evidence
 	PreviewMismatch                   bool
 	Reservation, Committed            Head
-	Fences, Confirmations             []Evidence
+	Fences, Confirmations, Disputes   []Evidence
+	BeforeDispute                     Phase
 	Disposition                       string
 	Hold                              Hold
 }
 
 func (t Transfer) clone() Transfer {
+	t.Disputes = slices.Clone(t.Disputes)
 	t.Routes = slices.Clone(t.Routes)
 	t.Outstanding = slices.Clone(t.Outstanding)
 	t.Fences = slices.Clone(t.Fences)

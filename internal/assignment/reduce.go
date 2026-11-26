@@ -49,6 +49,9 @@ func reduce(r Row, t Transfer, c Command, digest string) (Row, Transfer, error) 
 	}
 	r.Head.Revision++
 	begin := c.Kind == Seed || c.Kind == Freeze || c.Kind == RollbackFreeze
+	if old.Phase == PhaseReceiptDisputed && c.Kind != ReceiptReconciled && c.Kind != FenceReceipt && c.Kind != ConfirmReceipt {
+		return r, t, ErrEvidence
+	}
 	if begin {
 		required := t.Routes
 		t = Transfer{ID: c.TransferID, Original: old, Predecessor: r.Holder,
@@ -111,7 +114,20 @@ func reduce(r Row, t Transfer, c Command, digest string) (Row, Transfer, error) 
 
 func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 	h := &r.Head
+	// A later report from the same issuer about an acknowledged route can
+	// arrive even after fencing or opening. Retain it before checking phase.
+	if c.Kind == FenceReceipt || c.Kind == ConfirmReceipt {
+		existing := t.Fences
+		if c.Kind == ConfirmReceipt {
+			existing = t.Confirmations
+		}
+		if found, err := t.dispute(h, p, existing); found || err != nil {
+			return err
+		}
+	}
 	switch c.Kind {
+	case ReceiptReconciled:
+		return t.reconcile(h, c, p)
 	case Inventory:
 		if !h.Phase.precommit() {
 			return ErrPhase
