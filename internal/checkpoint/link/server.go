@@ -225,7 +225,7 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 }
 
 func exactJSON(b []byte, out any) bool {
-	if json.Unmarshal(b, out) != nil {
+	if !decodeJSON(b, out) {
 		return false
 	}
 	encoded, err := json.Marshal(out)

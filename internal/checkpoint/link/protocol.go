@@ -43,10 +43,46 @@ func readBody(q cp.ReadRequest, wid, op string) ([]byte, error) {
 	}
 	return wire.Canonicalize(b)
 }
+
+// Bound nesting before encoding/json scans a field. Leave syntax and
+// canonical representation checks to the decoders.
+func decodeJSON(b []byte, dst any) bool {
+	depth := 0
+	quoted, escaped := false, false
+	for _, c := range b {
+		if quoted {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				quoted = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			quoted = true
+		case '[', '{':
+			depth++
+			if depth > 8 {
+				return false
+			}
+		case ']', '}':
+			depth--
+			if depth < 0 {
+				return false
+			}
+		}
+	}
+	return json.Unmarshal(b, dst) == nil
+}
+
 func parseRead(b []byte, wid, op string) (cp.ReadRequest, error) {
 	var r readRecord
 	var q cp.ReadRequest
-	if json.Unmarshal(b, &r) != nil || len(r.Challenge) != 64 || len(r.ReceiptID) != 64 {
+	if !decodeJSON(b, &r) || len(r.Challenge) != 64 || len(r.ReceiptID) != 64 {
 		return q, frame.ErrProtocol
 	}
 	q.Slot = r.Slot

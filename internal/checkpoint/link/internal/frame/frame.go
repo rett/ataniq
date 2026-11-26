@@ -2,6 +2,7 @@
 package frame
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -92,7 +93,7 @@ func ReadMessage(r io.Reader) (Message, error) {
 		if uint64(n) > uint64(len(b)) {
 			return Message{}, ErrProtocol
 		}
-		m.Fields[i], b = b[:n], b[n:]
+		m.Fields[i], b = bytes.Clone(b[:n]), b[n:]
 	}
 	if len(b) != 0 {
 		return Message{}, ErrProtocol
