@@ -23,14 +23,17 @@ type StorageError string
 func (e StorageError) Error() string { return "durable witness: " + string(e) }
 
 const (
-	ErrUnsafe   StorageError = "unsafe path, ownership or permissions"
-	ErrLocked   StorageError = "already locked"
-	ErrIdentity StorageError = "identity or signing key mismatch"
-	ErrCorrupt  StorageError = "corrupt journal or receipt index"
-	ErrTorn     StorageError = "incomplete journal or receipt index"
+	ErrNotInitialized StorageError = "not initialised"
+	ErrPoisoned       StorageError = "storage error requires owner check"
+	ErrUnsafe         StorageError = "unsafe path, ownership or permissions"
+	ErrLocked         StorageError = "already locked"
+	ErrIdentity       StorageError = "identity or signing key mismatch"
+	ErrCorrupt        StorageError = "corrupt journal or receipt index"
+	ErrTorn           StorageError = "incomplete journal or receipt index"
 )
 
-// CapacityError reports which per-store history allowance was exhausted.
+// CapacityError reports the exhausted history allowance. A zero Limit indicates
+// that the filesystem could not reserve space for the transition.
 type CapacityError struct{ Limit uint64 }
 
 func (*CapacityError) Error() string { return "durable witness: history capacity exhausted" }
@@ -77,24 +80,29 @@ type enrollment struct {
 
 // Witness owns the files and the serialized transaction and replay indexes.
 type Witness struct {
-	transaction                chan struct{}
-	dir, journal, lockFile     *os.File
-	identity                   Identity
-	pin, homePin               ed25519.PublicKey
-	keyID                      string
-	signRecord                 func([]byte) []byte
-	sign                       func([]byte) ([]byte, error)
-	seq                        uint64
-	previous                   [32]byte
-	limit, reservedSettlements uint64
-	inhibited, stopped         bool
-	slots                      map[cp.Slot]*enrollment
-	history                    map[item]accepted // a zero receipt denotes a permanent Settle fence
-	grants                     map[cp.Slot]bool
-	fault                      func(string) error
-	writeFrame                 func([]byte) (int, error)
-	syncFile                   func(*os.File) error
-	armed, recoveryRequired    bool
+	transaction                     chan struct{}
+	dir, journal, lockFile, keyFile *os.File
+	identity                        Identity
+	pin, homePin                    ed25519.PublicKey
+	stagingPrefix                   string // nonempty only until Create publishes the pair
+	keyID                           string
+	signRecord                      func([]byte) []byte
+	sign                            func([]byte) ([]byte, error)
+	seq                             uint64
+	previous                        [32]byte
+	limit, reservedSettlements      uint64
+	inhibited, stopped              bool
+	slots                           map[cp.Slot]*enrollment
+	history                         map[item]accepted // a zero receipt denotes a permanent Settle fence
+	grants                          map[cp.Slot]bool
+	fault                           func(string) error
+	closingRecords                  int64 // one retirement per live slot and one release per active writer
+	journalSpace, indexSpace        int64 // ends of ranges reserved on these descriptors
+	allocate                        func(*os.File, int64, int64) error
+	writeEntry                      func([]byte) (int, error)
+	writeFrame                      func([]byte) (int, error)
+	syncFile                        func(*os.File) error
+	armed, recoveryRequired         bool
 }
 
 // Create exclusively initializes both files. A failed creation leaves its
@@ -120,7 +128,17 @@ func start(c Config, create bool) (*Witness, error) {
 	if err != nil || bytes.Equal(c.HomePin, c.Pin) {
 		return nil, ErrIdentity
 	}
-	key, err := loadKey(c.KeyPath)
+	keyFile, err := openKey(c.KeyPath)
+	if err != nil {
+		return nil, err
+	}
+	// Transfer the descriptor to the witness only on successful startup.
+	defer func() {
+		if keyFile != nil {
+			keyFile.Close()
+		}
+	}()
+	key, err := readKey(keyFile)
 	if err != nil {
 		return nil, err
 	}
@@ -146,12 +164,6 @@ func start(c Config, create bool) (*Witness, error) {
 	if w.limit == 0 {
 		w.limit = maxReceipts
 	}
-	var probe [32]byte
-	rand.Read(probe[:])
-	sig, err := w.SignDisposition(context.Background(), probe, "startup-probe")
-	if err != nil || !cp.VerifyDisposition(c.Pin, id.Epoch, probe, "startup-probe", sig) {
-		return nil, ErrIdentity
-	}
 	w.dir, err = directory(c.Directory, true)
 	if err != nil {
 		return nil, err
@@ -163,36 +175,35 @@ func start(c Config, create bool) (*Witness, error) {
 			w.Close()
 		}
 	}()
-	flags := syscall.O_RDWR | syscall.O_APPEND
-	if create {
-		flags |= syscall.O_CREAT | syscall.O_EXCL
-	}
-	w.lockFile, err = openFile(w.dir, lockName, flags)
-	if err != nil {
-		return nil, err
-	}
-	if err = syscall.Flock(int(w.lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, ErrLocked
-		}
-		return nil, err
-	}
-	w.journal, err = openFile(w.dir, journalName, flags)
-	if err != nil {
+	if err = w.openPair(create, keyFile); err != nil {
 		return nil, err
 	}
 	w.writeFrame = w.journal.Write
+	w.writeEntry = w.lockFile.Write
+	w.allocate = keepSize
 	if create {
 		if err = w.arm(); err != nil {
 			return nil, err
 		}
 		_, err = w.commit(record{Seq: 1, Identity: &id, HomeKeyID: homeID, Op: "create"}, change{})
 	} else {
-		err = w.replay(homeID)
+		err = w.replay(homeID, w.journal, w.lockFile)
 	}
 	if err != nil {
 		return nil, err
 	}
+	var probe [32]byte
+	rand.Read(probe[:])
+	sig, err := w.SignDisposition(context.Background(), probe, "startup-probe")
+	if err != nil || !cp.VerifyDisposition(c.Pin, id.Epoch, probe, "startup-probe", sig) {
+		return nil, ErrIdentity
+	}
+	if create {
+		if err = w.publishPair(); err != nil {
+			return nil, err
+		}
+	}
+	w.keyFile, keyFile = keyFile, nil
 	ok = true
 	return w, nil
 }
@@ -213,14 +224,16 @@ func (w *Witness) Close() error {
 		if err = w.lockFile.Sync(); err == nil {
 			err = syscall.Unlinkat(int(w.dir.Fd()), recoveryName)
 			// A lost unlink after a crash conservatively requires acknowledgement again.
+		} else {
+			err = w.poison(err)
 		}
 	}
-	for _, f := range []*os.File{w.lockFile, w.dir} {
+	for _, f := range []*os.File{w.lockFile, w.dir, w.keyFile} {
 		if f != nil {
 			err = errors.Join(err, f.Close())
 		}
 	}
-	w.dir, w.lockFile, w.journal = nil, nil, nil
+	w.dir, w.lockFile, w.journal, w.keyFile = nil, nil, nil, nil
 	w.armed = false
 	w.sign, w.signRecord, w.writeFrame = nil, nil, nil
 	return err

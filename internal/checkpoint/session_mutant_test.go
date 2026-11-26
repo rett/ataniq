@@ -54,3 +54,13 @@ func TestOverlappingSessionMutants(t *testing.T) {
 		})
 	}
 }
+
+func TestRestartClaimHistoryMutant(t *testing.T) {
+	rejectMemoryMutant(t, "session_claim_history", "restart accepted released session", func(h *checkpointtest.Harness, w *cp.Memory) {
+		var slot cp.Slot
+		grant := h.Grant
+		h.Grant = func(s cp.Slot, k ed25519.PublicKey, write bool) error { slot = s; return grant(s, k, write) }
+		restart := h.Restart
+		h.Restart = func() checkpointtest.Harness { w.KeepLastClaim(slot); return restart() }
+	})
+}

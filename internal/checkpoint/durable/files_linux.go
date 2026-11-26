@@ -2,17 +2,43 @@ package durable
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 const journalName = "journal.v1"
 const lockName = "witness.lock"
+const poisonName = "poisoned"
 const recoveryName = "recovery.pending"
+
+// A device reporting a writeback error may also fail to persist this marker.
+// Open therefore proves the tail again even when there is no marker.
+func (w *Witness) poison(cause error) error {
+	w.stopped = true
+	marker, err := openFile(w.dir, poisonName, syscall.O_RDWR|syscall.O_CREAT|syscall.O_EXCL)
+	if err == nil {
+		err = errors.Join(marker.Sync(), marker.Close(), w.dir.Sync())
+	}
+	return errors.Join(cause, err)
+}
+
+func (w *Witness) checkPoison() error {
+	marker, err := openFile(w.dir, poisonName, syscall.O_RDONLY)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return errors.Join(ErrPoisoned, marker.Close())
+}
 
 // Persist the marker before any journal write or replay sync. A failed device
 // may be unable to record that it failed. The lock serializes marker ownership.
@@ -29,10 +55,10 @@ func (w *Witness) arm() error {
 		return err
 	}
 	if err := errors.Join(marker.Sync(), marker.Close()); err != nil {
-		return err
+		return w.poison(err)
 	}
 	if err := w.dir.Sync(); err != nil {
-		return err
+		return w.poison(err)
 	}
 	w.armed = true
 	return nil
@@ -106,6 +132,12 @@ func openFile(dir *os.File, name string, flags int) (*os.File, error) {
 		return nil, err
 	}
 	f := os.NewFile(uintptr(fd), name)
+	if flags&(syscall.O_CREAT|syscall.O_EXCL) == syscall.O_CREAT|syscall.O_EXCL {
+		if err := f.Chmod(0600); err != nil {
+			f.Close()
+			return nil, err
+		}
+	}
 	if err := inspect(f, false); err != nil {
 		f.Close()
 		return nil, err
@@ -113,7 +145,7 @@ func openFile(dir *os.File, name string, flags int) (*os.File, error) {
 	return f, nil
 }
 
-func loadKey(path string) (ed25519.PrivateKey, error) {
+func openKey(path string) (*os.File, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return nil, ErrUnsafe
 	}
@@ -122,11 +154,10 @@ func loadKey(path string) (ed25519.PrivateKey, error) {
 		return nil, err
 	}
 	defer dir.Close()
-	key, err := openFile(dir, filepath.Base(path), syscall.O_RDONLY)
-	if err != nil {
-		return nil, err
-	}
-	defer key.Close()
+	return openFile(dir, filepath.Base(path), syscall.O_RDONLY)
+}
+
+func readKey(key *os.File) (ed25519.PrivateKey, error) {
 	seed, err := io.ReadAll(io.LimitReader(key, ed25519.SeedSize+1))
 	defer clear(seed)
 	if err != nil {
@@ -136,4 +167,83 @@ func loadKey(path string) (ed25519.PrivateKey, error) {
 		return nil, ErrIdentity
 	}
 	return ed25519.NewKeyFromSeed(seed), nil
+}
+
+func exclusive(file *os.File) error {
+	err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if errors.Is(err, syscall.EWOULDBLOCK) {
+		return ErrLocked
+	}
+	return err
+}
+
+// Look for the published names before an opener takes the directory lock.
+// A restart loop on an empty directory must never exclude its creator.
+func (w *Witness) openPair(create bool, key *os.File) error {
+	fd := int(w.dir.Fd())
+	if create {
+		if err := exclusive(w.dir); err != nil {
+			return err
+		}
+	}
+	for _, name := range []string{lockName, journalName} {
+		var st unix.Stat_t
+		err := unix.Fstatat(fd, name, &st, unix.AT_SYMLINK_NOFOLLOW)
+		if errors.Is(err, os.ErrNotExist) {
+			if create {
+				continue
+			}
+			return errors.Join(ErrNotInitialized, err)
+		}
+		if err != nil {
+			return err
+		}
+		if create {
+			return os.ErrExist
+		}
+	}
+	if !create {
+		if err := exclusive(w.dir); err != nil {
+			return err
+		}
+	}
+	if err := exclusive(key); err != nil {
+		return err
+	}
+	if err := w.checkPoison(); err != nil {
+		return err
+	}
+	flags := syscall.O_RDWR | syscall.O_APPEND
+	if create {
+		w.stagingPrefix = ".create-" + rand.Text() + "-"
+		flags |= syscall.O_CREAT | syscall.O_EXCL
+	}
+	var err error
+	w.lockFile, err = openFile(w.dir, w.stagingPrefix+lockName, flags)
+	if err != nil {
+		return err
+	}
+	// Keep the index flock for compatibility with existing directory users.
+	if err = exclusive(w.lockFile); err != nil {
+		return err
+	}
+	w.journal, err = openFile(w.dir, w.stagingPrefix+journalName, flags)
+	return err
+}
+
+// Genesis and its index entry have both passed their sync barriers. Publish
+// the already locked index first. The journal rename makes the pair visible.
+// RENAME_NOREPLACE also protects against an existing name at publication.
+func (w *Witness) publishPair() error {
+	fd := int(w.dir.Fd())
+	for _, name := range []string{lockName, journalName} {
+		if err := unix.Renameat2(fd, w.stagingPrefix+name, fd, name, unix.RENAME_NOREPLACE); err != nil {
+			return err
+		}
+	}
+	w.stagingPrefix = ""
+	if err := w.dir.Sync(); err != nil {
+		return w.poison(err)
+	}
+	return nil
 }

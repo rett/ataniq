@@ -335,6 +335,7 @@ func successor(q cp.Intent, m cp.Mutation, e *enrollment, session ed25519.Public
 }
 
 func (w *Witness) apply(r record, c change, sig []byte) cp.Receipt {
+	w.closingRecords += w.closingDelta(r, c)
 	if r.Op == "create" {
 		return cp.Receipt{}
 	}

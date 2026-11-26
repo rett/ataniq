@@ -253,7 +253,11 @@ func (w *Memory) read(q ReadRequest, e *enrollment, pin ed25519.PublicKey) (View
 	if w.inhibited {
 		guard = "inhibited"
 	}
-	b, err := readBody(w.keyID, q, v, guard)
+	read, err := expectedRead(w.keyID, q, v, guard)
+	if err != nil {
+		return View{}, err
+	}
+	b, err := encode(read)
 	if err != nil {
 		return View{}, err
 	}

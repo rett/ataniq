@@ -4,12 +4,20 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"syscall"
 	"testing"
+	"testing/iotest"
+	"time"
 
 	"ataniq/internal/assignment"
 	cp "ataniq/internal/checkpoint"
@@ -72,12 +80,16 @@ func TestWitnessChild(t *testing.T) {
 	must(t, err)
 	q := fixtureEnrollment(t, w)
 	w.fault = func(s string) error {
-		if s == stage {
+		if s == strings.TrimPrefix(stage, "settle-") {
 			os.Exit(79)
 		}
 		return nil
 	}
-	_, err = w.Administration().Enroll(t.Context(), q)
+	if strings.HasPrefix(stage, "settle-") {
+		_, err = w.Administration().Settle(t.Context(), 1, q.Slot, q.ID)
+	} else {
+		_, err = w.Administration().Enroll(t.Context(), q)
+	}
 	t.Fatalf("process missed boundary %s: %v", stage, err)
 }
 func child(t *testing.T, c Config, stage string, want int) {
@@ -156,6 +168,7 @@ func TestSyncFailureStopsServing(t *testing.T) {
 	}
 	w.journal = nil // closed by fault injection
 	must(t, w.Close())
+	requirePoison(t, c)
 	again := reopen(t, c)
 	original, err := again.Administration().Settle(t.Context(), 1, q.Slot, q.ID)
 	must(t, err)
@@ -236,12 +249,16 @@ func TestJournalStorageFaults(t *testing.T) {
 				t.Fatal("poisoned handle acknowledged", err)
 			}
 			must(t, w.Close())
+			requirePoison(t, c)
 			if site == 0 {
-				if _, err := Open(c); !errors.Is(err, ErrTorn) {
-					t.Fatal("accepted partial frame", err)
+				if !bytes.Equal(readFile(t, path), before) {
+					t.Fatal("short write left a partial journal frame")
 				}
-				if !bytes.Equal(readFile(t, path), append(before, partial...)) {
-					t.Fatal("partial write evidence changed")
+				again := reopen(t, c)
+				found, err := again.HasReceipt(t.Context(), q.Slot, q.ID)
+				must(t, err)
+				if found {
+					t.Fatal("rolled back write became a receipt")
 				}
 				return
 			}
@@ -282,6 +299,8 @@ func TestRefuseDamagedFiles(t *testing.T) {
 	must(t, w.Close())
 	original, anchors := readFile(t, journal), readFile(t, lock)
 	swapped := bytes.Join([][]byte{original[:genesis], original[enrolled:], original[genesis:enrolled]}, nil)
+	middleLength := bytes.Clone(original)
+	binary.BigEndian.PutUint32(middleLength[genesis:], maxRecord)
 	damagedSig := bytes.Clone(original)
 	damagedSig[len(damagedSig)-1] ^= 0x80
 	wrongReceipt := bytes.Clone(anchors)
@@ -291,8 +310,12 @@ func TestRefuseDamagedFiles(t *testing.T) {
 		frames, entries []byte
 		want            error
 	}{
-		{"empty", nil, anchors, ErrTorn}, {"short prefix", original[:2], anchors, ErrTorn},
-		{"partial frame", original[:len(original)-1], anchors, ErrTorn}, {"whole frame removed", original[:enrolled], anchors, ErrTorn},
+		{"empty", nil, anchors, ErrCorrupt}, {"short prefix", original[:2], anchors, ErrCorrupt},
+		{"middle length", middleLength, anchors, ErrCorrupt},
+		{"zero tail", append(bytes.Clone(original), make([]byte, 8192)...), anchors, ErrTorn},
+		{"nonzero after zeros", append(append(bytes.Clone(original), make([]byte, 8192)...), 1), anchors, ErrCorrupt},
+		{"unindexed partial frame", original[:len(original)-1], anchors[:len(anchors)-34], ErrTorn},
+		{"partial frame", original[:len(original)-1], anchors, ErrCorrupt}, {"whole frame removed", original[:enrolled], anchors, ErrCorrupt},
 		{"changed signature", damagedSig, anchors, ErrCorrupt}, {"receipt signature", original, wrongReceipt, ErrCorrupt},
 		{"duplicated frame", append(bytes.Clone(original), original[enrolled:]...), anchors, ErrCorrupt},
 		{"reordered frames", swapped, anchors, ErrCorrupt}, {"partial entry", original, anchors[:len(anchors)-1], ErrTorn},
@@ -622,4 +645,229 @@ func TestHomePinAndOwnerAllowance(t *testing.T) {
 	must(t, err)
 	_, err = w.Administration().Retire(t.Context(), cp.Retirement{Mutation: cp.Mutation{Expected: v.Current, ID: cp.ID{10}}, DispositionDigest: v.Current.Head.Digest})
 	must(t, err)
+}
+
+func requirePoison(t *testing.T, c Config) {
+	t.Helper()
+	if w, err := Open(c); err == nil {
+		w.Close()
+		t.Fatal("Open served after reported I/O error")
+	} else if !errors.Is(err, ErrPoisoned) {
+		t.Fatal("missing typed storage refusal", err)
+	}
+	must(t, os.Remove(filepath.Join(c.Directory, "poisoned")))
+}
+
+func TestOpenRewritesTails(t *testing.T) {
+	c := config(t, testKey("rewrite"))
+	w := create(t, c)
+	must(t, w.Close())
+	stale := time.Unix(946684800, 0)
+	for _, name := range []string{journalName, lockName} {
+		path := filepath.Join(c.Directory, name)
+		must(t, os.Chtimes(path, stale, stale))
+	}
+	reopen(t, c)
+	for _, name := range []string{journalName, lockName} {
+		info, err := os.Stat(filepath.Join(c.Directory, name))
+		must(t, err)
+		if info.ModTime().Equal(stale) {
+			t.Errorf("Open did not rewrite %s", name)
+		}
+	}
+}
+
+func TestReserveBeforeAppend(t *testing.T) {
+	c := config(t, testKey("blocks"))
+	w := create(t, c)
+	q := fixtureEnrollment(t, w)
+	receipt, err := w.Administration().Enroll(t.Context(), q)
+	must(t, err)
+	ack, err := cp.VerifyReceipt(c.Pin, receipt)
+	must(t, err)
+	before := readFile(t, filepath.Join(c.Directory, journalName))
+	w.allocate = func(*os.File, int64, int64) error { return syscall.EDQUOT }
+	_, err = w.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{7})
+	var capacity *CapacityError
+	if !errors.As(err, &capacity) || !errors.Is(err, syscall.EDQUOT) || !bytes.Equal(before, readFile(t, filepath.Join(c.Directory, journalName))) {
+		t.Fatal("quota did not refuse before append", err)
+	}
+	_, err = w.Administration().Retire(t.Context(), cp.Retirement{Mutation: cp.Mutation{ID: cp.ID{8}, Expected: ack.State}, DispositionDigest: ack.State.Head.Digest})
+	must(t, err)
+}
+
+func TestShortIndexWrite(t *testing.T) {
+	c := config(t, testKey("index"))
+	w := create(t, c)
+	q := fixtureEnrollment(t, w)
+	path := filepath.Join(c.Directory, lockName)
+	before := readFile(t, path)
+	w.writeEntry = func(entry []byte) (int, error) { return w.lockFile.Write(entry[:7]) }
+	_, err := w.Administration().Enroll(t.Context(), q)
+	if !errors.Is(err, cp.ErrUnknownOutcome) || !bytes.Equal(before, readFile(t, path)) {
+		t.Fatal("partial index after short write", err)
+	}
+	must(t, w.Close())
+	requirePoison(t, c)
+	again := reopen(t, c)
+	_, err = again.Administration().Settle(t.Context(), 1, q.Slot, q.ID)
+	must(t, err)
+}
+
+func TestReadSignsDirectoryPositionAfterFence(t *testing.T) {
+	c := config(t, testKey("read head"))
+	w := create(t, c)
+	q := fixtureEnrollment(t, w)
+	_, err := w.Administration().Enroll(t.Context(), q)
+	must(t, err)
+	request := cp.ReadRequest{Slot: q.Slot, Challenge: cp.ID{11}}
+	before, err := w.Administration().Read(t.Context(), request)
+	must(t, err)
+	_, err = w.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{12})
+	if !errors.Is(err, cp.ErrNotApplied) {
+		t.Fatal(err)
+	}
+	after, err := w.ReadHome(t.Context(), request, q.HomePublicKey)
+	must(t, err)
+	must(t, cp.VerifyView(c.Pin, request, after))
+	var head struct {
+		Seq    uint64 `json:"journal_sequence,string"`
+		Digest string `json:"previous_digest"`
+	}
+	must(t, json.Unmarshal(after.Fresh.Body, &head))
+	if before.Current != after.Current || bytes.Equal(before.Fresh.Body, after.Fresh.Body) || head.Seq != w.seq || head.Digest != hex.EncodeToString(w.previous[:]) {
+		t.Fatalf("missing signed directory position after fence: %+v", head)
+	}
+}
+
+func TestCopiedStoreWithSameKeyFile(t *testing.T) {
+	c := config(t, testKey("shared file"))
+	original := create(t, c)
+	copyConfig := c
+	copyConfig.Directory = t.TempDir()
+	must(t, os.Chmod(copyConfig.Directory, 0700))
+	for _, name := range []string{journalName, lockName} {
+		must(t, os.WriteFile(filepath.Join(copyConfig.Directory, name), readFile(t, filepath.Join(c.Directory, name)), 0600))
+	}
+	if other, err := Open(copyConfig); !errors.Is(err, ErrLocked) {
+		if other != nil {
+			other.Close()
+		}
+		t.Fatal("copy served concurrently with same key file", err)
+	}
+	must(t, original.Close())
+	reopen(t, copyConfig)
+}
+
+func TestSettleCrashBoundaries(t *testing.T) {
+	for _, stage := range []string{"before-append", "appended", "journal-synced", "directory-synced", "receipt-appended", "receipt-synced", "receipt-directory-synced"} {
+		t.Run(stage, func(t *testing.T) {
+			c := config(t, testKey("process"))
+			w := create(t, c)
+			must(t, w.Close())
+			child(t, c, "settle-"+stage, 79)
+			w = reopen(t, c)
+			q := fixtureEnrollment(t, w)
+			must(t, w.Administration().AcknowledgeStorageError(t.Context()))
+			_, err := w.Administration().Enroll(t.Context(), q)
+			if stage == "before-append" {
+				must(t, err)
+			} else if !errors.Is(err, cp.ErrNotApplied) {
+				t.Fatal("lost fence after restart", err)
+			}
+		})
+	}
+}
+func TestSettleSyncBarrier(t *testing.T) {
+	w := create(t, config(t, testKey("settle sync")))
+	q := fixtureEnrollment(t, w)
+	var last string
+	w.fault = func(s string) error { last = s; return nil }
+	_, err := w.Administration().Settle(t.Context(), 1, q.Slot, q.ID)
+	if !errors.Is(err, cp.ErrNotApplied) || last != "receipt-directory-synced" {
+		t.Fatalf("settlement returned at %q: %v", last, err)
+	}
+}
+
+func TestCreateOwnerUmask(t *testing.T) {
+	c := config(t, testKey("umask"))
+	old := syscall.Umask(0777)
+	defer syscall.Umask(old)
+	w := create(t, c)
+	must(t, w.Close())
+	reopen(t, c)
+}
+
+func TestHalfMadeStore(t *testing.T) {
+	for _, present := range []string{"", journalName, lockName} {
+		t.Run("only "+present, func(t *testing.T) {
+			c := config(t, testKey("half made"))
+			if present != "" {
+				must(t, os.WriteFile(filepath.Join(c.Directory, present), nil, 0600))
+			}
+			if _, err := Open(c); !errors.Is(err, ErrNotInitialized) {
+				t.Fatalf("Open: %v", err)
+			}
+		})
+	}
+}
+
+func TestConcurrentOpenDuringCreate(t *testing.T) {
+	c := config(t, testKey("provisioning"))
+	var wg sync.WaitGroup
+	ready := make(chan struct{}, 8)
+	stop := make(chan struct{})
+	for range cap(ready) {
+		wg.Go(func() {
+			ready <- struct{}{}
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				other, err := Open(c)
+				if other != nil {
+					other.Close()
+					t.Error("opened unpublished store")
+					return
+				}
+				if !errors.Is(err, ErrNotInitialized) && !errors.Is(err, ErrLocked) {
+					t.Errorf("Open: %v", err)
+					return
+				}
+			}
+		})
+	}
+	for range cap(ready) {
+		<-ready
+	}
+	w, err := Create(c)
+	close(stop)
+	wg.Wait()
+	must(t, err)
+	must(t, w.Close())
+	reopen(t, c)
+}
+
+func TestReplayReadErrorBetweenFrames(t *testing.T) {
+	c := config(t, testKey("read error"))
+	w := create(t, c)
+	q := fixtureEnrollment(t, w)
+	path := filepath.Join(c.Directory, journalName)
+	genesis := len(readFile(t, path))
+	_, err := w.Administration().Enroll(t.Context(), q)
+	must(t, err)
+	frames := readFile(t, path)
+	// The first underlying read supplies exactly genesis. Lookahead then
+	// sees one transient error before the reader can continue with Enroll.
+	input := io.MultiReader(iotest.TimeoutReader(bytes.NewReader(frames[:genesis])), bytes.NewReader(frames[genesis:]))
+	entries := bytes.NewReader(readFile(t, filepath.Join(c.Directory, lockName)))
+	fresh := &Witness{dir: w.dir, journal: w.journal, lockFile: w.lockFile, pin: w.pin, homePin: w.homePin, keyID: w.keyID, identity: w.identity,
+		slots: make(map[cp.Slot]*enrollment), history: make(map[item]accepted), syncFile: (*os.File).Sync}
+	homeID, err := cp.KeyID(c.HomePin)
+	must(t, err)
+	if err = fresh.replay(homeID, input, entries); !errors.Is(err, iotest.ErrTimeout) {
+		t.Fatalf("replay lost read error: %v", err)
+	}
 }
