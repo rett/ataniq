@@ -70,6 +70,15 @@ func TestWitnessChild(t *testing.T) {
 	}
 	root := os.Getenv(childDirectory)
 	c := Config{HomePin: public(testKey("fixture home")), Directory: root, KeyPath: filepath.Join(filepath.Dir(root), "key"), Pin: public(testKey("process")), Identity: Identity{"witness", "store", "incarnation", 1}}
+	if stage == "published-"+lockName {
+		_, err := start(c, createStore, func(s string) error {
+			if s == stage {
+				os.Exit(79)
+			}
+			return nil
+		})
+		t.Fatalf("missed publication boundary: %v", err)
+	}
 	w, err := Open(c)
 	if stage == "compete" {
 		if !errors.Is(err, ErrLocked) {
@@ -805,7 +814,14 @@ func TestHalfMadeStore(t *testing.T) {
 			if present != "" {
 				must(t, os.WriteFile(filepath.Join(c.Directory, present), nil, 0600))
 			}
-			if _, err := Open(c); !errors.Is(err, ErrNotInitialized) {
+			want := ErrNotInitialized
+			if present != "" {
+				want = ErrMissingJournal
+				if present == journalName {
+					want = ErrMissingIndex
+				}
+			}
+			if _, err := Open(c); !errors.Is(err, want) {
 				t.Fatalf("Open: %v", err)
 			}
 		})
@@ -869,5 +885,67 @@ func TestReplayReadErrorBetweenFrames(t *testing.T) {
 	must(t, err)
 	if err = fresh.replay(homeID, input, entries); !errors.Is(err, iotest.ErrTimeout) {
 		t.Fatalf("replay lost read error: %v", err)
+	}
+}
+
+func TestCompleteInterruptedPublication(t *testing.T) {
+	c := config(t, testKey("process"))
+	child(t, c, "published-"+lockName, 79)
+	for _, open := range []func(Config) (*Witness, error){Open, Create} {
+		if _, err := open(c); !errors.Is(err, ErrPublication) {
+			t.Fatal(err)
+		}
+	}
+	matches, err := filepath.Glob(filepath.Join(c.Directory, ".create-*-"+journalName))
+	must(t, err)
+	if len(matches) != 1 {
+		t.Fatal(matches)
+	}
+	before := readFile(t, matches[0])
+	index := readFile(t, filepath.Join(c.Directory, lockName))
+	w, err := CompletePublication(c)
+	must(t, err)
+	must(t, w.Close())
+	reopen(t, c)
+	if !bytes.Equal(before, readFile(t, filepath.Join(c.Directory, journalName))) ||
+		!bytes.Equal(index, readFile(t, filepath.Join(c.Directory, lockName))) {
+		t.Fatal("recovery changed genesis")
+	}
+}
+func TestPreserveAcknowledgedPublication(t *testing.T) {
+	for _, missing := range []string{lockName, journalName} {
+		t.Run(missing, func(t *testing.T) {
+			c := config(t, testKey("acknowledged"))
+			w := create(t, c)
+			q := fixtureEnrollment(t, w)
+			_, err := w.Administration().Enroll(t.Context(), q)
+			must(t, err)
+			must(t, w.Close())
+			survivor, want := journalName, ErrMissingIndex
+			if missing == journalName {
+				survivor, want = lockName, ErrMissingJournal
+			}
+			// Save the missing file outside the directory, then present it under
+			// a staging name. Neither shape proves a genesis-only publication.
+			path := filepath.Join(c.Directory, missing)
+			saved := filepath.Join(filepath.Dir(c.Directory), "saved")
+			must(t, os.Rename(path, saved))
+			before := readFile(t, filepath.Join(c.Directory, survivor))
+			for _, open := range []func(Config) (*Witness, error){Open, Create, CompletePublication} {
+				if _, err := open(c); !errors.Is(err, want) {
+					t.Fatal(err)
+				}
+			}
+			must(t, os.Rename(saved, filepath.Join(c.Directory, ".create-test-"+missing)))
+			if _, err := CompletePublication(c); !errors.Is(err, ErrPublication) {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, readFile(t, filepath.Join(c.Directory, survivor))) {
+				t.Fatal("changed surviving file")
+			}
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("published unproven file", err)
+			}
+		})
 	}
 }

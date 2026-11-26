@@ -24,6 +24,9 @@ func (e StorageError) Error() string { return "durable witness: " + string(e) }
 
 const (
 	ErrNotInitialized StorageError = "not initialised"
+	ErrMissingJournal StorageError = "published journal is missing"
+	ErrMissingIndex   StorageError = "published index is missing"
+	ErrPublication    StorageError = "interrupted publication"
 	ErrPoisoned       StorageError = "storage error requires owner check"
 	ErrUnsafe         StorageError = "unsafe path, ownership or permissions"
 	ErrLocked         StorageError = "already locked"
@@ -107,10 +110,22 @@ type Witness struct {
 
 // Create exclusively initializes both files. A failed creation leaves its
 // evidence in place. Creating again cannot replace an existing witness.
-func Create(c Config) (*Witness, error) { return start(c, true) }
+func Create(c Config) (*Witness, error) { return start(c, createStore, nil) }
 
 // Open replays existing storage. Missing state is never initialized.
-func Open(c Config) (*Witness, error) { return start(c, false) }
+func Open(c Config) (*Witness, error) { return start(c, openStore, nil) }
+
+// CompletePublication is an offline owner operation. It publishes only a full
+// signed genesis and matching empty-ack index left by an interrupted Create.
+func CompletePublication(c Config) (*Witness, error) { return start(c, completeStore, nil) }
+
+type startMode int
+
+const (
+	openStore startMode = iota
+	createStore
+	completeStore
+)
 
 func textOK(s string) bool {
 	return len(s) > 0 && len(s) <= assignment.MaxReferenceBytes && utf8.ValidString(s)
@@ -119,7 +134,7 @@ func (w *Witness) valid(s cp.Slot) bool {
 	return s.Witness == w.identity.Witness && textOK(s.Authority) && textOK(s.Store)
 }
 
-func start(c Config, create bool) (*Witness, error) {
+func start(c Config, mode startMode, fault func(string) error) (*Witness, error) {
 	id := c.Identity
 	if !textOK(id.Witness) || !textOK(id.Store) || !textOK(id.Incarnation) || id.Epoch == 0 || c.ReceiptLimit > maxReceipts {
 		return nil, &cp.Reason{Kind: cp.InvalidRequest}
@@ -148,6 +163,7 @@ func start(c Config, create bool) (*Witness, error) {
 	}
 	w := &Witness{
 		transaction: make(chan struct{}, 1),
+		fault:       fault,
 		identity:    id,
 		pin:         slices.Clone(c.Pin),
 		homePin:     slices.Clone(c.HomePin),
@@ -175,17 +191,19 @@ func start(c Config, create bool) (*Witness, error) {
 			w.Close()
 		}
 	}()
-	if err = w.openPair(create, keyFile); err != nil {
+	if err = w.openPair(mode, keyFile); err != nil {
 		return nil, err
 	}
 	w.writeFrame = w.journal.Write
 	w.writeEntry = w.lockFile.Write
 	w.allocate = keepSize
-	if create {
+	if mode == createStore {
 		if err = w.arm(); err != nil {
 			return nil, err
 		}
 		_, err = w.commit(record{Seq: 1, Identity: &id, HomeKeyID: homeID, Op: "create"}, change{})
+	} else if mode == completeStore {
+		err = w.verifyStagedGenesis(homeID)
 	} else {
 		err = w.replay(homeID, w.journal, w.lockFile)
 	}
@@ -198,7 +216,7 @@ func start(c Config, create bool) (*Witness, error) {
 	if err != nil || !cp.VerifyDisposition(c.Pin, id.Epoch, probe, "startup-probe", sig) {
 		return nil, ErrIdentity
 	}
-	if create {
+	if mode != openStore {
 		if err = w.publishPair(); err != nil {
 			return nil, err
 		}

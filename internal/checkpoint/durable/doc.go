@@ -5,7 +5,11 @@
 // 0700 directory. Create sets the private temporary files to mode 0600,
 // syncs genesis and its index entry, renames the files into place under the
 // directory lock and syncs the directory. Publishing the journal completes
-// the pair. Open reports ErrNotInitialized for an unfinished pair. The lock
+// the pair. Open reports ErrNotInitialized only on an unprovisioned directory.
+// A lone published file or interrupted publication has a distinct recovery
+// error. Create preserves these files. The local owner can CompletePublication
+// only with one unambiguous staged pair (or staged journal and published
+// index) matching the pinned signed genesis and exactly its index entry. The lock
 // file records each committed frame digest and its exact acknowledgement signature.
 // Losing a complete journal suffix alone is therefore detectable. Replay
 // verifies every frame, receipt and predecessor before serving. A complete
