@@ -76,3 +76,18 @@ func TestWitnessExactUnitPolicy(t *testing.T) {
 		}
 	}
 }
+
+func TestWitnessOtherUnitCommand(t *testing.T) {
+	for _, value := range []string{
+		"/release/bin/ataniq-witness\trun", "\"/release/bin/ataniq-witness\" run", "-'/release/bin/ataniq-witness'",
+		"/release//bin//ataniq-witness", "/opt/current/bin/ataniq-witness",
+		"/alternate/bin/../lib/ataniq-witness", "ataniq-witness", "/bin/sh -c 'exec /release/bin/ataniq-witness'",
+	} {
+		if WitnessUnitSafe("etc/systemd/system/other.service", "[Service]\nExecStart="+value, "/release") {
+			t.Errorf("accepted %q", value)
+		}
+	}
+	if !WitnessUnitSafe("etc/systemd/system/other.service", "[Service]\nExecStart=/release/bin/ataniq-seat", "/release") {
+		t.Fatal("refused unrelated binary")
+	}
+}

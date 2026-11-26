@@ -71,8 +71,15 @@ func WitnessUnitSafe(rel, text, releaseDir string) bool {
 		if section == "[Socket]" && k == "Service" && strings.Trim(v, "\"'") == "ataniq-witness.service" {
 			return false
 		}
-		if section == "[Service]" && strings.HasPrefix(k, "Exec") && strings.Contains(v, "/bin/ataniq-witness ") {
-			return false
+		if section == "[Service]" && strings.HasPrefix(k, "Exec") {
+			// Inspect arguments too: a shell can receive the invocation in one
+			// quoted word. Refuse escapes we cannot resolve as literal text.
+			words, ok := splitSystemd(v)
+			if !ok || strings.ContainsRune(v, '\\') || slices.ContainsFunc(words, func(word string) bool {
+				return strings.Contains(word, "ataniq-witness")
+			}) {
+				return false
+			}
 		}
 	}
 	return true
