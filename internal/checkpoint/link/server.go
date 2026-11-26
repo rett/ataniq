@@ -36,6 +36,7 @@ type Server struct {
 	witnessPin    ed25519.PublicKey
 	timeout       time.Duration
 	ownerCapacity int
+	ownerServing  atomic.Bool
 	home          Remote
 	slot          cp.Slot
 	polling       atomic.Bool
@@ -57,22 +58,18 @@ func NewServer(id seatgate.Identity, witnessPin ed25519.PublicKey, home Remote, 
 // ServeOwner is a separate owner endpoint. Supply a private local listener
 // and an independently provisioned client-certificate SPKI pin. Enrollment,
 // release, retirement and owner reads exist only on this authenticated endpoint.
-func (s *Server) ServeOwner(l net.Listener, a cp.Administration, ownerPin string) error {
-	if a == nil || !seatgate.ValidFingerprint(ownerPin) {
+func (s *Server) ServeOwner(l net.Listener, a cp.Administration, ownerPin string, uid uint32) error {
+	if _, ok := l.(*net.UnixListener); !ok {
+		return &ConfigError{"owner listener must be a Unix socket"}
+	}
+	return s.serveOwner(l, a, ownerPin, ownerAdmission(uid))
+}
+func (s *Server) serveOwner(l net.Listener, a cp.Administration, ownerPin string, admit admission) error {
+	if a == nil || !seatgate.ValidFingerprint(ownerPin) || !s.ownerServing.CompareAndSwap(false, true) {
 		return cp.ErrRefused
 	}
-	switch addr := l.Addr().(type) {
-	case *net.UnixAddr:
-	case *net.TCPAddr:
-		if !addr.IP.IsLoopback() {
-			return cp.ErrRefused
-		}
-	default:
-		return cp.ErrRefused
-	}
-	return serveListener(l, serverTLS(s.id, ownerPin), s.ownerCapacity, s.timeout, homeAdmission(nil), func(ctx context.Context, conn *tls.Conn, m frame.Message) {
-		_ = s.reply(ctx, conn, nil, a, m)
-	})
+	defer s.ownerServing.Store(false)
+	return serveListener(l, serverTLS(s.id, ownerPin), s.ownerCapacity, s.timeout, admit, func(ctx context.Context, conn *tls.Conn, m frame.Message) { _ = s.reply(ctx, conn, nil, a, m) })
 }
 
 func transientAccept(err error) bool {

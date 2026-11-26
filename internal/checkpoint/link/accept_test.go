@@ -24,7 +24,7 @@ func TestAcceptRetries(t *testing.T) {
 		l, _ := loopback(t)
 		defer l.Close()
 		scripted := &failingAccept{l, []error{syscall.EMFILE, syscall.ENFILE, syscall.ENOBUFS, syscall.ENOMEM, os.ErrDeadlineExceeded, end}}
-		err := f.s.ServeOwner(scripted, f.w.Administration(), f.id.Fingerprint())
+		err := endpointFor(t, identity(t, "home"), f.id, f).Serve(scripted)
 		if !errors.Is(err, end) {
 			t.Fatalf("accept returned %v, want %v", err, end)
 		}

@@ -41,9 +41,6 @@ func peerSource(c net.Conn) string {
 	if addr, ok := c.RemoteAddr().(*net.TCPAddr); ok {
 		return addr.IP.String()
 	}
-	if unix, ok := c.(*net.UnixConn); ok {
-		return unixPeer(unix)
-	}
 	return "local"
 }
 
@@ -90,4 +87,24 @@ func (c *firstByteConn) Read(b []byte) (int, error) {
 		c.deadline = time.Time{}
 	}
 	return n, err
+}
+
+func ownerAdmission(uid uint32) admission {
+	pending := make(chan struct{}, 4)
+	return func(c net.Conn) func() {
+		unix, ok := c.(*net.UnixConn)
+		if !ok {
+			return nil
+		}
+		peer, ok := unixPeer(unix)
+		if !ok || peer != uid {
+			return nil
+		}
+		select {
+		case pending <- struct{}{}:
+			return func() { <-pending }
+		default:
+			return nil
+		}
+	}
 }

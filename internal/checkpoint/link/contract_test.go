@@ -6,8 +6,11 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"errors"
+
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"testing"
@@ -103,6 +106,19 @@ func serveNetwork(t *testing.T, network string, run func(net.Listener) error) Re
 	var l net.Listener
 	var dial dialFunc
 	switch network {
+	case "unix":
+		dir, err := os.MkdirTemp("", "owner-")
+		must(t, err)
+		t.Cleanup(func() { os.RemoveAll(dir) })
+		l, err = net.Listen("unix", filepath.Join(dir, "sock"))
+		if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+			t.Log("Unix bind denied; exercising authenticated framing over net.Pipe")
+			p := &pipeListener{incoming: make(chan net.Conn), closed: make(chan struct{})}
+			l, dial = p, p.dial
+		} else {
+			must(t, err)
+			dial = (&net.Dialer{}).DialContext
+		}
 	case "tcp":
 		l = tcpListener(t)
 		dial = (&net.Dialer{}).DialContext
@@ -120,7 +136,10 @@ func serveNetwork(t *testing.T, network string, run func(net.Listener) error) Re
 			t.Errorf("serve: %v", err)
 		}
 	})
-	return Remote{Network: l.Addr().Network(), Address: l.Addr().String(), DialContext: dial}
+	if network != "unix" {
+		network = l.Addr().Network()
+	}
+	return Remote{Network: network, Address: l.Addr().String(), DialContext: dial}
 }
 
 // Both legs authenticate TLS. The proxy operates on complete plaintext
@@ -132,7 +151,11 @@ func proxied(t *testing.T, e Remote, id, owner seatgate.Identity, p *linktest.Pr
 		t.Fatal(err)
 	}
 	cfg := serverTLS(id, owner.Fingerprint())
-	frontend := serve(t, func(l net.Listener) error {
+	network := "unix"
+	if poll {
+		network = "auto"
+	}
+	frontend := serveNetwork(t, network, func(l net.Listener) error {
 		var wg sync.WaitGroup
 		defer wg.Wait()
 		for {
@@ -191,7 +214,7 @@ func TestWitnessContract(t *testing.T) {
 			s.limits.now = func() time.Time { now = now.Add(2 * time.Second); return now }
 		}
 		advanceClock(s)
-		admin := serve(t, func(l net.Listener) error { return s.ServeOwner(l, w.Administration(), ownerID.Fingerprint()) })
+		admin := testOwner(t, s, w.Administration(), ownerID.Fingerprint())
 		admin.ServerPin, admin.WitnessPin, admin.Epoch = serverID.Fingerprint(), pin, 1
 		var proxy linktest.Proxy
 		admin = proxied(t, admin, proxyID, ownerID, &proxy, false)
@@ -274,3 +297,36 @@ func startPolling(t *testing.T, s *Server, r Remote, w Witness) context.CancelFu
 }
 
 func loopbackTrust() TrustSources { return TrustSources{netip.MustParsePrefix("127.0.0.1/32")} }
+
+func testOwner(t *testing.T, s *Server, a cp.Administration, pin string) Remote {
+	return serveNetwork(t, "unix", func(l net.Listener) error {
+		if _, pipe := l.(*pipeListener); pipe {
+			return s.serveOwner(l, a, pin, func(net.Conn) func() { return func() {} })
+		}
+		return s.ServeOwner(l, a, pin, uint32(os.Getuid()))
+	})
+}
+func TestOwnerPeerUID(t *testing.T) {
+	f := newFixture(t, "witness")
+	owner := identity(t, "owner")
+	l, err := net.Listen("unix", filepath.Join(t.TempDir(), "owner.sock"))
+	if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+		t.Skipf("Unix bind denied: %v", err)
+	}
+	must(t, err)
+	done := make(chan error, 1)
+	go func() { done <- f.s.ServeOwner(l, f.w.Administration(), owner.Fingerprint(), uint32(os.Getuid())^1) }()
+	defer func() {
+		l.Close()
+		if !errors.Is(<-done, net.ErrClosed) {
+			t.Fatal("owner listener failed")
+		}
+	}()
+	raw, err := net.Dial("unix", l.Addr().String())
+	must(t, err)
+	defer raw.Close()
+	raw.SetDeadline(time.Now().Add(time.Second))
+	if err = tls.Client(raw, clientTLS(f.id.Fingerprint(), owner)).Handshake(); err == nil {
+		t.Fatal("different UID completed owner handshake")
+	}
+}

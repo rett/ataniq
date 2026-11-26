@@ -4,5 +4,5 @@ package link
 
 import "net"
 
-// Without peer credentials, share the local budget across Unix clients.
-func unixPeer(*net.UnixConn) string { return "local" }
+// Refuse owner admission without kernel peer credentials.
+func unixPeer(*net.UnixConn) (uint32, bool) { return 0, false }

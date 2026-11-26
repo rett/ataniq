@@ -103,7 +103,7 @@ type owner struct{ transport }
 // Administration dials the separately served owner endpoint with its pinned
 // client certificate. An owner read requires neither a home nor a session key.
 func (e Remote) Administration(id seatgate.Identity) (cp.Administration, error) {
-	if id.Fingerprint() == "" {
+	if e.Network != "unix" || id.Fingerprint() == "" {
 		return nil, cp.ErrRefused
 	}
 	t, err := e.transport(id)
