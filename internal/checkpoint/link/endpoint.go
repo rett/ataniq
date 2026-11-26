@@ -63,15 +63,41 @@ type callResult struct {
 	answer answer
 	err    error
 }
-type mutationRef struct {
-	id     cp.ID
-	digest string
+
+// PendingMutation identifies the canonical intent held for reconciliation.
+type PendingMutation struct {
+	ID     cp.ID
+	Digest string
+}
+
+// NewEndpointWithPending restores the home journal's intent before admitting calls.
+func NewEndpointWithPending(id seatgate.Identity, cert []byte, pin ed25519.PublicKey, epoch uint64, slot cp.Slot, trust TrustSources, pending PendingMutation) (*Endpoint, error) {
+	digest, err := hex.DecodeString(pending.Digest)
+	if pending.ID == (cp.ID{}) || len(pending.Digest) != 2*sha256.Size || err != nil || hex.EncodeToString(digest) != pending.Digest {
+		return nil, &ConfigError{"invalid pending mutation"}
+	}
+	e, err := NewEndpoint(id, cert, pin, epoch, slot, trust)
+	if err == nil {
+		e.home.queue.pending = &pending
+	}
+	return e, err
+}
+
+// PendingMutation returns a snapshot of the retained intent, if any.
+func (e *Endpoint) PendingMutation() (PendingMutation, bool) {
+	q := e.home.queue
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.pending == nil {
+		return PendingMutation{}, false
+	}
+	return *q.pending, true
 }
 
 type requestQueue struct {
 	mu         sync.Mutex
 	submitting bool
-	pending    *mutationRef
+	pending    *PendingMutation
 	calls      chan pendingCall
 	closed     chan struct{}
 	serving    atomic.Bool

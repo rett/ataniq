@@ -469,7 +469,7 @@ func (t transport) rawSubmit(ctx context.Context, k frame.Kind, slot cp.Slot, ho
 	default:
 		return cp.Receipt{}, cp.ErrRefused
 	}
-	retry, err := t.queue.begin(mutationRef{id, cp.RequestDigest(b)})
+	retry, err := t.queue.begin(PendingMutation{id, cp.RequestDigest(b)})
 	if err != nil {
 		return cp.Receipt{}, err
 	}

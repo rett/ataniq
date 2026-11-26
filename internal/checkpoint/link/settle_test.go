@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"ataniq/internal/seatgate"
+
 	cp "ataniq/internal/checkpoint"
 )
 
@@ -42,7 +44,7 @@ func TestSettleFencesContinuingWork(t *testing.T) {
 			var once sync.Once
 			resume := func() { once.Do(func() { close(w.resume) }) }
 			defer resume()
-			startPolling(t, f.s, r, w)
+			stop := startPolling(t, f.s, r, w)
 			s := f.enroll(t, f.w.Administration())
 			c, err := e.Connect(t.Context(), f.slot, f.home, f.session)
 			must(t, err)
@@ -57,6 +59,19 @@ func TestSettleFencesContinuingWork(t *testing.T) {
 			if v.Prior != nil {
 				t.Fatal("unexpected receipt before commit")
 			}
+			saved, ok := e.PendingMutation()
+			body, err := first.Body(e.home.wid)
+			must(t, err)
+			if !ok || saved.ID != first.ID || saved.Digest != cp.RequestDigest(body) {
+				t.Fatal("wrong journal record")
+			}
+			stop()
+			cert := seatgate.ServerTLS(f.id, nil).Certificates[0].Certificate[0]
+			e, err = NewEndpointWithPending(id, cert, f.pin, 1, f.slot, loopbackTrust(), saved)
+			must(t, err)
+			r = serveNetwork(t, network, e.Serve)
+			r.ServerPin = id.Fingerprint()
+			startPolling(t, f.s, r, w)
 			replacement, err := e.Connect(t.Context(), f.slot, f.home, f.session)
 			must(t, err)
 			second := first
@@ -73,13 +88,16 @@ func TestSettleFencesContinuingWork(t *testing.T) {
 			if !errors.Is(err, cp.ErrNotApplied) {
 				t.Fatal(err)
 			}
+			if _, ok := e.PendingMutation(); ok {
+				t.Fatal("fenced intent still pending")
+			}
 			resume()
 			if err := <-w.result; !errors.Is(err, cp.ErrNotApplied) {
 				t.Fatalf("fenced work returned %v", err)
 			}
 			receipt, err := replacement.Claim(t.Context(), second)
 			must(t, err)
-			settled, err := c.Settle(t.Context(), 1, f.slot, second.ID)
+			settled, err := replacement.Settle(t.Context(), 1, f.slot, second.ID)
 			must(t, err)
 			if cp.ReceiptDigest(receipt) != cp.ReceiptDigest(settled) {
 				t.Fatal("settlement changed receipt")

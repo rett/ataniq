@@ -11,7 +11,7 @@ import (
 
 // Retain the intent before handoff. A receipt or fence received while an
 // exchange is winding down may already have cleared it when finish runs.
-func (q *requestQueue) begin(ref mutationRef) (retry bool, err error) {
+func (q *requestQueue) begin(ref PendingMutation) (retry bool, err error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.submitting || q.pending != nil && *q.pending != ref {
@@ -38,7 +38,7 @@ func (q *requestQueue) finish(retry bool, err error) error {
 func (q *requestQueue) resolve(id cp.ID, digest string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.pending != nil && q.pending.id == id && (digest == "" || q.pending.digest == digest) {
+	if q.pending != nil && q.pending.ID == id && (digest == "" || q.pending.Digest == digest) {
 		q.pending = nil
 	}
 }
