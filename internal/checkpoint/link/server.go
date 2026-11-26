@@ -10,6 +10,7 @@ import (
 	"net"
 	"slices"
 	"sync"
+	"syscall"
 	"time"
 
 	cp "ataniq/internal/checkpoint"
@@ -73,15 +74,29 @@ func (s *Server) ServeOwner(l net.Listener, a cp.Administration, ownerPin string
 	return s.serve(l, serverTLS(s.id, ownerPin), nil, a)
 }
 
+func transientAccept(err error) bool {
+	var n net.Error
+	return !errors.Is(err, net.ErrClosed) && (errors.As(err, &n) && n.Timeout() ||
+		errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) ||
+		errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM))
+}
+
 func (s *Server) serve(l net.Listener, cfg *tls.Config, w Witness, a cp.Administration) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	var workers sync.WaitGroup
 	defer func() { cancel(); workers.Wait() }()
+	delay := 5 * time.Millisecond
 	for {
 		c, err := l.Accept()
 		if err != nil {
-			return err
+			if !transientAccept(err) {
+				return err
+			}
+			time.Sleep(delay)
+			delay = min(delay*2, time.Second)
+			continue
 		}
+		delay = 5 * time.Millisecond
 		select {
 		case s.connections <- struct{}{}:
 		default:
