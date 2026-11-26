@@ -325,7 +325,7 @@ func exactPredecessor(t *testing.T, f fixture) {
 			old := s
 			alter(&old)
 			_, err := h.c.Advance(f.ctx, advance(old, "cas"))
-			if err != cp.ErrRefused && err != cp.ErrStale {
+			if !errors.Is(err, cp.ErrRefused) && !errors.Is(err, cp.ErrStale) {
 				t.Fatal("wrong CAS result", err)
 			}
 		})
@@ -547,7 +547,7 @@ func interleave(t *testing.T, factory Factory) {
 					}
 				}
 				if err != nil {
-					if err != cp.ErrStale && err != cp.ErrRefused && err != cp.ErrRetired {
+					if !errors.Is(err, cp.ErrStale) && !errors.Is(err, cp.ErrRefused) && !errors.Is(err, cp.ErrRetired) {
 						t.Fatal(err)
 					}
 					continue
