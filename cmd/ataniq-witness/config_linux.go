@@ -139,6 +139,11 @@ func loadConfig(path string) (config, durable.Config, error) {
 		if len(v) == 0 || len(v) > assignment.MaxReferenceBytes {
 			return c, store, errConfig
 		}
+		for _, ch := range v {
+			if ch < ' ' || ch > '~' {
+				return c, store, errConfig
+			}
+		}
 	}
 	// Each storage, key, guard and runtime location has a separate owner or lifecycle.
 	paths := []string{c.State, c.Seed, c.Guard, filepath.Dir(c.Socket), c.ServiceTLS, c.OwnerTLS}

@@ -7,13 +7,13 @@ separate files under protected directories.
 
 | Command | Account | Result |
 | --- | --- | --- |
-| `init` | Witness service | Creates signed genesis in a pre-provisioned, service-owned 0700 directory. Refuses an existing or interrupted store. |
+| `init` | Witness service | Creates signed genesis in a pre-provisioned, service-owned 0700 directory. Prints `witness store initialized` on success. Refuses an existing or interrupted store. |
 | `check` | Witness service | Checks local configuration, signing and TLS identity, and published file modes without opening the journal for replay. Prints one line and exits. |
 | `run` | Witness service | Opens and re-proves the store, grants the configured home access to one slot, polls outbound and serves the owner socket. |
 | `status` | Local root | Verifies a fresh signed status and prints the epoch, directory sequence, predecessor digest, counts and inhibition reason. |
 | `acknowledge` | Local root | Sends a pinned, epoch-bound acknowledgement over the owner socket. |
 | `recover` | Witness service, under owner control | Re-proves storage and serves only the owner socket with decisions inhibited. |
-| `complete-publication` | Witness service, offline | Finishes publication of one unambiguous staged signed genesis pair. |
+| `complete-publication` | Witness service, offline | Finishes publication of one unambiguous staged signed genesis pair and prints `witness publication completed`. |
 
 Exit 0 indicates success, 1 refusal and 2 incorrect usage. A verified status
 reporting storage failure, an unclean end or interrupted publication also exits
@@ -132,7 +132,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 sh scripts/go-tool.sh build -trimpath -o b
 Replace the uppercase values locally. The five public-key and fingerprint
 values each use 64 lowercase hex digits. The witness directory identity
 and the home ledger slot have separate store identifiers. The witness name
-is shared. Encode the nonzero activation epoch as a decimal string.
+is shared. Use nonempty printable ASCII (space through tilde) for witness,
+store, incarnation and authority identifiers. Encode the nonzero activation epoch as a decimal string.
 
 ```json
 {

@@ -52,7 +52,9 @@ func TestWitnessProvisionFromOperatorGuide(t *testing.T) {
 
 func TestWitnessOfflinePublication(t *testing.T) {
 	c, path := fixture(t)
-	call(t, path, "init", 0)
+	if got := call(t, path, "init", 0); got != "witness store initialized\n" {
+		t.Errorf("init: %q", got)
+	}
 	journal := filepath.Join(c.State, "journal.v1")
 	staged := filepath.Join(c.State, ".create-fixture-journal.v1")
 	original, err := os.ReadFile(journal)
@@ -66,7 +68,9 @@ func TestWitnessOfflinePublication(t *testing.T) {
 	must(t, err)
 	call(t, path, "complete-publication", 1) // Inspector still holds the lock.
 	must(t, w.Close())
-	call(t, path, "complete-publication", 0)
+	if got := call(t, path, "complete-publication", 0); got != "witness publication completed\n" {
+		t.Errorf("complete-publication: %q", got)
+	}
 	call(t, path, "complete-publication", 1)
 	got, err := os.ReadFile(journal)
 	must(t, err)

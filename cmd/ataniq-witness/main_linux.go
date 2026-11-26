@@ -111,10 +111,18 @@ func execute(ctx context.Context, hostRoot, op, path string, out io.Writer) (ret
 	if err != nil {
 		return err
 	}
-	defer func() { retErr = errors.Join(retErr, w.Close()) }()
 	if op == "init" || op == "complete-publication" {
-		return nil
+		if err := w.Close(); err != nil {
+			return err
+		}
+		message := "witness store initialized"
+		if op == "complete-publication" {
+			message = "witness publication completed"
+		}
+		_, err := fmt.Fprintln(out, message)
+		return err
 	}
+	defer func() { retErr = errors.Join(retErr, w.Close()) }()
 	recoveryOnly := op == "recover"
 	if !recoveryOnly {
 		if err := w.Grant(c.Slot, store.HomePin, true); err != nil {

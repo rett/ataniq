@@ -296,3 +296,24 @@ func TestWitnessOverlappingPaths(t *testing.T) {
 		})
 	}
 }
+
+func TestWitnessIdentityCharacters(t *testing.T) {
+	c, p := fixture(t)
+	for _, value := range []string{"space ~", "nul\x00", "tab\t", "line\n", "del\x7f", "é"} {
+		for _, set := range []func(*config, string){
+			func(x *config, s string) { x.Identity.Witness = s; x.Slot.Witness = s },
+			func(x *config, s string) { x.Identity.Store = s },
+			func(x *config, s string) { x.Identity.Incarnation = s },
+			func(x *config, s string) { x.Slot.Authority = s },
+			func(x *config, s string) { x.Slot.Store = s },
+		} {
+			x := c
+			set(&x, value)
+			writeConfig(t, p, x)
+			_, _, err := loadConfig(p)
+			if (err == nil) != (value == "space ~") {
+				t.Errorf("%q: %v", value, err)
+			}
+		}
+	}
+}
