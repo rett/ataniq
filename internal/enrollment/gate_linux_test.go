@@ -159,7 +159,7 @@ func (f *fixture) seed(t *testing.T, s *Store, project string) a.Event {
 }
 
 func TestCompareAndReplay(t *testing.T) {
-	for _, kind := range []string{"boundary cut", "restore prefix", "torn", "fork", "bad signature", "missing", "empty", "legacy", "registry", "wrong header", "unknown", "partition", "witness restore", "other enrollment"} {
+	for _, kind := range []string{"boundary cut", "restore prefix", "torn", "fork", "bad signature", "missing", "empty", "header removed", "legacy", "registry", "wrong header", "unknown", "partition", "witness restore", "other enrollment"} {
 		t.Run(kind, func(t *testing.T) {
 			f := enrolled(t)
 			s := f.open(t, nil)
@@ -197,6 +197,9 @@ func TestCompareAndReplay(t *testing.T) {
 				reason = Corrupt
 			case "missing":
 				check(t, os.Remove(path))
+				reason = MissingHeader
+			case "header removed":
+				put(t, path, prefix[len(header):])
 				reason = MissingHeader
 			case "empty":
 				put(t, path, nil)

@@ -207,6 +207,9 @@ func (s *Store) start(ctx context.Context, header []byte) error {
 
 func equalHeader(raw, expected []byte) error {
 	if _, err := assignment.NewLedgerFromHeader(raw); err != nil {
+		if _, eventErr := assignment.DecodeRecord(raw); eventErr == nil {
+			return refuse(MissingHeader, nil)
+		}
 		return ledgerError(err)
 	}
 	if !bytes.Equal(raw, expected) {
