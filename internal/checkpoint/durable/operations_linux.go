@@ -93,6 +93,7 @@ type change struct {
 }
 
 func (w *Witness) submit(ctx context.Context, r record) (cp.Receipt, error) {
+	r.Seq = w.seq + 1
 	c, retry, err := w.prepare(r, false)
 	if err != nil || retry.Body != nil {
 		return retry, err
@@ -192,6 +193,7 @@ func (w *Witness) prepare(r record, replay bool) (change, cp.Receipt, error) {
 	if err != nil {
 		return c, empty, err
 	}
+	c.state.JournalSequence = r.Seq
 	c.ack, err = w.ackBody(r, c)
 	return c, empty, err
 }

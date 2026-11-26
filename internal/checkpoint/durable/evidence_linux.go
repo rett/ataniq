@@ -28,6 +28,7 @@ func protocolState(s cp.State) map[string]any {
 			"digest":      h.Digest,
 		},
 		"epoch":               decimal(s.Epoch),
+		"journal_sequence":    decimal(s.JournalSequence),
 		"revision":            decimal(s.Revision),
 		"fence":               decimal(s.Fence),
 		"home_key_id":         s.HomeKeyID,

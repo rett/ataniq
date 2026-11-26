@@ -167,6 +167,32 @@ func (f fixture) reconnect(t *testing.T, h home, session ed25519.PrivateKey) hom
 // calls with identical keys used to model independent restores.
 func Run(t *testing.T, newWitness Factory) {
 	settlementBoundaries(t, newWitness)
+	t.Run("witness journal position", func(t *testing.T) {
+		f := start(t, newWitness)
+		first := f.home(t, "west", "s", "one", true)
+		second := f.homeWithKey(t, "east", "s", "two", true, first.private)
+		a := f.enroll(t, first)
+		_, err := f.Admin.Settle(f.ctx, 1, second.slot, id("intervening fence"))
+		want(t, err, cp.ErrNotApplied)
+		b := f.enroll(t, second)
+		if b.JournalSequence != a.JournalSequence+2 {
+			t.Fatal("receipt missed intervening journal transitions")
+		}
+		f.Harness = f.Restart()
+		retry, err := f.Admin.Enroll(f.ctx, second.e)
+		check(t, err)
+		if cp.ReceiptDigest(retry) != b.LastReceiptDigest {
+			t.Fatal("restart changed the original receipt")
+		}
+		first = f.reconnect(t, first, first.session)
+		c := f.claim(t, first, a, "claim after restart")
+		if c.JournalSequence != b.JournalSequence+1 {
+			t.Fatal("journal sequence did not continue after restart")
+		}
+		if cp.Compare(b.Head, b, c.JournalSequence) != cp.Unknown {
+			t.Fatal("comparison accepted an older journal position")
+		}
+	})
 	t.Run("restart mutation history", func(t *testing.T) { restartHistory(t, start(t, newWitness)) })
 	t.Run("settle", func(t *testing.T) { settlement(t, start(t, newWitness)) })
 	for _, op := range []string{"claim", "advance"} {
@@ -223,7 +249,7 @@ func Run(t *testing.T, newWitness Factory) {
 		t.Run("conflicting "+op, func(t *testing.T) { conflictingOwnerID(t, newWitness, op) })
 	}
 	for _, op := range []string{"claim", "advance"} {
-		for _, field := range []string{"operation", "id", "request_digest", "predecessor", "head", "fence", "session", "epoch", "revision", "home", "witness_slot", "replay", "signer", "profile_home", "profile_session"} {
+		for _, field := range []string{"operation", "id", "request_digest", "predecessor", "head", "fence", "session", "epoch", "sequence not bound", "sequence goes backwards", "revision", "home", "witness_slot", "replay", "signer", "profile_home", "profile_session"} {
 			t.Run("lying "+op+" "+field, func(t *testing.T) { lyingReply(t, newWitness, op, field) })
 		}
 	}

@@ -67,7 +67,6 @@ func decode(in io.Reader, pin ed25519.PublicKey) (record, [32]byte, error) {
 }
 
 func (w *Witness) commit(r record, c change) (cp.Receipt, error) {
-	r.Seq = w.seq + 1
 	r.Previous = hex.EncodeToString(w.previous[:])
 	body, err := canonical(r)
 	if err != nil || len(body) > maxRecord {

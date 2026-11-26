@@ -294,6 +294,12 @@ func (w *Memory) commit(e *enrollment, op string, id ID, body []byte, s State, s
 	if op != "release" && op != "retire" && w.receiptLimit != 0 && w.receiptCount >= w.receiptLimit {
 		return Receipt{}, ErrUnavailable
 	}
+	// Position one is witness creation. Every receipt and new settlement
+	// fence consumes one subsequent position, across all slots.
+	if w.receiptCount >= math.MaxUint64-1 {
+		return Receipt{}, &Reason{Kind: CounterExhausted}
+	}
+	s.JournalSequence = w.receiptCount + 2
 	a := ackRecord{recordHeader{1, op, s.Slot.Authority, w.keyID}, idString(id), RequestDigest(body), recordState(s)}
 	b, err := encode(a)
 	if err != nil {

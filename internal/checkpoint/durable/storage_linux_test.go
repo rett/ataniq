@@ -434,3 +434,35 @@ func TestCancelledWaitForCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Both fixtures use exactly the same key, identity and enrollment. Only the
+// number of earlier, independently valid journal transitions differs.
+func TestReviewReceiptPosition(t *testing.T) {
+	enrollAt := func(extraFence bool) (uint64, cp.Receipt) {
+		c := config(t, testKey("review position"))
+		w := create(t, c)
+		q := fixtureEnrollment(t, w)
+		if extraFence {
+			_, err := w.Administration().Settle(t.Context(), c.Identity.Epoch, q.Slot, cp.ID{9})
+			if !errors.Is(err, cp.ErrNotApplied) {
+				t.Fatal(err)
+			}
+		}
+		r, err := w.Administration().Enroll(t.Context(), q)
+		must(t, err)
+		a, err := cp.VerifyReceipt(c.Pin, r)
+		must(t, err)
+		if a.State.JournalSequence != w.seq {
+			t.Fatalf("signed position %d, journal position %d", a.State.JournalSequence, w.seq)
+		}
+		return w.seq, r
+	}
+	p, a := enrollAt(false)
+	q, b := enrollAt(true)
+	if p == q {
+		t.Fatal("fixture did not distinguish journal positions")
+	}
+	if bytes.Equal(a.Body, b.Body) {
+		t.Fatalf("journal positions %d and %d have identical signed receipt bodies (signatures identical=%t)", p, q, bytes.Equal(a.Signature, b.Signature))
+	}
+}

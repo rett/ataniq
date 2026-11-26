@@ -67,6 +67,10 @@ func lyingReply(t *testing.T, factory Factory, op, field string) {
 			result["session_key_id"] = s.HomeKeyID
 		case "epoch":
 			result["epoch"] = "2"
+		case "sequence goes backwards":
+			result["journal_sequence"] = "1"
+		case "sequence not bound":
+			delete(result, "journal_sequence")
 		case "revision":
 			result["revision"] = "100"
 		case "home":
@@ -86,7 +90,7 @@ func lyingReply(t *testing.T, factory Factory, op, field string) {
 		sig, err := cp.Sign(cp.WitnessNamespace, signer, b)
 		check(t, err)
 		lie := cp.Receipt{Body: b, Signature: sig}
-		if field != "signer" {
+		if field != "signer" && field != "sequence not bound" {
 			_, err = cp.VerifyReceipt(f.pin, lie)
 			check(t, err)
 		}

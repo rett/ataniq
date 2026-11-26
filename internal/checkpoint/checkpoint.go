@@ -44,6 +44,7 @@ type State struct {
 	Header                    assignment.Header
 	Head                      assignment.Checkpoint
 	Epoch, Revision, Fence    uint64
+	JournalSequence           uint64 // Witness-wide position of the transition that last changed this slot.
 	HomeKeyID, SessionKeyID   string
 	Status, LastReceiptDigest string
 }

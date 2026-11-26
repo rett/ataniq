@@ -51,7 +51,14 @@ const (
 // HomeAhead report sequence order only. Before using either for recovery,
 // replay the longer journal through the shorter head's sequence and compare
 // the digest there. Divergent journals can also have unequal lengths.
-func Compare(home assignment.Checkpoint, witness State) Comparison {
+// Each retained position comes from an authenticated receipt for this witness.
+// A state behind retained evidence cannot establish a safe starting point.
+func Compare(home assignment.Checkpoint, witness State, retained ...uint64) Comparison {
+	for _, position := range retained {
+		if witness.JournalSequence < position {
+			return Unknown
+		}
+	}
 	if !validState(witness) {
 		return Unknown
 	}

@@ -73,6 +73,7 @@ def derive(directory):
         return dict(schema=1, operation=op, key_id=ids[role], audience=audience)
 
     def ack(op, request):
+        state["journal_sequence"] = str(1 + int(state["revision"]))
         body = dict(base(op, "witness", "home"), id=request["id"], result=state,
                     request_digest=sha(b"ataniq.checkpoint.request.v1\0" + canon(request)))
         sig = record(op + "-ack", body, ["witness"])["witness"]

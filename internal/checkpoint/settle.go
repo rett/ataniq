@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"math"
 )
 
 func (a admin) Settle(ctx context.Context, epoch uint64, slot Slot, id ID) (Receipt, error) {
@@ -54,6 +55,9 @@ func (w *Memory) settle(ctx context.Context, epoch uint64, slot Slot, id ID) (Re
 	}
 	if w.inhibited || w.receiptLimit != 0 && w.receiptCount >= w.receiptLimit {
 		return Receipt{}, ErrUnavailable
+	}
+	if w.receiptCount >= math.MaxUint64-1 {
+		return Receipt{}, &Reason{Kind: CounterExhausted}
 	}
 	if w.fenced[slot] == nil {
 		w.fenced[slot] = make(map[ID]bool)
