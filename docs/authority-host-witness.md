@@ -255,8 +255,23 @@ request ID to bypass an unresolved mutation.
 
 3. From a second local root terminal, run `WITNESS status --config CONFIG`.
    Compare its verified head, reason and counts with the independent record.
-   After repairing storage and reconciling evidence, keep home admission
-   independently suspended. In the owner's root session run `ah-switch status`.
+   If signed status reports `interrupted publication`, preserve the staged
+   files and keep home admission closed. `acknowledge` always refuses staged publication.
+   Stop the attended recovery process and keep the regular unit stopped.
+   After identifying exactly one staged journal and its staged or
+   already-published index, run `WITNESS complete-publication --config CONFIG`
+   offline as the witness account. It verifies the pinned signed genesis and
+   exact index, publishes the pair, then reopens and verifies the published
+   names. Run `check`, start the verified unit and compare fresh signed status
+   with the independent record before resuming admission. This completes the
+   interrupted-publication procedure. An ambiguous pair, torn frame, corrupt
+   receipt, missing partner or legacy format needs preservation and owner
+   reconciliation before fresh provisioning. A second `init` cannot repair
+   an existing store.
+
+4. For a storage error or unclean process end, repair storage and reconcile
+   the evidence. Keep home admission independently suspended. In the owner's
+   root session run `ah-switch status`.
    If a transaction is open, including a journal held in the inhibit, end the
    attended witness process before running `ah-switch recover`. Recovery can
    reload services. Follow the switch's recovery procedure until the transaction
@@ -274,15 +289,6 @@ request ID to bypass an unresolved mutation.
    to retry. Recovery mode remains service-inhibited after acknowledgement.
    End the recovery process cleanly, start the verified unit and check status
    again before restoring home admission.
-4. If status reports `interrupted publication`, preserve the staged files.
-   Stop recovery and, after identifying exactly one staged journal and its
-   staged or already-published index, run
-   `WITNESS complete-publication --config CONFIG` as the witness account.
-   It verifies the pinned signed genesis and exact index, publishes the pair
-   and reopens and verifies the published names. Run `check` and start the
-   unit. An ambiguous pair, torn frame, corrupt receipt, missing partner or
-   legacy format needs preservation and owner reconciliation before fresh
-   provisioning. A second `init` cannot repair an existing store.
 
 ## Backup, restore and rollback
 

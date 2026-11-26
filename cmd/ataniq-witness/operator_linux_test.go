@@ -186,7 +186,7 @@ func TestWitnessRecoveryGuide(t *testing.T) {
 	if !ok {
 		t.Fatal("missing backup procedure")
 	}
-	for _, step := range []string{"ah-switch status", "ah-switch recover", "ah-switch inhibit-clear --asked", "decisions: not inhibited", "WITNESS acknowledge --config CONFIG"} {
+	for _, step := range []string{"WITNESS status --config CONFIG", "interrupted publication", "`acknowledge` always refuses staged publication", "WITNESS complete-publication --config CONFIG", "ah-switch status", "ah-switch recover", "ah-switch inhibit-clear --asked", "decisions: not inhibited", "WITNESS acknowledge --config CONFIG"} {
 		var found bool
 		_, recovery, found = strings.Cut(recovery, step)
 		if !found {
