@@ -43,8 +43,8 @@ func command(r Row, tr Transfer, k Kind, id, route string) Command {
 		if tr.PreviewMismatch {
 			add("preview", tr.Candidate.ID, "stopped")
 		}
-		add("inventory", key.Project, "complete")
-		add("handoff", key.Project, "verified")
+		add("inventory", r.Head.Key.Project, "complete")
+		add("handoff", r.Head.Key.Project, "verified")
 		for _, name := range tr.Routes {
 			add("route", name, "frozen")
 		}
