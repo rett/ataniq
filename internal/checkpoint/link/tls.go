@@ -1,7 +1,13 @@
 // Package link carries checkpoint requests from a home to its configured
 // authority over connections polled by the witness. A lost
 // mutation reply is reconciled by a challenged Read with the saved ReceiptID
-// and, when appropriate, a retry of the identical intent.
+// and, when appropriate, an identical retry or Settle.
+//
+// Each configured endpoint has 60 ordinary calls and 60 recovery reads per
+// rolling minute. Only a read naming a committed receipt in its slot history
+// can use recovery capacity. Missing IDs, current reads, grant checks,
+// settlements and mutations use ordinary capacity. Each historical read also
+// returns current state, for an effective ceiling of 120 views per minute.
 package link
 
 import (

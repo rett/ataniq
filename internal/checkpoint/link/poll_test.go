@@ -121,3 +121,17 @@ func TestPollShutdownCancelsGrant(t *testing.T) {
 		t.Fatal("grant was not canceled")
 	}
 }
+
+func TestPermanentPollConfigurationError(t *testing.T) {
+	f := newFixture(t, "witness")
+	for _, home := range []Remote{
+		{Network: "tcp", Address: "no-port", ServerPin: f.id.Fingerprint()},
+		{Network: "udp", Address: "localhost:1", ServerPin: f.id.Fingerprint()},
+	} {
+		_, err := NewServer(f.id, f.pin, home, f.slot)
+		var config *ConfigError
+		if !errors.As(err, &config) {
+			t.Fatalf("invalid configuration: %v", err)
+		}
+	}
+}

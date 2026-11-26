@@ -205,7 +205,7 @@ func TestWitnessContract(t *testing.T) {
 			t.Fatal(err)
 		}
 		homeID := identity(t, "home")
-		placeholder := Remote{Address: "home", ServerPin: homeID.Fingerprint()}
+		placeholder := Remote{Address: "localhost:1", ServerPin: homeID.Fingerprint()}
 		s, err := NewServer(serverID, pin, placeholder, cp.Slot{Witness: "witness", Authority: "owner", Store: "owner"})
 		must(t, err)
 		advanceClock := func(s *Server) {
@@ -299,7 +299,7 @@ func startPolling(t *testing.T, s *Server, r Remote, w Witness) context.CancelFu
 
 func loopbackTrust() TrustSources { return TrustSources{netip.MustParsePrefix("127.0.0.1/32")} }
 
-func testOwner(t *testing.T, s *Server, signer cp.DispositionSigner, a cp.Administration, pin string) Remote {
+func testOwner(t *testing.T, s *Server, signer WitnessEvidence, a cp.Administration, pin string) Remote {
 	return serveNetwork(t, "unix", func(l net.Listener) error {
 		if _, pipe := l.(*pipeListener); pipe {
 			return s.serveOwner(l, a, signer, pin, func(net.Conn) func() { return func() {} })

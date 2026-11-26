@@ -131,8 +131,13 @@ func TestDatedWitnessRetriesPeerAlert(t *testing.T) {
 				home := identity(t, "home")
 				e := endpointFor(t, home, f.id, f)
 				var attempts atomic.Int32
+				var first, second atomic.Int64
 				e.listenerTLS.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
-					if attempts.Add(1) == 1 {
+					switch attempts.Add(1) {
+					case 2:
+						second.Store(time.Now().UnixNano())
+					case 1:
+						first.Store(time.Now().UnixNano())
 						return nil, errors.New("temporary refusal")
 					}
 					return nil, nil
@@ -144,6 +149,9 @@ func TestDatedWitnessRetriesPeerAlert(t *testing.T) {
 				defer cancel()
 				_, err = e.Connect(ctx, f.slot, f.home, f.session)
 				must(t, err)
+				if time.Duration(second.Load()-first.Load()) < 500*time.Millisecond {
+					t.Fatal("peer alert missed long backoff")
+				}
 				if attempts.Load() < 2 {
 					t.Fatal("missing retry")
 				}

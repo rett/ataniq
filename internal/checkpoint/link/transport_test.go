@@ -51,7 +51,7 @@ func newFixture(t *testing.T, name string) *fixture {
 	must(t, err)
 	id := identity(t, "authority")
 	slot := cp.Slot{Witness: name, Authority: name, Store: name}
-	s, err := NewServer(id, public(k), Remote{Address: "home", ServerPin: id.Fingerprint()}, slot)
+	s, err := NewServer(id, public(k), Remote{Address: "localhost:1", ServerPin: id.Fingerprint()}, slot)
 	must(t, err)
 	f := &fixture{w, public(k), s, id, key(t), key(t), slot}
 	must(t, w.Grant(f.slot, public(f.home), true))

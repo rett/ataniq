@@ -89,3 +89,42 @@ func TestUngrantedKeyPacingAndBudget(t *testing.T) {
 		})
 	}
 }
+
+func TestOnlyCommittedReceiptsUseRecoveryBudget(t *testing.T) {
+	for _, network := range []string{"pipe", "tcp"} {
+		t.Run(network, func(t *testing.T) {
+			f := newFixture(t, "witness")
+			id := identity(t, "home")
+			e := endpointFor(t, id, f.id, f)
+			r := serveNetwork(t, network, e.Serve)
+			r.ServerPin = id.Fingerprint()
+			startPolling(t, f.s, r, memoryWitness{f.w})
+			f.enroll(t, f.w.Administration())
+			c, err := e.Connect(t.Context(), f.slot, f.home, f.session)
+			must(t, err)
+			absent := cp.ReadRequest{Slot: f.slot, Challenge: cp.ID{1}, ReceiptID: cp.ID{99}}
+			v, err := c.Read(t.Context(), absent)
+			must(t, err)
+			if v.Prior != nil {
+				t.Fatal("unexpected receipt")
+			}
+			for range 58 {
+				if !f.s.limits.allow(false, ordinary) {
+					t.Fatal("ordinary window exhausted early")
+				}
+			}
+			absent.Challenge[0]++
+			if _, err = c.Read(t.Context(), absent); !errors.Is(err, cp.ErrUnavailable) {
+				t.Fatalf("missing receipt spent recovery credit: %v", err)
+			}
+			found := absent
+			found.ReceiptID = cp.ID{1}
+			found.Challenge[0]++
+			v, err = c.Read(t.Context(), found)
+			must(t, err)
+			if v.Prior == nil {
+				t.Fatal("history lookup lost reserved credit")
+			}
+		})
+	}
+}

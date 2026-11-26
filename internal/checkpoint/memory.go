@@ -225,6 +225,22 @@ func (a admin) Read(ctx context.Context, q ReadRequest) (View, error) {
 	return w.read(q, e, w.key.public)
 }
 
+// HasReceipt probes the immutable history index for admission accounting.
+// A fence without a committed receipt is absent from this index.
+func (w *Memory) HasReceipt(ctx context.Context, slot Slot, id ID) (bool, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	e := w.slots[slot]
+	if e == nil {
+		return false, nil
+	}
+	_, ok := e.history[id]
+	return ok, nil
+}
+
 // read snapshots both ends of the challenged view under the witness lock.
 func (w *Memory) read(q ReadRequest, e *enrollment, pin ed25519.PublicKey) (View, error) {
 	// Current comes from the live slot even when Prior names an older head.

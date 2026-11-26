@@ -20,10 +20,16 @@ import (
 	"ataniq/internal/seatgate"
 )
 
+// WitnessEvidence belongs to the same backend as the operations it serves.
+type WitnessEvidence interface {
+	cp.DispositionSigner
+	HasReceipt(context.Context, cp.Slot, cp.ID) (bool, error)
+}
+
 // Witness rechecks the live grant for each request. RawSubmit verifies the
 // exact body and both signatures under the witness's mutation contract.
 type Witness interface {
-	cp.DispositionSigner
+	WitnessEvidence
 	SettleHome(context.Context, cp.Slot, cp.ID, ed25519.PublicKey) (cp.Receipt, error)
 	CheckHome(context.Context, cp.Slot, ed25519.PublicKey) error
 	ReadHome(context.Context, cp.ReadRequest, ed25519.PublicKey) (cp.View, error)
@@ -52,6 +58,18 @@ func NewServer(id seatgate.Identity, witnessPin ed25519.PublicKey, home Remote, 
 	if err != nil || id.Fingerprint() == "" || !validSlot(slot) || home.Address == "" || !seatgate.ValidFingerprint(home.ServerPin) {
 		return nil, &ConfigError{"invalid home, enrollment, or witness identity"}
 	}
+	if home.DialContext == nil {
+		switch home.Network {
+		case "", "tcp", "tcp4", "tcp6":
+			_, port, err := net.SplitHostPort(home.Address)
+			if err != nil || port == "" {
+				return nil, &ConfigError{"invalid home TCP address"}
+			}
+		case "unix":
+		default:
+			return nil, &ConfigError{"invalid home stream network"}
+		}
+	}
 	return &Server{
 		id: id, witnessKeyID: wid, witnessPin: slices.Clone(witnessPin),
 		pollDelay: retryDelay, timeout: requestTimeout, ownerCapacity: 2, home: home, slot: slot,
@@ -61,18 +79,20 @@ func NewServer(id seatgate.Identity, witnessPin ed25519.PublicKey, home Remote, 
 // ServeOwner is a separate owner endpoint. Supply a private local listener
 // and an independently provisioned client-certificate SPKI pin. Enrollment,
 // release, retirement and owner reads exist only on this authenticated endpoint.
-func (s *Server) ServeOwner(l net.Listener, a cp.Administration, signer cp.DispositionSigner, ownerPin string, uid uint32) error {
+func (s *Server) ServeOwner(l net.Listener, a cp.Administration, evidence WitnessEvidence, ownerPin string, uid uint32) error {
 	if _, ok := l.(*net.UnixListener); !ok {
 		return &ConfigError{"owner listener must be a Unix socket"}
 	}
-	return s.serveOwner(l, a, signer, ownerPin, ownerAdmission(uid))
+	return s.serveOwner(l, a, evidence, ownerPin, ownerAdmission(uid))
 }
-func (s *Server) serveOwner(l net.Listener, a cp.Administration, signer cp.DispositionSigner, ownerPin string, admit admission) error {
-	if a == nil || signer == nil || !seatgate.ValidFingerprint(ownerPin) || !s.ownerServing.CompareAndSwap(false, true) {
+func (s *Server) serveOwner(l net.Listener, a cp.Administration, evidence WitnessEvidence, ownerPin string, admit admission) error {
+	if a == nil || evidence == nil || !seatgate.ValidFingerprint(ownerPin) || !s.ownerServing.CompareAndSwap(false, true) {
 		return cp.ErrRefused
 	}
 	defer s.ownerServing.Store(false)
-	return serveListener(l, serverTLS(s.id, ownerPin), s.ownerCapacity, s.timeout, admit, func(ctx context.Context, conn *tls.Conn, m frame.Message) { _ = s.reply(ctx, conn, nil, a, signer, m) })
+	return serveListener(l, serverTLS(s.id, ownerPin), s.ownerCapacity, s.timeout, admit, func(ctx context.Context, conn *tls.Conn, m frame.Message) {
+		_ = s.reply(ctx, conn, nil, a, evidence, m)
+	})
 }
 
 func transientAccept(err error) bool {
@@ -139,8 +159,8 @@ func serveListener(l net.Listener, cfg *tls.Config, capacity int, timeout time.D
 
 var errRequestFailed = errors.New("checkpoint link: request failed")
 
-func (s *Server) reply(ctx context.Context, conn *tls.Conn, w Witness, a cp.Administration, signer cp.DispositionSigner, m frame.Message) error {
-	replies, err := s.dispatch(ctx, w, a, m)
+func (s *Server) reply(ctx context.Context, conn *tls.Conn, w Witness, a cp.Administration, evidence WitnessEvidence, m frame.Message) error {
+	replies, err := s.dispatch(ctx, w, a, evidence, m)
 	if errors.Is(err, frame.ErrProtocol) {
 		return err
 	}
@@ -156,7 +176,7 @@ func (s *Server) reply(ctx context.Context, conn *tls.Conn, w Witness, a cp.Admi
 		if marshalErr != nil {
 			return marshalErr
 		}
-		sig, signErr := signer.SignDisposition(ctx, sha256.Sum256(data), result)
+		sig, signErr := evidence.SignDisposition(ctx, sha256.Sum256(data), result)
 		if signErr != nil {
 			return signErr
 		}
@@ -177,7 +197,7 @@ func (s *Server) reply(ctx context.Context, conn *tls.Conn, w Witness, a cp.Admi
 	return nil
 }
 
-func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m frame.Message) ([]frame.Message, error) {
+func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, evidence WitnessEvidence, m frame.Message) ([]frame.Message, error) {
 	f := m.Fields
 	var receipt cp.Receipt
 	var err error
@@ -191,17 +211,23 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 		if err != nil {
 			return nil, err
 		}
+		if w != nil && q.Slot != s.slot {
+			return nil, cp.ErrRefused
+		}
 		pool := ordinary
 		if (m.Kind == frame.Read || m.Kind == frame.OwnerRead) && q.ReceiptID != (cp.ID{}) {
-			pool = recoveryReads
+			found, err := evidence.HasReceipt(ctx, q.Slot, q.ReceiptID)
+			if err != nil {
+				return nil, err
+			}
+			if found {
+				pool = recoveryReads
+			}
 		}
 		if !s.limits.allow(w == nil, pool) {
 			return nil, cp.ErrUnavailable
 		}
 		if w != nil {
-			if q.Slot != s.slot {
-				return nil, cp.ErrRefused
-			}
 			if err := authenticate(ctx, w, q.Slot, f[1], f[0], f[2]); err != nil {
 				return nil, err
 			}
@@ -233,6 +259,9 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 			if !errors.Is(err, cp.ErrUnavailable) || !errors.Is(cp.VerifyView(s.witnessPin, q, v), cp.ErrUnavailable) {
 				return nil, err
 			}
+		}
+		if pool == recoveryReads && v.Prior == nil {
+			return nil, cp.ErrUnavailable
 		}
 		current, err := json.Marshal(v.Current)
 		if err != nil {

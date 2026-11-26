@@ -149,6 +149,12 @@ func retryDelay(limit time.Duration) time.Duration {
 	return limit/2 + jitter.N(limit/2+1)
 }
 
+// TLS exposes peer alerts on stream transports as remote net.OpErrors.
+func peerAlert(err error) bool {
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "remote error"
+}
+
 // TLS over streams wraps its private alert type in a remote net.OpError.
 // Match the closed set by its standard-library AlertError representation.
 func handshakeRefusal(err error) bool {
@@ -201,6 +207,9 @@ func (t transport) connect(ctx context.Context) (*tls.Conn, error) {
 		var header tls.RecordHeaderError
 		if handshakeRefusal(err) || errors.As(err, &header) {
 			return nil, cp.ErrRefused
+		}
+		if peerAlert(err) {
+			return nil, errors.Join(cp.ErrUnavailable, err)
 		}
 		if errors.Is(err, cp.ErrRefused) {
 			return nil, err

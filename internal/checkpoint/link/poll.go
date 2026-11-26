@@ -41,7 +41,7 @@ func (s *Server) Poll(ctx context.Context, w Witness) error {
 		if errors.Is(err, errRequestFailed) {
 			capDelay = 5 * time.Second
 		}
-		if errors.Is(err, cp.ErrRefused) {
+		if errors.Is(err, cp.ErrRefused) || peerAlert(err) {
 			delay = max(delay, time.Second)
 			capDelay = 30 * time.Second
 		}
