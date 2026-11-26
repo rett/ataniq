@@ -75,6 +75,28 @@ func TestCreateRequiresReadableParent(t *testing.T) {
 	}
 }
 
+func TestOpenExistingRegistryUnderSearchOnlyAncestor(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "reg")
+	r := openReg(t, dir)
+	okf(t)(r.Define(lead(t, "proj"), ManagerAtaniq, goodProfile()))
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0100); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(parent, 0700); err != nil {
+			t.Error(err)
+		}
+	})
+	r = openReg(t, dir)
+	if rev, err := r.Revision(); err != nil || rev != 1 {
+		t.Fatalf("replayed revision = %d, err = %v", rev, err)
+	}
+}
+
 func TestDefineNewRole(t *testing.T) {
 	ok := okf(t)
 	r := openReg(t, regDir(t))
@@ -784,6 +806,22 @@ func checkEntrySyncAndRetry(t *testing.T) {
 			}
 			if err = r.Close(); err != nil {
 				t.Fatal(err)
+			}
+			if child != "" {
+				// A healthy registry can reopen through search-only ancestors.
+				r, err = open(reg, Options{}, syncTarget)
+				if err != nil {
+					t.Fatalf("reopen through confirmed ancestor: %v", err)
+				}
+				if err := r.Close(); err != nil {
+					t.Fatal(err)
+				}
+				// Leave the child as a creator killed between mkdir and its
+				// parent fsync would: visible, with no next entry yet.
+				next := map[string]string{".": "b", "a": "reg", "a/b": FileName}[target]
+				if err := os.RemoveAll(filepath.Join(path, child, next)); err != nil {
+					t.Fatal(err)
+				}
 			}
 			r, err = open(reg, Options{}, syncTarget)
 			if r != nil {
