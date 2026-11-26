@@ -326,10 +326,11 @@ For a software rollback use the signed switch procedure
 It also runs the departing release’s stop list when that release still verifies. If a stop fails, decisions
 stay inhibited. Correct the cause and retry the rollback. A target that carries the witness restarts its own
 binary against the existing store. Verify storage-format compatibility,
-pins, epoch and signed status before resuming admission. Back to a release
-without the witness, confirm it is stopped and remove its line from the
-host emergency stop list once the unit link dangles. Retain the other
-services' stop commands. Preserve witness state and keep dependent homes
+pins, epoch and signed status before resuming admission. When returning to a
+release without the witness, confirm it is stopped. Keep its single-unit
+stop command in the host list. Once the target's daemon-reload unloads
+the unit, the switch accepts systemctl exit 5 on that stop, including
+when retrying an interrupted rollback. Preserve witness state and keep dependent homes
 suspended until an appropriate release is active again. The no-AI listener
 check continues to check the witness account after its unit link is removed.
 

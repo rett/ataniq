@@ -2363,8 +2363,8 @@ folder's alone.
   switch before anything changes when the owner's link of the unit (setup
   step 5, below) is missing; a link that dangles passes, as it must before
   the first switch. (`systemd-analyze verify` reads the release's own path,
-  so it passes without the link, and the reload's restart and the stop list's
-  stop would fail with exit 5 after `current` moved.)
+  so it passes without the link and the reload would fail to restart the seat
+  after `current` moved.)
 - `share/reload.list`: `systemctl daemon-reload`,
   `systemctl restart ataniq-seat.service`, `systemctl restart caddy`.
 - `share/health.cmd`: the front end's `/healthz`, and the seat's own over
@@ -2560,10 +2560,8 @@ ataniq-seat.service`): for the release a switch goes back from, and when
 no healthy release is left. The host's own `/etc/authority-host/stop.list`
 must stop every decision service of any release, so once the first switch
 to the seat's release ended `ok`, replace its line `/usr/bin/true` with
-`systemctl stop ataniq-seat.service` (not before: `systemctl stop` of a
-unit systemd does not know fails, exit 5, and a stop list that fails
-leaves a transaction in `stopping`). Until then the seat release's own
-list covers it. While the seat is stopped, decisions are not made at all;
+`systemctl stop ataniq-seat.service`. Use a separate stop command for each unit. The switch counts exit 5
+from `systemctl stop UNIT` as already stopped. While the seat is stopped, decisions are not made at all;
 the static status page stays.
 
 ### Rollback
@@ -2572,11 +2570,8 @@ the static status page stays.
 release's `stop.list` stops the seat, `current` goes back, and the earlier
 release's reload list runs. Back to another seat release, that restarts
 the seat from that release's binary. Back to the first (static) release,
-the seat stays stopped and the unit's link dangles: `systemctl stop
-ataniq-seat.service` then fails for a unit systemd does not know, so put
-`/usr/bin/true` back in the host's stop list (or remove the link) until
-a seat release is `current` again, or the next stop the host's list must
-make fails and the transaction stays in `stopping`. The seat's state is
+the seat stays stopped and the unit's link dangles. Its stop command can stay
+in the host list across rollbacks and retries. The seat's state is
 its key, in `/var/lib/seat`, which no switch touches; sessions are in
 memory and end with the process.
 
