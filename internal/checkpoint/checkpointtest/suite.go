@@ -291,6 +291,35 @@ func Run(t *testing.T, newWitness Factory) {
 		_, err = h.c.Advance(f.ctx, q)
 		want(t, err, cp.ErrStale)
 	})
+	t.Run("historical head", func(t *testing.T) {
+		f := start(t, newWitness)
+		h := f.home(t, "west", "s", "one", true)
+		s := f.claim(t, h, f.enroll(t, h), "claim")
+		first := advance(s, "first")
+		r, err := h.c.Advance(f.ctx, first)
+		check(t, err)
+		a, err := cp.VerifyReceipt(f.pin, r)
+		check(t, err)
+		later, err := h.c.Advance(f.ctx, advance(a.State, "second"))
+		check(t, err)
+		b, err := cp.VerifyReceipt(f.pin, later)
+		check(t, err)
+		_, err = h.c.Advance(f.ctx, first)
+		want(t, err, cp.ErrStale)
+		first.Next.Digest = digest("different")
+		_, err = h.c.Advance(f.ctx, first)
+		want(t, err, cp.ErrStale)
+		q := cp.ReadRequest{Slot: h.slot, Challenge: id("historical challenge"), ReceiptID: first.ID}
+		v, err := h.c.Read(f.ctx, q)
+		check(t, err)
+		if v.Current != b.State {
+			t.Fatal("historical lookup changed the current head")
+		}
+		check(t, cp.VerifyView(f.pin, q, v))
+		if v.Prior == nil || !same(*v.Prior, r) {
+			t.Fatal("missing historical receipt")
+		}
+	})
 	t.Run("replacement retry", func(t *testing.T) {
 		f := start(t, newWitness)
 		h := f.home(t, "west", "s", "one", true)

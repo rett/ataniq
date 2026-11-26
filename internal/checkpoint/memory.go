@@ -166,6 +166,7 @@ func (c *client) Read(ctx context.Context, q ReadRequest) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
+	// Current comes from the live slot even when Prior names an older head.
 	v := View{Current: e.state}
 	if history, ok := e.history[q.ReceiptID]; ok {
 		r := cloneReceipt(history.receipt)

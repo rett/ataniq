@@ -50,3 +50,29 @@ func TestReplacementRetryMutant(t *testing.T) {
 		})
 	})
 }
+
+type historicalClient struct {
+	cp.Client
+	pin ed25519.PublicKey
+}
+
+func (c historicalClient) Read(ctx context.Context, q cp.ReadRequest) (cp.View, error) {
+	v, err := c.Client.Read(ctx, q)
+	if err == nil && v.Prior != nil {
+		a, err := cp.VerifyReceipt(c.pin, *v.Prior)
+		if err != nil {
+			return cp.View{}, err
+		}
+		v.Current.Head = a.State.Head
+	}
+	return v, err
+}
+func TestHistoricalHeadMutant(t *testing.T) {
+	rejectMutant(t, "historical_head", "historical lookup changed the current head", func(h *checkpointtest.Harness) {
+		connect := h.Connect
+		h.Connect = func(s cp.Slot, home, session ed25519.PrivateKey, pin ed25519.PublicKey) (cp.Client, error) {
+			c, err := connect(s, home, session, pin)
+			return historicalClient{c, pin}, err
+		}
+	})
+}
