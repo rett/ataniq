@@ -451,3 +451,14 @@ func TestStartWithoutClient(t *testing.T) {
 		f.open(t, nil)
 	}
 }
+
+func TestStageRefusalReasons(t *testing.T) {
+	f := enrolled(t)
+	path := filepath.Join(f.root.Path, stageName)
+	check(t, os.Symlink(ledgerName, path))
+	f.refused(t, Insecure)
+	check(t, os.Remove(path))
+	put(t, path, []byte("{"))
+	f.w.Inhibit(true)
+	f.refused(t, Unreachable)
+}

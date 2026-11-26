@@ -249,7 +249,7 @@ func (f *fileLedger) Stage() ([]byte, error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, refuse(Interrupted, err)
+		return nil, refuse(Insecure, err)
 	}
 	defer func() { _ = file.Close() }()
 	if st.Size > stageLimit {
