@@ -86,9 +86,6 @@ func reduce(r Row, t Transfer, c Command, digest string) (Row, Transfer, error) 
 				return r, t, err
 			}
 		}
-		if old.Phase != PhaseAbortedClosed && c.Kind != RollbackFreeze {
-			required = nil
-		}
 		err = t.capture(&p, required)
 		if c.Kind == Seed && len(t.Outstanding) != 0 {
 			return r, t, ErrEvidence

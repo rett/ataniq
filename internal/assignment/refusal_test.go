@@ -114,3 +114,11 @@ func TestAbortCannotReopenAnUnconfirmedIncumbent(t *testing.T) {
 		t.Fatal(tr)
 	}
 }
+
+func TestFreezeRetainsConfirmedRoutes(t *testing.T) {
+	s := seeded(t)
+	c := next(s.ledger, key, Freeze, "T", "")
+	c.Evidence = slices.DeleteFunc(c.Evidence, func(e Evidence) bool { return e.Subject == "worker" || e.Kind == "effect" })
+	refused(t, s.ledger, c, ErrEvidence)
+	s.steps(t, "T", forwardSteps)
+}
