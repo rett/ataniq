@@ -432,3 +432,12 @@ func TestTraverseOnlyAncestor(t *testing.T) {
 	s := f.open(t, nil)
 	check(t, AppendAndAdvance(f.ctx, s, f.seed(t, s, "row")))
 }
+
+func TestRestrictiveUmask(t *testing.T) {
+	f := setup(t)
+	old := syscall.Umask(0777)
+	defer syscall.Umask(old)
+	check(t, f.enroll(nil))
+	s := f.open(t, nil)
+	check(t, AppendAndAdvance(f.ctx, s, f.seed(t, s, "row")))
+}

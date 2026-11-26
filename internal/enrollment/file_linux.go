@@ -99,6 +99,11 @@ func (f *fileLedger) open(name string, flags int) (*os.File, syscall.Stat_t, err
 		return nil, st, err
 	}
 	file := os.NewFile(uintptr(fd), name)
+	if flags&(syscall.O_CREAT|syscall.O_EXCL) == syscall.O_CREAT|syscall.O_EXCL {
+		if err := file.Chmod(0600); err != nil {
+			return nil, st, errors.Join(err, file.Close())
+		}
+	}
 	st, err = inspect(file, false)
 	if err != nil {
 		_ = file.Close()
