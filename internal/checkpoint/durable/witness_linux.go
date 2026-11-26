@@ -105,7 +105,8 @@ type Witness struct {
 	writeEntry                      func([]byte) (int, error)
 	writeFrame                      func([]byte) (int, error)
 	syncFile                        func(*os.File) error
-	armed, recoveryRequired         bool
+	armed                           bool
+	recovery                        cp.Inhibition
 }
 
 // Create exclusively initializes both files. A failed creation leaves its
@@ -119,12 +120,17 @@ func Open(c Config) (*Witness, error) { return start(c, openStore, nil) }
 // signed genesis and matching empty-ack index left by an interrupted Create.
 func CompletePublication(c Config) (*Witness, error) { return start(c, completeStore, nil) }
 
+// OpenForRecovery lets the local owner inspect a re-proved poisoned store,
+// or a verified staged genesis. Only CompletePublication can publish it.
+func OpenForRecovery(c Config) (*Witness, error) { return start(c, inspectStore, nil) }
+
 type startMode int
 
 const (
 	openStore startMode = iota
 	createStore
 	completeStore
+	inspectStore
 )
 
 func textOK(s string) bool {
@@ -202,7 +208,7 @@ func start(c Config, mode startMode, fault func(string) error) (*Witness, error)
 			return nil, err
 		}
 		_, err = w.commit(record{Seq: 1, Identity: &id, HomeKeyID: homeID, Op: "create"}, change{})
-	} else if mode == completeStore {
+	} else if w.stagingPrefix != "" {
 		err = w.verifyStagedGenesis(homeID)
 	} else {
 		err = w.replay(homeID, w.journal, w.lockFile)
@@ -216,7 +222,7 @@ func start(c Config, mode startMode, fault func(string) error) (*Witness, error)
 	if err != nil || !cp.VerifyDisposition(c.Pin, id.Epoch, probe, "startup-probe", sig) {
 		return nil, ErrIdentity
 	}
-	if mode != openStore {
+	if mode == createStore || mode == completeStore {
 		if err = w.publishPair(); err != nil {
 			return nil, err
 		}
@@ -231,7 +237,7 @@ func (w *Witness) Close() error {
 		return nil
 	}
 	defer w.unlock()
-	clean := w.armed && !w.stopped && !w.recoveryRequired
+	clean := w.armed && !w.stopped && w.recovery == ""
 	w.stopped = true
 	var err error
 	if w.journal != nil {

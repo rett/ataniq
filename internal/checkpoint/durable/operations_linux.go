@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"math"
 	"slices"
+	"syscall"
 
 	"ataniq/internal/assignment"
 	cp "ataniq/internal/checkpoint"
@@ -14,12 +15,8 @@ import (
 
 type admin struct{ w *Witness }
 
-// Administration is the local owner capability. Acknowledgement requires a
-// successfully reopened store. The home and network link have no such operation.
-type Administration interface {
-	cp.Administration
-	AcknowledgeStorageError(context.Context) error
-}
+// Administration is the local owner capability, also served on the owner socket.
+type Administration = cp.RecoveryAdministration
 
 func (w *Witness) Administration() Administration { return admin{w} }
 func (a admin) AcknowledgeStorageError(ctx context.Context) error {
@@ -27,7 +24,18 @@ func (a admin) AcknowledgeStorageError(ctx context.Context) error {
 		return err
 	}
 	defer a.w.unlock()
-	a.w.recoveryRequired = false
+	if a.w.stagingPrefix != "" {
+		return ErrPublication
+	}
+	if a.w.recovery == cp.StorageFailure {
+		if err := syscall.Unlinkat(int(a.w.dir.Fd()), poisonName); err != nil {
+			return err
+		}
+		if err := a.w.dir.Sync(); err != nil {
+			return a.w.poison(err)
+		}
+	}
+	a.w.recovery = ""
 	return nil
 }
 func (a admin) Enroll(ctx context.Context, q cp.Enrollment) (cp.Receipt, error) {
@@ -189,7 +197,7 @@ func (w *Witness) prepare(r record, replay bool) (change, cp.Receipt, error) {
 	limit := w.limit
 	if replay {
 		limit = maxReceipts
-	} else if w.inhibited || w.recoveryRequired {
+	} else if w.inhibited || w.recovery != "" {
 		return c, empty, cp.ErrUnavailable
 	}
 	switch {

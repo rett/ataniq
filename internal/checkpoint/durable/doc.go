@@ -56,10 +56,19 @@
 // Before journal I/O the witness durably creates recovery.pending. A clean close
 // removes it. Process death leaves this marker. After recovery every new
 // transition stays inhibited until Administration().AcknowledgeStorageError.
+// Even an idle kill leaves recovery.pending. Tail re-proof establishes that
+// the surviving bytes can be written now. It cannot establish that a previous
+// writeback failure was never reported: that same fault can prevent persistence
+// of poisoned. The owner therefore checks every unclean end.
 // A reported write or sync error stops service and creates and syncs a second
 // marker, poisoned, on a best-effort basis. Open refuses while it exists.
-// An I/O error on this directory requires the owner's check and repair before
-// removing poisoned and reopening. On every Open, replay rewrites the last
+// After checking and repairing storage, the owner can use OpenForRecovery
+// to re-prove the journal while retaining poisoned. Administration.Status signs
+// the reason, counts and directory head under the caller's fresh challenge,
+// including before enrollment. AcknowledgeStorageError clears the poison
+// marker and recovery inhibition after re-proof. The service guard is independent.
+// OpenForRecovery can also inspect a provable interrupted genesis without
+// publishing it. Completing publication requires the offline owner call. On every Open, replay rewrites the last
 // validated frame and index entry in place and syncs both files and the directory
 // before signing or serving. Torn or corrupt evidence still prevents Open.
 package durable

@@ -949,3 +949,63 @@ func TestPreserveAcknowledgedPublication(t *testing.T) {
 		})
 	}
 }
+
+func TestStatusBeforeEnrollment(t *testing.T) {
+	c := config(t, testKey("status"))
+	w := create(t, c)
+	check := func(ch cp.ID, reason cp.Inhibition, slots, receipts, fences uint64) cp.DirectoryStatus {
+		t.Helper()
+		r, err := w.Administration().Status(t.Context(), ch)
+		must(t, err)
+		status, err := cp.VerifyDirectoryStatus(c.Pin, c.Identity.Epoch, ch, r)
+		must(t, err)
+		if status.Inhibition != reason || status.Sequence != 1+receipts+fences || status.Slots != slots ||
+			status.Receipts != receipts || status.Fences != fences || status.Digest != hex.EncodeToString(w.previous[:]) {
+			t.Fatal(status)
+		}
+		ch[31] ^= 1
+		if _, err := cp.VerifyDirectoryStatus(c.Pin, c.Identity.Epoch, ch, r); err == nil {
+			t.Fatal("accepted stale challenge")
+		}
+		return status
+	}
+	before := check(cp.ID{1}, cp.ServiceInhibited, 0, 0, 0)
+	q := fixtureEnrollment(t, w)
+	_, err := w.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{9})
+	if !errors.Is(err, cp.ErrNotApplied) {
+		t.Fatal(err)
+	}
+	after := check(cp.ID{2}, cp.Ready, 0, 0, 1)
+	if before.Digest == after.Digest {
+		t.Fatal("fence did not advance directory head")
+	}
+	_, err = w.Administration().Enroll(t.Context(), q)
+	must(t, err)
+	check(cp.ID{3}, cp.Ready, 1, 1, 1)
+	must(t, w.Close())
+	must(t, os.WriteFile(filepath.Join(c.Directory, recoveryName), nil, 0600))
+	w = reopen(t, c)
+	check(cp.ID{4}, cp.UncleanEnd, 1, 1, 1)
+}
+
+func TestInspectInterruptedPublication(t *testing.T) {
+	c := config(t, testKey("process"))
+	child(t, c, "published-"+lockName, 79)
+	w, err := OpenForRecovery(c)
+	must(t, err)
+	defer w.Close()
+	ch := cp.ID{1}
+	r, err := w.Administration().Status(t.Context(), ch)
+	must(t, err)
+	s, err := cp.VerifyDirectoryStatus(c.Pin, 1, ch, r)
+	must(t, err)
+	if s.Inhibition != cp.InterruptedPublication || s.Sequence != 1 {
+		t.Fatal(s)
+	}
+	if err := w.Administration().AcknowledgeStorageError(t.Context()); !errors.Is(err, ErrPublication) {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(c.Directory, journalName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+}

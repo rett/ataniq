@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 
+	cp "ataniq/internal/checkpoint"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -38,7 +40,10 @@ func (w *Witness) checkPoison() error {
 	if err != nil {
 		return err
 	}
-	return errors.Join(ErrPoisoned, marker.Close())
+	if err := marker.Close(); err != nil {
+		return err
+	}
+	return ErrPoisoned
 }
 
 // Persist the marker before any journal write or replay sync. A failed device
@@ -49,7 +54,9 @@ func (w *Witness) arm() error {
 	}
 	marker, err := openFile(w.dir, recoveryName, syscall.O_RDWR|syscall.O_CREAT|syscall.O_EXCL)
 	if errors.Is(err, os.ErrExist) {
-		w.recoveryRequired = true
+		if w.recovery == "" {
+			w.recovery = cp.UncleanEnd
+		}
 		marker, err = openFile(w.dir, recoveryName, syscall.O_RDONLY)
 	}
 	if err != nil {
@@ -281,13 +288,17 @@ func (w *Witness) openPair(mode startMode, key *os.File) error {
 		if state != nil {
 			return state
 		}
-	case completeStore:
+	case completeStore, inspectStore:
+		if mode == inspectStore && state == nil {
+			break
+		}
 		if state != ErrPublication {
 			if state == nil {
 				return os.ErrExist
 			}
 			return state
 		}
+		w.recovery = cp.InterruptedPublication
 		w.stagingPrefix, err = p.stagedPrefix()
 		if err != nil {
 			return err
@@ -297,7 +308,10 @@ func (w *Witness) openPair(mode startMode, key *os.File) error {
 		return err
 	}
 	if err := w.checkPoison(); err != nil {
-		return err
+		if mode != inspectStore || w.stagingPrefix != "" || err != ErrPoisoned {
+			return err
+		}
+		w.recovery = cp.StorageFailure
 	}
 	flags := syscall.O_RDWR | syscall.O_APPEND
 	if mode == createStore {

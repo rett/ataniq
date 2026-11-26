@@ -97,7 +97,7 @@ func (w *Witness) read(q cp.ReadRequest) (cp.View, error) {
 		}
 	}
 	guard := "ready"
-	if w.inhibited || w.recoveryRequired {
+	if w.inhibited || w.recovery != "" {
 		guard = "inhibited"
 	}
 	b, err := canonical(map[string]any{"schema": 1, "operation": "read", "audience": q.Slot.Authority, "key_id": w.keyID,
@@ -112,4 +112,36 @@ func (w *Witness) read(q cp.ReadRequest) (cp.View, error) {
 	}
 	v.Fresh = cp.Receipt{Body: b, Signature: sig}
 	return v, cp.VerifyView(w.pin, q, v)
+}
+
+func (a admin) Status(ctx context.Context, challenge cp.ID) (cp.Receipt, error) {
+	w := a.w
+	if err := w.enter(ctx); err != nil {
+		return cp.Receipt{}, err
+	}
+	defer w.unlock()
+	reason := w.recovery
+	if reason == "" {
+		reason = cp.Ready
+		if w.inhibited {
+			reason = cp.ServiceInhibited
+		}
+	}
+	s := cp.DirectoryStatus{Epoch: w.identity.Epoch, Sequence: w.seq, Digest: hex.EncodeToString(w.previous[:]), Inhibition: reason, Slots: uint64(len(w.slots))}
+	for _, entry := range w.history {
+		if entry.receipt.Body == nil {
+			s.Fences++
+		} else {
+			s.Receipts++
+		}
+	}
+	body, err := s.Body(challenge)
+	if err != nil {
+		return cp.Receipt{}, err
+	}
+	sig, err := w.sign(body)
+	if err != nil {
+		return cp.Receipt{}, err
+	}
+	return cp.Receipt{Body: body, Signature: sig}, nil
 }
