@@ -8,14 +8,12 @@ import (
 type allowance byte
 
 const (
-	mutations allowance = iota
-	ordinaryReads
+	ordinary allowance = iota
 	recoveryReads
-	grantChecks
 )
 
 // Each authenticated signing key has a rolling minute of 60 calls in each
-// class, shared across its connections. Only a key with a live grant and a
+// of the ordinary and recovery classes, shared across its connections. Only a key with a live grant and a
 // valid signature can consume a home budget.
 type minute struct {
 	times [60]time.Time
@@ -32,10 +30,11 @@ func (m *minute) take(now time.Time) bool {
 }
 
 type peerBudget struct {
-	windows [4]minute
+	windows [2]minute
 	last    time.Time
 }
 type limiter struct {
+	now   func() time.Time
 	mu    sync.Mutex
 	peers map[string]*peerBudget
 	owner peerBudget
@@ -45,6 +44,9 @@ func (l *limiter) allow(key string, pool allowance) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
+	if l.now != nil {
+		now = l.now()
+	}
 	if key == "owner" {
 		return l.owner.windows[pool].take(now)
 	}

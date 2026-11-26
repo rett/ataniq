@@ -2,6 +2,7 @@
 package frame
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -28,11 +29,13 @@ const (
 	Failure                   // one closed-set error code
 	Connect                   // signed home grant check, same fields as Read
 	Granted                   // empty response to Connect
+	Poll                      // witness requests one home request
+	Idle                      // no home request waiting
 )
 
 var arity = [...]int{
 	Read: 3, OwnerRead: 1, Claim: 5, Advance: 5, Enroll: 2, Release: 1, Retire: 1,
-	Receipt: 2, View: 1, Fresh: 2, Prior: 2, Failure: 1, Connect: 3, Granted: 0,
+	Receipt: 2, View: 1, Fresh: 2, Prior: 2, Failure: 1, Connect: 3, Granted: 0, Poll: 0, Idle: 0,
 }
 var ErrProtocol = errors.New("checkpoint link: invalid frame")
 
@@ -65,6 +68,11 @@ func (m Message) Marshal() ([]byte, error) {
 }
 
 func ReadMessage(r io.Reader) (Message, error) {
+	return ReadAfterHeader(r, nil)
+}
+
+// ReadAfterHeader invokes ready once after validating the length prefix.
+func ReadAfterHeader(r io.Reader, ready func() error) (Message, error) {
 	var prefix [4]byte
 	if _, err := io.ReadFull(r, prefix[:]); err != nil {
 		return Message{}, err
@@ -72,6 +80,11 @@ func ReadMessage(r io.Reader) (Message, error) {
 	size := binary.BigEndian.Uint32(prefix[:])
 	if size < 2 || size > checkpoint.MaxFrame {
 		return Message{}, ErrProtocol
+	}
+	if ready != nil {
+		if err := ready(); err != nil {
+			return Message{}, err
+		}
 	}
 	b := make([]byte, size)
 	if _, err := io.ReadFull(r, b); err != nil {
@@ -92,7 +105,7 @@ func ReadMessage(r io.Reader) (Message, error) {
 		if uint64(n) > uint64(len(b)) {
 			return Message{}, ErrProtocol
 		}
-		m.Fields[i], b = b[:n], b[n:]
+		m.Fields[i], b = bytes.Clone(b[:n]), b[n:]
 	}
 	if len(b) != 0 {
 		return Message{}, ErrProtocol

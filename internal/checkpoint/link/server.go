@@ -10,6 +10,7 @@ import (
 	"net"
 	"slices"
 	"sync"
+	"syscall"
 	"time"
 
 	cp "ataniq/internal/checkpoint"
@@ -20,7 +21,7 @@ import (
 // Witness rechecks the live grant for each request. RawSubmit verifies the
 // exact body and both signatures under the witness's mutation contract.
 type Witness interface {
-	CheckHome(cp.Slot, ed25519.PublicKey) error
+	CheckHome(context.Context, cp.Slot, ed25519.PublicKey) error
 	ReadHome(context.Context, cp.ReadRequest, ed25519.PublicKey) (cp.View, error)
 	RawSubmit(context.Context, cp.Slot, ed25519.PublicKey, string, []byte, []byte, []byte) (cp.Receipt, error)
 }
@@ -29,12 +30,13 @@ const requestTimeout = 30 * time.Second
 const handshakeTimeout = 5 * time.Second
 
 type Server struct {
-	id           seatgate.Identity
-	witnessKeyID string
-	witnessPin   ed25519.PublicKey
-	timeout      time.Duration
-	connections  chan struct{}
-	limits       limiter
+	id            seatgate.Identity
+	witnessKeyID  string
+	witnessPin    ed25519.PublicKey
+	timeout       time.Duration
+	ownerCapacity int
+	polls         chan struct{}
+	limits        limiter
 }
 
 func NewServer(id seatgate.Identity, witnessPin ed25519.PublicKey) (*Server, error) {
@@ -42,16 +44,10 @@ func NewServer(id seatgate.Identity, witnessPin ed25519.PublicKey) (*Server, err
 	if err != nil || id.Fingerprint() == "" {
 		return nil, cp.ErrRefused
 	}
-	return &Server{id: id, witnessKeyID: wid, witnessPin: slices.Clone(witnessPin), timeout: requestTimeout, connections: make(chan struct{}, 8)}, nil
-}
-
-// Serve accepts home-signed requests. Close the listener to stop serving.
-// It returns after all exchanges have finished or been cancelled.
-func (s *Server) Serve(l net.Listener, w Witness) error {
-	if w == nil {
-		return cp.ErrRefused
-	}
-	return s.serve(l, serverTLS(s.id, ""), w, nil)
+	return &Server{
+		id: id, witnessKeyID: wid, witnessPin: slices.Clone(witnessPin),
+		timeout: requestTimeout, ownerCapacity: 2, polls: make(chan struct{}, 6),
+	}, nil
 }
 
 // ServeOwner is a separate owner endpoint. Supply a private local listener
@@ -70,57 +66,85 @@ func (s *Server) ServeOwner(l net.Listener, a cp.Administration, ownerPin string
 	default:
 		return cp.ErrRefused
 	}
-	return s.serve(l, serverTLS(s.id, ownerPin), nil, a)
+	return serveListener(l, serverTLS(s.id, ownerPin), s.ownerCapacity, s.timeout, func(ctx context.Context, conn *tls.Conn, m frame.Message) {
+		_ = s.reply(ctx, conn, nil, a, m)
+	})
 }
 
-func (s *Server) serve(l net.Listener, cfg *tls.Config, w Witness, a cp.Administration) error {
+func transientAccept(err error) bool {
+	var n net.Error
+	return !errors.Is(err, net.ErrClosed) && (errors.As(err, &n) && n.Timeout() ||
+		errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) ||
+		errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM))
+}
+
+func serveListener(l net.Listener, cfg *tls.Config, capacity int, timeout time.Duration, handle func(context.Context, *tls.Conn, frame.Message)) error {
+	connections := make(chan struct{}, capacity)
+	var pending handshakes
 	ctx, cancel := context.WithCancel(context.Background())
 	var workers sync.WaitGroup
 	defer func() { cancel(); workers.Wait() }()
+	delay := 5 * time.Millisecond
 	for {
 		c, err := l.Accept()
 		if err != nil {
-			return err
+			if !transientAccept(err) {
+				return err
+			}
+			time.Sleep(delay)
+			delay = min(delay*2, time.Second)
+			continue
 		}
-		select {
-		case s.connections <- struct{}{}:
-		default:
+		delay = 5 * time.Millisecond
+		source := peerSource(c)
+		if !pending.acquire(source) {
 			c.Close()
 			continue
 		}
 		workers.Go(func() {
-			defer func() { <-s.connections }()
 			defer c.Close()
 			stop := context.AfterFunc(ctx, func() { c.Close() })
 			defer stop()
-			conn := tls.Server(c, cfg)
-			if c.SetDeadline(time.Now().Add(handshakeTimeout)) != nil || conn.HandshakeContext(ctx) != nil {
+			conn := tls.Server(&countedConn{Conn: c}, cfg)
+			authenticated := c.SetDeadline(time.Now().Add(handshakeTimeout)) == nil && conn.HandshakeContext(ctx) == nil
+			pending.release(source)
+			if !authenticated {
 				return
 			}
-			reqCtx, done := context.WithTimeout(ctx, s.timeout)
+			select {
+			case connections <- struct{}{}:
+				defer func() { <-connections }()
+			default:
+				return
+			}
+			reqCtx, done := context.WithTimeout(ctx, timeout)
 			defer done()
 			deadline, _ := reqCtx.Deadline()
-			if c.SetDeadline(deadline) != nil {
+			if c.SetDeadline(time.Now().Add(min(timeout, 2*time.Second))) != nil {
 				return
 			}
-			m, err := frame.ReadMessage(conn)
+			m, err := frame.ReadAfterHeader(conn, func() error { return c.SetDeadline(deadline) })
 			if err != nil {
 				return
 			}
-			replies, err := s.dispatch(reqCtx, w, a, m)
-			if errors.Is(err, frame.ErrProtocol) {
-				return
-			}
-			if err != nil {
-				replies = []frame.Message{encodeError(err)}
-			}
-			for _, reply := range replies {
-				if reply.WriteToStream(conn) != nil {
-					return
-				}
-			}
+			handle(reqCtx, conn, m)
 		})
 	}
+}
+func (s *Server) reply(ctx context.Context, conn *tls.Conn, w Witness, a cp.Administration, m frame.Message) error {
+	replies, err := s.dispatch(ctx, w, a, m)
+	if errors.Is(err, frame.ErrProtocol) {
+		return err
+	}
+	if err != nil {
+		replies = []frame.Message{encodeError(err)}
+	}
+	for _, reply := range replies {
+		if err := reply.WriteToStream(conn); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m frame.Message) ([]frame.Message, error) {
@@ -138,17 +162,14 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 		}
 		peer := "owner"
 		if w != nil {
-			if err := authenticate(w, q.Slot, f[1], f[0], f[2]); err != nil {
+			if err := authenticate(ctx, w, q.Slot, f[1], f[0], f[2]); err != nil {
 				return nil, err
 			}
 			peer = string(f[1])
 		}
-		pool := ordinaryReads
-		if q.ReceiptID != (cp.ID{}) {
+		pool := ordinary
+		if m.Kind != frame.Connect && q.ReceiptID != (cp.ID{}) {
 			pool = recoveryReads
-		}
-		if m.Kind == frame.Connect {
-			pool = grantChecks
 		}
 		if !s.limits.allow(peer, pool) {
 			return nil, cp.ErrUnavailable
@@ -186,10 +207,10 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 		if !exactJSON(f[0], &slot) || !validSlot(slot) {
 			return nil, frame.ErrProtocol
 		}
-		if err := authenticate(w, slot, f[1], f[2], f[3]); err != nil {
+		if err := authenticate(ctx, w, slot, f[1], f[2], f[3]); err != nil {
 			return nil, err
 		}
-		if !s.limits.allow(string(f[1]), mutations) {
+		if !s.limits.allow(string(f[1]), ordinary) {
 			return nil, cp.ErrUnavailable
 		}
 		receipt, err = w.RawSubmit(ctx, slot, f[1], operation[m.Kind], f[2], f[3], f[4])
@@ -197,7 +218,7 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 		if a == nil {
 			return nil, cp.ErrRefused
 		}
-		if !s.limits.allow("owner", mutations) {
+		if !s.limits.allow("owner", ordinary) {
 			return nil, cp.ErrUnavailable
 		}
 		intent, parseErr := cp.ParseIntent(operation[m.Kind], s.witnessKeyID, f[0])
@@ -225,15 +246,15 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 }
 
 func exactJSON(b []byte, out any) bool {
-	if json.Unmarshal(b, out) != nil {
+	if !decodeJSON(b, out) {
 		return false
 	}
 	encoded, err := json.Marshal(out)
 	return err == nil && bytes.Equal(b, encoded)
 }
 
-func authenticate(w Witness, slot cp.Slot, key, body, sig []byte) error {
-	if err := w.CheckHome(slot, key); err != nil {
+func authenticate(ctx context.Context, w Witness, slot cp.Slot, key, body, sig []byte) error {
+	if err := w.CheckHome(ctx, slot, key); err != nil {
 		return err
 	}
 	if cp.VerifySignature(cp.HomeNamespace, key, body, sig) != nil {

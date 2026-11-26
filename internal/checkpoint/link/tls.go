@@ -1,5 +1,5 @@
 // Package link carries checkpoint requests from a home to its configured
-// authority. Each outbound TLS connection carries one exchange. A lost
+// authority over connections polled by the witness. A lost
 // mutation reply is reconciled by a challenged Read with the saved ReceiptID
 // and, when appropriate, a retry of the identical intent.
 package link
@@ -27,12 +27,8 @@ func checkpointTLS(cfg *tls.Config) *tls.Config {
 	return cfg
 }
 
-func serverTLS(id seatgate.Identity, ownerPin string) *tls.Config {
-	cfg := seatgate.ServerTLS(id, []string{ownerPin})
-	if ownerPin == "" {
-		cfg.ClientAuth = tls.NoClientCert
-		cfg.VerifyPeerCertificate = nil
-	}
+func serverTLS(id seatgate.Identity, peerPin string) *tls.Config {
+	cfg := seatgate.ServerTLS(id, []string{peerPin})
 	return checkpointTLS(cfg)
 }
 

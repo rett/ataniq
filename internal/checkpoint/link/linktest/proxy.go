@@ -27,6 +27,9 @@ func (p *Proxy) Forward(client, witness io.ReadWriter) error {
 	if err := req.WriteToStream(witness); err != nil {
 		return err
 	}
+	if req.Kind == frame.Idle {
+		return nil
+	}
 	first, err := frame.ReadMessage(witness)
 	if err != nil {
 		return err
