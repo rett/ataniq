@@ -57,11 +57,16 @@ func (t *txn) kind() string {
 // errNoFallback: the transaction has no earlier release to go back to.
 var errNoFallback = errors.New("no earlier release")
 
+// openStoredTree checks the protected tree and all its file hashes.
+func (s *Switcher) openStoredTree(id ReleaseID) (*release, error) {
+	b := &budget{lim: s.cfg.Limits, deadline: s.cfg.Now().Add(s.cfg.Limits.Time), now: s.cfg.Now}
+	return openRelease(id, s.relRoot, id.Name, filepath.Join(s.base(), "releases", id.Name), s.entryTrusted, b)
+}
+
 // openVerified opens releases/<id> and verifies it as the switch policy and
 // the transaction's trust say.
 func (s *Switcher) openVerified(ctx context.Context, id ReleaseID) (*release, error) {
-	b := &budget{lim: s.cfg.Limits, deadline: s.cfg.Now().Add(s.cfg.Limits.Time), now: s.cfg.Now}
-	rel, err := openRelease(id, s.relRoot, id.Name, filepath.Join(s.base(), "releases", id.Name), s.entryTrusted, b)
+	rel, err := s.openStoredTree(id)
 	if err != nil {
 		return nil, err
 	}
@@ -459,12 +464,12 @@ func (s *Switcher) stop(ctx context.Context, t *txn) error {
 	} else if !errors.Is(err, errNoFallback) {
 		s.printf("stop: the stop list of the earlier release is not run: it cannot be verified (%s)", describe(err))
 	}
-	if err := s.confirmStopped(ctx, t, t.j.ID, cand, &t.j.CandidateUnits); err != nil {
+	if err := s.confirmStopped(ctx, t.j.ID, t.j.CandidateUnits); err != nil {
 		failures = append(failures, describe(err))
 	}
 	if t.j.OldCurrent != "" {
 		old, _ := s.targetID(t.j.OldCurrent)
-		if err := s.confirmStopped(ctx, t, old.Name, fb, &t.j.OldUnits); err != nil {
+		if err := s.confirmStopped(ctx, old.Name, t.j.OldUnits); err != nil {
 			failures = append(failures, describe(err))
 		}
 	}

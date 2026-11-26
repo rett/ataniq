@@ -10,12 +10,13 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
+
+	"ataniq/internal/authorityhost/noaicheck"
 )
 
 // The names a release folder holds at its top.
@@ -195,7 +196,7 @@ type release struct {
 	b     *budget // nil: no limit (a test's look at a release)
 	sums  []byte
 	files int
-	units []string // canonical file names, from the verified tree
+	units []string // service names from the verified files and their drop-ins
 	// digest is the tree's digest (see treeDigest), set by verify.
 	digest string
 	// Set by checkRelease.
@@ -359,13 +360,17 @@ func (r *release) verify(trust entryCheck) error {
 	}
 	r.units = []string{}
 	for _, p := range paths {
-		if strings.HasPrefix(p, "etc/systemd/") && strings.HasSuffix(p, ".service") {
-			name := filepath.Base(p)
-			if !serviceName.MatchString(name) || len(name) > 255 {
-				return failf(CodeBadEntry, "invalid service unit name %s", q(name))
-			}
-			r.units = append(r.units, name)
+		if !strings.HasPrefix(p, "etc/systemd/") {
+			continue
 		}
+		name := noaicheck.ReleaseUnitName(p)
+		if !strings.HasSuffix(name, ".service") {
+			continue
+		}
+		if !serviceName.MatchString(name) || len(name) > 255 {
+			return failf(CodeBadEntry, "invalid service unit name %s", q(name))
+		}
+		r.units = append(r.units, name)
 	}
 	slices.Sort(r.units)
 	r.units = slices.Compact(r.units)

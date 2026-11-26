@@ -219,7 +219,7 @@ func (c *Checker) CheckRelease(dir string) error {
 		if u.bad {
 			c.hit(KindIncomplete, PathEnvSyntax, at(p))
 		}
-		dir, name, dropin := releaseUnitName(e.rel)
+		dir, name, dropin := releaseUnitLocation(e.rel)
 		key := strconv.FormatBool(userUnitPath(p)) + "\x00" + dir + "\x00" + name
 		ru := units[key]
 		if ru == nil {
@@ -350,13 +350,23 @@ type releaseFile struct {
 	r     *envParse
 }
 
-// releaseUnitName returns the unit the release file rel (where it sits,
+// ReleaseUnitName maps a shipped systemd file to its unit name. A .conf
+// drop-in names the unit alongside its directory. A unit file names itself.
+func ReleaseUnitName(rel string) string {
+	if strings.HasSuffix(rel, ".conf") {
+		_, name, _ := releaseUnitLocation(rel)
+		return name
+	}
+	return path.Base(rel)
+}
+
+// releaseUnitLocation returns the unit the release file rel (where it sits,
 // not where a link leads) belongs to, and the folder holding that unit:
 // the unit of its folder and the folder above, and true, when its folder
 // is a drop-in folder ("app.service.d"); its own name and folder
 // otherwise. A type's or a prefix's drop-in folder ("service.d") is a
 // unit of its own, as for installed units.
-func releaseUnitName(rel string) (dir, name string, dropin bool) {
+func releaseUnitLocation(rel string) (dir, name string, dropin bool) {
 	folder := path.Dir(rel)
 	if base := path.Base(folder); isDropinDir(base) && folder != "." {
 		return path.Dir(folder), strings.TrimSuffix(base, ".d"), true

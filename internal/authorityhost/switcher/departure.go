@@ -3,55 +3,12 @@ package switcher
 import (
 	"context"
 	"errors"
-	"fmt"
-	"io/fs"
-	"path"
 	"regexp"
 	"slices"
 	"strings"
 )
 
-// Keep the inventories of both verified trees. Either can become the
-// departing release if activation fails or an interrupted switch goes back.
-const systemUnits = "etc/systemd/system"
-
 var serviceName = regexp.MustCompile(`^[a-zA-Z0-9_.@:+-]+\.service$`)
-
-// installedUnits recovers names for legacy state without an inventory.
-// Read the target text even when current has moved and the link dangles.
-func (s *Switcher) installedUnits(id string) ([]string, error) {
-	dir, err := s.openTrusted(systemUnits, false)
-	if err != nil {
-		return nil, err
-	}
-	defer dir.Close()
-	entries, err := fs.ReadDir(dir.FS(), ".")
-	if err != nil {
-		return nil, err
-	}
-	var names []string
-	for _, entry := range entries {
-		if entry.Type()&fs.ModeSymlink == 0 || !strings.HasSuffix(entry.Name(), ".service") {
-			continue
-		}
-		target, err := dir.Readlink(entry.Name())
-		if err != nil {
-			return nil, err
-		}
-		if !path.IsAbs(target) {
-			target = path.Join("/", systemUnits, target)
-		}
-		parent := path.Dir(target)
-		if parent == path.Join("/", BaseDir, "current", systemUnits) || parent == path.Join("/", BaseDir, "releases", id, systemUnits) {
-			names = append(names, path.Base(target))
-		}
-	}
-	if len(names) == 0 {
-		return nil, fmt.Errorf("no installed release unit links for %s", id)
-	}
-	slices.Sort(names)
-	return slices.Compact(names), nil
-}
 
 // checkInactive accepts only a complete, single-unit manager observation.
 // Exit 3 alone also covers failed and transitional states.
@@ -90,23 +47,26 @@ func (s *Switcher) checkInactive(ctx context.Context, units, restarted []string)
 	return nil
 }
 
-// stopDeparting runs both stop lists, then checks the actual shipped units.
-// Old journals can lack inventory. Save recovered names before relying on
-// them so a later retry can proceed even if the tree or a link disappears.
+// departing selects the recorded inventory for the direction of activation.
+// OldCurrent is empty on first deployment and otherwise a checked releases/<id>.
+func (j *journal) departing(restoring bool) (string, *[]string) {
+	if restoring {
+		return j.ID, &j.CandidateUnits
+	}
+	return strings.TrimPrefix(j.OldCurrent, "releases/"), &j.OldUnits
+}
+
+// stopDeparting runs both stop lists, then checks the recorded services.
 func (s *Switcher) stopDeparting(ctx context.Context, t *txn, restoring bool) error {
+	id, names := t.j.departing(restoring)
+	if id == "" {
+		return nil
+	}
 	var rel *release
 	var err error
-	id := t.j.ID
-	names := &t.j.CandidateUnits
 	if restoring {
 		rel, err = s.candidate(ctx, t)
 	} else {
-		if t.j.OldCurrent == "" {
-			return nil
-		}
-		old, _ := s.targetID(t.j.OldCurrent)
-		id = old.Name
-		names = &t.j.OldUnits
 		rel, err = s.fallback(ctx, t)
 	}
 	var failures []string
@@ -121,7 +81,7 @@ func (s *Switcher) stopDeparting(ctx context.Context, t *txn, restoring bool) er
 	} else {
 		failures = append(failures, s.runStops(ctx, id, rel.stops)...)
 	}
-	if err := s.confirmStopped(ctx, t, id, rel, names); err != nil {
+	if err := s.confirmStopped(ctx, id, *names); err != nil {
 		return err
 	}
 	if len(failures) > 0 {
@@ -132,29 +92,9 @@ func (s *Switcher) stopDeparting(ctx context.Context, t *txn, restoring bool) er
 
 // confirmStopped also serves the terminal stopping phase, which runs all
 // executable stop lists before checking either release.
-func (s *Switcher) confirmStopped(ctx context.Context, t *txn, id string, rel *release, names *[]string) error {
-	if *names == nil {
-		if rel != nil {
-			*names = rel.units
-		} else {
-			rec, _, err := s.readRecord()
-			if err != nil {
-				return err
-			}
-			if rec.CurrentID == id {
-				*names = rec.CurrentUnits
-			}
-			if *names == nil {
-				units, err := s.installedUnits(id)
-				if err != nil {
-					return failf(CodeStopFailed, "cannot identify services of %s: %s; decisions stay inhibited", id, q(err.Error()))
-				}
-				*names = units
-			}
-		}
-		if err := s.save(t); err != nil {
-			return err
-		}
+func (s *Switcher) confirmStopped(ctx context.Context, id string, names []string) error {
+	if names == nil {
+		return failf(CodeStopFailed, "missing service inventory for %s; decisions stay inhibited. Stop the decision services, restore the original imported release, run ah-switch recover --services-stopped and retry", id)
 	}
-	return s.checkInactive(ctx, *names, nil)
+	return s.checkInactive(ctx, names, nil)
 }

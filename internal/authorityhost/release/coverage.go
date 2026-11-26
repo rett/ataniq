@@ -214,20 +214,10 @@ func (c *checker) units(root *os.Root, files map[string]entry, relDir string, wi
 		if len(execs) == 0 {
 			continue
 		}
-		out = append(out, unit{path: p, name: unitName(p), execs: execs})
+		name := noaicheck.ReleaseUnitName(p)
+		out = append(out, unit{path: p, name: strings.TrimSuffix(name, ".service"), execs: execs})
 	}
 	return out, complete
-}
-
-// unitName is the name of the unit a file under etc/systemd belongs to,
-// without ".service": the file's own, or for a drop-in the folder's
-// ("app.service.d/10-x.conf" belongs to "app").
-func unitName(p string) string {
-	base := path.Base(p)
-	if dir := path.Base(path.Dir(p)); strings.HasSuffix(dir, ".d") {
-		base = strings.TrimSuffix(dir, ".d")
-	}
-	return strings.TrimSuffix(base, ".service")
 }
 
 // parseUnit reads the physical lines of a unit that passed UnitTextSafe.

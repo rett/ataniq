@@ -137,11 +137,8 @@ func TestWitnessStopExitFiveIsSpecific(t *testing.T) {
 
 func TestWitnessRollbackProvesDeparture(t *testing.T) {
 	const unit = "ataniq-witness.service"
-	for _, legacy := range []bool{false, true} {
-		name := "recorded"
-		if legacy {
-			name = "installed link"
-		}
+	for _, name := range []string{"recorded", "installed link", "legacy-partial-links", "legacy-intact-tree"} {
+		legacy := name != "recorded"
 		t.Run(name, func(t *testing.T) {
 			e := newEnv(t)
 			e.release(rel1, "s")
@@ -150,6 +147,7 @@ func TestWitnessRollbackProvesDeparture(t *testing.T) {
 			}
 			dir := e.release(rel2, "s")
 			e.write(filepath.Join(dir, "etc/systemd/system", unit), "[Service]\n", 0644)
+			e.write(filepath.Join(dir, "etc/systemd/system/ataniq-seat.service"), "[Service]\n", 0644)
 			e.withLists(rel2, "start-witness", "health-witness", "systemctl stop "+unit)
 			if e.switchTo(rel2) != ExitOK {
 				t.Fatal(e.last)
@@ -170,12 +168,23 @@ func TestWitnessRollbackProvesDeparture(t *testing.T) {
 				if err := os.MkdirAll(filepath.Dir(link), 0755); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Symlink("/opt/authority-host/current/etc/systemd/system/"+unit, link); err != nil {
+				if name == "legacy-partial-links" {
+					link = filepath.Join(filepath.Dir(link), "ataniq-seat.service")
+				}
+				if err := os.Symlink("/opt/authority-host/current/etc/systemd/system/"+filepath.Base(link), link); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if err := os.RemoveAll(dir); err != nil {
-				t.Fatal(err)
+			// Set the original import aside so repair can restore its provenance.
+			removed := dir
+			if name == "legacy-partial-links" {
+				removed = filepath.Join(dir, "etc/systemd/system", unit)
+			}
+			original := filepath.Join(t.TempDir(), "original")
+			if name != "legacy-intact-tree" {
+				if err := os.Rename(removed, original); err != nil {
+					t.Fatal(err)
+				}
 			}
 			host := filepath.Join(e.root, PolicyDir, HostStopList)
 			e.write(host, "systemctl stop ataniq-witnes.service\n", 0644)
@@ -200,6 +209,45 @@ func TestWitnessRollbackProvesDeparture(t *testing.T) {
 				return Output{Stdout: []byte("inactive\n")}, &RunError{Status: 3}
 			}
 			e.runner.reset()
+			if legacy {
+				for range 2 {
+					code := e.rollBack("previous")
+					if _, held := e.inhibited(); code != ExitFailed || !held || e.runner.called("reload-units") != 0 ||
+						!strings.Contains(e.last, "missing service inventory") || !strings.Contains(e.last, "recover --services-stopped") {
+						t.Fatalf("missing inventory: exit %d, inhibited %t, queried %t\n%s", code, held, queried, e.last)
+					}
+					if j, ok := e.journal(); !ok || j.OldUnits != nil {
+						t.Fatalf("inferred inventory: %+v", j)
+					}
+				}
+				if name != "legacy-intact-tree" {
+					if e.recover(RecoverOptions{ServicesStopped: true}) != ExitFailed {
+						t.Fatal("recovered from an absent release")
+					}
+					if name == "legacy-partial-links" {
+						// The hashes match, but this replacement was never imported.
+						e.write(removed, "[Service]\n", 0644)
+						if e.recover(RecoverOptions{ServicesStopped: true}) != ExitFailed || !strings.Contains(e.last, CodeProvenanceMismatch) {
+							t.Fatal(e.last)
+						}
+					}
+					if err := os.Rename(original, removed); err != nil {
+						t.Fatal(err)
+					}
+				}
+				active = false // the owner stops the service by hand
+				if e.recover(RecoverOptions{ServicesStopped: true}) != ExitOK {
+					t.Fatal(e.last)
+				}
+				if _, held := e.inhibited(); !held {
+					t.Fatal("recording names cleared the inhibit")
+				}
+				// If the service returns, the recorded name must still be checked.
+				active, queried = true, false
+				if err := os.RemoveAll(dir); err != nil {
+					t.Fatal(err)
+				}
+			}
 			code := e.rollBack("previous")
 			if _, held := e.inhibited(); code != ExitFailed || !held || !queried || !strings.Contains(e.last, unit) || e.runner.called("reload-units") != 0 {
 				t.Fatalf("active departure: exit %d, held %v, queried %v", code, held, queried)
@@ -362,5 +410,66 @@ func TestWitnessEmergencyStopExitFiveNeedsObservation(t *testing.T) {
 	}
 	if j, ok := e.journal(); !ok || j.Phase != PhaseStopping || !strings.Contains(j.StopFailures, "ataniq-witness.service") {
 		t.Fatalf("no retryable stop: %+v", j)
+	}
+}
+
+func TestReleaseDepartureDropInOnly(t *testing.T) {
+	const unit = "worker.service"
+	const units = "etc/systemd/system"
+	e := newEnv(t)
+	dir := e.release(rel1, "s")
+	host := filepath.Join(e.root, units)
+	e.write(filepath.Join(host, unit), "[Service]\nExecStart=/usr/bin/true\n", 0644)
+	if err := os.Symlink("/opt/authority-host/current/"+units+"/"+unit+".d", filepath.Join(host, unit+".d")); err != nil {
+		t.Fatal(err)
+	}
+	drop := filepath.Join(dir, units, unit+".d", "10-start.conf")
+	e.write(drop, "[Service]\nExecStart=\nExecStart=/opt/authority-host/current/bin/app\n", 0644)
+	e.write(filepath.Join(dir, units, unit+".d", "20-limit.conf"), "[Service]\nLimitNOFILE=1024\n", 0644)
+	e.write(filepath.Join(dir, units, "other.service.d/10-limit.conf"), "[Service]\nLimitNOFILE=1024\n", 0644)
+	e.withLists(rel1, "start-worker", "health-probe", "systemctl stop "+unit)
+	if e.switchTo(rel1) != ExitOK {
+		t.Fatal(e.last)
+	}
+	inventory := e.record().CurrentUnits
+	if err := os.Remove(drop); err != nil {
+		t.Fatal(err)
+	}
+	e.release(rel2, "s")
+	e.hostList("systemctl stop workr.service\n")
+	active := true
+	e.runner.gate = func(argv []string) error {
+		switch strings.Join(argv, " ") {
+		case "systemctl stop workr.service":
+			return &RunError{Status: 5}
+		case "systemctl stop " + unit:
+			active = false
+		}
+		return nil
+	}
+	queries := 0
+	e.runner.unitState = func(name string) (Output, error) {
+		if name == unit {
+			queries++
+			if active {
+				return Output{Stdout: []byte("active\n")}, nil
+			}
+		}
+		return Output{Stdout: []byte("inactive\n")}, &RunError{Status: 3}
+	}
+	e.runner.reset()
+	code := e.switchTo(rel2)
+	if _, held := e.inhibited(); code != ExitFailed || !held || queries == 0 || e.runner.called("reload-units") != 0 {
+		t.Fatalf("drop-in departure: exit %d, inhibited %t, inventory %v, queries %d, reloads %d", code, held, inventory, queries, e.runner.called("reload-units"))
+	}
+	if want := []string{"app.service", "other.service", unit}; !slices.Equal(inventory, want) {
+		t.Fatalf("recorded inventory %v, want %v", inventory, want)
+	}
+	e.hostList("systemctl stop " + unit + "\n")
+	if e.switchTo(rel2) != ExitOK || active {
+		t.Fatal(e.last)
+	}
+	if _, held := e.inhibited(); held {
+		t.Fatal("successful retry left decisions inhibited")
 	}
 }
