@@ -11,9 +11,12 @@ import (
 // UnitSyntax is the finding for a unit or drop-in outside the supported text format.
 const UnitSyntax = "unit-syntax"
 
-// UnitTextSafe accepts UTF-8 physical lines with LF or CRLF endings.
+// UnitTextSafe accepts BOM-free UTF-8 physical lines with LF or CRLF endings.
 // Check comments too, before any parser can discard or join a directive.
 func UnitTextSafe(text string) bool {
+	if strings.HasPrefix(text, "\ufeff") {
+		return false
+	}
 	for raw := range strings.Lines(text) {
 		line, ended := strings.CutSuffix(raw, "\n")
 		if ended {

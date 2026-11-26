@@ -4,10 +4,13 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
 	"testing"
+
+	"ataniq/internal/authorityhost/noaicheck"
 )
 
 var noRun = CheckOptions{NoNoAICheck: true}
@@ -21,6 +24,33 @@ func TestCheckPasses(t *testing.T) {
 		if f := Check(dir, noRun); len(f) != 0 {
 			t.Errorf("%s: %s", name, lines(f))
 		}
+	}
+}
+
+// Both release gates inspect the same bytes before parsing the first section.
+func TestReleaseUnitInitialBOM(t *testing.T) {
+	const unit = "etc/systemd/system/ataniq-seat.service"
+	for _, file := range []string{unit, unit + ".d/10-start.conf"} {
+		t.Run(filepath.Base(file), func(t *testing.T) {
+			src := dynamicSrc(t)
+			set(t, src, file, "\ufeff[Service]\nExecStart=/opt/authority-host/current/bin/ataniq-seat\n")
+			dir := built(t, dynamicOptions(t, src))
+			if got := Check(dir, noRun); !slices.Equal(got, []Finding{{Code: noaicheck.UnitSyntax, Name: file}}) {
+				t.Errorf("ah-release findings: %v", got)
+			}
+			checker, err := noaicheck.Open(t.TempDir(), &noaicheck.Lists{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer checker.Close()
+			if err := checker.CheckRelease(dir); err != nil {
+				t.Fatal(err)
+			}
+			want := noaicheck.Hit{Kind: noaicheck.KindUnit, Path: filepath.Join(dir, file), Detail: noaicheck.UnitSyntax}
+			if got := checker.Report().Hits; !slices.Equal(got, []noaicheck.Hit{want}) {
+				t.Errorf("ah-noaicheck hits: %v", got)
+			}
+		})
 	}
 }
 

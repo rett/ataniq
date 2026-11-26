@@ -2048,8 +2048,9 @@ It checks, in this order, all of them (a pass is no finding):
    - No file under `etc/systemd` still holds `{release}` (`unit-placeholder`):
      the builder replaces it, so one left is a folder made or changed by
      hand, whose unit systemd would run with the words as they are.
-   - Write each systemd directive on one UTF-8 line. The release and host
-     checks report `unit-syntax` for a trailing backslash, a lone carriage
+   - Save units and drop-ins as UTF-8 without an initial byte-order mark.
+     Write each systemd directive on one line. The release and host checks
+     report `unit-syntax` for an initial mark, a trailing backslash, a lone carriage
      return or any control character other than a tab or line ending (LF or
      CRLF), including in comments and drop-ins.
    - In every service and socket command, including pre-start, post-start,
