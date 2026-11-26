@@ -182,6 +182,11 @@ func (c *checker) units(root *os.Root, files map[string]entry, relDir string, wi
 		if !strings.HasPrefix(p, systemdDir) {
 			continue
 		}
+		if noaicheck.ReleaseUserService(p) {
+			c.add(noaicheck.UserService, p)
+			complete = false
+			continue
+		}
 		data, err := readSmall(root, p)
 		if err != nil {
 			c.add(CodeUnitUnreadable, p)

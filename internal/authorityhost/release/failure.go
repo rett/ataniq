@@ -151,6 +151,8 @@ var reasons = map[string]string{
 	CodeReloadNone:       "reload.list does not restart or reload what the release ships",
 	CodeStopNone:         "stop.list does not stop a decision service",
 
+	noaicheck.UserService: "release services must use the system manager",
+
 	CodeNoAIStart:   "the shipped no-AI check did not start",
 	CodeNoAITimeout: "the shipped no-AI check did not finish in 60 seconds",
 	CodeNoAIExit:    "the shipped no-AI check exited with a failure",

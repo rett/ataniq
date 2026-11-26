@@ -353,6 +353,9 @@ pins, epoch and signed status before resuming admission. When returning to a
 release without the witness, confirm it is stopped. Keep its single-unit
 stop command in the host list. A stop reporting exit 5 still requires
 the manager to confirm that the canonical unit is inactive or absent.
+Departure checks query the system manager. Release checks and switch import
+refuse services, templates and service drop-ins under `etc/systemd/user/`
+with `user-service`.
 The switch records the verified service names in the transaction journal
 and the current release’s names in `deploy.json`. A shipped service drop-in
 such as `worker.service.d/10-start.conf` records `worker.service`, even if

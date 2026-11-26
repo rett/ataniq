@@ -1500,9 +1500,11 @@ their place is a read error, not a wait.
     unit file keeps for the merge is charged to the run's memory budget
     before it is kept and released once that unit is checked, so a
     release with very many unit files ends `HIT incomplete budget
-    memory` rather than holding them all. A file in a folder named `user` is a user
-    unit, its `EnvironmentFile=` resolved for every user; any other is a
-    system unit;
+    memory` rather than holding them all. The release checks and switch import
+    report `user-service` for a service, service template or service drop-in
+    under `etc/systemd/user/`, including a type-wide `service.d/*.conf`.
+    Departure checks use the system manager. For other units in a folder
+    named `user`, the check resolves `EnvironmentFile=` for every user.
   - every file beneath its `etc/caddy` is read, by its format, for the
     variables it refers to through a placeholder Caddy itself replaces,
     and only those. A file whose name ends in `.json` is Caddy's native

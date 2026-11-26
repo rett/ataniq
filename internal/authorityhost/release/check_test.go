@@ -83,6 +83,32 @@ func TestReleaseUnitText(t *testing.T) {
 	}
 }
 
+func TestReleaseUserServices(t *testing.T) {
+	const user = "etc/systemd/user/"
+	for _, tc := range []struct{ name, rule string }{
+		{"app.service", "user-service"},
+		{"app@.service", "user-service"},
+		{"app.service.d/env.conf", "user-service"},
+		{"app@.service.d/env.conf", "user-service"},
+		{"app-.service.d/env.conf", "user-service"},
+		{"service.d/env.conf", "user-service"},
+		{"default.target.wants/app.service", "user-service"},
+		{"app.socket", ""},
+		{"app.socket.d/env.conf", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := dynamicSrc(t)
+			file := user + tc.name
+			set(t, src, file, "[Unit]\nDescription=Example\n")
+			if !strings.HasSuffix(file, ".conf") {
+				replace(t, src, "share/validators.list", "caddy validate",
+					"systemd-analyze verify {release}/"+file+"\ncaddy validate")
+			}
+			checkReleaseUnit(t, src, file, tc.rule)
+		})
+	}
+}
+
 // replace rewrites the file rel of src, which must hold old.
 func replace(t *testing.T, src, rel, old, new string) {
 	t.Helper()

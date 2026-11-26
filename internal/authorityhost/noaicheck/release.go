@@ -98,9 +98,10 @@ func (c *Checker) RunPhase(phase, release string, listing []byte) (Report, error
 // CheckRelease reads the release folder dir's own files, as the release
 // would install them, before the host loads any: every file beneath its
 // etc/systemd is a unit or drop-in, read with the rules of installed units
-// (Environment=, PassEnvironment= and EnvironmentFile= by name; all symlinks anywhere in the release are refused; a file in a folder named "user" is
-// a user unit, its EnvironmentFile= resolved in every user's context, any
-// other a system unit), and every file a unit's EnvironmentFile= names is
+// (Environment=, PassEnvironment= and EnvironmentFile= by name). A user
+// service under etc/systemd/user or a symlink anywhere is refused. Other
+// units in a folder named "user" have EnvironmentFile= resolved in every
+// user's context. Every file a unit's EnvironmentFile= names is
 // read on the host like any other. Every file beneath its etc/caddy is
 // read, by its format, for the variables it refers to through Caddy's own
 // placeholders (see releaseRefs): each one named like a provider key (see
@@ -189,6 +190,10 @@ func (c *Checker) CheckRelease(dir string) error {
 			return
 		}
 		if !strings.HasPrefix(e.rel, releaseUnits+"/") {
+			return
+		}
+		if ReleaseUserService(e.rel) {
+			c.hit(KindUnit, at(e.rel), UserService)
 			return
 		}
 		p, data, ok := read(e)
@@ -348,6 +353,19 @@ type releaseFile struct {
 	shown string
 	name  string // its file name
 	r     *envParse
+}
+
+// UserService is the rule for release services outside the system manager's scope.
+const UserService = "user-service"
+
+// ReleaseUserService reports whether a file under etc/systemd/user supplies
+// a service or a service drop-in, including a type-wide service.d override.
+func ReleaseUserService(rel string) bool {
+	if !strings.HasPrefix(rel, releaseUnits+"/user/") {
+		return false
+	}
+	name := ReleaseUnitName(rel)
+	return strings.HasSuffix(name, ".service") || name == "service" && strings.HasSuffix(rel, ".conf")
 }
 
 // ReleaseUnitName maps a shipped systemd file to its unit name. A .conf
