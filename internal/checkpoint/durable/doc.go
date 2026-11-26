@@ -17,6 +17,12 @@
 // A partial frame or partial signature entry requires owner intervention.
 // Preserve the directory for investigation before re-enrolling.
 //
+// Stores from the earlier development format need fresh provisioning.
+// Its genesis omits the home fingerprint and its signed mutation receipts
+// omit the journal sequence. Open, VerifyReceipt and MatchReceipt identify
+// the old evidence with ErrLegacyFormat. Preserve the old directory and
+// receipts separately and provision a fresh directory and activation epoch.
+//
 // The independently configured activation epoch is signed into acknowledgements
 // and dispositions. The link pins it for an activation. Journal sequence
 // orders transitions within this directory, including Settle fences. A matched

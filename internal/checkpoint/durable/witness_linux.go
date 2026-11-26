@@ -23,6 +23,7 @@ type StorageError string
 func (e StorageError) Error() string { return "durable witness: " + string(e) }
 
 const (
+	ErrLegacyFormat                = cp.ErrLegacyFormat
 	ErrNotInitialized StorageError = "not initialised"
 	ErrMissingJournal StorageError = "published journal is missing"
 	ErrMissingIndex   StorageError = "published index is missing"

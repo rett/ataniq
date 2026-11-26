@@ -1009,3 +1009,15 @@ func TestInspectInterruptedPublication(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Genesis and its index are the unmodified output of Create at 4580bd22.
+func TestLegacyGenesisFormat(t *testing.T) {
+	c := config(t, testKey("legacy fixture"))
+	for name, fixture := range map[string]string{journalName: "legacy-genesis", lockName: "legacy-index"} {
+		must(t, os.WriteFile(filepath.Join(c.Directory, name), readFile(t, filepath.Join("testdata", fixture)), 0600))
+	}
+	_, err := Open(c)
+	if !errors.Is(err, ErrLegacyFormat) || errors.Is(err, ErrIdentity) {
+		t.Fatal("legacy genesis with matching pins", err)
+	}
+}

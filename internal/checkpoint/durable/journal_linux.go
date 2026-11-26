@@ -322,6 +322,9 @@ func (w *Witness) replay(homeID string, journal, index io.Reader) error {
 			if r.Op != "create" || r.ReservedSettlement || r.Identity == nil || r.Body != nil || r.HomeProof != nil || r.SessionProof != nil || r.ID != nil || r.Slot != nil {
 				return ErrCorrupt
 			}
+			if r.HomeKeyID == "" {
+				return ErrLegacyFormat
+			}
 			if *r.Identity != w.identity || r.HomeKeyID != homeID {
 				return ErrIdentity
 			}

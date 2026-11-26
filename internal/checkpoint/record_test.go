@@ -358,3 +358,28 @@ func TestReturnedEvidenceIsIndependent(t *testing.T) {
 	}
 	requireOK(t, VerifyView(public(f.witness), q, v))
 }
+
+// The enrollment acknowledgement is the signed golden row from 4580bd22.
+func TestLegacyReceiptFormat(t *testing.T) {
+	data, err := os.ReadFile("testdata/legacy-enroll-ack.json")
+	requireOK(t, err)
+	var old vector
+	requireOK(t, json.Unmarshal(data, &old))
+	r := Receipt{old.Body, []byte(old.Signatures["witness"])}
+	pin := public(fixtureKey("witness"))
+	requireOK(t, VerifySignature(WitnessNamespace, pin, r.Body, r.Signature))
+	_, verify := VerifyReceipt(pin, r)
+	match := MatchReceipt(pin, 1, "enroll", vectors(t)["enroll"].Body, r)
+	for _, err := range []error{verify, match} {
+		if !errors.Is(err, ErrLegacyFormat) {
+			t.Errorf("missing legacy receipt diagnosis: %v", err)
+		}
+	}
+	if !errors.Is(match, ErrUnknownOutcome) {
+		t.Fatal("legacy evidence resolved delivery", match)
+	}
+	r.Signature[0] ^= 1
+	if _, err := VerifyReceipt(pin, r); !errors.Is(err, ErrRefused) || errors.Is(err, ErrLegacyFormat) {
+		t.Fatal("classified unauthenticated evidence as legacy", err)
+	}
+}
