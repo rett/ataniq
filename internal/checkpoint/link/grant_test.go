@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
+	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,5 +41,51 @@ func TestGrantLookupCancellation(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("grant lookup did not stop")
+	}
+}
+
+type countingWitness struct {
+	memoryWitness
+	lookups atomic.Int32
+}
+
+func (w *countingWitness) CheckHome(ctx context.Context, s cp.Slot, k ed25519.PublicKey) error {
+	w.lookups.Add(1)
+	return w.memoryWitness.CheckHome(ctx, s, k)
+}
+
+func TestUngrantedKeyPacingAndBudget(t *testing.T) {
+	for _, network := range []string{"pipe", "tcp"} {
+		t.Run(network, func(t *testing.T) {
+			f := newFixture(t, "witness")
+			id := identity(t, "home")
+			e := endpointFor(t, id, f.id, f)
+			r := serveNetwork(t, network, e.Serve)
+			r.ServerPin = id.Fingerprint()
+			var polls atomic.Int32
+			dial := r.DialContext
+			r.DialContext = func(ctx context.Context, n, a string) (net.Conn, error) { polls.Add(1); return dial(ctx, n, a) }
+			for range 58 {
+				if !f.s.limits.allow(false, ordinary) {
+					t.Fatal("initial budget")
+				}
+			}
+			w := &countingWitness{memoryWitness: memoryWitness{f.w}}
+			startPolling(t, f.s, r, w)
+			wrong := key(t)
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			for i := 0; i < 16 && ctx.Err() == nil; i++ {
+				if _, err := e.Connect(ctx, f.slot, wrong, f.session); err == nil {
+					t.Fatal("granted foreign key")
+				}
+			}
+			if n := polls.Load(); n > 10 || n < 3 {
+				t.Fatalf("%d polls in one second", n)
+			}
+			if n := w.lookups.Load(); n != 2 {
+				t.Fatalf("%d lookups with two credits", n)
+			}
+		})
 	}
 }

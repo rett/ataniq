@@ -12,9 +12,6 @@ const (
 	recoveryReads
 )
 
-// Each authenticated signing key has a rolling minute of 60 calls in each
-// of the ordinary and recovery classes, shared across its connections. Only a key with a live grant and a
-// valid signature can consume a home budget.
 type minute struct {
 	times [60]time.Time
 	next  int
@@ -29,48 +26,22 @@ func (m *minute) take(now time.Time) bool {
 	return true
 }
 
-type peerBudget struct {
-	windows [2]minute
-	last    time.Time
-}
+// Budgets belong to configured endpoints and survive connection and key changes.
 type limiter struct {
-	now   func() time.Time
-	mu    sync.Mutex
-	peers map[string]*peerBudget
-	owner peerBudget
+	now         func() time.Time
+	mu          sync.Mutex
+	home, owner [2]minute
 }
 
-func (l *limiter) allow(key string, pool allowance) bool {
+func (l *limiter) allow(owner bool, pool allowance) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
 	if l.now != nil {
 		now = l.now()
 	}
-	if key == "owner" {
-		return l.owner.windows[pool].take(now)
+	if owner {
+		return l.owner[pool].take(now)
 	}
-	if l.peers == nil {
-		l.peers = make(map[string]*peerBudget)
-	}
-	p := l.peers[key]
-	if p == nil {
-		if len(l.peers) >= 256 {
-			for k, b := range l.peers {
-				if now.Sub(b.last) >= time.Minute {
-					delete(l.peers, k)
-				}
-			}
-			if len(l.peers) >= 256 {
-				return false
-			}
-		}
-		p = &peerBudget{}
-		l.peers[key] = p
-	}
-	if !p.windows[pool].take(now) {
-		return false
-	}
-	p.last = now
-	return true
+	return l.home[pool].take(now)
 }

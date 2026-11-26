@@ -39,6 +39,7 @@ type Server struct {
 	home          Remote
 	slot          cp.Slot
 	polling       atomic.Bool
+	pollDelay     func(time.Duration) time.Duration
 	limits        limiter
 }
 
@@ -49,7 +50,7 @@ func NewServer(id seatgate.Identity, witnessPin ed25519.PublicKey, home Remote, 
 	}
 	return &Server{
 		id: id, witnessKeyID: wid, witnessPin: slices.Clone(witnessPin),
-		timeout: requestTimeout, ownerCapacity: 2, home: home, slot: slot,
+		pollDelay: retryDelay, timeout: requestTimeout, ownerCapacity: 2, home: home, slot: slot,
 	}, nil
 }
 
@@ -134,6 +135,9 @@ func serveListener(l net.Listener, cfg *tls.Config, capacity int, timeout time.D
 		})
 	}
 }
+
+var errRequestFailed = errors.New("checkpoint link: request failed")
+
 func (s *Server) reply(ctx context.Context, conn *tls.Conn, w Witness, a cp.Administration, m frame.Message) error {
 	replies, err := s.dispatch(ctx, w, a, m)
 	if errors.Is(err, frame.ErrProtocol) {
@@ -146,6 +150,9 @@ func (s *Server) reply(ctx context.Context, conn *tls.Conn, w Witness, a cp.Admi
 		if err := reply.WriteToStream(conn); err != nil {
 			return err
 		}
+	}
+	if replies[0].Kind == frame.Failure {
+		return errRequestFailed
 	}
 	return nil
 }
@@ -163,7 +170,13 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 		if err != nil {
 			return nil, err
 		}
-		peer := "owner"
+		pool := ordinary
+		if m.Kind != frame.Connect && q.ReceiptID != (cp.ID{}) {
+			pool = recoveryReads
+		}
+		if !s.limits.allow(w == nil, pool) {
+			return nil, cp.ErrUnavailable
+		}
 		if w != nil {
 			if q.Slot != s.slot {
 				return nil, cp.ErrRefused
@@ -171,14 +184,6 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 			if err := authenticate(ctx, w, q.Slot, f[1], f[0], f[2]); err != nil {
 				return nil, err
 			}
-			peer = string(f[1])
-		}
-		pool := ordinary
-		if m.Kind != frame.Connect && q.ReceiptID != (cp.ID{}) {
-			pool = recoveryReads
-		}
-		if !s.limits.allow(peer, pool) {
-			return nil, cp.ErrUnavailable
 		}
 		if m.Kind == frame.Connect {
 			return []frame.Message{frame.New(frame.Granted)}, nil
@@ -213,21 +218,21 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 		if !exactJSON(f[0], &slot) || !validSlot(slot) {
 			return nil, frame.ErrProtocol
 		}
+		if !s.limits.allow(false, ordinary) {
+			return nil, cp.ErrUnavailable
+		}
 		if slot != s.slot {
 			return nil, cp.ErrRefused
 		}
 		if err := authenticate(ctx, w, slot, f[1], f[2], f[3]); err != nil {
 			return nil, err
 		}
-		if !s.limits.allow(string(f[1]), ordinary) {
-			return nil, cp.ErrUnavailable
-		}
 		receipt, err = w.RawSubmit(ctx, slot, f[1], operation[m.Kind], f[2], f[3], f[4])
 	case frame.Enroll, frame.Release, frame.Retire:
 		if a == nil {
 			return nil, cp.ErrRefused
 		}
-		if !s.limits.allow("owner", ordinary) {
+		if !s.limits.allow(true, ordinary) {
 			return nil, cp.ErrUnavailable
 		}
 		intent, parseErr := cp.ParseIntent(operation[m.Kind], s.witnessKeyID, f[0])

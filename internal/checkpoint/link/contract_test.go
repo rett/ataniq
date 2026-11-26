@@ -185,6 +185,7 @@ func TestWitnessContract(t *testing.T) {
 		s, err := NewServer(serverID, pin, placeholder, cp.Slot{Witness: "witness", Authority: "owner", Store: "owner"})
 		must(t, err)
 		advanceClock := func(s *Server) {
+			s.pollDelay = func(time.Duration) time.Duration { return 25 * time.Millisecond }
 			now := time.Now()
 			s.limits.now = func() time.Time { now = now.Add(2 * time.Second); return now }
 		}

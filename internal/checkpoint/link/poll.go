@@ -38,6 +38,9 @@ func (s *Server) Poll(ctx context.Context, w Witness) error {
 	for ctx.Err() == nil {
 		worked, err := s.pollOnce(ctx, t, w)
 		capDelay := time.Second
+		if errors.Is(err, errRequestFailed) {
+			capDelay = 5 * time.Second
+		}
 		if errors.Is(err, cp.ErrRefused) {
 			delay = max(delay, time.Second)
 			capDelay = 30 * time.Second
@@ -49,7 +52,7 @@ func (s *Server) Poll(ctx context.Context, w Witness) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(retryDelay(delay)):
+		case <-time.After(max(25*time.Millisecond, s.pollDelay(delay))):
 		}
 		delay = min(delay*2, capDelay)
 	}
