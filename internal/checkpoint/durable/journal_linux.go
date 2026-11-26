@@ -38,11 +38,27 @@ type record struct {
 }
 
 func readPart(in io.Reader, b []byte, atBoundary bool) error {
-	_, err := io.ReadFull(in, b)
-	if errors.Is(err, io.ErrUnexpectedEOF) || (!atBoundary && errors.Is(err, io.EOF)) {
-		return ErrTorn
+	// ReadFull suppresses any error on the read that fills b. A storage
+	// error on those bytes must still stop verification.
+	for len(b) > 0 {
+		n, err := in.Read(b)
+		b = b[n:]
+		if n > 0 {
+			atBoundary = false
+		}
+		if err == io.EOF {
+			if len(b) == 0 {
+				return nil
+			}
+			if !atBoundary {
+				return ErrTorn
+			}
+		}
+		if err != nil {
+			return err
+		}
 	}
-	return err
+	return nil
 }
 func decode(in io.Reader, pin ed25519.PublicKey) (record, [32]byte, error) {
 	var r record

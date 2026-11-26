@@ -1021,3 +1021,19 @@ func TestLegacyGenesisFormat(t *testing.T) {
 		t.Fatal("legacy genesis with matching pins", err)
 	}
 }
+
+func TestDecodeErrorWithFinalBytes(t *testing.T) {
+	c := config(t, testKey("reader"))
+	w := create(t, c)
+	must(t, w.Close())
+	frame := readFile(t, filepath.Join(c.Directory, journalName))
+	for _, end := range []error{io.EOF, syscall.EIO, io.ErrUnexpectedEOF} {
+		in := iotest.DataErrReader(io.MultiReader(bytes.NewReader(frame), iotest.ErrReader(end)))
+		_, _, err := decode(in, c.Pin)
+		if end == io.EOF {
+			must(t, err)
+		} else if !errors.Is(err, end) {
+			t.Errorf("final bytes with %v: got %v", end, err)
+		}
+	}
+}
