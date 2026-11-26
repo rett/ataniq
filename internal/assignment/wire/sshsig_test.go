@@ -101,6 +101,15 @@ func TestLedgerAdapters(t *testing.T) {
 	p := sample()
 	p.Home = assignment.Instance{Authority: h.Authority, Store: h.Store, Incarnation: h.Incarnation}
 	p.KeyID = h.KeyID
+	badSeed := p
+	badSeed.ProjectID = ""
+	unaddressable, err := (assignment.Event{Public: badSeed}).SigningBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Sign(h, unaddressable); err == nil {
+		t.Fatal("signed unaddressable seed")
+	}
 	message, err := (assignment.Event{Public: p}).SigningBytes()
 	if err != nil {
 		t.Fatal(err)
@@ -134,7 +143,7 @@ func TestLedgerAdapters(t *testing.T) {
 		}
 	}
 	p.Signature = ""
-	for _, bad := range [][]byte{body, append([]byte(domain), message...), bytes.Replace(message, []byte("home\""), []byte("else\""), 1),
+	for _, bad := range [][]byte{body, append([]byte(domain), message...), bytes.Replace(message, []byte(`"home":{"authority":"home"`), []byte(`"home":{"authority":"else"`), 1),
 		bytes.Replace(message, []byte(p.KeyID), []byte("new"), 1), bytes.Replace(message, []byte(":"), []byte(": "), 1)} {
 		if _, err := s.Sign(h, bad); err == nil || v.Verify(h, bad, sig) == nil {
 			t.Fatal("accepted unbound message")

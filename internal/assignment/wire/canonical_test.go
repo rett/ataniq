@@ -30,7 +30,10 @@ func TestCanonicalJSON(t *testing.T) {
 }
 
 func sample() assignment.PublicEnvelope {
+	instance := assignment.Instance{Authority: "home", Incarnation: "instance", Store: "store"}
 	return assignment.PublicEnvelope{Schema: 1, Algorithm: "Ed25519", EvidenceDigests: []string{},
+		Home: instance, ExecutingInstance: instance, KeyID: "pin", ProjectID: "project", RoleID: "role",
+		TransferID: "seed", ActiveTransferID: "seed", RequestID: "request", Binding: assignment.PublicBinding{ID: "holder", Kind: "legacy"},
 		EventID: strings.Repeat("a", 64), Kind: assignment.Seed, Phase: assignment.PhaseCommittedClosed,
 		Revision: "1", Generation: "1", CommitRevision: "1", PreviousGeneration: "0", PreviousRevision: "0"}
 }
@@ -61,6 +64,28 @@ func TestProjection(t *testing.T) {
 	}
 }
 
+func TestMissingProjectionIdentity(t *testing.T) {
+	for _, clear := range []func(*assignment.PublicEnvelope){
+		func(p *assignment.PublicEnvelope) { p.ProjectID = "" }, func(p *assignment.PublicEnvelope) { p.RoleID = "" },
+		func(p *assignment.PublicEnvelope) { p.RequestID = "" }, func(p *assignment.PublicEnvelope) { p.TransferID = "" },
+		func(p *assignment.PublicEnvelope) { p.ActiveTransferID = "" }, func(p *assignment.PublicEnvelope) { p.KeyID = "" },
+		func(p *assignment.PublicEnvelope) { p.ExecutingInstance.Authority = "" }, func(p *assignment.PublicEnvelope) { p.ExecutingInstance.Incarnation = "" },
+		func(p *assignment.PublicEnvelope) { p.ExecutingInstance.Store = "" }, func(p *assignment.PublicEnvelope) { p.Home.Store = "" },
+		func(p *assignment.PublicEnvelope) { p.Binding.ID = "" }, func(p *assignment.PublicEnvelope) { p.Binding.Kind = "other" },
+		func(p *assignment.PublicEnvelope) { p.OldBinding.ID = "unexpected" }, func(p *assignment.PublicEnvelope) { p.Kind = assignment.ConfirmReceipt },
+	} {
+		p := sample()
+		clear(&p)
+		body, err := (assignment.Event{Public: p}).SigningBytes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Unmarshal(body[len(domain):]); err == nil {
+			t.Fatalf("accepted unaddressable projection: %+v", p)
+		}
+	}
+}
+
 func TestProjectionRefusals(t *testing.T) {
 	b, err := Marshal(sample())
 	if err != nil {
@@ -73,7 +98,7 @@ func TestProjectionRefusals(t *testing.T) {
 		{`"schema":1`, `"schema":2`}, {`"schema":1`, `"schema":1.0`}, {`"schema":1`, `"schema":"1"`},
 		{`"Seed"`, `"Unknown"`}, {`"Ed25519"`, `"other"`}, {`"revision":"1"`, `"revision":1`},
 		{`"revision":"1"`, `"revision":"00"`}, {`"revision":"1"`, `"revision":"18446744073709551616"`},
-		{`"role_id":""`, `"role_id":"\udfff"`}, {`"role_id":""`, `"signature":"","role_id":""`},
+		{`"role_id":"role"`, `"role_id":"\udfff"`}, {`"role_id":"role"`, `"signature":"","role_id":"role"`},
 		{strings.Repeat("a", 64), strings.Repeat("A", 64)}, {`"inventory_digest":""`, `"inventory_digest":"unknown"`},
 		{`"evidence_digests":[]`, `"evidence_digests":[""]`}, {`"previous_public_digest":""`, `"previous_public_digest":"0"`},
 	} {
@@ -88,7 +113,7 @@ func TestProjectionRefusals(t *testing.T) {
 		}
 	}
 	p := sample()
-	p.ProjectID = strings.Repeat("x", recordLimit-len(b))
+	p.ProjectID += strings.Repeat("x", recordLimit-len(b))
 	full, err := Marshal(p)
 	if err != nil || len(full) != recordLimit {
 		t.Fatal(len(full), err)
