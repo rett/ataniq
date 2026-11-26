@@ -61,6 +61,9 @@ func (s *Store) finishStage(ctx context.Context, raw, last []byte, head assignme
 		if err := s.files.Sync(); err != nil {
 			return v, refuse(Interrupted, err)
 		}
+		if err := s.files.Check(); err != nil {
+			return v, err
+		}
 		r, err := s.client.Advance(ctx, q)
 		if err != nil {
 			return v, refuse(Interrupted, err)
@@ -148,6 +151,9 @@ func AppendAndAdvance(ctx context.Context, s *Store, event assignment.Event) err
 	if err := s.files.Append(frame); err != nil {
 		return refuse(Interrupted, err)
 	}
+	if err := s.files.Check(); err != nil {
+		return err
+	}
 	r, err := s.client.Advance(ctx, q)
 	if err != nil {
 		return refuse(Interrupted, err)
@@ -167,6 +173,9 @@ func AppendAndAdvance(ctx context.Context, s *Store, event assignment.Event) err
 	}
 	if err := s.files.ClearStage(); err != nil {
 		return refuse(Interrupted, err)
+	}
+	if err := s.files.Check(); err != nil {
+		return err
 	}
 	s.ledger, s.state, s.stopped = next, state, false
 	return nil

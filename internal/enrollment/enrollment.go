@@ -201,6 +201,9 @@ func enroll(ctx context.Context, f LockedLedger, admin checkpoint.Administration
 	if err != nil {
 		return Binding{}, err
 	}
+	if err := f.Check(); err != nil {
+		return Binding{}, err
+	}
 	b.Receipt, err = admin.Enroll(ctx, q)
 	if err != nil {
 		return Binding{}, err
@@ -215,5 +218,5 @@ func enroll(ctx context.Context, f LockedLedger, admin checkpoint.Administration
 	if err = checkpoint.MatchReceipt(witness, epoch, "enroll", body, b.Receipt); err != nil {
 		return Binding{}, err
 	}
-	return b, nil
+	return b, f.Check()
 }

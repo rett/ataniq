@@ -31,31 +31,34 @@ func (root FileRoot) Lock(fault Fault) (LockedLedger, error) {
 	if err != nil {
 		return nil, refuse(Insecure, err)
 	}
+	l := &fileLedger{dir: os.NewFile(uintptr(fd), "/"), fault: fault}
+	fail := func(err error) (LockedLedger, error) {
+		return nil, errors.Join(err, l.Close())
+	}
 	for _, name := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' }) {
-		next, err := syscall.Openat(fd, name, directoryFlags, 0)
-		_ = syscall.Close(fd)
+		next, err := syscall.Openat(int(l.dir.Fd()), name, directoryFlags, 0)
 		if err != nil {
-			return nil, refuse(Insecure, err)
+			return fail(refuse(Insecure, err))
 		}
-		fd = next
+		l.parents = append(l.parents, l.dir)
+		l.dir = os.NewFile(uintptr(next), name)
 	}
-	dir := os.NewFile(uintptr(fd), path)
-	st, err := inspect(dir, true)
+	st, err := inspect(l.dir, true)
 	if err != nil {
-		_ = dir.Close()
-		return nil, err
+		return fail(err)
 	}
-	if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		_ = dir.Close()
+	if err := syscall.Flock(int(l.dir.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, refuse(Occupied, err)
+			return fail(refuse(Occupied, err))
 		}
-		return nil, refuse(Insecure, err)
+		return fail(refuse(Insecure, err))
 	}
-	return &fileLedger{dir: dir, identity: Identity{RootDevice: uint64(st.Dev), RootInode: st.Ino}, fault: fault}, nil
+	l.identity = Identity{RootDevice: uint64(st.Dev), RootInode: st.Ino}
+	return l, nil
 }
 
 type fileLedger struct {
+	parents     []*os.File
 	dir, ledger *os.File
 	identity    Identity
 	size        int64
@@ -112,16 +115,18 @@ func (f *fileLedger) persist(file *os.File, data []byte, op string) error {
 	return after(f.fault, op+".dir-synced")
 }
 
-func (f *fileLedger) create(name string, data []byte, op string) (syscall.Stat_t, error) {
-	file, st, err := f.open(name, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL)
+func (f *fileLedger) create(name string, data []byte, op string) (*os.File, error) {
+	file, _, err := f.open(name, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL)
 	if err != nil {
-		return st, err
+		return nil, err
 	}
-	err = after(f.fault, op+".created")
-	if err == nil {
+	if err = after(f.fault, op+".created"); err == nil {
 		err = f.persist(file, data, op)
 	}
-	return st, errors.Join(err, file.Close())
+	if err != nil {
+		return nil, errors.Join(err, file.Close())
+	}
+	return file, nil
 }
 
 func (f *fileLedger) Create(header []byte) (Identity, error) {
@@ -131,10 +136,16 @@ func (f *fileLedger) Create(header []byte) (Identity, error) {
 		}
 		return Identity{}, errors.New("enrollment requires an empty root")
 	}
-	st, err := f.create(ledgerName, header, "header")
+	file, err := f.create(ledgerName, header, "header")
 	if err != nil {
 		return Identity{}, err
 	}
+	f.ledger = file
+	st, err := inspect(file, false)
+	if err != nil {
+		return Identity{}, err
+	}
+	f.size, f.changed = int64(len(header)), st.Ctim
 	f.identity.LedgerDevice, f.identity.LedgerInode = uint64(st.Dev), st.Ino
 	return f.identity, nil
 }
@@ -164,16 +175,38 @@ func (f *fileLedger) Ledger() (io.Reader, Identity, error) {
 
 // Check the name as well as the open descriptor across calls to the witness.
 func (f *fileLedger) Check() error {
-	dir, err := inspect(f.dir, true)
+	if _, err := inspect(f.dir, true); err != nil {
+		return err
+	}
+	// Verify each named edge relative to its pinned parent. This also catches
+	// replacement of an ancestor with a symlink back to the original tree.
+	child := f.dir
+	for i := len(f.parents) - 1; i >= 0; i-- {
+		parent := f.parents[i]
+		fd, err := syscall.Openat(int(parent.Fd()), child.Name(), directoryFlags, 0)
+		if err != nil {
+			return refuse(IdentityMismatch, err)
+		}
+		var held, named syscall.Stat_t
+		err = syscall.Fstat(fd, &named)
+		_ = syscall.Close(fd)
+		if err != nil {
+			return refuse(Insecure, err)
+		}
+		if err := syscall.Fstat(int(child.Fd()), &held); err != nil {
+			return refuse(Insecure, err)
+		}
+		if held.Dev != named.Dev || held.Ino != named.Ino {
+			return refuse(IdentityMismatch, nil)
+		}
+		child = parent
+	}
+	held, err := inspect(f.ledger, false)
 	if err != nil {
 		return err
 	}
-	var named syscall.Stat_t
-	if err := syscall.Lstat(f.dir.Name(), &named); err != nil {
-		return refuse(Insecure, err)
-	}
-	if dir.Dev != named.Dev || dir.Ino != named.Ino {
-		return refuse(IdentityMismatch, nil)
+	if err := f.checkLedger(held); err != nil {
+		return err
 	}
 	file, st, err := f.open(ledgerName, syscall.O_RDONLY)
 	if err != nil {
@@ -214,8 +247,11 @@ func (f *fileLedger) Stage() ([]byte, error) {
 }
 
 func (f *fileLedger) SaveStage(b []byte) error {
-	_, err := f.create(stageName, b, "stage")
-	return err
+	file, err := f.create(stageName, b, "stage")
+	if err != nil {
+		return err
+	}
+	return file.Close()
 }
 
 func (f *fileLedger) Append(b []byte) error {
@@ -263,6 +299,9 @@ func (f *fileLedger) Close() error {
 	var err error
 	if f.ledger != nil {
 		err = f.ledger.Close()
+	}
+	for _, parent := range f.parents {
+		err = errors.Join(err, parent.Close())
 	}
 	return errors.Join(err, f.dir.Close())
 }

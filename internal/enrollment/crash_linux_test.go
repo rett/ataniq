@@ -188,3 +188,57 @@ func TestInvalidStageNeverAdvances(t *testing.T) {
 		})
 	}
 }
+
+type boundaryHook func(string) error
+
+func (fn boundaryHook) After(point string) error { return fn(point) }
+
+func swapAt(t *testing.T, f *fixture, boundary string) Fault {
+	t.Helper()
+	hit := false
+	t.Cleanup(func() {
+		if !hit {
+			t.Errorf("missed %s", boundary)
+		}
+	})
+	return boundaryHook(func(point string) error {
+		if point == boundary {
+			hit = true
+			check(t, os.Rename(f.root.Path, f.root.Path+".old"))
+			check(t, os.Mkdir(f.root.Path, 0700))
+		}
+		return nil
+	})
+}
+
+func TestSwappedDirectoryNeverAdmitted(t *testing.T) {
+	for _, point := range []string{"header.created", "header.written", "header.file-synced", "header.dir-synced", "enroll.registered"} {
+		t.Run(point, func(t *testing.T) {
+			f := setup(t)
+			want(t, f.enroll(swapAt(t, f, point)), EnrollmentFailed)
+		})
+	}
+	for _, point := range []string{"stage.created", "stage.written", "stage.file-synced", "stage.dir-synced", "append.written", "append.file-synced", "append.dir-synced", "advance.committed", "stage.removed", "stage.removal-synced"} {
+		t.Run(point, func(t *testing.T) {
+			f := enrolled(t)
+			s := f.open(t, swapAt(t, f, point))
+			if err := AppendAndAdvance(f.ctx, s, f.seed(t, s, "row")); err == nil {
+				t.Fatal("published after directory replacement")
+			}
+		})
+	}
+	for _, point := range []string{"start.claimed", "stage.removed", "stage.removal-synced"} {
+		t.Run("start-"+point, func(t *testing.T) {
+			f := enrolled(t)
+			s := f.open(t, cut("advance.committed"))
+			want(t, AppendAndAdvance(f.ctx, s, f.seed(t, s, "row")), Interrupted)
+			check(t, s.Close())
+			f.release(t)
+			s, err := f.start(swapAt(t, f, point))
+			if s != nil {
+				check(t, s.Close())
+			}
+			want(t, err, IdentityMismatch)
+		})
+	}
+}

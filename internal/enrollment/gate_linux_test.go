@@ -407,3 +407,16 @@ func TestPrewriteFailureCanRetry(t *testing.T) {
 		})
 	}
 }
+
+func TestAncestorSubstitutionReturningToHeldRoot(t *testing.T) {
+	f := setup(t)
+	parent := filepath.Join(t.TempDir(), "parent")
+	f.root.Path = filepath.Join(parent, "store")
+	check(t, os.MkdirAll(f.root.Path, 0700))
+	check(t, f.enroll(nil))
+	f.client = claimHook{f.client, func() {
+		check(t, os.Rename(parent, parent+".original"))
+		check(t, os.Symlink(parent+".original", parent))
+	}}
+	f.refused(t, IdentityMismatch)
+}

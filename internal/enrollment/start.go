@@ -186,6 +186,9 @@ func (s *Store) start(ctx context.Context, header []byte) error {
 	if err != nil {
 		return witnessError(err)
 	}
+	if err := after(s.fault, "start.claimed"); err != nil {
+		return refuse(ClaimUncertain, err)
+	}
 	s.state, err = s.confirm(ctx, "claim", q, rct)
 	if err != nil {
 		return err
@@ -200,6 +203,9 @@ func (s *Store) start(ctx context.Context, header []byte) error {
 		if err := s.files.ClearStage(); err != nil {
 			return refuse(Interrupted, err)
 		}
+	}
+	if err := s.files.Check(); err != nil {
+		return err
 	}
 	s.ledger = ledger
 	return nil
