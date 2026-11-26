@@ -20,14 +20,24 @@ import (
 
 // Endpoint listens at the home. Its clients share one bounded handoff queue.
 type Endpoint struct {
+	trust       TrustSources
+	slot        cp.Slot
 	home        transport
 	listenerTLS *tls.Config
 }
 
-func NewEndpoint(id seatgate.Identity, witnessCertDER []byte, signingKey ed25519.PublicKey, epoch uint64) (*Endpoint, error) {
+func NewEndpoint(id seatgate.Identity, witnessCertDER []byte, signingKey ed25519.PublicKey, epoch uint64, slot cp.Slot, trust TrustSources) (*Endpoint, error) {
 	leaf, err := x509.ParseCertificate(slices.Clone(witnessCertDER))
-	if err != nil || id.Fingerprint() == "" || epoch == 0 {
+	if err != nil || id.Fingerprint() == "" || epoch == 0 || !validSlot(slot) {
 		return nil, cp.ErrRefused
+	}
+	if len(trust) == 0 {
+		return nil, &ConfigError{"missing witness source prefixes"}
+	}
+	for _, prefix := range trust {
+		if !prefix.IsValid() {
+			return nil, &ConfigError{"invalid witness source prefix"}
+		}
 	}
 	wid, err := cp.KeyID(signingKey)
 	if err != nil {
@@ -35,17 +45,12 @@ func NewEndpoint(id seatgate.Identity, witnessCertDER []byte, signingKey ed25519
 	}
 	pin := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
 	cfg := serverTLS(id, hex.EncodeToString(pin[:]))
-	cfg.ClientAuth = tls.RequireAndVerifyClientCert
-	cfg.ClientCAs = x509.NewCertPool()
-	cfg.ClientCAs.AddCert(leaf)
 	q := &requestQueue{
-		calls:     make(chan pendingCall),
-		closed:    make(chan struct{}),
-		capacity:  make(chan struct{}, 8),
-		mutations: make(map[cp.Slot]chan struct{}),
+		calls:  make(chan pendingCall),
+		closed: make(chan struct{}),
 	}
 	t := transport{Remote: Remote{WitnessPin: slices.Clone(signingKey), Epoch: epoch}, queue: q, wid: wid}
-	return &Endpoint{t, cfg}, nil
+	return &Endpoint{slices.Clone(trust), slot, t, cfg}, nil
 }
 
 type pendingCall struct {
@@ -58,59 +63,35 @@ type callResult struct {
 	answer answer
 	err    error
 }
-type requestQueue struct {
-	calls     chan pendingCall
-	closed    chan struct{}
-	serving   atomic.Bool
-	capacity  chan struct{}
-	mu        sync.Mutex
-	mutations map[cp.Slot]chan struct{}
+type mutationRef struct {
+	id     cp.ID
+	digest string
 }
 
-// Serialize callers before handing a mutation to a poll. At most the fixed
-// caller capacity can wait, including other callers for this enrollment.
-func (q *requestQueue) reserve(ctx context.Context, slot cp.Slot) error {
-	for {
-		q.mu.Lock()
-		active := q.mutations[slot]
-		if active == nil {
-			q.mutations[slot] = make(chan struct{})
-			q.mu.Unlock()
-			return nil
-		}
-		q.mu.Unlock()
-		select {
-		case <-active:
-		case <-ctx.Done():
-			return errors.Join(ErrNotSent, ctx.Err())
-		case <-q.closed:
-			return ErrNotSent
-		}
-	}
+type requestQueue struct {
+	mu         sync.Mutex
+	submitting bool
+	pending    *mutationRef
+	calls      chan pendingCall
+	closed     chan struct{}
+	serving    atomic.Bool
+	ordinary   atomic.Bool
+	recovery   atomic.Bool
 }
-func (q *requestQueue) release(slot cp.Slot) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	close(q.mutations[slot])
-	delete(q.mutations, slot)
-}
-func (q *requestQueue) exchange(ctx context.Context, k frame.Kind, data []byte, slot cp.Slot) (answer, error) {
+
+func (q *requestQueue) exchange(ctx context.Context, k frame.Kind, data []byte, recovery bool) (answer, error) {
 	unsent := cp.ErrUnavailable
-	if k == frame.Claim || k == frame.Advance {
+	if k.Mutation() {
 		unsent = ErrNotSent
 	}
-	select {
-	case q.capacity <- struct{}{}:
-		defer func() { <-q.capacity }()
-	default:
-		return answer{}, unsent
+	lane := &q.ordinary
+	if recovery {
+		lane = &q.recovery
 	}
-	if k == frame.Claim || k == frame.Advance {
-		if err := q.reserve(ctx, slot); err != nil {
-			return answer{}, err
-		}
-		defer q.release(slot)
+	if !lane.CompareAndSwap(false, true) {
+		return answer{}, errors.Join(unsent, cp.ErrBusy)
 	}
+	defer lane.Store(false)
 	call := pendingCall{ctx, k, data, make(chan callResult, 1)}
 	select {
 	case q.calls <- call:
@@ -133,7 +114,7 @@ func (e *Endpoint) Serve(l net.Listener) error {
 		return cp.ErrRefused
 	}
 	defer close(q.closed)
-	return serveListener(l, e.listenerTLS, 8, requestTimeout, func(ctx context.Context, c *tls.Conn, m frame.Message) {
+	return serveListener(l, e.listenerTLS, 1, requestTimeout, homeAdmission(e.trust), func(ctx context.Context, c *tls.Conn, m frame.Message) {
 		if m.Kind != frame.Poll {
 			return
 		}
@@ -141,7 +122,7 @@ func (e *Endpoint) Serve(l net.Listener) error {
 		case call := <-q.calls:
 			deadline, _ := ctx.Deadline()
 			exchange, cancel := context.WithDeadline(call.ctx, deadline)
-			a, err := exchangeOn(exchange, c, call.kind, call.data, false)
+			a, err := e.home.exchangeOn(exchange, c, call.kind, call.data, false)
 			cancel()
 			call.result <- callResult{a, err}
 		default:

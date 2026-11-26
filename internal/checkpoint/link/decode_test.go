@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	cp "ataniq/internal/checkpoint"
 	"ataniq/internal/checkpoint/link/internal/frame"
 )
 
@@ -28,4 +29,29 @@ func TestReceiptFieldsOwned(t *testing.T) {
 	if string(r.Signature) != "signature" {
 		t.Fatalf("append changed signature to %q", r.Signature)
 	}
+}
+
+func FuzzReadDecoder(f *testing.F) {
+	slot := cp.Slot{Witness: "witness", Authority: "authority", Store: "store"}
+	for _, op := range []string{"connect", "read", "settle"} {
+		q := cp.ReadRequest{Slot: slot, Challenge: cp.ID{1}, ReceiptID: cp.ID{2}}
+		body, err := readBody(q, "witness-key", op)
+		if err != nil {
+			f.Fatal(err)
+		}
+		f.Add(body, op)
+	}
+	f.Fuzz(func(t *testing.T, b []byte, op string) {
+		if len(b) > cp.MaxFrame || len(op) > 16 {
+			return
+		}
+		q, err := parseRead(b, "witness-key", op)
+		if err != nil {
+			return
+		}
+		exact, err := readBody(q, "witness-key", op)
+		if err != nil || !bytes.Equal(exact, b) {
+			t.Fatal("ambiguous read request")
+		}
+	})
 }

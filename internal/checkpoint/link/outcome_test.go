@@ -33,7 +33,7 @@ func TestMutationWriteProgress(t *testing.T) {
 	for _, partial := range []bool{false, true} {
 		f := newFixture(t, "witness")
 		owner := identity(t, "owner")
-		e := f.endpoint(serve(t, func(l net.Listener) error { return f.s.ServeOwner(l, f.w.Administration(), owner.Fingerprint()) }))
+		e := f.endpoint(testOwner(t, f.s, f.w, f.w.Administration(), owner.Fingerprint()))
 		dial := e.DialContext
 		e.DialContext = func(ctx context.Context, n, a string) (net.Conn, error) {
 			c, err := dial(ctx, n, a)
@@ -108,18 +108,14 @@ func tcpListener(t *testing.T) net.Listener {
 	must(t, err)
 	return l
 }
-func TestTCPOwnerCertificateRefusal(t *testing.T) {
+func TestOwnerRefusesTCP(t *testing.T) {
 	l := tcpListener(t)
+	defer l.Close()
 	f := newFixture(t, "witness")
-	done := make(chan error, 1)
-	identityPin := identity(t, "owner").Fingerprint()
-	go func() { done <- f.s.ServeOwner(l, f.w.Administration(), identityPin) }()
-	defer func() { l.Close(); <-done }()
-	e := f.endpoint(Remote{Network: "tcp4", Address: l.Addr().String()})
-	tr, err := e.transport(identity(t, "untrusted"))
-	must(t, err)
-	_, err = tr.exchange(t.Context(), frame.New(frame.Enroll, []byte("{}"), nil))
-	if !errors.Is(err, cp.ErrRefused) {
-		t.Fatalf("enroll with unpinned certificate: %v", err)
+	if err := f.s.ServeOwner(l, f.w.Administration(), f.w, f.id.Fingerprint(), 0); !errors.Is(err, cp.ErrRefused) {
+		t.Fatal(err)
+	}
+	if _, err := f.endpoint(Remote{Network: "tcp", Address: l.Addr().String()}).Administration(f.id); !errors.Is(err, cp.ErrRefused) {
+		t.Fatal(err)
 	}
 }

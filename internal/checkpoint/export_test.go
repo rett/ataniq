@@ -20,5 +20,5 @@ func (w *Memory) ForgetRetiredSlot(slot Slot) {
 
 // Used after Connect's only refusal was a key-role conflict.
 func (w *Memory) ClientWithOverlappingRoles(slot Slot, home, session ed25519.PrivateKey, pin ed25519.PublicKey) Client {
-	return &client{w, slot, home, session, pin}
+	return &client{w, slot, newMemoryKey(home, homeProfile), newMemoryKey(session, sessionProfile), pin}
 }

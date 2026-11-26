@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"net"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -18,9 +20,17 @@ import (
 	"ataniq/internal/seatgate"
 )
 
+// WitnessEvidence belongs to the same backend as the operations it serves.
+type WitnessEvidence interface {
+	cp.DispositionSigner
+	HasReceipt(context.Context, cp.Slot, cp.ID) (bool, error)
+}
+
 // Witness rechecks the live grant for each request. RawSubmit verifies the
 // exact body and both signatures under the witness's mutation contract.
 type Witness interface {
+	WitnessEvidence
+	SettleHome(context.Context, cp.Slot, cp.ID, ed25519.PublicKey) (cp.Receipt, error)
 	CheckHome(context.Context, cp.Slot, ed25519.PublicKey) error
 	ReadHome(context.Context, cp.ReadRequest, ed25519.PublicKey) (cp.View, error)
 	RawSubmit(context.Context, cp.Slot, ed25519.PublicKey, string, []byte, []byte, []byte) (cp.Receipt, error)
@@ -35,39 +45,53 @@ type Server struct {
 	witnessPin    ed25519.PublicKey
 	timeout       time.Duration
 	ownerCapacity int
-	polls         chan struct{}
+	ownerServing  atomic.Bool
+	home          Remote
+	slot          cp.Slot
+	polling       atomic.Bool
+	pollDelay     func(time.Duration) time.Duration
 	limits        limiter
 }
 
-func NewServer(id seatgate.Identity, witnessPin ed25519.PublicKey) (*Server, error) {
+func NewServer(id seatgate.Identity, witnessPin ed25519.PublicKey, home Remote, slot cp.Slot) (*Server, error) {
 	wid, err := cp.KeyID(witnessPin)
-	if err != nil || id.Fingerprint() == "" {
-		return nil, cp.ErrRefused
+	if err != nil || id.Fingerprint() == "" || !validSlot(slot) || home.Address == "" || !seatgate.ValidFingerprint(home.ServerPin) {
+		return nil, &ConfigError{"invalid home, enrollment, or witness identity"}
+	}
+	if home.DialContext == nil {
+		switch home.Network {
+		case "", "tcp", "tcp4", "tcp6":
+			_, port, err := net.SplitHostPort(home.Address)
+			if err != nil || port == "" {
+				return nil, &ConfigError{"invalid home TCP address"}
+			}
+		case "unix":
+		default:
+			return nil, &ConfigError{"invalid home stream network"}
+		}
 	}
 	return &Server{
 		id: id, witnessKeyID: wid, witnessPin: slices.Clone(witnessPin),
-		timeout: requestTimeout, ownerCapacity: 2, polls: make(chan struct{}, 6),
+		pollDelay: retryDelay, timeout: requestTimeout, ownerCapacity: 2, home: home, slot: slot,
 	}, nil
 }
 
 // ServeOwner is a separate owner endpoint. Supply a private local listener
 // and an independently provisioned client-certificate SPKI pin. Enrollment,
 // release, retirement and owner reads exist only on this authenticated endpoint.
-func (s *Server) ServeOwner(l net.Listener, a cp.Administration, ownerPin string) error {
-	if a == nil || !seatgate.ValidFingerprint(ownerPin) {
+func (s *Server) ServeOwner(l net.Listener, a cp.Administration, evidence WitnessEvidence, ownerPin string, uid uint32) error {
+	if _, ok := l.(*net.UnixListener); !ok {
+		return &ConfigError{"owner listener must be a Unix socket"}
+	}
+	return s.serveOwner(l, a, evidence, ownerPin, ownerAdmission(uid))
+}
+func (s *Server) serveOwner(l net.Listener, a cp.Administration, evidence WitnessEvidence, ownerPin string, admit admission) error {
+	if a == nil || evidence == nil || !seatgate.ValidFingerprint(ownerPin) || !s.ownerServing.CompareAndSwap(false, true) {
 		return cp.ErrRefused
 	}
-	switch addr := l.Addr().(type) {
-	case *net.UnixAddr:
-	case *net.TCPAddr:
-		if !addr.IP.IsLoopback() {
-			return cp.ErrRefused
-		}
-	default:
-		return cp.ErrRefused
-	}
-	return serveListener(l, serverTLS(s.id, ownerPin), s.ownerCapacity, s.timeout, func(ctx context.Context, conn *tls.Conn, m frame.Message) {
-		_ = s.reply(ctx, conn, nil, a, m)
+	defer s.ownerServing.Store(false)
+	return serveListener(l, serverTLS(s.id, ownerPin), s.ownerCapacity, s.timeout, admit, func(ctx context.Context, conn *tls.Conn, m frame.Message) {
+		_ = s.reply(ctx, conn, nil, a, evidence, m)
 	})
 }
 
@@ -78,9 +102,8 @@ func transientAccept(err error) bool {
 		errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM))
 }
 
-func serveListener(l net.Listener, cfg *tls.Config, capacity int, timeout time.Duration, handle func(context.Context, *tls.Conn, frame.Message)) error {
+func serveListener(l net.Listener, cfg *tls.Config, capacity int, timeout time.Duration, admit admission, handle func(context.Context, *tls.Conn, frame.Message)) error {
 	connections := make(chan struct{}, capacity)
-	var pending handshakes
 	ctx, cancel := context.WithCancel(context.Background())
 	var workers sync.WaitGroup
 	defer func() { cancel(); workers.Wait() }()
@@ -96,8 +119,8 @@ func serveListener(l net.Listener, cfg *tls.Config, capacity int, timeout time.D
 			continue
 		}
 		delay = 5 * time.Millisecond
-		source := peerSource(c)
-		if !pending.acquire(source) {
+		release := admit(c)
+		if release == nil {
 			c.Close()
 			continue
 		}
@@ -105,9 +128,11 @@ func serveListener(l net.Listener, cfg *tls.Config, capacity int, timeout time.D
 			defer c.Close()
 			stop := context.AfterFunc(ctx, func() { c.Close() })
 			defer stop()
-			conn := tls.Server(&countedConn{Conn: c}, cfg)
-			authenticated := c.SetDeadline(time.Now().Add(handshakeTimeout)) == nil && conn.HandshakeContext(ctx) == nil
-			pending.release(source)
+			now := time.Now()
+			deadline := now.Add(handshakeTimeout)
+			conn := tls.Server(&countedConn{Conn: &firstByteConn{Conn: c, deadline: deadline}}, cfg)
+			authenticated := c.SetDeadline(deadline) == nil && c.SetReadDeadline(now.Add(500*time.Millisecond)) == nil && conn.HandshakeContext(ctx) == nil
+			release()
 			if !authenticated {
 				return
 			}
@@ -119,7 +144,7 @@ func serveListener(l net.Listener, cfg *tls.Config, capacity int, timeout time.D
 			}
 			reqCtx, done := context.WithTimeout(ctx, timeout)
 			defer done()
-			deadline, _ := reqCtx.Deadline()
+			deadline, _ = reqCtx.Deadline()
 			if c.SetDeadline(time.Now().Add(min(timeout, 2*time.Second))) != nil {
 				return
 			}
@@ -131,51 +156,96 @@ func serveListener(l net.Listener, cfg *tls.Config, capacity int, timeout time.D
 		})
 	}
 }
-func (s *Server) reply(ctx context.Context, conn *tls.Conn, w Witness, a cp.Administration, m frame.Message) error {
-	replies, err := s.dispatch(ctx, w, a, m)
+
+var errRequestFailed = errors.New("checkpoint link: request failed")
+
+func (s *Server) reply(ctx context.Context, conn *tls.Conn, w Witness, a cp.Administration, evidence WitnessEvidence, m frame.Message) error {
+	replies, err := s.dispatch(ctx, w, a, evidence, m)
 	if errors.Is(err, frame.ErrProtocol) {
 		return err
 	}
-	if err != nil {
-		replies = []frame.Message{encodeError(err)}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err != nil || replies[0].Kind == frame.Granted {
+		result := "granted"
+		if err != nil {
+			result = errorCode(err)
+		}
+		data, marshalErr := m.Marshal()
+		if marshalErr != nil {
+			return marshalErr
+		}
+		sig, signErr := evidence.SignDisposition(ctx, sha256.Sum256(data), result)
+		if signErr != nil {
+			return signErr
+		}
+		if err != nil {
+			replies = []frame.Message{frame.New(frame.Failure, []byte(result), sig)}
+		} else {
+			replies = []frame.Message{frame.New(frame.Granted, sig)}
+		}
 	}
 	for _, reply := range replies {
 		if err := reply.WriteToStream(conn); err != nil {
 			return err
 		}
 	}
+	if replies[0].Kind == frame.Failure {
+		return errRequestFailed
+	}
 	return nil
 }
 
-func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m frame.Message) ([]frame.Message, error) {
+func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, evidence WitnessEvidence, m frame.Message) ([]frame.Message, error) {
 	f := m.Fields
 	var receipt cp.Receipt
 	var err error
 	switch m.Kind {
-	case frame.Connect, frame.Read, frame.OwnerRead:
-		if m.Kind == frame.OwnerRead && a == nil || m.Kind != frame.OwnerRead && w == nil {
+	case frame.Connect, frame.Read, frame.OwnerRead, frame.Settle, frame.OwnerSettle:
+		ownerOp := m.Kind == frame.OwnerRead || m.Kind == frame.OwnerSettle
+		if ownerOp != (a != nil) {
 			return nil, cp.ErrRefused
 		}
 		q, err := parseRead(f[0], s.witnessKeyID, operation[m.Kind])
 		if err != nil {
 			return nil, err
 		}
-		peer := "owner"
+		if w != nil && q.Slot != s.slot {
+			return nil, cp.ErrRefused
+		}
+		pool := ordinary
+		if (m.Kind == frame.Read || m.Kind == frame.OwnerRead) && q.ReceiptID != (cp.ID{}) {
+			found, err := evidence.HasReceipt(ctx, q.Slot, q.ReceiptID)
+			if err != nil {
+				return nil, err
+			}
+			if found {
+				pool = recoveryReads
+			}
+		}
+		if !s.limits.allow(w == nil, pool) {
+			return nil, cp.ErrUnavailable
+		}
 		if w != nil {
 			if err := authenticate(ctx, w, q.Slot, f[1], f[0], f[2]); err != nil {
 				return nil, err
 			}
-			peer = string(f[1])
-		}
-		pool := ordinary
-		if m.Kind != frame.Connect && q.ReceiptID != (cp.ID{}) {
-			pool = recoveryReads
-		}
-		if !s.limits.allow(peer, pool) {
-			return nil, cp.ErrUnavailable
 		}
 		if m.Kind == frame.Connect {
 			return []frame.Message{frame.New(frame.Granted)}, nil
+		}
+		if m.Kind == frame.Settle || m.Kind == frame.OwnerSettle {
+			var r cp.Receipt
+			if w != nil {
+				r, err = w.SettleHome(ctx, q.Slot, q.ReceiptID, f[1])
+			} else {
+				r, err = a.Settle(ctx, q.Slot, q.ReceiptID)
+			}
+			if err != nil {
+				return nil, err
+			}
+			return []frame.Message{frame.New(frame.Receipt, r.Body, r.Signature)}, nil
 		}
 		var v cp.View
 		if w != nil {
@@ -189,6 +259,9 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 			if !errors.Is(err, cp.ErrUnavailable) || !errors.Is(cp.VerifyView(s.witnessPin, q, v), cp.ErrUnavailable) {
 				return nil, err
 			}
+		}
+		if pool == recoveryReads && v.Prior == nil {
+			return nil, cp.ErrUnavailable
 		}
 		current, err := json.Marshal(v.Current)
 		if err != nil {
@@ -207,18 +280,21 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 		if !exactJSON(f[0], &slot) || !validSlot(slot) {
 			return nil, frame.ErrProtocol
 		}
+		if !s.limits.allow(false, ordinary) {
+			return nil, cp.ErrUnavailable
+		}
+		if slot != s.slot {
+			return nil, cp.ErrRefused
+		}
 		if err := authenticate(ctx, w, slot, f[1], f[2], f[3]); err != nil {
 			return nil, err
-		}
-		if !s.limits.allow(string(f[1]), ordinary) {
-			return nil, cp.ErrUnavailable
 		}
 		receipt, err = w.RawSubmit(ctx, slot, f[1], operation[m.Kind], f[2], f[3], f[4])
 	case frame.Enroll, frame.Release, frame.Retire:
 		if a == nil {
 			return nil, cp.ErrRefused
 		}
-		if !s.limits.allow("owner", ordinary) {
+		if !s.limits.allow(true, ordinary) {
 			return nil, cp.ErrUnavailable
 		}
 		intent, parseErr := cp.ParseIntent(operation[m.Kind], s.witnessKeyID, f[0])

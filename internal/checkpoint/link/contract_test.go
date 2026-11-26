@@ -6,7 +6,11 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"errors"
+
 	"net"
+	"net/netip"
+	"os"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"testing"
@@ -94,7 +98,36 @@ func loopback(t *testing.T) (net.Listener, dialFunc) {
 
 func serve(t *testing.T, run func(net.Listener) error) Remote {
 	t.Helper()
-	l, dial := loopback(t)
+	return serveNetwork(t, "auto", run)
+}
+
+func serveNetwork(t *testing.T, network string, run func(net.Listener) error) Remote {
+	t.Helper()
+	var l net.Listener
+	var dial dialFunc
+	switch network {
+	case "unix":
+		dir, err := os.MkdirTemp("", "owner-")
+		must(t, err)
+		t.Cleanup(func() { os.RemoveAll(dir) })
+		l, err = net.Listen("unix", filepath.Join(dir, "sock"))
+		if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+			t.Log("Unix bind denied; exercising authenticated framing over net.Pipe")
+			p := &pipeListener{incoming: make(chan net.Conn), closed: make(chan struct{})}
+			l, dial = p, p.dial
+		} else {
+			must(t, err)
+			dial = (&net.Dialer{}).DialContext
+		}
+	case "tcp":
+		l = tcpListener(t)
+		dial = (&net.Dialer{}).DialContext
+	case "pipe":
+		p := &pipeListener{incoming: make(chan net.Conn), closed: make(chan struct{})}
+		l, dial = p, p.dial
+	default:
+		l, dial = loopback(t)
+	}
 	done := make(chan error, 1)
 	go func() { done <- run(l) }()
 	t.Cleanup(func() {
@@ -103,7 +136,10 @@ func serve(t *testing.T, run func(net.Listener) error) Remote {
 			t.Errorf("serve: %v", err)
 		}
 	})
-	return Remote{Network: l.Addr().Network(), Address: l.Addr().String(), DialContext: dial}
+	if network != "unix" {
+		network = l.Addr().Network()
+	}
+	return Remote{Network: network, Address: l.Addr().String(), DialContext: dial}
 }
 
 // Both legs authenticate TLS. The proxy operates on complete plaintext
@@ -115,7 +151,11 @@ func proxied(t *testing.T, e Remote, id, owner seatgate.Identity, p *linktest.Pr
 		t.Fatal(err)
 	}
 	cfg := serverTLS(id, owner.Fingerprint())
-	frontend := serve(t, func(l net.Listener) error {
+	network := "unix"
+	if poll {
+		network = "auto"
+	}
+	frontend := serveNetwork(t, network, func(l net.Listener) error {
 		var wg sync.WaitGroup
 		defer wg.Wait()
 		for {
@@ -164,26 +204,36 @@ func TestWitnessContract(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		s, err := NewServer(serverID, pin)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// The state-machine suite models up to 70 transitions per schedule.
-		// Space calls in logical time, exercising the real rolling window. The
-		// rate tests exercise bursts with the production clock.
-		now := time.Now()
-		s.limits.now = func() time.Time { now = now.Add(time.Second * 2); return now }
 		homeID := identity(t, "home")
-		home, err := NewEndpoint(homeID, seatgate.ServerTLS(serverID, nil).Certificates[0].Certificate[0], pin, 1)
+		placeholder := Remote{Address: "localhost:1", ServerPin: homeID.Fingerprint()}
+		s, err := NewServer(serverID, pin, placeholder, cp.Slot{Witness: "witness", Authority: "owner", Store: "owner"})
 		must(t, err)
-		addr := serve(t, home.Serve)
-		addr.ServerPin, addr.WitnessPin, addr.Epoch = homeID.Fingerprint(), pin, 1
-		admin := serve(t, func(l net.Listener) error { return s.ServeOwner(l, w.Administration(), ownerID.Fingerprint()) })
+		advanceClock := func(s *Server) {
+			s.pollDelay = func(time.Duration) time.Duration { return 25 * time.Millisecond }
+			now := time.Now()
+			s.limits.now = func() time.Time { now = now.Add(2 * time.Second); return now }
+		}
+		advanceClock(s)
+		admin := testOwner(t, s, w, w.Administration(), ownerID.Fingerprint())
 		admin.ServerPin, admin.WitnessPin, admin.Epoch = serverID.Fingerprint(), pin, 1
 		var proxy linktest.Proxy
-		addr = proxied(t, addr, proxyID, serverID, &proxy, true)
 		admin = proxied(t, admin, proxyID, ownerID, &proxy, false)
-		startPolling(t, s, addr, memoryWitness{w})
+		endpoints := map[cp.Slot]*Endpoint{}
+		provision := func(slot cp.Slot, key ed25519.PublicKey, write bool) error {
+			if endpoints[slot] == nil {
+				e, err := NewEndpoint(homeID, seatgate.ServerTLS(serverID, nil).Certificates[0].Certificate[0], pin, 1, slot, loopbackTrust())
+				must(t, err)
+				addr := serve(t, e.Serve)
+				addr.ServerPin, addr.WitnessPin, addr.Epoch = homeID.Fingerprint(), pin, 1
+				addr = proxied(t, addr, proxyID, serverID, &proxy, true)
+				poller, err := NewServer(serverID, pin, addr, slot)
+				must(t, err)
+				advanceClock(poller)
+				startPolling(t, poller, addr, memoryWitness{w})
+				endpoints[slot] = e
+			}
+			return w.Grant(slot, key, write)
+		}
 		a, err := admin.Administration(ownerID)
 		if err != nil {
 			t.Fatal(err)
@@ -193,7 +243,7 @@ func TestWitnessContract(t *testing.T) {
 		// with that write even when kernel TCP carries the reply.
 		var delivery sync.Mutex
 		return checkpointtest.Harness{
-			Admin: a, Grant: w.Grant, Revoke: w.Revoke, Inhibit: w.Inhibit, SetReceiptLimit: w.SetReceiptLimit,
+			Admin: a, Grant: provision, Revoke: w.Revoke, Inhibit: w.Inhibit, SetReceiptLimit: w.SetReceiptLimit,
 			LoseNextReply: proxy.DropNextReply,
 			TransformNextReply: func(change func(cp.Receipt) cp.Receipt) {
 				w.TransformNextReply(func(r cp.Receipt) cp.Receipt {
@@ -203,16 +253,19 @@ func TestWitnessContract(t *testing.T) {
 				})
 			},
 			Connect: func(slot cp.Slot, h, s ed25519.PrivateKey, p ed25519.PublicKey) (cp.Client, error) {
-				e := *home
-				e.home.WitnessPin = p
-				e.home.wid, _ = cp.KeyID(p)
+				e := endpoints[slot]
+				if !ed25519.PublicKey(p).Equal(e.home.WitnessPin) {
+					return nil, &cp.Reason{Kind: cp.Unauthorized}
+				}
 				c, err := e.Connect(t.Context(), slot, h, s)
 				if err != nil {
 					return nil, err
 				}
 				return synchronizedClient{c, &delivery}, nil
 			},
-			RawSubmit: home.RawSubmit,
+			RawSubmit: func(ctx context.Context, slot cp.Slot, key ed25519.PublicKey, op string, b, hs, ss []byte) (cp.Receipt, error) {
+				return endpoints[slot].RawSubmit(ctx, slot, key, op, b, hs, ss)
+			},
 		}
 	})
 }
@@ -232,13 +285,51 @@ func startPolling(t *testing.T, s *Server, r Remote, w Witness) context.CancelFu
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
+	s.home = r
 	go func() {
 		defer close(done)
-		if err := s.Poll(ctx, r, w); !errors.Is(err, context.Canceled) {
+		if err := s.Poll(ctx, w); !errors.Is(err, context.Canceled) {
 			t.Errorf("poll: %v", err)
 		}
 	}()
 	stop := func() { cancel(); <-done }
 	t.Cleanup(stop)
 	return stop
+}
+
+func loopbackTrust() TrustSources { return TrustSources{netip.MustParsePrefix("127.0.0.1/32")} }
+
+func testOwner(t *testing.T, s *Server, signer WitnessEvidence, a cp.Administration, pin string) Remote {
+	return serveNetwork(t, "unix", func(l net.Listener) error {
+		if _, pipe := l.(*pipeListener); pipe {
+			return s.serveOwner(l, a, signer, pin, func(net.Conn) func() { return func() {} })
+		}
+		return s.ServeOwner(l, a, signer, pin, uint32(os.Getuid()))
+	})
+}
+func TestOwnerPeerUID(t *testing.T) {
+	f := newFixture(t, "witness")
+	owner := identity(t, "owner")
+	l, err := net.Listen("unix", filepath.Join(t.TempDir(), "owner.sock"))
+	if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+		t.Skipf("Unix bind denied: %v", err)
+	}
+	must(t, err)
+	done := make(chan error, 1)
+	go func() {
+		done <- f.s.ServeOwner(l, f.w.Administration(), f.w, owner.Fingerprint(), uint32(os.Getuid())^1)
+	}()
+	defer func() {
+		l.Close()
+		if !errors.Is(<-done, net.ErrClosed) {
+			t.Fatal("owner listener failed")
+		}
+	}()
+	raw, err := net.Dial("unix", l.Addr().String())
+	must(t, err)
+	defer raw.Close()
+	raw.SetDeadline(time.Now().Add(time.Second))
+	if err = tls.Client(raw, clientTLS(f.id.Fingerprint(), owner)).Handshake(); err == nil {
+		t.Fatal("different UID completed owner handshake")
+	}
 }

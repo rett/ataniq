@@ -50,9 +50,10 @@ func newFixture(t *testing.T, name string) *fixture {
 	w, err := cp.NewMemory(name, 1, k)
 	must(t, err)
 	id := identity(t, "authority")
-	s, err := NewServer(id, public(k))
+	slot := cp.Slot{Witness: name, Authority: name, Store: name}
+	s, err := NewServer(id, public(k), Remote{Address: "localhost:1", ServerPin: id.Fingerprint()}, slot)
 	must(t, err)
-	f := &fixture{w, public(k), s, id, key(t), key(t), cp.Slot{Witness: name, Authority: name, Store: name}}
+	f := &fixture{w, public(k), s, id, key(t), key(t), slot}
 	must(t, w.Grant(f.slot, public(f.home), true))
 	return f
 }
@@ -142,7 +143,7 @@ func TestPinAndDowngrade(t *testing.T) {
 func TestMalformedAndSlowFramesClose(t *testing.T) {
 	f := newFixture(t, "witness")
 	f.s.timeout = 75 * time.Millisecond
-	e := f.endpoint(serve(t, func(l net.Listener) error { return f.s.ServeOwner(l, f.w.Administration(), f.id.Fingerprint()) }))
+	e := f.endpoint(testOwner(t, f.s, f.w, f.w.Administration(), f.id.Fingerprint()))
 	tr, err := e.transport(f.id)
 	must(t, err)
 	for _, tc := range []struct {
@@ -150,10 +151,10 @@ func TestMalformedAndSlowFramesClose(t *testing.T) {
 		input []byte
 	}{
 		{"oversize", binary.BigEndian.AppendUint32(nil, cp.MaxFrame+1)},
-		{"unknown version", []byte{0, 0, 0, 2, 2, byte(frame.Granted)}},
+		{"unknown version", []byte{0, 0, 0, 2, 1, byte(frame.Granted)}},
 		{"partial prefix", []byte{0}},
 		{"partial payload", []byte{0, 0, 0, 16, 1}},
-		{"response as request", []byte{0, 0, 0, 2, 1, byte(frame.Granted)}},
+		{"response as request", []byte{0, 0, 0, 2, 2, byte(frame.Idle)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, err := tr.connect(t.Context())
@@ -173,7 +174,7 @@ func TestMalformedAndSlowFramesClose(t *testing.T) {
 func TestConnectionCap(t *testing.T) {
 	f := newFixture(t, "witness")
 	f.s.ownerCapacity = 1
-	e := f.endpoint(serve(t, func(l net.Listener) error { return f.s.ServeOwner(l, f.w.Administration(), f.id.Fingerprint()) }))
+	e := f.endpoint(testOwner(t, f.s, f.w, f.w.Administration(), f.id.Fingerprint()))
 	tr, err := e.transport(f.id)
 	must(t, err)
 	// Occupy the one permitted connection through its handshake.
@@ -221,7 +222,7 @@ func TestReadAuthenticationAndOwnerIsolation(t *testing.T) {
 		}
 	}
 	ownerID := identity(t, "owner")
-	oe := f.endpoint(serve(t, func(l net.Listener) error { return f.s.ServeOwner(l, f.w.Administration(), ownerID.Fingerprint()) }))
+	oe := f.endpoint(testOwner(t, f.s, f.w, f.w.Administration(), ownerID.Fingerprint()))
 	for _, id := range []seatgate.Identity{{}, identity(t, "untrusted")} {
 		tr, err := oe.transport(id)
 		must(t, err)
@@ -284,9 +285,7 @@ func TestReadFailureWithReadyEvidence(t *testing.T) {
 	f := newFixture(t, "witness")
 	f.enroll(t, f.w.Administration())
 	id := identity(t, "owner")
-	e := f.endpoint(serve(t, func(l net.Listener) error {
-		return f.s.ServeOwner(l, unavailableReader{f.w.Administration()}, id.Fingerprint())
-	}))
+	e := f.endpoint(testOwner(t, f.s, f.w, unavailableReader{f.w.Administration()}, id.Fingerprint()))
 	a, err := e.Administration(id)
 	must(t, err)
 	q := cp.ReadRequest{Slot: f.slot, Challenge: cp.ID{1}, ReceiptID: cp.ID{1}}
@@ -365,7 +364,7 @@ func TestReconnectAfterRestart(t *testing.T) {
 		_, err := c.Read(t.Context(), cp.ReadRequest{Slot: f.slot, Challenge: cp.ID{3}, ReceiptID: cp.ID{1}})
 		read <- err
 	}()
-	restarted, err := NewServer(f.id, f.pin)
+	restarted, err := NewServer(f.id, f.pin, r, f.slot)
 	must(t, err)
 	startPolling(t, restarted, r, memoryWitness{f.w})
 	select {
@@ -380,7 +379,7 @@ func TestEscapedIdentifiersFit(t *testing.T) {
 	f := newFixture(t, strings.Repeat("<", assignment.MaxReferenceBytes))
 	e := f.serve(t)
 	ownerID := identity(t, "owner")
-	oe := f.endpoint(serve(t, func(l net.Listener) error { return f.s.ServeOwner(l, f.w.Administration(), ownerID.Fingerprint()) }))
+	oe := f.endpoint(testOwner(t, f.s, f.w, f.w.Administration(), ownerID.Fingerprint()))
 	a, err := oe.Administration(ownerID)
 	must(t, err)
 	s := f.enroll(t, a)

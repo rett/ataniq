@@ -104,28 +104,28 @@ func parseRead(b []byte, wid, op string) (cp.ReadRequest, error) {
 
 // Send only contract error codes. An unclassified backend error may have
 // happened after commit. Its diagnostic never goes on the wire.
-var categories = []error{cp.ErrRefused, cp.ErrStale, cp.ErrRetired, cp.ErrUnavailable, cp.ErrUnknownOutcome}
+var categories = []error{cp.ErrNotApplied, cp.ErrRefused, cp.ErrStale, cp.ErrRetired, cp.ErrUnavailable, cp.ErrUnknownOutcome}
 var reasons = []cp.ReasonKind{cp.InvalidRequest, cp.Unauthorized, cp.KeyRoleConflict, cp.NotEnrolled, cp.MutationConflict,
 	cp.Superseded, cp.PredecessorMismatch, cp.SessionConflict, cp.EnrollmentConflict, cp.CounterExhausted, cp.InvalidSuccessor}
 
-func encodeError(err error) frame.Message {
+func errorCode(err error) string {
 	if errors.Is(err, cp.ErrUnknownOutcome) {
-		return frame.New(frame.Failure, []byte(cp.ErrUnknownOutcome.Error()))
+		return string(cp.ErrUnknownOutcome.Error())
 	}
 	var reason *cp.Reason
 	if errors.As(err, &reason) {
 		for _, k := range reasons {
 			if k == reason.Kind {
-				return frame.New(frame.Failure, []byte(k))
+				return string(k)
 			}
 		}
 	}
 	for _, e := range categories {
 		if errors.Is(err, e) {
-			return frame.New(frame.Failure, []byte(e.Error()))
+			return string(e.Error())
 		}
 	}
-	return frame.New(frame.Failure, []byte(cp.ErrUnknownOutcome.Error()))
+	return string(cp.ErrUnknownOutcome.Error())
 }
 func decodeError(b []byte) error {
 	for _, k := range reasons {
@@ -142,7 +142,7 @@ func decodeError(b []byte) error {
 }
 
 var operation = [...]string{
-	frame.Connect: "connect", frame.Read: "read", frame.OwnerRead: "read",
+	frame.Settle: "settle", frame.OwnerSettle: "settle", frame.Connect: "connect", frame.Read: "read", frame.OwnerRead: "read",
 	frame.Claim: "claim", frame.Advance: "advance", frame.Enroll: "enroll",
 	frame.Release: "release", frame.Retire: "retire",
 }

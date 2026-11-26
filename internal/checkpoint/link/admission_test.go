@@ -2,9 +2,12 @@ package link
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,7 +19,7 @@ import (
 func TestWitnessCertificateRequired(t *testing.T) {
 	f := newFixture(t, "witness")
 	e, r := f.listener(t)
-	if e.listenerTLS.ClientAuth != tls.RequireAndVerifyClientCert || e.listenerTLS.ClientCAs == nil {
+	if e.listenerTLS.ClientAuth != tls.RequireAnyClientCert || e.listenerTLS.ClientCAs != nil {
 		t.Error("home does not verify the registered witness certificate")
 	}
 	for _, id := range []seatgate.Identity{{}, identity(t, "untrusted")} {
@@ -67,7 +70,7 @@ func TestAdmissionIsolation(t *testing.T) {
 				defer c.Close()
 			}
 			ownerID := identity(t, "owner")
-			admin := f.endpoint(serve(t, func(l net.Listener) error { return f.s.ServeOwner(l, f.w.Administration(), ownerID.Fingerprint()) }))
+			admin := f.endpoint(testOwner(t, f.s, f.w, f.w.Administration(), ownerID.Fingerprint()))
 			a, err := admin.Administration(ownerID)
 			must(t, err)
 			f.enroll(t, a)
@@ -115,14 +118,99 @@ func TestFrameHeaderDeadline(t *testing.T) {
 	}
 }
 
-func TestRejectedWitnessStopsPolling(t *testing.T) {
-	f := newFixture(t, "witness")
-	_, r := f.listener(t)
-	other, err := NewServer(identity(t, "untrusted"), f.pin)
-	must(t, err)
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-	defer cancel()
-	if err := other.Poll(ctx, r, memoryWitness{f.w}); !errors.Is(err, cp.ErrRefused) {
-		t.Fatalf("poll: %v", err)
+func TestDatedWitnessRetriesPeerAlert(t *testing.T) {
+	for _, network := range []string{"pipe", "tcp"} {
+		for _, years := range []int{-20, 3} {
+			t.Run(fmt.Sprintf("%s/%d", network, years), func(t *testing.T) {
+				f := newFixture(t, "witness")
+				cert, key, err := seatgate.GenerateIdentity(rand.Reader, time.Now().AddDate(years, 0, 0), "witness")
+				must(t, err)
+				f.id, err = seatgate.ParseIdentity(cert, key)
+				must(t, err)
+				f.s.id = f.id
+				home := identity(t, "home")
+				e := endpointFor(t, home, f.id, f)
+				var attempts atomic.Int32
+				var first, second atomic.Int64
+				e.listenerTLS.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
+					switch attempts.Add(1) {
+					case 2:
+						second.Store(time.Now().UnixNano())
+					case 1:
+						first.Store(time.Now().UnixNano())
+						return nil, errors.New("temporary refusal")
+					}
+					return nil, nil
+				}
+				r := serveNetwork(t, network, e.Serve)
+				r.ServerPin = home.Fingerprint()
+				startPolling(t, f.s, r, memoryWitness{f.w})
+				ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+				defer cancel()
+				_, err = e.Connect(ctx, f.slot, f.home, f.session)
+				must(t, err)
+				if time.Duration(second.Load()-first.Load()) < 500*time.Millisecond {
+					t.Fatal("peer alert missed long backoff")
+				}
+				if attempts.Load() < 2 {
+					t.Fatal("missing retry")
+				}
+			})
+		}
 	}
+}
+
+func TestTCPReservedWitnessHandshake(t *testing.T) {
+	f := newFixture(t, "witness")
+	id := identity(t, "home")
+	e := endpointFor(t, id, f.id, f)
+	r := serveNetwork(t, "tcp", e.Serve)
+	r.ServerPin = id.Fingerprint()
+	var silent []net.Conn
+	for _, ip := range []string{"127.0.0.2", "127.0.0.3"} {
+		d := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(ip)}}
+		for range 2 {
+			c, err := d.DialContext(t.Context(), "tcp4", r.Address)
+			must(t, err)
+			defer c.Close()
+			silent = append(silent, c)
+		}
+	}
+	startPolling(t, f.s, r, memoryWitness{f.w})
+	ctx, cancel := context.WithTimeout(t.Context(), 450*time.Millisecond)
+	defer cancel()
+	_, err := e.Connect(ctx, f.slot, f.home, f.session)
+	must(t, err)
+	silent[0].SetReadDeadline(time.Now().Add(time.Second))
+	_, err = silent[0].Read(make([]byte, 1))
+	var timeout net.Error
+	if err == nil || errors.As(err, &timeout) && timeout.Timeout() {
+		t.Fatal("silent peer exceeded first-byte window", err)
+	}
+}
+
+type sourceConn struct {
+	net.Conn
+	source net.IP
+}
+
+func (c sourceConn) RemoteAddr() net.Addr { return &net.TCPAddr{IP: c.source} }
+
+func TestConfiguredSourcesHaveReservedSlots(t *testing.T) {
+	admit := homeAdmission(loopbackTrust())
+	for _, ip := range []string{"127.0.0.2", "127.0.0.2", "127.0.0.3", "127.0.0.3"} {
+		release := admit(sourceConn{source: net.ParseIP(ip)})
+		if release == nil {
+			t.Fatal("missing ordinary capacity")
+		}
+		defer release()
+	}
+	if admit(sourceConn{source: net.ParseIP("127.0.0.4")}) != nil {
+		t.Fatal("ordinary limit exceeded")
+	}
+	release := admit(sourceConn{source: net.ParseIP("127.0.0.1")})
+	if release == nil {
+		t.Fatal("reserved capacity unavailable")
+	}
+	release()
 }

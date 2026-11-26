@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -33,10 +34,10 @@ type Remote struct {
 
 type transport struct {
 	Remote
-	queue        *requestQueue
-	mutationSlot cp.Slot
-	tls          *tls.Config
-	wid          string
+	queue    *requestQueue
+	recovery bool
+	tls      *tls.Config
+	wid      string
 }
 
 func (e Remote) transport(owner seatgate.Identity) (transport, error) {
@@ -56,10 +57,28 @@ func (e Remote) transport(owner seatgate.Identity) (transport, error) {
 
 type client struct {
 	transport
-	slot          cp.Slot
-	home, session ed25519.PrivateKey
+	slot cp.Slot
+	keys *signingCapability
 }
 
+type signingCapability struct {
+	home, session         ed25519.PublicKey
+	signHome, signSession func([]byte) ([]byte, error)
+}
+
+func newSigningCapability(home, session ed25519.PrivateKey) *signingCapability {
+	home, session = slices.Clone(home), slices.Clone(session)
+	return &signingCapability{
+		home: home.Public().(ed25519.PublicKey), session: session.Public().(ed25519.PublicKey),
+		signHome:    func(b []byte) ([]byte, error) { return cp.Sign(cp.HomeNamespace, home, b) },
+		signSession: func(b []byte) ([]byte, error) { return cp.Sign(cp.SessionNamespace, session, b) },
+	}
+}
+func (signingCapability) String() string                 { return "[redacted checkpoint keys]" }
+func (k signingCapability) GoString() string             { return k.String() }
+func (k signingCapability) Format(out fmt.State, _ rune) { io.WriteString(out, k.String()) }
+
+func (c client) MarshalText() ([]byte, error)    { return []byte(c.String()), nil }
 func (client) String() string                    { return "[redacted checkpoint client]" }
 func (c client) GoString() string                { return c.String() }
 func (c client) Format(out fmt.State, verb rune) { io.WriteString(out, c.String()) }
@@ -75,6 +94,9 @@ func (e Endpoint) Connect(ctx context.Context, slot cp.Slot, home, session ed255
 	if t.queue == nil {
 		return nil, cp.ErrRefused
 	}
+	if slot != e.slot {
+		return nil, &cp.Reason{Kind: cp.Unauthorized}
+	}
 	if !validSlot(slot) || !validPrivate(home) || !validPrivate(session) {
 		return nil, &cp.Reason{Kind: cp.InvalidRequest}
 	}
@@ -82,7 +104,7 @@ func (e Endpoint) Connect(ctx context.Context, slot cp.Slot, home, session ed255
 	if bytes.Equal(h, s) || bytes.Equal(h, t.WitnessPin) || bytes.Equal(s, t.WitnessPin) {
 		return nil, &cp.Reason{Kind: cp.KeyRoleConflict}
 	}
-	c := &client{t, slot, slices.Clone(home), slices.Clone(session)}
+	c := &client{t, slot, newSigningCapability(home, session)}
 	q := cp.ReadRequest{Slot: slot}
 	rand.Read(q.Challenge[:])
 	m, err := c.signedRead(frame.Connect, q)
@@ -100,7 +122,7 @@ type owner struct{ transport }
 // Administration dials the separately served owner endpoint with its pinned
 // client certificate. An owner read requires neither a home nor a session key.
 func (e Remote) Administration(id seatgate.Identity) (cp.Administration, error) {
-	if id.Fingerprint() == "" {
+	if e.Network != "unix" || id.Fingerprint() == "" {
 		return nil, cp.ErrRefused
 	}
 	t, err := e.transport(id)
@@ -125,6 +147,12 @@ func (c *countedConn) Write(b []byte) (int, error) {
 }
 func retryDelay(limit time.Duration) time.Duration {
 	return limit/2 + jitter.N(limit/2+1)
+}
+
+// TLS exposes peer alerts on stream transports as remote net.OpErrors.
+func peerAlert(err error) bool {
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "remote error"
 }
 
 // TLS over streams wraps its private alert type in a remote net.OpError.
@@ -179,6 +207,9 @@ func (t transport) connect(ctx context.Context) (*tls.Conn, error) {
 		var header tls.RecordHeaderError
 		if handshakeRefusal(err) || errors.As(err, &header) {
 			return nil, cp.ErrRefused
+		}
+		if peerAlert(err) {
+			return nil, errors.Join(cp.ErrUnavailable, err)
 		}
 		if errors.Is(err, cp.ErrRefused) {
 			return nil, err
@@ -238,15 +269,18 @@ func sendFirst(conn *tls.Conn, data []byte, dialed bool) (reply frame.Message, w
 // After a write starts, a mutation may have committed even on a write error.
 // Only a recognized witness refusal or a matching signed receipt resolves it.
 func (t transport) exchange(ctx context.Context, m frame.Message) (answer, error) {
+	if m.Kind.Mutation() {
+		rand.Read(m.Nonce[:])
+	}
 	data, err := m.Marshal()
 	if err != nil {
 		return answer{}, &cp.Reason{Kind: cp.InvalidRequest}
 	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	mutation := m.Kind != frame.Connect && m.Kind != frame.Read && m.Kind != frame.OwnerRead
+	mutation := m.Kind.Mutation()
 	if t.queue != nil {
-		return t.queue.exchange(ctx, m.Kind, data, t.mutationSlot)
+		return t.queue.exchange(ctx, m.Kind, data, t.recovery)
 	}
 	conn, err := t.connect(ctx)
 	if err != nil {
@@ -256,11 +290,11 @@ func (t transport) exchange(ctx context.Context, m frame.Message) (answer, error
 		return answer{}, err
 	}
 	defer conn.NetConn().Close()
-	return exchangeOn(ctx, conn, m.Kind, data, true)
+	return t.exchangeOn(ctx, conn, m.Kind, data, true)
 }
 
-func exchangeOn(ctx context.Context, conn *tls.Conn, kind frame.Kind, data []byte, dialed bool) (answer, error) {
-	mutation := kind != frame.Connect && kind != frame.Read && kind != frame.OwnerRead
+func (t transport) exchangeOn(ctx context.Context, conn *tls.Conn, kind frame.Kind, data []byte, dialed bool) (answer, error) {
+	mutation := kind.Mutation()
 	raw := conn.NetConn()
 	stop := context.AfterFunc(ctx, func() { raw.Close() })
 	defer stop()
@@ -279,7 +313,7 @@ func exchangeOn(ctx context.Context, conn *tls.Conn, kind frame.Kind, data []byt
 	counter := raw.(*countedConn)
 	before := counter.written.Load()
 	reply, writeErr, readErr := sendFirst(conn, data, dialed)
-	if errors.Is(readErr, cp.ErrRefused) {
+	if !mutation && errors.Is(readErr, cp.ErrRefused) {
 		return answer{}, cp.ErrRefused
 	}
 	if writeErr != nil && mutation && counter.written.Load() == before {
@@ -289,6 +323,9 @@ func exchangeOn(ctx context.Context, conn *tls.Conn, kind frame.Kind, data []byt
 		return answer{}, errors.Join(result, ctx.Err())
 	}
 	if reply.Kind == frame.Failure {
+		if !cp.VerifyDisposition(t.WitnessPin, t.Epoch, sha256.Sum256(data), string(reply.Fields[0]), reply.Fields[1]) {
+			return answer{}, result
+		}
 		err := decodeError(reply.Fields[0])
 		if err == frame.ErrProtocol || err == cp.ErrUnknownOutcome {
 			return answer{}, result
@@ -296,7 +333,7 @@ func exchangeOn(ctx context.Context, conn *tls.Conn, kind frame.Kind, data []byt
 		return answer{}, err
 	}
 	if kind == frame.Connect {
-		if reply.Kind != frame.Granted {
+		if reply.Kind != frame.Granted || !cp.VerifyDisposition(t.WitnessPin, t.Epoch, sha256.Sum256(data), "granted", reply.Fields[0]) {
 			return answer{}, result
 		}
 		return answer{}, nil
@@ -347,11 +384,11 @@ func (c *client) signedRead(kind frame.Kind, q cp.ReadRequest) (frame.Message, e
 	if err != nil {
 		return frame.Message{}, err
 	}
-	sig, err := cp.Sign(cp.HomeNamespace, c.home, b)
+	sig, err := c.keys.signHome(b)
 	if err != nil {
 		return frame.Message{}, err
 	}
-	return frame.New(kind, b, c.home.Public().(ed25519.PublicKey), sig), nil
+	return frame.New(kind, b, c.keys.home, sig), nil
 }
 func (c *owner) Read(ctx context.Context, q cp.ReadRequest) (cp.View, error) {
 	b, err := readBody(q, c.wid, "read")
@@ -361,22 +398,29 @@ func (c *owner) Read(ctx context.Context, q cp.ReadRequest) (cp.View, error) {
 	return c.read(ctx, q, frame.New(frame.OwnerRead, b))
 }
 func (t transport) read(ctx context.Context, q cp.ReadRequest, m frame.Message) (cp.View, error) {
+	t.recovery = q.ReceiptID != (cp.ID{})
 	a, err := t.exchange(ctx, m)
 	if err != nil {
 		return cp.View{}, err
 	}
 	err = cp.VerifyView(t.WitnessPin, q, a.view)
 	if err != nil && !errors.Is(err, cp.ErrUnavailable) {
-		return cp.View{}, err
+		return cp.View{}, cp.ErrUnavailable
 	}
 	if a.view.Current.Epoch != t.Epoch {
 		return cp.View{}, cp.ErrStale
+	}
+	if t.queue != nil && a.view.Prior != nil {
+		ack, verifyErr := cp.VerifyReceipt(t.WitnessPin, *a.view.Prior)
+		if verifyErr == nil && ack.State.Epoch == t.Epoch {
+			t.queue.resolve(ack.ID, ack.RequestDigest)
+		}
 	}
 	return a.view, err
 }
 
 func (c *client) Claim(ctx context.Context, q cp.Claim) (cp.Receipt, error) {
-	if !bytes.Equal(q.NewSessionPublicKey, c.session.Public().(ed25519.PublicKey)) {
+	if !bytes.Equal(q.NewSessionPublicKey, c.keys.session) {
 		return cp.Receipt{}, &cp.Reason{Kind: cp.InvalidRequest}
 	}
 	return c.submit(ctx, frame.Claim, q.Expected, q)
@@ -392,23 +436,41 @@ func (c *client) submit(ctx context.Context, k frame.Kind, s cp.State, q cp.Inte
 	if err != nil {
 		return cp.Receipt{}, err
 	}
-	hs, err := cp.Sign(cp.HomeNamespace, c.home, b)
+	hs, err := c.keys.signHome(b)
 	if err != nil {
 		return cp.Receipt{}, err
 	}
-	ss, err := cp.Sign(cp.SessionNamespace, c.session, b)
+	ss, err := c.keys.signSession(b)
 	if err != nil {
 		return cp.Receipt{}, err
 	}
-	return c.rawSubmit(ctx, k, c.slot, c.home.Public().(ed25519.PublicKey), b, hs, ss)
+	return c.rawSubmit(ctx, k, c.slot, c.keys.home, b, hs, ss)
 }
 func (t transport) rawSubmit(ctx context.Context, k frame.Kind, slot cp.Slot, home ed25519.PublicKey, b, hs, ss []byte) (cp.Receipt, error) {
-	t.mutationSlot = slot
+
 	route, err := json.Marshal(slot)
 	if err != nil {
 		return cp.Receipt{}, err
 	}
-	return t.mutate(ctx, frame.New(k, route, home, b, hs, ss), b)
+	intent, err := cp.ParseIntent(operation[k], t.wid, b)
+	if err != nil {
+		return cp.Receipt{}, err
+	}
+	var id cp.ID
+	switch q := intent.(type) {
+	case cp.Claim:
+		id = q.ID
+	case cp.Advance:
+		id = q.ID
+	default:
+		return cp.Receipt{}, cp.ErrRefused
+	}
+	retry, err := t.queue.begin(mutationRef{id, cp.RequestDigest(b)})
+	if err != nil {
+		return cp.Receipt{}, err
+	}
+	r, err := t.mutate(ctx, frame.New(k, route, home, b, hs, ss), b)
+	return r, t.queue.finish(retry, err)
 }
 
 // RawSubmit is the checkpointtest harness hook for qualifying a remote
@@ -418,6 +480,9 @@ func (e Endpoint) RawSubmit(ctx context.Context, slot cp.Slot, home ed25519.Publ
 	t := e.home
 	if t.queue == nil {
 		return cp.Receipt{}, cp.ErrRefused
+	}
+	if slot != e.slot {
+		return cp.Receipt{}, &cp.Reason{Kind: cp.Unauthorized}
 	}
 	switch op {
 	case "claim":
