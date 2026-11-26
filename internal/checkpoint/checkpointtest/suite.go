@@ -194,7 +194,7 @@ func Run(t *testing.T, newWitness Factory) {
 		_, err = f.Admin.Retire(f.ctx, cp.Retirement{Mutation: mutation(v.Current, "retire"), DispositionDigest: digest("disposed")})
 		check(t, err)
 		_, err = f.Admin.Enroll(f.ctx, h.e)
-		want(t, err, cp.ErrRetired)
+		want(t, err, cp.ErrStale)
 		f.enroll(t, replacement)
 	})
 	t.Run("two homes and live grants", func(t *testing.T) {
@@ -264,6 +264,32 @@ func Run(t *testing.T, newWitness Factory) {
 		if f.state(t, h, "still recoverable") != v.Current {
 			t.Fatal("capacity refusal changed state")
 		}
+	})
+	t.Run("inhibited retry", func(t *testing.T) {
+		f := start(t, newWitness)
+		h := f.home(t, "west", "s", "one", true)
+		s := f.claim(t, h, f.enroll(t, h), "claim")
+		q := advance(s, "first")
+		f.LoseNextReply()
+		_, err := h.c.Advance(f.ctx, q)
+		want(t, err, cp.ErrUnknownOutcome)
+		f.Inhibit(true)
+		r, err := h.c.Advance(f.ctx, q)
+		check(t, err)
+		a, err := cp.VerifyReceipt(f.pin, r)
+		check(t, err)
+		if a.ID != q.ID || a.State.Head != q.Next {
+			t.Fatal("retry lost committed advance")
+		}
+		next := advance(a.State, "second")
+		_, err = h.c.Advance(f.ctx, next)
+		want(t, err, cp.ErrUnavailable)
+		f.Inhibit(false)
+		_, err = h.c.Advance(f.ctx, next)
+		check(t, err)
+		f.Inhibit(true)
+		_, err = h.c.Advance(f.ctx, q)
+		want(t, err, cp.ErrStale)
 	})
 	t.Run("replacement retry", func(t *testing.T) {
 		f := start(t, newWitness)

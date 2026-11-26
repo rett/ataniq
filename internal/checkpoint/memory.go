@@ -197,7 +197,7 @@ func (e *enrollment) retry(id ID, b []byte) (Receipt, bool, error) {
 	if !ok {
 		return Receipt{}, false, nil
 	}
-	if !bytes.Equal(saved.request, b) {
+	if !bytes.Equal(saved.request, b) || ReceiptDigest(saved.receipt) != e.state.LastReceiptDigest {
 		return Receipt{}, true, ErrStale
 	}
 	return cloneReceipt(saved.receipt), true, nil
@@ -240,9 +240,6 @@ func (a admin) Enroll(ctx context.Context, q Enrollment) (Receipt, error) {
 	w := a.w
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if err := w.available(ctx); err != nil {
-		return Receipt{}, err
-	}
 	g, ok := w.grants[q.Slot]
 	if !ok || !bytes.Equal(g.key, q.HomePublicKey) {
 		return Receipt{}, ErrRefused
@@ -251,12 +248,18 @@ func (a admin) Enroll(ctx context.Context, q Enrollment) (Receipt, error) {
 	if err != nil || !homeProfile.verify(g.key, b, q.ProofOfPossession) {
 		return Receipt{}, ErrRefused
 	}
-	if old := w.slots[q.Slot]; old != nil {
+	old := w.slots[q.Slot]
+	if old != nil {
+		if r, found, err := old.retry(q.ID, b); found {
+			return r, err
+		}
+	}
+	if err := w.available(ctx); err != nil {
+		return Receipt{}, err
+	}
+	if old != nil {
 		if old.state.Status == Retired {
 			return Receipt{}, ErrRetired
-		}
-		if r, ok, err := old.retry(q.ID, b); ok {
-			return r, err
 		}
 		return Receipt{}, ErrStale
 	}
@@ -341,9 +344,6 @@ func (c *client) accept(ctx context.Context, op string, b, homeSig, sessionSig [
 	m := record.mutation
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if err := w.available(ctx); err != nil {
-		return Receipt{}, err
-	}
 	e, err := c.authorized(m.Expected.Slot, true)
 	if err != nil {
 		return Receipt{}, err
@@ -363,9 +363,9 @@ func (c *client) accept(ctx context.Context, op string, b, homeSig, sessionSig [
 	}
 	// A past claim or advance cannot return success on a later fence.
 	// Read retains the old receipt.
-	if prior, ok := e.history[m.ID]; ok {
-		if !bytes.Equal(prior.request, b) {
-			return Receipt{}, ErrStale
+	if r, ok, err := e.retry(m.ID, b); ok {
+		if err != nil {
+			return Receipt{}, err
 		}
 		fence := m.Expected.Fence
 		if op == "claim" {
@@ -374,7 +374,10 @@ func (c *client) accept(ctx context.Context, op string, b, homeSig, sessionSig [
 		if fence != e.state.Fence || e.state.SessionKeyID != c.sessionID {
 			return Receipt{}, ErrStale
 		}
-		return cloneReceipt(prior.receipt), nil
+		return r, nil
+	}
+	if err := w.available(ctx); err != nil {
+		return Receipt{}, err
 	}
 	if m.Expected != e.state || e.state.Revision == math.MaxUint64 {
 		return Receipt{}, ErrStale
@@ -411,9 +414,6 @@ func (a admin) end(ctx context.Context, op string, m Mutation, disposition strin
 	w := a.w
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if err := w.available(ctx); err != nil {
-		return Receipt{}, err
-	}
 	e := w.slots[m.Expected.Slot]
 	if e == nil {
 		return Receipt{}, ErrRefused
@@ -422,11 +422,11 @@ func (a admin) end(ctx context.Context, op string, m Mutation, disposition strin
 	if err != nil {
 		return Receipt{}, err
 	}
-	if e.state.Status == Retired && op != "retire" {
-		return Receipt{}, ErrRetired
-	}
 	if r, ok, err := e.retry(m.ID, b); ok {
 		return r, err
+	}
+	if err := w.available(ctx); err != nil {
+		return Receipt{}, err
 	}
 	if e.state.Status == Retired {
 		return Receipt{}, ErrRetired

@@ -11,7 +11,9 @@ import (
 )
 
 // A conflicting mutation ID or failed compare-and-swap returns ErrStale.
-// ErrUnavailable means the request did not commit. ErrUnknownOutcome requires
+// ErrUnavailable means this attempt made no change. Non-commit is guaranteed
+// only for a request absent from witness history. An authorized exact retry of
+// the latest mutation returns its receipt even during inhibition. ErrUnknownOutcome requires
 // reconciling the saved intent by its ID before publishing a result.
 var (
 	ErrRefused        = errors.New("checkpoint: refused")
@@ -80,7 +82,8 @@ type View struct {
 
 // Client is scoped to a single authorized slot and signs with its configured
 // keys. Exact retry returns the original receipt without repeating the change.
-// After release or retirement use challenged Read for historical evidence.
+// Superseded receipts are available by ReceiptID through challenged Read.
+// Mutation retries still require current authorization and valid signatures.
 type Client interface {
 	Read(context.Context, ReadRequest) (View, error)
 	Claim(context.Context, Claim) (Receipt, error)
