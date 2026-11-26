@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 
@@ -81,6 +83,96 @@ func TestPublicKeyLine(t *testing.T) {
 		if _, _, err := LoadPublicKey(bad); err == nil {
 			t.Fatalf("accepted %q", bad)
 		}
+	}
+}
+
+func TestCanonicalPrimeOrderEnrollment(t *testing.T) {
+	priv := testKey()
+	pub := priv.Public().(ed25519.PublicKey)
+	seed := sample()
+	seed.KeyID = keyID(pub)
+	h := assignment.Header{Schema: 1, Authority: seed.Home.Authority, Incarnation: seed.Home.Incarnation,
+		Store: seed.Home.Store, LedgerID: "ledger", KeyID: seed.KeyID}
+	signer, err := NewSigner(h, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewVerifier(h, pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := (assignment.Event{Public: seed}).SigningBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig, err := signer.Sign(h, message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verifier.Verify(h, message, sig); err != nil {
+		t.Fatal(err)
+	}
+	blob, err := decodeSignature(sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := bytes.TrimPrefix(message, []byte(domain))
+	if err := Verify(pub, body, armor(blob)); err != nil {
+		t.Fatal(err)
+	}
+	zeros := strings.Repeat("00", 30)
+	ones := strings.Repeat("ff", 30)
+	for name, encoded := range map[string]string{
+		"identity":                         "01" + zeros + "00",
+		"order two":                        "ec" + ones + "7f",
+		"order four positive":              "00" + zeros + "00",
+		"order four negative":              "00" + zeros + "80",
+		"order eight 1":                    "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+		"order eight 2":                    "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+		"order eight 3":                    "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+		"order eight 4":                    "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+		"negative zero identity":           "01" + zeros + "80",
+		"unreduced identity":               "ee" + ones + "7f",
+		"unreduced negative zero identity": "ee" + ones + "ff",
+		"negative zero order two":          "ec" + ones + "ff",
+		"unreduced y":                      "ed" + ones + "7f",
+		"off curve":                        "02" + zeros + "00",
+		// The standard base point plus the point of order two.
+		"mixed order": "95" + strings.Repeat("99", 31),
+	} {
+		t.Run(name, func(t *testing.T) {
+			key, err := hex.DecodeString(encoded)
+			if err != nil || len(key) != ed25519.PublicKeySize {
+				t.Fatal("invalid fixture", err)
+			}
+			line := "home " + keyType + " " + base64.StdEncoding.EncodeToString(keyBlob(key))
+			if _, _, err := LoadPublicKey(line); !errors.Is(err, errKey) {
+				t.Fatalf("loaded key: %v", err)
+			}
+			badHeader := h
+			badHeader.KeyID = keyID(key)
+			if _, err := NewVerifier(badHeader, key); !errors.Is(err, errKey) {
+				t.Fatalf("pinned key: %v", err)
+			}
+			if _, err := NewSigner(badHeader, priv); !errors.Is(err, errEnrollment) {
+				t.Fatalf("accepted header: %v", err)
+			}
+			badSeed := seed
+			badSeed.KeyID = badHeader.KeyID
+			badMessage, err := (assignment.Event{Public: badSeed}).SigningBytes()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := signer.Sign(h, badMessage); !errors.Is(err, errEnrollment) {
+				t.Fatalf("signed seed: %v", err)
+			}
+			if err := verifier.Verify(h, badMessage, sig); !errors.Is(err, errEnrollment) {
+				t.Fatalf("verified seed: %v", err)
+			}
+			if err := Verify(key, body, armor(blob)); !errors.Is(err, errKey) {
+				t.Fatalf("verified with invalid key: %v", err)
+			}
+		})
 	}
 }
 

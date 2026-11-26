@@ -26,7 +26,10 @@ func checkPin(h assignment.Header, pub ed25519.PublicKey) error {
 	if _, err := h.Bytes(); err != nil {
 		return err
 	}
-	if len(pub) != ed25519.PublicKeySize || h.KeyID != keyID(pub) {
+	if !validPublic(pub) {
+		return errKey
+	}
+	if h.KeyID != keyID(pub) {
 		return errEnrollment
 	}
 	return nil
