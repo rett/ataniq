@@ -214,6 +214,20 @@ func TestWitnessReleaseExecutableIdentity(t *testing.T) {
 	}
 }
 
+func TestWitnessReleaseExecPrefixes(t *testing.T) {
+	const executable = "/opt/authority-host/current/bin/example"
+	for _, prefix := range []string{"", "+", "!", "!!", ":", "@", "-", "-:"} {
+		got := ReleaseProgram(prefix+executable, "/release")
+		want := ""
+		if prefix == "" {
+			want = "example"
+		}
+		if got != want {
+			t.Errorf("prefix %q: got %q, want %q", prefix, got, want)
+		}
+	}
+}
+
 func TestWitnessReleaseRejectsLinks(t *testing.T) {
 	for _, rel := range []string{"etc/systemd/system/alias.service", "etc/caddy/alias", "share/alias", "bin/alias"} {
 		f := cleanFixture(t)

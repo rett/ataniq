@@ -2048,8 +2048,10 @@ It checks, in this order, all of them (a pass is no finding):
    - In every service and socket command, including pre-start, post-start,
      reload and stop commands, the executable word must literally name an
      executable file of this release’s `bin/` under the release path or
-     `/opt/authority-host/current`. Both release checks refuse shell prefixes,
-     relative paths, path aliases, and `$` or `%` expansion in that word.
+     `/opt/authority-host/current`. Use an unprefixed executable path, as in the seat, notifier and
+     witness units. Both release checks report `decision-exec` for a systemd
+     execution prefix (including `+`, `!`, `:`, `@` and `-`), a relative path,
+     a path alias, or `$` or `%` expansion in the executable word.
    - A static release has no unit that starts a program: no file under
      `etc/systemd`, a drop-in included, with a `[Service]` section and an
      `ExecStart=` line. Any other release has at least one (a *decision

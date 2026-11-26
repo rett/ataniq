@@ -32,14 +32,13 @@ func UnitTextSafe(text string) bool {
 }
 
 // ReleaseProgram maps a literal systemd executable word to its file in bin/.
-// The current link names this release when the unit is active. Strip only
-// execution prefixes which leave the invoked executable unchanged.
+// The shipped units use unprefixed executable paths.
 func ReleaseProgram(value, releaseDir string) string {
 	words, ok := splitSystemd(value)
 	if !ok || len(words) == 0 || strings.ContainsRune(value, '\\') || slices.Contains(words, ";") {
 		return ""
 	}
-	program := strings.TrimLeft(words[0], "@-:+!")
+	program := words[0]
 	if strings.ContainsAny(program, "$%") || !path.IsAbs(program) || path.Clean(program) != program {
 		return ""
 	}
