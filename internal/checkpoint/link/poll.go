@@ -27,6 +27,9 @@ func (s *Server) Poll(ctx context.Context, w Witness) error {
 		return &ConfigError{"poll loop already running"}
 	}
 	defer s.polling.Store(false)
+	if err := s.checkEvidence(ctx, w); err != nil {
+		return err
+	}
 	if home.Network == "" {
 		home.Network = "tcp"
 	}

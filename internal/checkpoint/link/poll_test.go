@@ -109,7 +109,7 @@ func TestOneOutstandingMutationPerEnrollment(t *testing.T) {
 func TestPollShutdownCancelsGrant(t *testing.T) {
 	f := newFixture(t, "witness")
 	e, r := f.listener(t)
-	w := blockedGrant{entered: make(chan struct{})}
+	w := blockedGrant{Witness: memoryWitness{f.w}, entered: make(chan struct{})}
 	stop := startPolling(t, f.s, r, w)
 	result := make(chan error, 1)
 	go func() { _, err := e.Connect(t.Context(), f.slot, f.home, f.session); result <- err }()

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
@@ -23,6 +24,7 @@ import (
 // WitnessEvidence belongs to the same backend as the operations it serves.
 type WitnessEvidence interface {
 	cp.DispositionSigner
+	WitnessEpoch() uint64
 	HasReceipt(context.Context, cp.Slot, cp.ID) (bool, error)
 }
 
@@ -76,6 +78,25 @@ func NewServer(id seatgate.Identity, witnessPin ed25519.PublicKey, home Remote, 
 	}, nil
 }
 
+// Probe the live signer before accepting work. A fresh challenge and a
+// distinct result keep probe signatures separate from request dispositions.
+func (s *Server) checkEvidence(ctx context.Context, evidence WitnessEvidence) error {
+	ctx, cancel := context.WithTimeout(ctx, handshakeTimeout)
+	defer cancel()
+	const probe = "startup-probe"
+	var digest [32]byte
+	rand.Read(digest[:])
+	epoch := evidence.WitnessEpoch()
+	sig, err := evidence.SignDisposition(ctx, digest, probe)
+	if err != nil {
+		return err
+	}
+	if epoch == 0 || !cp.VerifyDisposition(s.witnessPin, epoch, digest, probe, sig) {
+		return &ConfigError{"backend disposition signer does not match witness pin and epoch"}
+	}
+	return nil
+}
+
 // ServeOwner is a separate owner endpoint. Supply a private local listener
 // and an independently provisioned client-certificate SPKI pin. Enrollment,
 // release, retirement and owner reads exist only on this authenticated endpoint.
@@ -90,6 +111,9 @@ func (s *Server) serveOwner(l net.Listener, a cp.Administration, evidence Witnes
 		return cp.ErrRefused
 	}
 	defer s.ownerServing.Store(false)
+	if err := s.checkEvidence(context.Background(), evidence); err != nil {
+		return err
+	}
 	return serveListener(l, serverTLS(s.id, ownerPin), s.ownerCapacity, s.timeout, admit, func(ctx context.Context, conn *tls.Conn, m frame.Message) {
 		_ = s.reply(ctx, conn, nil, a, evidence, m)
 	})
