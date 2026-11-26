@@ -15,27 +15,29 @@ import (
 type Kind byte
 
 const (
-	Read      Kind = 1 + iota // canonical read request, home public key, home signature
-	OwnerRead                 // canonical read request
-	Claim                     // scoped slot, home public key, canonical intent, home and session signatures
-	Advance                   // same layout as Claim
-	Enroll                    // canonical intent, home proof of possession
-	Release                   // canonical intent
-	Retire                    // canonical intent
-	Receipt                   // canonical acknowledgement, witness signature
-	View                      // current state; followed by Fresh and Prior under the same deadline
-	Fresh                     // challenged body, witness signature
-	Prior                     // historical body and signature, both empty when absent
-	Failure                   // closed-set code, disposition signature
-	Connect                   // signed home grant check, same fields as Read
-	Granted                   // disposition signature
-	Poll                      // witness requests one home request
-	Idle                      // no home request waiting
+	Read        Kind = 1 + iota // canonical read request, home public key, home signature
+	OwnerRead                   // canonical read request
+	Claim                       // scoped slot, home public key, canonical intent, home and session signatures
+	Advance                     // same layout as Claim
+	Enroll                      // canonical intent, home proof of possession
+	Release                     // canonical intent
+	Retire                      // canonical intent
+	Receipt                     // canonical acknowledgement, witness signature
+	View                        // current state; followed by Fresh and Prior under the same deadline
+	Fresh                       // challenged body, witness signature
+	Prior                       // historical body and signature, both empty when absent
+	Failure                     // closed-set code, disposition signature
+	Connect                     // signed home grant check, same fields as Read
+	Granted                     // disposition signature
+	Poll                        // witness requests one home request
+	Idle                        // no home request waiting
+	Settle                      // signed reconciliation request from home
+	OwnerSettle                 // reconciliation request from owner
 )
 
 var arity = [...]int{
 	Read: 3, OwnerRead: 1, Claim: 5, Advance: 5, Enroll: 2, Release: 1, Retire: 1,
-	Receipt: 2, View: 1, Fresh: 2, Prior: 2, Failure: 2, Connect: 3, Granted: 1, Poll: 0, Idle: 0,
+	Receipt: 2, View: 1, Fresh: 2, Prior: 2, Failure: 2, Connect: 3, Granted: 1, Poll: 0, Idle: 0, Settle: 3, OwnerSettle: 1,
 }
 var ErrProtocol = errors.New("checkpoint link: invalid frame")
 
@@ -49,7 +51,7 @@ func New(kind Kind, fields ...[]byte) Message { return Message{Kind: kind, Field
 
 func (k Kind) Mutation() bool {
 	switch k {
-	case Claim, Advance, Enroll, Release, Retire:
+	case Claim, Advance, Enroll, Release, Retire, Settle, OwnerSettle:
 		return true
 	}
 	return false

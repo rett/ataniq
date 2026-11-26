@@ -383,6 +383,12 @@ func (t transport) read(ctx context.Context, q cp.ReadRequest, m frame.Message) 
 	if a.view.Current.Epoch != t.Epoch {
 		return cp.View{}, cp.ErrStale
 	}
+	if t.queue != nil && a.view.Prior != nil {
+		ack, verifyErr := cp.VerifyReceipt(t.WitnessPin, *a.view.Prior)
+		if verifyErr == nil && ack.State.Epoch == t.Epoch {
+			t.queue.resolve(ack.ID, ack.RequestDigest)
+		}
+	}
 	return a.view, err
 }
 
@@ -419,7 +425,25 @@ func (t transport) rawSubmit(ctx context.Context, k frame.Kind, slot cp.Slot, ho
 	if err != nil {
 		return cp.Receipt{}, err
 	}
-	return t.mutate(ctx, frame.New(k, route, home, b, hs, ss), b)
+	intent, err := cp.ParseIntent(operation[k], t.wid, b)
+	if err != nil {
+		return cp.Receipt{}, err
+	}
+	var id cp.ID
+	switch q := intent.(type) {
+	case cp.Claim:
+		id = q.ID
+	case cp.Advance:
+		id = q.ID
+	default:
+		return cp.Receipt{}, cp.ErrRefused
+	}
+	retry, err := t.queue.begin(mutationRef{id, cp.RequestDigest(b)})
+	if err != nil {
+		return cp.Receipt{}, err
+	}
+	r, err := t.mutate(ctx, frame.New(k, route, home, b, hs, ss), b)
+	return r, t.queue.finish(retry, err)
 }
 
 // RawSubmit is the checkpointtest harness hook for qualifying a remote

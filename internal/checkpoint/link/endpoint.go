@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net"
 	"slices"
+	"sync"
 	"sync/atomic"
 
 	cp "ataniq/internal/checkpoint"
@@ -62,17 +63,25 @@ type callResult struct {
 	answer answer
 	err    error
 }
+type mutationRef struct {
+	id     cp.ID
+	digest string
+}
+
 type requestQueue struct {
-	calls    chan pendingCall
-	closed   chan struct{}
-	serving  atomic.Bool
-	ordinary atomic.Bool
-	recovery atomic.Bool
+	mu         sync.Mutex
+	submitting bool
+	pending    *mutationRef
+	calls      chan pendingCall
+	closed     chan struct{}
+	serving    atomic.Bool
+	ordinary   atomic.Bool
+	recovery   atomic.Bool
 }
 
 func (q *requestQueue) exchange(ctx context.Context, k frame.Kind, data []byte, recovery bool) (answer, error) {
 	unsent := cp.ErrUnavailable
-	if k == frame.Claim || k == frame.Advance {
+	if k.Mutation() {
 		unsent = ErrNotSent
 	}
 	lane := &q.ordinary

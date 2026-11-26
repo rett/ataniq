@@ -24,6 +24,7 @@ import (
 // exact body and both signatures under the witness's mutation contract.
 type Witness interface {
 	cp.DispositionSigner
+	SettleHome(context.Context, cp.Slot, cp.ID, ed25519.PublicKey) (cp.Receipt, error)
 	CheckHome(context.Context, cp.Slot, ed25519.PublicKey) error
 	ReadHome(context.Context, cp.ReadRequest, ed25519.PublicKey) (cp.View, error)
 	RawSubmit(context.Context, cp.Slot, ed25519.PublicKey, string, []byte, []byte, []byte) (cp.Receipt, error)
@@ -181,8 +182,9 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 	var receipt cp.Receipt
 	var err error
 	switch m.Kind {
-	case frame.Connect, frame.Read, frame.OwnerRead:
-		if m.Kind == frame.OwnerRead && a == nil || m.Kind != frame.OwnerRead && w == nil {
+	case frame.Connect, frame.Read, frame.OwnerRead, frame.Settle, frame.OwnerSettle:
+		ownerOp := m.Kind == frame.OwnerRead || m.Kind == frame.OwnerSettle
+		if ownerOp != (a != nil) {
 			return nil, cp.ErrRefused
 		}
 		q, err := parseRead(f[0], s.witnessKeyID, operation[m.Kind])
@@ -190,7 +192,7 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 			return nil, err
 		}
 		pool := ordinary
-		if m.Kind != frame.Connect && q.ReceiptID != (cp.ID{}) {
+		if (m.Kind == frame.Read || m.Kind == frame.OwnerRead) && q.ReceiptID != (cp.ID{}) {
 			pool = recoveryReads
 		}
 		if !s.limits.allow(w == nil, pool) {
@@ -206,6 +208,18 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, m
 		}
 		if m.Kind == frame.Connect {
 			return []frame.Message{frame.New(frame.Granted)}, nil
+		}
+		if m.Kind == frame.Settle || m.Kind == frame.OwnerSettle {
+			var r cp.Receipt
+			if w != nil {
+				r, err = w.SettleHome(ctx, q.Slot, q.ReceiptID, f[1])
+			} else {
+				r, err = a.Settle(ctx, q.Slot, q.ReceiptID)
+			}
+			if err != nil {
+				return nil, err
+			}
+			return []frame.Message{frame.New(frame.Receipt, r.Body, r.Signature)}, nil
 		}
 		var v cp.View
 		if w != nil {

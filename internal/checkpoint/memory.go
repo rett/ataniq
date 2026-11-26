@@ -38,6 +38,7 @@ type Memory struct {
 	keyID                      string
 	grants                     map[Slot]grant
 	slots                      map[Slot]*enrollment
+	fenced                     map[Slot]map[ID]bool
 	inhibited, loseReply       bool
 	transformNextReply         func(Receipt) Receipt
 	receiptCount, receiptLimit uint64
@@ -51,7 +52,7 @@ func NewMemory(witness string, epoch uint64, key ed25519.PrivateKey) (*Memory, e
 	if err != nil {
 		return nil, err
 	}
-	return &Memory{witness: witness, epoch: epoch, key: slices.Clone(key), keyID: id, grants: make(map[Slot]grant), slots: make(map[Slot]*enrollment)}, nil
+	return &Memory{witness: witness, epoch: epoch, key: slices.Clone(key), keyID: id, grants: make(map[Slot]grant), slots: make(map[Slot]*enrollment), fenced: make(map[Slot]map[ID]bool)}, nil
 }
 
 // Grant installs an independently selected home pin for the exact slot. A
@@ -271,6 +272,9 @@ func (e *enrollment) retry(id ID, b []byte) (Receipt, bool, error) {
 // The signed result links to the previous receipt. The new receipt digest
 // then becomes part of the next mutation's exact CAS predecessor.
 func (w *Memory) commit(e *enrollment, op string, id ID, body []byte, s State, session ed25519.PublicKey) (Receipt, error) {
+	if w.fenced[s.Slot][id] {
+		return Receipt{}, ErrNotApplied
+	}
 	if op != "release" && op != "retire" && w.receiptLimit != 0 && w.receiptCount >= w.receiptLimit {
 		return Receipt{}, ErrUnavailable
 	}

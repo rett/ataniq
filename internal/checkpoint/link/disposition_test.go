@@ -58,7 +58,7 @@ func TestDispositionEvidence(t *testing.T) {
 			}
 			state.Revision++
 			claim := cp.Claim{Mutation: cp.Mutation{ID: cp.ID{2}, Expected: state}, NewSessionPublicKey: public(f.session)}
-			for _, fault := range []int32{1, 2, 0} {
+			for _, fault := range []int32{0, 1, 2} {
 				w.fault.Store(fault)
 				_, err = c.Claim(t.Context(), claim)
 				want := cp.ErrUnknownOutcome

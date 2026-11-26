@@ -163,6 +163,7 @@ func (f fixture) reconnect(t *testing.T, h home, session ed25519.PrivateKey) hom
 // The factory must provision a separate directory for each call, including
 // calls with identical keys used to model independent restores.
 func Run(t *testing.T, newWitness Factory) {
+	t.Run("settle", func(t *testing.T) { settlement(t, start(t, newWitness)) })
 	for _, op := range []string{"claim", "advance"} {
 		t.Run("raw "+op, func(t *testing.T) { rawProofs(t, newWitness, op) })
 	}
