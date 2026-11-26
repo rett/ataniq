@@ -130,13 +130,11 @@ func (w *Memory) Connect(slot Slot, home, session ed25519.PrivateKey, witnessPin
 	if !validPrivate(home) || !validPrivate(session) {
 		return nil, &Reason{Kind: InvalidRequest}
 	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	g, ok := w.grants[slot]
-	if !ok || !bytes.Equal(home.Public().(ed25519.PublicKey), g.key) {
-		return nil, &Reason{Kind: Unauthorized}
+	h := home.Public().(ed25519.PublicKey)
+	if err := w.CheckHome(slot, h); err != nil {
+		return nil, err
 	}
-	if err := checkSessionRole(session.Public().(ed25519.PublicKey), g.key, witnessPin); err != nil {
+	if err := checkSessionRole(session.Public().(ed25519.PublicKey), h, witnessPin); err != nil {
 		return nil, err
 	}
 	_, err := KeyID(session.Public().(ed25519.PublicKey))
@@ -144,6 +142,18 @@ func (w *Memory) Connect(slot Slot, home, session ed25519.PrivateKey, witnessPin
 		return nil, err
 	}
 	return &client{w, slot, slices.Clone(home), slices.Clone(session), slices.Clone(witnessPin)}, nil
+}
+
+// CheckHome checks the provisioned home pin independently of enrollment.
+// Success grants no access to a prior enrollment bound to another key.
+func (w *Memory) CheckHome(slot Slot, key ed25519.PublicKey) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	g, ok := w.grants[slot]
+	if !ok || !bytes.Equal(key, g.key) {
+		return &Reason{Kind: Unauthorized}
+	}
+	return nil
 }
 func cloneReceipt(r Receipt) Receipt { return Receipt{slices.Clone(r.Body), slices.Clone(r.Signature)} }
 
@@ -172,20 +182,29 @@ func (w *Memory) authorized(slot Slot, home ed25519.PublicKey, write bool) (*enr
 }
 
 func (c *client) Read(ctx context.Context, q ReadRequest) (View, error) {
-	w := c.w
+	return c.w.readHome(ctx, q, c.slot, c.home.Public().(ed25519.PublicKey), c.witnessPin)
+}
+
+// ReadHome checks the current read grant for an already authenticated home key.
+// The transport must verify the caller's signature over the read request first.
+func (w *Memory) ReadHome(ctx context.Context, q ReadRequest, home ed25519.PublicKey) (View, error) {
+	return w.readHome(ctx, q, q.Slot, home, w.key.Public().(ed25519.PublicKey))
+}
+
+func (w *Memory) readHome(ctx context.Context, q ReadRequest, slot Slot, home, pin ed25519.PublicKey) (View, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if ctx.Err() != nil {
 		return View{}, ErrUnavailable
 	}
-	if q.Slot != c.slot {
+	if q.Slot != slot {
 		return View{}, &Reason{Kind: Unauthorized}
 	}
-	e, err := w.authorized(q.Slot, c.home.Public().(ed25519.PublicKey), false)
+	e, err := w.authorized(q.Slot, home, false)
 	if err != nil {
 		return View{}, err
 	}
-	return w.read(q, e, c.witnessPin)
+	return w.read(q, e, pin)
 }
 
 func (a admin) Read(ctx context.Context, q ReadRequest) (View, error) {
@@ -355,7 +374,7 @@ func (c *client) mutate(ctx context.Context, op string, m Mutation, b []byte) (R
 	if err != nil {
 		return Receipt{}, err
 	}
-	r, err := c.w.accept(ctx, c.slot, c.home.Public().(ed25519.PublicKey), op, b, homeSig, sessionSig)
+	r, err := c.w.RawSubmit(ctx, c.slot, c.home.Public().(ed25519.PublicKey), op, b, homeSig, sessionSig)
 	if err != nil {
 		return Receipt{}, err
 	}
@@ -365,8 +384,12 @@ func (c *client) mutate(ctx context.Context, op string, m Mutation, b []byte) (R
 	return r, nil
 }
 
-// accept consumes only the signed bytes and independently pinned identities.
+// RawSubmit consumes only the signed bytes and independently pinned identities.
 // The method selects the operation before interpreting its record.
+func (w *Memory) RawSubmit(ctx context.Context, slot Slot, home ed25519.PublicKey, op string, b, homeSig, sessionSig []byte) (Receipt, error) {
+	return w.accept(ctx, slot, home, op, b, homeSig, sessionSig)
+}
+
 func (w *Memory) accept(ctx context.Context, slot Slot, home ed25519.PublicKey, op string, b, homeSig, sessionSig []byte) (reply Receipt, err error) {
 	intent, err := ParseIntent(op, w.keyID, b)
 	if err != nil {

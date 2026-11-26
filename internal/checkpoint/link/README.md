@@ -1,0 +1,25 @@
+# Checkpoint witness link v1
+
+The home dials the authority. Configure an `Endpoint` with its address, the SHA-256 fingerprint of the server's P-256 SubjectPublicKeyInfo, the independent Ed25519 witness public key and the expected epoch. `Connect` takes the exact slot, the enrolled home private key and the process session private key. Its signed grant check can succeed before enrollment. Each subsequent call opens its own outbound TLS 1.3 connection with ALPN `ataniq-checkpoint/1`. The certificate usage and pin checks come from `seatgate`. Provision separate checkpoint identities.
+
+`NewServer` takes the server TLS identity and the witness signing public key. `Server.Serve` accepts a raw listener and a `Witness`. Implementations check the provisioned key in `CheckHome`, recheck the live grant while taking the read snapshot in `ReadHome`, and verify the signed claim or advance and current write grant as part of the transaction in `RawSubmit`. A successful mutation returns its committed receipt. A backend that loses certainty about commit returns `checkpoint.ErrUnknownOutcome`.
+
+For owner calls, use `ServeOwner` on a separate Unix-domain or loopback listener. Supply the administrative capability and the pinned SPKI fingerprint of the owner's client certificate. Dial that endpoint with `Endpoint.Administration` and the matching TLS identity. The authenticated owner can read, enroll, release and retire. Enrollment also carries the home's proof of possession.
+
+## Framing and bounds
+
+One connection carries one request. The four-byte unsigned big-endian length covers the entire payload. The payload starts with version byte 1 and a one-byte message kind. Each field has a four-byte unsigned big-endian length followed by its exact bytes. Each kind has a fixed field count. Both sides enforce `checkpoint.MaxFrame` on each frame before allocating the payload. The numeric kinds, field order and decoder live together in [frame.go](internal/frame/frame.go).
+
+Mutation requests carry the canonical bytes from `checkpoint.Intent.Body`. Home writes carry the scoped slot, home public key and detached home and session signatures. Home reads and grant checks sign canonical JSON containing the operation, schema, witness key ID, slot, challenge and receipt ID in the home namespace. Both IDs use 64 lowercase hex digits. An all-zero receipt ID requests current state only.
+
+A mutation returns one receipt frame. A read returns three ordered frames carrying current state, the fresh signed receipt and the optional historical receipt. Two empty fields in the last frame mean no receipt matched. Each frame fits the same ceiling even when both receipts contain maximum-length identifiers. The client verifies the fresh challenge, slot, guard, epoch and historical evidence before returning the view. A signed inhibited view accompanies `ErrUnavailable`.
+
+A server allows eight simultaneous connections across its listeners. The handshake has five seconds and the complete request and reply have another 30 seconds. Each authenticated principal has a rolling limit of 60 calls per minute for each of mutations, current reads, historical reads and grant checks. Budgets survive reconnects. Closing the listener cancels its workers.
+
+## Lost acknowledgements
+
+The client backs off on connection failures before sending, up to the caller's deadline or 30 seconds. A typed witness refusal ends the call. A broken exchange after a mutation write begins, an unrecognized reply or a receipt that fails `checkpoint.MatchReceipt` leaves the outcome unknown.
+
+Keep the original intent. Reconnect and issue a fresh challenged read with its mutation ID in `ReceiptID`. Verify the prior receipt against the saved intent and compare the current state and fence before publication. An authorized retry of the exact latest mutation can recover the original acknowledgement. A superseded receipt is historical evidence. Unresolved outcomes stay suspended for operator reconciliation.
+
+For qualification, `linktest.Proxy.Forward` relays one exchange between two authenticated streams. Arm `DropNextReply` before the mutation and close both streams when `Forward` returns. The proxy consumes the complete successful receipt before dropping it, so a subsequent read can establish what committed.

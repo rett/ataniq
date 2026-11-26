@@ -1,0 +1,112 @@
+package link
+
+import (
+	"bytes"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"unicode/utf8"
+
+	"ataniq/internal/assignment"
+	"ataniq/internal/assignment/wire"
+	cp "ataniq/internal/checkpoint"
+	"ataniq/internal/checkpoint/link/internal/frame"
+)
+
+func validSlot(s cp.Slot) bool {
+	for _, v := range []string{s.Witness, s.Authority, s.Store} {
+		if v == "" || len(v) > assignment.MaxReferenceBytes || !utf8.ValidString(v) {
+			return false
+		}
+	}
+	return true
+}
+
+// Checkpoint already defines the signed read *reply*. The home signs this
+// distinct request, binding both IDs, the exact slot and the witness key.
+type readRecord struct {
+	Schema     int     `json:"schema"`
+	Operation  string  `json:"operation"`
+	WitnessKey string  `json:"witness_key_id"`
+	Slot       cp.Slot `json:"slot"`
+	Challenge  string  `json:"challenge"`
+	ReceiptID  string  `json:"receipt_id"`
+}
+
+func readBody(q cp.ReadRequest, wid, op string) ([]byte, error) {
+	if !validSlot(q.Slot) || q.Challenge == (cp.ID{}) {
+		return nil, &cp.Reason{Kind: cp.InvalidRequest}
+	}
+	b, err := json.Marshal(readRecord{1, op, wid, q.Slot, hex.EncodeToString(q.Challenge[:]), hex.EncodeToString(q.ReceiptID[:])})
+	if err != nil {
+		return nil, err
+	}
+	return wire.Canonicalize(b)
+}
+func parseRead(b []byte, wid, op string) (cp.ReadRequest, error) {
+	var r readRecord
+	var q cp.ReadRequest
+	if json.Unmarshal(b, &r) != nil || len(r.Challenge) != 64 || len(r.ReceiptID) != 64 {
+		return q, frame.ErrProtocol
+	}
+	q.Slot = r.Slot
+	if _, err := hex.Decode(q.Challenge[:], []byte(r.Challenge)); err != nil {
+		return q, frame.ErrProtocol
+	}
+	if _, err := hex.Decode(q.ReceiptID[:], []byte(r.ReceiptID)); err != nil {
+		return q, frame.ErrProtocol
+	}
+	exact, err := readBody(q, r.WitnessKey, op)
+	if err != nil || !bytes.Equal(exact, b) {
+		return q, frame.ErrProtocol
+	}
+	if r.WitnessKey != wid {
+		return q, &cp.Reason{Kind: cp.Unauthorized}
+	}
+	return q, nil
+}
+
+// Send only contract error codes. An unclassified backend error may have
+// happened after commit. Its diagnostic never goes on the wire.
+var categories = []error{cp.ErrRefused, cp.ErrStale, cp.ErrRetired, cp.ErrUnavailable, cp.ErrUnknownOutcome}
+var reasons = []cp.ReasonKind{cp.InvalidRequest, cp.Unauthorized, cp.KeyRoleConflict, cp.NotEnrolled, cp.MutationConflict,
+	cp.Superseded, cp.PredecessorMismatch, cp.SessionConflict, cp.EnrollmentConflict, cp.CounterExhausted, cp.InvalidSuccessor}
+
+func encodeError(err error) frame.Message {
+	if errors.Is(err, cp.ErrUnknownOutcome) {
+		return frame.New(frame.Failure, []byte(cp.ErrUnknownOutcome.Error()))
+	}
+	var reason *cp.Reason
+	if errors.As(err, &reason) {
+		for _, k := range reasons {
+			if k == reason.Kind {
+				return frame.New(frame.Failure, []byte(k))
+			}
+		}
+	}
+	for _, e := range categories {
+		if errors.Is(err, e) {
+			return frame.New(frame.Failure, []byte(e.Error()))
+		}
+	}
+	return frame.New(frame.Failure, []byte(cp.ErrUnknownOutcome.Error()))
+}
+func decodeError(b []byte) error {
+	for _, k := range reasons {
+		if string(b) == string(k) {
+			return &cp.Reason{Kind: k}
+		}
+	}
+	for _, e := range categories {
+		if string(b) == e.Error() {
+			return e
+		}
+	}
+	return frame.ErrProtocol
+}
+
+var operation = [...]string{
+	frame.Connect: "connect", frame.Read: "read", frame.OwnerRead: "read",
+	frame.Claim: "claim", frame.Advance: "advance", frame.Enroll: "enroll",
+	frame.Release: "release", frame.Retire: "retire",
+}
