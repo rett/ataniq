@@ -113,8 +113,12 @@ func TestLedgerAdapters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	rawWire, err := base64.RawURLEncoding.DecodeString(sig)
+	if err != nil || !bytes.HasPrefix(rawWire, []byte("SSHSIG")) {
+		t.Fatal("undecodable wire signature", err)
+	}
 	want, err := Sign(testKey(), body)
-	if err != nil || sig != want {
+	if err != nil || armor(rawWire) != want {
 		t.Fatal("signature or domain prefix differs", err)
 	}
 	if err := v.Verify(h, message, sig); err != nil {

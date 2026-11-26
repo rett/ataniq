@@ -8,6 +8,11 @@ paired `.sig` is an SSHSIG over `ataniq.assignment.event.v1`, a NUL byte and
 the exact body. The numbered files follow a single project through a transfer
 and fallback hold. The abort files branch after the reservation.
 
+The JSON envelope encodes the binary version-1 SSHSIG container with unpadded
+base64url. The detached fixtures armor that same container for OpenSSH.
+Use namespace `ataniq.assignment.event.v1`, empty reserved data and SSHSIG's
+SHA-512 message hash over the domain, NUL and canonical body described above.
+
 The duplicate redelivers the begin event. The conflict is a competing signed
 begin at the same predecessor with the same request ID. A home with the first
 begin already recorded refuses that command. The cut contains the last complete

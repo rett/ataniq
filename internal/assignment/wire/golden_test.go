@@ -51,7 +51,11 @@ func goldenEvent(t *testing.T, name string, e assignment.Event) {
 		t.Fatal(err)
 	}
 	golden(t, name+".json", body)
-	golden(t, name+".sig", []byte(e.Signature))
+	blob, err := base64.RawURLEncoding.Strict().DecodeString(e.Signature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	golden(t, name+".sig", []byte(armor(blob)))
 	p, err := Unmarshal(body)
 	if err != nil || !reflect.DeepEqual(p, e.Public) {
 		t.Fatal(name, err)

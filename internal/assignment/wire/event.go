@@ -29,7 +29,7 @@ func validDigest(s string) bool {
 }
 
 // Marshal returns the canonical public object without framing. Leave Signature
-// empty for a signing body. Set it to the armor to encode the signed envelope.
+// empty for a signing body. The signed envelope carries the unpadded base64url SSHSIG blob.
 func Marshal(p assignment.PublicEnvelope) ([]byte, error) {
 	if p.Schema != 1 || p.Algorithm != "Ed25519" || p.EvidenceDigests == nil {
 		return nil, errProjection
