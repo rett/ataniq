@@ -367,6 +367,24 @@ func TestReviewHistoricalHold(t *testing.T) {
 	s.steps(t, "U", forwardSteps[1:])
 }
 
+func TestRefuseHoldReviewOfReopenedFallback(t *testing.T) {
+	s := forward(t, len(forwardSteps))
+	s.steps(t, "T", []step{{kind: HoldStarted}})
+	held, _ := s.ledger.Transfer(key, "T")
+	s.steps(t, "U", appendSteps([]step{{kind: RollbackFreeze}}, forwardSteps[1:]...))
+	review := func() {
+		t.Helper()
+		row, _ := s.ledger.Row(key)
+		if row.Holder != held.Predecessor || !row.Permits(row.Head) {
+			t.Fatal(row)
+		}
+		refused(t, s.ledger, command(row, held, HoldReviewed, "T", ""), ErrPhase)
+	}
+	review()
+	s.steps(t, "V", []step{{kind: Freeze}, {kind: AbortPrepared}, {kind: Aborted}})
+	review()
+}
+
 func TestUnsignedDecisionCannotAdvanceCheckpoint(t *testing.T) {
 	s := seeded(t)
 	c := next(s.ledger, key, Freeze, "T", "")

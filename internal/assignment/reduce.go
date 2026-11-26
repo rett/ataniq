@@ -351,6 +351,9 @@ func updateHold(r Row, t *Transfer, c Command, p *evidenceSet) error {
 	if t.Hold.Preservation == (Evidence{}) || t.Hold.Review != (Evidence{}) {
 		return ErrPhase
 	}
+	if r.Head.Phase.open() && r.Holder == t.Predecessor {
+		return ErrPhase
+	}
 	review, err := p.take("fallback", t.Hold.Preservation.Digest, "reviewed")
 	if err != nil || len(*p) != 0 {
 		return ErrEvidence
