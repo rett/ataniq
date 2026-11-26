@@ -35,6 +35,9 @@ type Binding struct {
 }
 
 func (b Binding) valid() bool {
+	if b.Kind == "managed" && (b.LaunchIntent == "") != (b.RoleEpoch == 0) {
+		return false
+	}
 	return (b.Kind == "legacy" || b.Kind == "managed") && b.ID != "" &&
 		b.Authority != "" && b.Store != "" && b.Incarnation != "" && b.Conversation != ""
 }

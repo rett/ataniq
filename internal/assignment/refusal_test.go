@@ -192,3 +192,29 @@ func TestAbortNeedsMismatchedPreviewStop(t *testing.T) {
 	s.steps(t, "T", []step{{kind: Aborted}})
 	assertHolder(t, s.ledger, legacy, 1, true)
 }
+
+func TestManagedLaunchIdentityPair(t *testing.T) {
+	for _, kind := range []Kind{Seed, Freeze} {
+		for _, tc := range []struct {
+			intent string
+			epoch  uint64
+			valid  bool
+		}{{"launch", 0, false}, {"", 1, false}, {"", 0, true}, {"launch", 1, true}} {
+			s := fresh(t)
+			if kind == Freeze {
+				s = seeded(t)
+			}
+			c := next(s.ledger, key, kind, "T", "")
+			c.Candidate = managed
+			c.Candidate.LaunchIntent, c.Candidate.RoleEpoch = tc.intent, tc.epoch
+			if kind == Seed {
+				c.Evidence[0].Subject = managed.ID
+			}
+			if tc.valid {
+				s.accept(t, c)
+			} else {
+				refused(t, s.ledger, c, ErrInvalid)
+			}
+		}
+	}
+}
