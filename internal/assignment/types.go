@@ -108,7 +108,7 @@ type Evidence struct {
 	Route                                            string // Owning route for an effect reference.
 	Kind, Issuer, Subject, Revision, Digest, Outcome string
 	Scope                                            Head
-	TransferID                                       string
+	TransferID, ScopeEventID                         string
 }
 
 type Hold struct {
@@ -120,20 +120,21 @@ type Hold struct {
 type Effect struct{ ID, Route string }
 
 type Transfer struct {
-	ID, BeginDigest, Authorization    string
-	Original                          Head
-	Predecessor, Candidate            Binding
-	Phase                             Phase
-	PhaseRevision                     uint64
-	Routes                            []string
-	Outstanding                       []Effect
-	Inventory, Note, Belief, Decision Evidence
-	PreviewMismatch                   bool
-	Reservation, Committed            Head
-	Fences, Confirmations, Disputes   []Evidence
-	BeforeDispute                     Phase
-	Disposition                       string
-	Hold                              Hold
+	ID, BeginDigest, Authorization       string
+	Original                             Head
+	Predecessor, Candidate               Binding
+	Phase                                Phase
+	PhaseRevision                        uint64
+	Routes                               []string
+	Outstanding                          []Effect
+	Inventory, Note, Belief, Decision    Evidence
+	PreviewMismatch                      bool
+	Reservation, Committed               Head
+	ReservationEventID, CommittedEventID string
+	Fences, Confirmations, Disputes      []Evidence
+	BeforeDispute                        Phase
+	Disposition                          string
+	Hold                                 Hold
 }
 
 func (t Transfer) clone() Transfer {

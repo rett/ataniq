@@ -197,6 +197,12 @@ func apply(l Ledger, e Event, privateIndexes bool) (Ledger, error) {
 	if ch.event.Result != e.Result {
 		return l, ErrChain
 	}
+	switch e.Command.Kind {
+	case Reserve:
+		ch.transfer.ReservationEventID = e.Result.EventID
+	case Seed, Commit:
+		ch.transfer.CommittedEventID = e.Result.EventID
+	}
 	if !privateIndexes {
 		l.rows, l.transfers = maps.Clone(l.rows), maps.Clone(l.transfers)
 		l.history, l.latest = maps.Clone(l.history), maps.Clone(l.latest)

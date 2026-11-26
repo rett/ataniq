@@ -54,7 +54,7 @@ func (w *encoding) command(c Command) {
 	for _, e := range c.Evidence {
 		w.strings(e.Kind, e.Issuer, e.Subject, e.Revision, e.Digest, e.Outcome, e.Route)
 		w.head(e.Scope)
-		w.strings(e.TransferID)
+		w.strings(e.TransferID, e.ScopeEventID)
 		if w.err != nil {
 			return
 		}

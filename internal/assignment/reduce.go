@@ -37,13 +37,17 @@ func reduce(r Row, t Transfer, c Command, digest string) (Row, Transfer, error) 
 	}
 
 	scope := old
+	var targetID string
 	switch c.Kind {
 	case FenceReceipt:
-		scope = t.Reservation
+		scope, targetID = t.Reservation, t.ReservationEventID
 	case ConfirmReceipt:
-		scope = t.Committed
+		scope, targetID = t.Committed, t.CommittedEventID
 	}
-	p, err := proofs(c, scope)
+	if (c.Kind == FenceReceipt || c.Kind == ConfirmReceipt) && !validDigest(targetID) {
+		return r, t, ErrEvidence
+	}
+	p, err := proofs(c, scope, targetID)
 	if err != nil {
 		return r, t, err
 	}
@@ -139,6 +143,7 @@ func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 		}
 		// A changed snapshot invalidates every dependent comparison and seal.
 		t.Belief, t.Decision, t.Reservation, t.Fences = Evidence{}, Evidence{}, Head{}, nil
+		t.ReservationEventID = ""
 		t.PreviewMismatch = false
 		t.Disposition = "pending"
 		subject := h.Key.Project

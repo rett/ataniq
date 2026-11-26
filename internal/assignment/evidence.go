@@ -18,10 +18,10 @@ func validDigest(s string) bool {
 	return err == nil
 }
 
-func proofs(c Command, scope Head) (evidenceSet, error) {
+func proofs(c Command, scope Head, eventID string) (evidenceSet, error) {
 	for i, e := range c.Evidence {
 		if (e.Kind == "effect") != (e.Route != "") || !validDigest(e.Digest) ||
-			e.Scope != scope || e.TransferID != c.TransferID || e.Kind == "" ||
+			e.ScopeEventID != eventID || e.Scope != scope || e.TransferID != c.TransferID || e.Kind == "" ||
 			e.Issuer == "" || e.Subject == "" || e.Revision == "" || e.Outcome == "" {
 			return nil, ErrEvidence
 		}
@@ -190,7 +190,7 @@ func (t *Transfer) reconcile(h *Head, c Command, p *evidenceSet) error {
 	default:
 		h.Phase, t.Disposition = PhaseFrozen, "pending"
 		t.Inventory, t.Note, t.Belief, t.Decision = Evidence{}, Evidence{}, Evidence{}, Evidence{}
-		t.Reservation, t.Fences = Head{}, nil
+		t.Reservation, t.ReservationEventID, t.Fences = Head{}, "", nil
 	}
 	t.BeforeDispute, t.Disputes = "", nil
 	return nil

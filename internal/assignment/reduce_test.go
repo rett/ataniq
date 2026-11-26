@@ -16,11 +16,12 @@ var (
 func command(r Row, tr Transfer, k Kind, id, route string) Command {
 	c := Command{Expected: r.Head, Kind: k, TransferID: id, RequestID: fmt.Sprintf("%s-%d", k, r.Head.Revision), Actor: "owner", Authorization: "approval"}
 	scope := r.Head
+	var targetID string
 	add := func(kind, subject, outcome string) {
 		c.Evidence = append(c.Evidence, Evidence{
 			Kind: kind, Issuer: "source", Subject: subject, Revision: "snapshot", Outcome: outcome,
 			Digest: fmt.Sprintf("%x", sha256.Sum256([]byte(kind+subject+outcome))),
-			Scope:  scope, TransferID: id,
+			Scope:  scope, TransferID: id, ScopeEventID: targetID,
 		})
 	}
 	switch k {
@@ -54,7 +55,7 @@ func command(r Row, tr Transfer, k Kind, id, route string) Command {
 		c.Candidate = tr.Candidate
 		add("decision", tr.Candidate.ID, "authorized")
 	case FenceReceipt:
-		scope = tr.Reservation
+		scope, targetID = tr.Reservation, tr.ReservationEventID
 		add("route", route, "sealed-and-drained")
 		if route == "worker" {
 			for _, id := range tr.Outstanding {
@@ -68,7 +69,7 @@ func command(r Row, tr Transfer, k Kind, id, route string) Command {
 		c.Candidate = tr.Candidate
 		add("revalidation", tr.Decision.Digest, "current")
 	case ConfirmReceipt:
-		scope = tr.Committed
+		scope, targetID = tr.Committed, tr.CommittedEventID
 		add("route", route, "installed-stale-refused")
 	case Open:
 		add("enrollment", r.Holder.ID, "current")
@@ -126,6 +127,7 @@ func TestTransitionTable(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			trace := fresh(t)
 			r := Row{Head: Head{Key: key}}
 			var tr Transfer
 			id := "seed"
@@ -138,11 +140,9 @@ func TestTransitionTable(t *testing.T) {
 				}
 				c := command(r, tr, s.kind, id, s.route)
 				before := r.Head
-				var err error
-				r, tr, err = reduce(r, tr.clone(), c, "begin")
-				if err != nil {
-					t.Fatalf("%s: %v", s.kind, err)
-				}
+				trace.accept(t, c)
+				r, _ = trace.ledger.Row(key)
+				tr, _ = trace.ledger.Transfer(key, id)
 				if r.Head.Phase != s.phase || r.Head.Revision != before.Revision+1 {
 					t.Fatalf("%s: %+v", s.kind, r)
 				}

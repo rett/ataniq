@@ -269,3 +269,30 @@ func TestCounterExhaustion(t *testing.T) {
 		})
 	}
 }
+
+func TestReceiptNamesExactEvent(t *testing.T) {
+	for _, tc := range []struct {
+		target, receipt Kind
+		n               int
+	}{{Seed, ConfirmReceipt, 0}, {Reserve, FenceReceipt, 3}, {Commit, ConfirmReceipt, 7}} {
+		t.Run(string(tc.target), func(t *testing.T) {
+			s := fresh(t)
+			id := "seed"
+			if tc.target != Seed {
+				s = forward(t, tc.n)
+				id = "T"
+			}
+			a, b := trace{ledger: s.ledger}, trace{ledger: s.ledger}
+			c := next(s.ledger, key, tc.target, id, "")
+			ea := a.accept(t, c)
+			c.Actor = "other-owner"
+			eb := b.accept(t, c)
+			if ea.Result.Head != eb.Result.Head || ea.Result.EventID == eb.Result.EventID {
+				t.Fatal("targets must fork at equal heads")
+			}
+			receipt := next(a.ledger, key, tc.receipt, id, "worker")
+			refused(t, b.ledger, receipt, ErrEvidence)
+			b.accept(t, next(b.ledger, key, tc.receipt, id, "worker"))
+		})
+	}
+}

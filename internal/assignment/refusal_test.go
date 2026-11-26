@@ -156,6 +156,7 @@ func TestContradictoryReceiptRequiresReconciliation(t *testing.T) {
 		resolve := next(l, key, Kind("ReceiptReconciled"), "T", "")
 		proof := c.Evidence[0]
 		proof.Scope = row.Head
+		proof.ScopeEventID = ""
 		proof.Kind, proof.Subject, proof.Outcome = "reconciliation", proof.Digest, "reconciled"
 		proof.Digest = event.Result.EventID
 		resolve.Evidence = []Evidence{proof}
