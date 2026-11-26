@@ -76,7 +76,12 @@ func covers(names, required []string) bool {
 func (t *Transfer) capture(p *evidenceSet, required []string) error {
 	t.Routes = subjects(p.group("route", "enabled"))
 
-	if !slices.Contains(t.Routes, "qargi") || !covers(t.Routes, required) {
+	// Verified retirement attests that this prior route is disabled, drained
+	// and its work disposed at this freeze. inventoryEffects also refuses a
+	// contradictory barrier capture of outstanding work on the retired route.
+	retired := subjects(p.group("route", "retired-drained-disabled"))
+	if !slices.Contains(t.Routes, "qargi") || !covers(required, retired) ||
+		!covers(append(slices.Clone(t.Routes), retired...), required) {
 		return ErrEvidence
 	}
 	return t.inventoryEffects(p)
