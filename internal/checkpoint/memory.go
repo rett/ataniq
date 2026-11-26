@@ -1,0 +1,431 @@
+package checkpoint
+
+import (
+	"bytes"
+	"context"
+	"crypto/ed25519"
+	"encoding/json"
+	"math"
+	"slices"
+	"sync"
+
+	"ataniq/internal/assignment"
+)
+
+type grant struct {
+	key   ed25519.PublicKey
+	keyID string
+	write bool
+}
+type accepted struct {
+	request []byte
+	receipt Receipt
+}
+type enrollment struct {
+	state         State
+	headerBytes   []byte
+	home, session ed25519.PublicKey
+	history       map[ID]accepted
+	claimed       map[string]bool
+}
+
+// Memory is an explicitly configured, deterministic test witness. Its handles
+// share one serialized enrollment directory. It has no persistence or clock.
+type Memory struct {
+	mu                         sync.Mutex
+	witness                    string
+	epoch                      uint64
+	key                        ed25519.PrivateKey
+	keyID                      string
+	grants                     map[Slot]grant
+	slots                      map[Slot]*enrollment
+	inhibited, loseReply       bool
+	receiptCount, receiptLimit uint64
+}
+
+func NewMemory(witness string, epoch uint64, key ed25519.PrivateKey) (*Memory, error) {
+	if !textOK(witness) || epoch == 0 || !validPrivate(key) {
+		return nil, ErrRefused
+	}
+	id, err := KeyID(key.Public().(ed25519.PublicKey))
+	if err != nil {
+		return nil, err
+	}
+	return &Memory{witness: witness, epoch: epoch, key: slices.Clone(key), keyID: id, grants: make(map[Slot]grant), slots: make(map[Slot]*enrollment)}, nil
+}
+
+// Grant installs an independently selected home pin for the exact slot. A
+// read-only grant can reconcile receipts but cannot claim or advance.
+func (w *Memory) Grant(slot Slot, pin ed25519.PublicKey, write bool) error {
+	id, err := KeyID(pin)
+	if err != nil || id == w.keyID || !slot.valid() || slot.Witness != w.witness {
+		return ErrRefused
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.grants[slot] = grant{slices.Clone(pin), id, write}
+	return nil
+}
+func (w *Memory) Revoke(slot Slot) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	delete(w.grants, slot)
+}
+func (w *Memory) Inhibit(inhibited bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.inhibited = inhibited
+}
+
+// LoseNextReply drops the next successful new mutation response after commit.
+func (w *Memory) LoseNextReply() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.loseReply = true
+}
+
+// SetReceiptLimit bounds the number of accepted mutations across the
+// directory. Zero is unlimited. Recovery reads and retries consume no space.
+func (w *Memory) SetReceiptLimit(limit uint64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.receiptLimit = limit
+}
+
+type admin struct{ w *Memory }
+
+func (w *Memory) Administration() Administration { return admin{w} }
+
+type client struct {
+	w             *Memory
+	slot          Slot
+	home, session ed25519.PrivateKey
+	witnessPin    ed25519.PublicKey
+	sessionID     string
+}
+
+// Connect creates an authenticated handle scoped to one home and process
+// session. Mutations and reads recheck the live grant under the witness lock.
+func (w *Memory) Connect(slot Slot, home, session ed25519.PrivateKey, witnessPin ed25519.PublicKey) (Client, error) {
+	if !validPrivate(home) || !validPrivate(session) || home.Equal(session) ||
+		!bytes.Equal(witnessPin, w.key.Public().(ed25519.PublicKey)) || session.Public().(ed25519.PublicKey).Equal(witnessPin) {
+		return nil, ErrRefused
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	g, ok := w.grants[slot]
+	if !ok || !bytes.Equal(home.Public().(ed25519.PublicKey), g.key) {
+		return nil, ErrRefused
+	}
+	sessionID, err := KeyID(session.Public().(ed25519.PublicKey))
+	if err != nil {
+		return nil, err
+	}
+	return &client{w, slot, slices.Clone(home), slices.Clone(session), slices.Clone(witnessPin), sessionID}, nil
+}
+func cloneReceipt(r Receipt) Receipt { return Receipt{slices.Clone(r.Body), slices.Clone(r.Signature)} }
+
+func (w *Memory) available(ctx context.Context) error {
+	if ctx.Err() != nil || w.inhibited {
+		return ErrUnavailable
+	}
+	return nil
+}
+func (c *client) authorized(slot Slot, write bool) (*enrollment, error) {
+	g, ok := c.w.grants[slot]
+	e := c.w.slots[slot]
+	if !ok || slot != c.slot || e == nil || write && !g.write ||
+		!bytes.Equal(g.key, e.home) || !bytes.Equal(g.key, c.home.Public().(ed25519.PublicKey)) {
+		return nil, ErrRefused
+	}
+	if write && e.state.Status == Retired {
+		return nil, ErrRetired
+	}
+	return e, nil
+}
+
+func (c *client) Read(ctx context.Context, q ReadRequest) (View, error) {
+	w := c.w
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if ctx.Err() != nil {
+		return View{}, ErrUnavailable
+	}
+	e, err := c.authorized(q.Slot, false)
+	if err != nil {
+		return View{}, err
+	}
+	v := View{Current: e.state}
+	if history, ok := e.history[q.ReceiptID]; ok {
+		r := cloneReceipt(history.receipt)
+		v.Prior = &r
+	}
+	guard := "ready"
+	if w.inhibited {
+		guard = "inhibited"
+	}
+	b, err := readBody(w.keyID, q, v, guard)
+	if err != nil {
+		return View{}, err
+	}
+	sig, err := witnessProfile.sign(w.key, b)
+	if err != nil {
+		return View{}, err
+	}
+	v.Fresh = Receipt{b, sig}
+	if err := verifyView(c.witnessPin, w.keyID, q, v); err == ErrUnavailable {
+		return v, err
+	} else if err != nil {
+		return View{}, err
+	}
+	return v, nil
+}
+
+func (e *enrollment) retry(id ID, b []byte) (Receipt, bool, error) {
+	saved, ok := e.history[id]
+	if !ok {
+		return Receipt{}, false, nil
+	}
+	if !bytes.Equal(saved.request, b) {
+		return Receipt{}, true, ErrStale
+	}
+	return cloneReceipt(saved.receipt), true, nil
+}
+
+// commit runs under mu. All fallible encoding precedes the state change.
+// The signed result links to the previous receipt. The new receipt digest
+// then becomes part of the next mutation's exact CAS predecessor.
+func (w *Memory) commit(e *enrollment, op string, id ID, body []byte, s State, session ed25519.PublicKey) (Receipt, error) {
+	if w.receiptLimit != 0 && w.receiptCount >= w.receiptLimit {
+		return Receipt{}, ErrUnavailable
+	}
+	a := ackRecord{recordHeader{1, op, s.Slot.Authority, w.keyID}, idString(id), RequestDigest(body), recordState(s)}
+	b, err := encode(a)
+	if err != nil {
+		return Receipt{}, err
+	}
+	sig, err := witnessProfile.sign(w.key, b)
+	if err != nil {
+		return Receipt{}, err
+	}
+	r := Receipt{b, sig}
+	s.LastReceiptDigest = ReceiptDigest(r)
+	w.receiptCount++
+	if op == "claim" {
+		e.claimed[s.SessionKeyID] = true
+	}
+	e.state = s
+	e.session = slices.Clone(session)
+	e.history[id] = accepted{body, r}
+	w.slots[s.Slot] = e
+	if w.loseReply {
+		w.loseReply = false
+		return Receipt{}, ErrUnknownOutcome
+	}
+	return cloneReceipt(r), nil
+}
+
+func (a admin) Enroll(ctx context.Context, q Enrollment) (Receipt, error) {
+	w := a.w
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.available(ctx); err != nil {
+		return Receipt{}, err
+	}
+	g, ok := w.grants[q.Slot]
+	if !ok || !bytes.Equal(g.key, q.HomePublicKey) {
+		return Receipt{}, ErrRefused
+	}
+	b, err := enrollmentBody(q, g.keyID)
+	if err != nil || !homeProfile.verify(g.key, b, q.ProofOfPossession) {
+		return Receipt{}, ErrRefused
+	}
+	if old := w.slots[q.Slot]; old != nil {
+		if old.state.Status == Retired {
+			return Receipt{}, ErrRetired
+		}
+		if r, ok, err := old.retry(q.ID, b); ok {
+			return r, err
+		}
+		return Receipt{}, ErrStale
+	}
+	ledger, err := assignment.NewLedgerFromHeader(q.HeaderBytes)
+	if err != nil {
+		return Receipt{}, ErrRefused
+	}
+	// Assignment validated the exact header frame, including its LF and
+	// format. Retrieve the pinned fields without regenerating those bytes.
+	var frame struct{ Header assignment.Header }
+	if json.Unmarshal(q.HeaderBytes, &frame) != nil {
+		return Receipt{}, ErrRefused
+	}
+	h := frame.Header
+	if h.KeyID != g.keyID || h.Authority != q.Slot.Authority || h.Store != q.Slot.Store {
+		return Receipt{}, ErrRefused
+	}
+	for slot, old := range w.slots {
+		if slot.Authority == q.Slot.Authority && (old.state.Status == Active || h.LedgerID == old.state.Header.LedgerID ||
+			h.Incarnation == old.state.Header.Incarnation || h.KeyID == old.state.HomeKeyID) {
+			return Receipt{}, ErrStale
+		}
+	}
+	e := &enrollment{headerBytes: slices.Clone(q.HeaderBytes), home: slices.Clone(g.key), history: make(map[ID]accepted), claimed: make(map[string]bool)}
+	s := State{Slot: q.Slot, Header: h, Head: ledger.Checkpoint(), Epoch: w.epoch, Revision: 1, HomeKeyID: g.keyID, Status: Active}
+	return w.commit(e, "enroll", q.ID, b, s, nil)
+}
+
+func (c *client) Claim(ctx context.Context, q Claim) (Receipt, error) {
+	if !bytes.Equal(q.NewSessionPublicKey, c.session.Public().(ed25519.PublicKey)) {
+		return Receipt{}, ErrRefused
+	}
+	b, err := mutationBody("claim", q.Expected.HomeKeyID, q.Mutation, q.NewSessionPublicKey, nil, "")
+	if err != nil {
+		return Receipt{}, err
+	}
+	result := q.Expected
+	result.Fence++
+	result.SessionKeyID = c.sessionID
+	return c.mutate(ctx, "claim", q.Mutation, b, result)
+}
+func (c *client) Advance(ctx context.Context, q Advance) (Receipt, error) {
+	b, err := AdvanceBody(q)
+	if err != nil {
+		return Receipt{}, err
+	}
+	result := q.Expected
+	result.Head = q.Next
+	return c.mutate(ctx, "advance", q.Mutation, b, result)
+}
+func (c *client) mutate(ctx context.Context, op string, m Mutation, b []byte, result State) (Receipt, error) {
+	homeSig, err := homeProfile.sign(c.home, b)
+	if err != nil {
+		return Receipt{}, err
+	}
+	sessionSig, err := sessionProfile.sign(c.session, b)
+	if err != nil {
+		return Receipt{}, err
+	}
+	r, err := c.accept(ctx, op, b, homeSig, sessionSig)
+	if err != nil {
+		return Receipt{}, err
+	}
+	a, err := verifyReceipt(c.witnessPin, c.w.keyID, r)
+	result.Revision++
+	result.LastReceiptDigest = ReceiptDigest(r)
+	if err != nil || a.Operation != op || a.ID != m.ID || a.RequestDigest != RequestDigest(b) ||
+		a.PredecessorDigest != m.Expected.LastReceiptDigest || a.State != result {
+		return Receipt{}, ErrUnknownOutcome
+	}
+	return r, nil
+}
+
+// accept consumes only the signed bytes and independently pinned identities.
+// The method selects the operation before interpreting its record.
+func (c *client) accept(ctx context.Context, op string, b, homeSig, sessionSig []byte) (Receipt, error) {
+	w := c.w
+	record, err := parseHomeMutation(op, b)
+	if err != nil {
+		return Receipt{}, err
+	}
+	m := record.mutation
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.available(ctx); err != nil {
+		return Receipt{}, err
+	}
+	e, err := c.authorized(m.Expected.Slot, true)
+	if err != nil {
+		return Receipt{}, err
+	}
+	session := e.session
+	if op == "claim" {
+		session = record.session
+		if !bytes.Equal(session, c.session.Public().(ed25519.PublicKey)) {
+			return Receipt{}, ErrRefused
+		}
+	}
+	if len(session) == 0 || !homeProfile.verify(e.home, b, homeSig) || !sessionProfile.verify(session, b, sessionSig) {
+		return Receipt{}, ErrRefused
+	}
+	// A past claim or advance cannot return success on a later fence.
+	// Read retains the old receipt.
+	if prior, ok := e.history[m.ID]; ok {
+		if !bytes.Equal(prior.request, b) {
+			return Receipt{}, ErrStale
+		}
+		fence := m.Expected.Fence
+		if op == "claim" {
+			fence++
+		}
+		if fence != e.state.Fence || e.state.SessionKeyID != c.sessionID {
+			return Receipt{}, ErrStale
+		}
+		return cloneReceipt(prior.receipt), nil
+	}
+	if m.Expected != e.state || e.state.Revision == math.MaxUint64 {
+		return Receipt{}, ErrStale
+	}
+	s := e.state
+	s.Revision++
+	if op == "claim" {
+		if len(e.session) != 0 || e.claimed[c.sessionID] || s.Fence == math.MaxUint64 {
+			return Receipt{}, ErrStale
+		}
+		s.Fence++
+		s.SessionKeyID = c.sessionID
+	} else {
+		if s.Head.Sequence == math.MaxUint64 {
+			return Receipt{}, ErrStale
+		}
+		expected := s.Head
+		expected.Sequence++
+		expected.Digest = record.next.Digest
+		if expected != record.next {
+			return Receipt{}, ErrStale
+		}
+		s.Head = record.next
+	}
+	return w.commit(e, op, m.ID, b, s, session)
+}
+func (a admin) Release(ctx context.Context, m Mutation) (Receipt, error) {
+	return a.end(ctx, "release", m, "")
+}
+func (a admin) Retire(ctx context.Context, q Retirement) (Receipt, error) {
+	return a.end(ctx, "retire", q.Mutation, q.DispositionDigest)
+}
+func (a admin) end(ctx context.Context, op string, m Mutation, disposition string) (Receipt, error) {
+	w := a.w
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.available(ctx); err != nil {
+		return Receipt{}, err
+	}
+	e := w.slots[m.Expected.Slot]
+	if e == nil {
+		return Receipt{}, ErrRefused
+	}
+	b, err := mutationBody(op, w.keyID, m, nil, nil, disposition)
+	if err != nil {
+		return Receipt{}, err
+	}
+	if e.state.Status == Retired && op != "retire" {
+		return Receipt{}, ErrRetired
+	}
+	if r, ok, err := e.retry(m.ID, b); ok {
+		return r, err
+	}
+	if e.state.Status == Retired {
+		return Receipt{}, ErrRetired
+	}
+	s := e.state
+	if m.Expected != s || s.Revision == math.MaxUint64 || s.Fence == math.MaxUint64 || op == "release" && len(e.session) == 0 {
+		return Receipt{}, ErrStale
+	}
+	s.Revision++
+	s.Fence++
+	s.SessionKeyID = ""
+	if op == "retire" {
+		s.Status = Retired
+	}
+	return w.commit(e, op, m.ID, b, s, nil)
+}
