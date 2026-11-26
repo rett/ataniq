@@ -147,23 +147,31 @@ func checkOwner(st *unix.Stat_t, path string) error {
 	return nil
 }
 
+const dirFlags = unix.O_DIRECTORY | unix.O_CLOEXEC
+
 func openDir(dir string, syncFile func(int) error) (int, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return -1, err
 	}
-	const flags = unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC
+	flags := unix.O_PATH | dirFlags
+	if abs == "/" {
+		flags = unix.O_RDONLY | dirFlags
+	}
 	fd, err := unix.Open("/", flags, 0)
 	if err != nil {
 		return -1, err
 	}
 	names := strings.FieldsFunc(abs, func(c rune) bool { return c == '/' })
 	for i, name := range names {
-		childFlags := flags
-		if i == len(names)-1 {
-			childFlags |= unix.O_NOFOLLOW
+		childFlags := unix.O_PATH | dirFlags
+		nextName := FileName
+		if i+1 < len(names) {
+			nextName = names[i+1]
+		} else {
+			childFlags = unix.O_RDONLY | dirFlags | unix.O_NOFOLLOW
 		}
-		next, err := openSyncedChild(fd, name, childFlags, syncFile)
+		next, err := openSyncedChild(fd, name, nextName, childFlags, syncFile)
 		_ = unix.Close(fd)
 		if err != nil {
 			return -1, err
@@ -186,16 +194,33 @@ func openDir(dir string, syncFile func(int) error) (int, error) {
 	return fd, nil
 }
 
-// A visible child can belong to an interrupted or concurrent creator. Confirm
-// its entry even on EEXIST before using it as the parent of another entry.
-func openSyncedChild(parent int, name string, flags int, syncFile func(int) error) (int, error) {
+// Each creator confirms a directory's entry before adding the next path
+// component (or journal). If the next entry already exists, we can traverse
+// this one with search permission alone. A missing next entry can be a crash
+// between mkdir and fsync, so confirm the containing directory on that retry.
+func openSyncedChild(parent int, name, nextName string, flags int, syncFile func(int) error) (int, error) {
 	fd, err := unix.Openat(parent, name, flags, 0)
+	if err == nil {
+		var st unix.Stat_t
+		err = unix.Fstatat(fd, nextName, &st, unix.AT_SYMLINK_NOFOLLOW)
+		if err == unix.ENOENT {
+			err = syncDirectoryAt(parent, syncFile)
+		}
+		if err != nil {
+			_ = unix.Close(fd)
+			return -1, fmt.Errorf("leadregistry: confirm folder %s: %w", name, err)
+		}
+		return fd, nil
+	}
 	created := false
 	if err == unix.ENOENT {
 		err = unix.Mkdirat(parent, name, 0700)
 		created = err == nil
 		if err != nil && err != unix.EEXIST {
 			return -1, fmt.Errorf("leadregistry: create folder %s: %w", name, err)
+		}
+		if created {
+			flags = flags &^ unix.O_PATH | unix.O_RDONLY
 		}
 		fd, err = unix.Openat(parent, name, flags, 0)
 	}
@@ -211,7 +236,7 @@ func openSyncedChild(parent int, name string, flags int, syncFile func(int) erro
 			return -1, fmt.Errorf("leadregistry: chmod folder: %w", err)
 		}
 	}
-	if err := syncFile(parent); err != nil {
+	if err := syncDirectoryAt(parent, syncFile); err != nil {
 		// Roll back only our own still-named empty directory. A concurrent
 		// creator may have populated it. Preserve those entries for retry.
 		if created {
@@ -227,6 +252,17 @@ func openSyncedChild(parent int, name string, flags int, syncFile func(int) erro
 		return -1, fmt.Errorf("leadregistry: sync parent of %s: %w", name, err)
 	}
 	return fd, nil
+}
+
+// Reopen the held parent for fsync. An O_PATH descriptor pins the directory
+// across renames but cannot itself be passed to fsync.
+func syncDirectoryAt(parent int, syncFile func(int) error) error {
+	fd, err := unix.Openat(parent, ".", unix.O_RDONLY|dirFlags, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+	return syncFile(fd)
 }
 
 func openFile(dirFD int, path string) (*os.File, error) {

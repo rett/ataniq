@@ -107,14 +107,9 @@ func TestAdvanceCuts(t *testing.T) {
 					t.Fatal("changed unappended intent before claim")
 				}
 				f.release(t)
-				if tc.point != "stage.created" {
-					// Release changed the full Expected state of this intact intent.
-					f.refused(t, Interrupted)
-					return
-				}
 				f.open(t, nil)
 				if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) || f.state(t).Head != state.Head {
-					t.Fatal("empty stage survived admission or changed head", err)
+					t.Fatal("unappended stage survived admission or changed head", err)
 				}
 				return
 			}
@@ -157,6 +152,39 @@ func TestAdvanceCuts(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestOwnerReconcilesUncommittedSuffix(t *testing.T) {
+	f := enrolled(t)
+	inhibit := false
+	s := f.open(t, boundaryHook(func(point string) error {
+		if inhibit && point == "append.dir-synced" {
+			f.w.Inhibit(true)
+		}
+		return nil
+	}))
+	check(t, appendOnly(f.ctx, s, f.seed(t, s, "one")))
+	prefix := contents(t, f.ledgerPath())
+	head := f.state(t).Head
+	inhibit = true
+	want(t, appendOnly(f.ctx, s, f.seed(t, s, "two")), Interrupted)
+	check(t, s.Close())
+	f.w.Inhibit(false)
+	f.release(t)
+	f.refused(t, Interrupted)
+
+	// The owner cuts only the unwitnessed suffix, retaining the signed stage.
+	check(t, os.Truncate(f.ledgerPath(), int64(len(prefix))))
+	s = f.open(t, nil)
+	ledger, err := s.Ledger()
+	check(t, err)
+	if ledger.Checkpoint() != head || f.state(t).Head != head {
+		t.Fatal("did not admit the witnessed prefix")
+	}
+	if _, err := os.Stat(filepath.Join(f.root.Path, stageName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("stage after reconciliation", err)
+	}
+	check(t, appendOnly(f.ctx, s, f.seed(t, s, "three")))
 }
 
 func TestInvalidStageNeverAdvances(t *testing.T) {
