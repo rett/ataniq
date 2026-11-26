@@ -6,7 +6,13 @@ On the authority host, construct a `NewServer` with the witness TLS identity and
 
 Implementations check the provisioned key in `CheckHome` under the request context (including cancellation and shutdown), recheck the live grant while taking the read snapshot in `ReadHome`, and verify the signed claim or advance and current write grant as part of the transaction in `RawSubmit`. History exhaustion has the signed disposition `checkpoint.ErrCapacity`. A durable witness serves the home key pinned when its store was created. A successful mutation returns its committed receipt. A backend that loses certainty about commit returns `checkpoint.ErrUnknownOutcome`.
 
-For owner calls, use `ServeOwner` on a private Unix-domain stream listener. Supply the administrative capability, its backend's witness evidence capability, the pinned SPKI fingerprint of the owner's client certificate and the administrator UID. Dial that endpoint with `Remote.Administration` and the matching TLS identity. The authenticated owner can read, settle, enroll, release and retire. Enrollment also carries the home's proof of possession.
+For owner calls, use `ServeOwner` on a private Unix-domain stream listener. Supply the administrative capability, its backend's witness evidence capability, the pinned SPKI fingerprint of the owner's client certificate and the administrator UID. Dial that endpoint with `Remote.Administration` and the matching TLS identity. The authenticated owner can read, settle, enroll, release and retire. Enrollment also carries the home's proof of possession. A durable backend also
+serves `Status` and `AcknowledgeStorageError` through this listener. Status
+signs the caller's fresh challenge, epoch, inhibition reason, directory head
+and counts of slots, receipts and fences. It works before enrollment. The
+owner checks this evidence and repairs storage before acknowledging. The
+acknowledgement names the expected epoch and receives a signed disposition.
+After a lost reply, use a new challenged status read to check the outcome.
 
 ## Framing and bounds
 

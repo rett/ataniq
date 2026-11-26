@@ -48,6 +48,7 @@ const (
 	Retired          Reason = "retired identity. Enroll afresh in a new empty root"
 	Unknown          Reason = "unknown enrollment"
 	Unreachable      Reason = "witness unavailable"
+	Capacity         Reason = "witness capacity exhausted"
 	MissingHeader    Reason = "missing ledger header"
 	IdentityMismatch Reason = "store identity mismatch"
 	Insecure         Reason = "unsafe store"
@@ -80,6 +81,8 @@ func refuse(r Reason, err error) error { return &Error{r, err} }
 func witnessError(err error) error {
 	var r *checkpoint.Reason
 	switch {
+	case errors.Is(err, checkpoint.ErrCapacity):
+		return refuse(Capacity, err)
 	case errors.Is(err, checkpoint.ErrRetired):
 		return refuse(Retired, err)
 	case errors.As(err, &r):

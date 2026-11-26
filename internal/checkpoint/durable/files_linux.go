@@ -7,8 +7,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
+
+	cp "ataniq/internal/checkpoint"
 
 	"golang.org/x/sys/unix"
 )
@@ -37,7 +40,10 @@ func (w *Witness) checkPoison() error {
 	if err != nil {
 		return err
 	}
-	return errors.Join(ErrPoisoned, marker.Close())
+	if err := marker.Close(); err != nil {
+		return err
+	}
+	return ErrPoisoned
 }
 
 // Persist the marker before any journal write or replay sync. A failed device
@@ -48,7 +54,9 @@ func (w *Witness) arm() error {
 	}
 	marker, err := openFile(w.dir, recoveryName, syscall.O_RDWR|syscall.O_CREAT|syscall.O_EXCL)
 	if errors.Is(err, os.ErrExist) {
-		w.recoveryRequired = true
+		if w.recovery == "" {
+			w.recovery = cp.UncleanEnd
+		}
 		marker, err = openFile(w.dir, recoveryName, syscall.O_RDONLY)
 	}
 	if err != nil {
@@ -177,33 +185,122 @@ func exclusive(file *os.File) error {
 	return err
 }
 
-// Look for the published names before an opener takes the directory lock.
-// A restart loop on an empty directory must never exclude its creator.
-func (w *Witness) openPair(create bool, key *os.File) error {
-	fd := int(w.dir.Fd())
-	if create {
-		if err := exclusive(w.dir); err != nil {
-			return err
+// Scan a fresh directory descriptor so an optimistic empty-store check and
+// the authoritative check under flock each start at the first entry.
+type publication struct {
+	index, journal, pending bool
+	private                 []string
+}
+
+func inspectPublication(dir *os.File) (publication, error) {
+	var p publication
+	fd, err := unix.Openat(int(dir.Fd()), ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return p, err
+	}
+	f := os.NewFile(uintptr(fd), ".")
+	defer f.Close()
+	names, err := f.Readdirnames(-1)
+	for _, name := range names {
+		switch name {
+		case lockName:
+			p.index = true
+		case journalName:
+			p.journal = true
+		case recoveryName, poisonName:
+			p.pending = true
+		default:
+			if strings.HasPrefix(name, ".create-") {
+				p.private = append(p.private, name)
+			}
 		}
 	}
-	for _, name := range []string{lockName, journalName} {
-		var st unix.Stat_t
-		err := unix.Fstatat(fd, name, &st, unix.AT_SYMLINK_NOFOLLOW)
-		if errors.Is(err, os.ErrNotExist) {
-			if create {
-				continue
-			}
-			return errors.Join(ErrNotInitialized, err)
+	return p, err
+}
+
+func (p publication) state() error {
+	switch {
+	case p.index && p.journal:
+		return nil
+	case len(p.private) != 0:
+		return ErrPublication
+	case p.index:
+		return ErrMissingJournal
+	case p.journal:
+		return ErrMissingIndex
+	case p.pending:
+		return ErrPublication
+	default:
+		return ErrNotInitialized
+	}
+}
+
+// Accept one staged journal and its corresponding staged or published index.
+// Ambiguous remnants and a lone public file must be preserved for inspection.
+func (p publication) stagedPrefix() (string, error) {
+	if p.journal {
+		return "", ErrPublication
+	}
+	var prefix string
+	for _, name := range p.private {
+		if strings.HasSuffix(name, "-"+journalName) {
+			prefix = strings.TrimSuffix(name, journalName)
 		}
+	}
+	if prefix != "" {
+		if p.index && len(p.private) == 1 {
+			return prefix, nil
+		}
+		if !p.index && len(p.private) == 2 && slices.Contains(p.private, prefix+lockName) {
+			return prefix, nil
+		}
+	}
+	return "", ErrPublication
+}
+
+func (w *Witness) openPair(mode startMode, key *os.File) error {
+	if mode == openStore {
+		p, err := inspectPublication(w.dir)
 		if err != nil {
 			return err
 		}
-		if create {
-			return os.ErrExist
+		if p.state() == ErrNotInitialized {
+			return errors.Join(ErrNotInitialized, os.ErrNotExist)
 		}
 	}
-	if !create {
-		if err := exclusive(w.dir); err != nil {
+	if err := exclusive(w.dir); err != nil {
+		return err
+	}
+	p, err := inspectPublication(w.dir)
+	if err != nil {
+		return err
+	}
+	state := p.state()
+	switch mode {
+	case createStore:
+		if state == nil {
+			return os.ErrExist
+		}
+		if state != ErrNotInitialized {
+			return state
+		}
+	case openStore:
+		if state != nil {
+			return state
+		}
+	case completeStore, inspectStore:
+		if mode == inspectStore && state == nil {
+			break
+		}
+		if state != ErrPublication {
+			if state == nil {
+				return os.ErrExist
+			}
+			return state
+		}
+		w.recovery = cp.InterruptedPublication
+		w.stagingPrefix, err = p.stagedPrefix()
+		if err != nil {
 			return err
 		}
 	}
@@ -211,15 +308,21 @@ func (w *Witness) openPair(create bool, key *os.File) error {
 		return err
 	}
 	if err := w.checkPoison(); err != nil {
-		return err
+		if mode != inspectStore || w.stagingPrefix != "" || err != ErrPoisoned {
+			return err
+		}
+		w.recovery = cp.StorageFailure
 	}
 	flags := syscall.O_RDWR | syscall.O_APPEND
-	if create {
+	if mode == createStore {
 		w.stagingPrefix = ".create-" + rand.Text() + "-"
 		flags |= syscall.O_CREAT | syscall.O_EXCL
 	}
-	var err error
-	w.lockFile, err = openFile(w.dir, w.stagingPrefix+lockName, flags)
+	index := w.stagingPrefix + lockName
+	if p.index {
+		index = lockName
+	}
+	w.lockFile, err = openFile(w.dir, index, flags)
 	if err != nil {
 		return err
 	}
@@ -237,7 +340,13 @@ func (w *Witness) openPair(create bool, key *os.File) error {
 func (w *Witness) publishPair() error {
 	fd := int(w.dir.Fd())
 	for _, name := range []string{lockName, journalName} {
+		if name == lockName && w.lockFile.Name() == lockName {
+			continue
+		}
 		if err := unix.Renameat2(fd, w.stagingPrefix+name, fd, name, unix.RENAME_NOREPLACE); err != nil {
+			return err
+		}
+		if err := w.after("published-" + name); err != nil {
 			return err
 		}
 	}

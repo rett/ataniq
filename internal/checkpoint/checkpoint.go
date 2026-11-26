@@ -28,6 +28,13 @@ var (
 	ErrUnknownOutcome = errors.New("checkpoint: unknown mutation outcome")
 )
 
+// FormatError identifies evidence from an unsupported witness format.
+type FormatError string
+
+func (e FormatError) Error() string { return string(e) }
+
+const ErrLegacyFormat FormatError = "checkpoint: legacy format requires fresh provisioning"
+
 const (
 	Active  = "active"
 	Retired = "retired"

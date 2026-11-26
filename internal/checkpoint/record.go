@@ -116,7 +116,7 @@ type stateRecord struct {
 	Header            assignment.Header `json:"header"`
 	Head              headRecord        `json:"head"`
 	Epoch             uint64            `json:"epoch,string"`
-	JournalSequence   uint64            `json:"journal_sequence,string"`
+	JournalSequence   uint64            `json:"journal_sequence,string,omitempty"`
 	Revision          uint64            `json:"revision,string"`
 	Fence             uint64            `json:"fence,string"`
 	HomeKeyID         string            `json:"home_key_id"`
@@ -307,6 +307,11 @@ func verifyReceipt(pin ed25519.PublicKey, keyID string, r Receipt) (Acknowledgem
 	if id == (ID{}) || (a.Operation == "enroll" && (prior != "" || a.Result.Revision != 1)) ||
 		(a.Operation != "enroll" && !digestOK(prior)) {
 		return Acknowledgement{}, &Reason{Kind: InvalidRequest}
+	}
+	// Strict re-encoding rejects an explicitly zero sequence. An omitted
+	// field in this otherwise authenticated acknowledgement is the old format.
+	if a.Result.JournalSequence == 0 {
+		return Acknowledgement{}, ErrLegacyFormat
 	}
 	state := a.Result.state()
 	state.LastReceiptDigest = ReceiptDigest(r)

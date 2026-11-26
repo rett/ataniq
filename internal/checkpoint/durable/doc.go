@@ -5,13 +5,23 @@
 // 0700 directory. Create sets the private temporary files to mode 0600,
 // syncs genesis and its index entry, renames the files into place under the
 // directory lock and syncs the directory. Publishing the journal completes
-// the pair. Open reports ErrNotInitialized for an unfinished pair. The lock
+// the pair. Open reports ErrNotInitialized only on an unprovisioned directory.
+// A lone published file or interrupted publication has a distinct recovery
+// error. Create preserves these files. The local owner can CompletePublication
+// only with one unambiguous staged pair (or staged journal and published
+// index) matching the pinned signed genesis and exactly its index entry. The lock
 // file records each committed frame digest and its exact acknowledgement signature.
 // Losing a complete journal suffix alone is therefore detectable. Replay
 // verifies every frame, receipt and predecessor before serving. A complete
 // final transition left by a crash can finish its missing acknowledgement.
 // A partial frame or partial signature entry requires owner intervention.
 // Preserve the directory for investigation before re-enrolling.
+//
+// Stores from the earlier development format need fresh provisioning.
+// Its genesis omits the home fingerprint and its signed mutation receipts
+// omit the journal sequence. Open, VerifyReceipt and MatchReceipt identify
+// the old evidence with ErrLegacyFormat. Preserve the old directory and
+// receipts separately and provision a fresh directory and activation epoch.
 //
 // The independently configured activation epoch is signed into acknowledgements
 // and dispositions. The link pins it for an activation. Journal sequence
@@ -52,10 +62,19 @@
 // Before journal I/O the witness durably creates recovery.pending. A clean close
 // removes it. Process death leaves this marker. After recovery every new
 // transition stays inhibited until Administration().AcknowledgeStorageError.
+// Even an idle kill leaves recovery.pending. Tail re-proof establishes that
+// the surviving bytes can be written now. It cannot establish that a previous
+// writeback failure was never reported: that same fault can prevent persistence
+// of poisoned. The owner therefore checks every unclean end.
 // A reported write or sync error stops service and creates and syncs a second
 // marker, poisoned, on a best-effort basis. Open refuses while it exists.
-// An I/O error on this directory requires the owner's check and repair before
-// removing poisoned and reopening. On every Open, replay rewrites the last
+// After checking and repairing storage, the owner can use OpenForRecovery
+// to re-prove the journal while retaining poisoned. Administration.Status signs
+// the reason, counts and directory head under the caller's fresh challenge,
+// including before enrollment. AcknowledgeStorageError clears the poison
+// marker and recovery inhibition after re-proof. The service guard is independent.
+// OpenForRecovery can also inspect a provable interrupted genesis without
+// publishing it. Completing publication requires the offline owner call. On every Open, replay rewrites the last
 // validated frame and index entry in place and syncs both files and the directory
 // before signing or serving. Torn or corrupt evidence still prevents Open.
 package durable

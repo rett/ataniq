@@ -38,11 +38,27 @@ type record struct {
 }
 
 func readPart(in io.Reader, b []byte, atBoundary bool) error {
-	_, err := io.ReadFull(in, b)
-	if errors.Is(err, io.ErrUnexpectedEOF) || (!atBoundary && errors.Is(err, io.EOF)) {
-		return ErrTorn
+	// ReadFull suppresses any error on the read that fills b. A storage
+	// error on those bytes must still stop verification.
+	for len(b) > 0 {
+		n, err := in.Read(b)
+		b = b[n:]
+		if n > 0 {
+			atBoundary = false
+		}
+		if err == io.EOF {
+			if len(b) == 0 {
+				return nil
+			}
+			if !atBoundary {
+				return ErrTorn
+			}
+		}
+		if err != nil {
+			return err
+		}
 	}
-	return err
+	return nil
 }
 func decode(in io.Reader, pin ed25519.PublicKey) (record, [32]byte, error) {
 	var r record
@@ -68,6 +84,47 @@ func decode(in io.Reader, pin ed25519.PublicKey) (record, [32]byte, error) {
 		return r, digest, ErrCorrupt
 	}
 	return r, sha256.Sum256(sig), nil
+}
+
+// Prove both files end exactly at genesis before any recovery write or rename.
+// Comparing the canonical record covers every field, including both pins.
+func (w *Witness) verifyStagedGenesis(homeID string) error {
+	r, digest, err := decode(w.journal, w.pin)
+	if err != nil {
+		return errors.Join(ErrPublication, err)
+	}
+	want := record{Seq: 1, Previous: hex.EncodeToString(w.previous[:]), Op: "create", Identity: &w.identity, HomeKeyID: homeID}
+	body, err := canonical(r)
+	if err != nil {
+		return err
+	}
+	expected, err := canonical(want)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(body, expected) {
+		return ErrPublication
+	}
+	sig, err := readEntry(w.lockFile, digest)
+	if err != nil || len(sig) != 0 {
+		return errors.Join(ErrPublication, err)
+	}
+	for _, f := range []*os.File{w.journal, w.lockFile} {
+		var extra [1]byte
+		if n, err := f.Read(extra[:]); n != 0 || err != io.EOF {
+			return errors.Join(ErrPublication, err)
+		}
+	}
+	if err := w.arm(); err != nil {
+		return err
+	}
+	for _, f := range []*os.File{w.journal, w.lockFile, w.dir} {
+		if err := f.Sync(); err != nil {
+			return w.poison(err)
+		}
+	}
+	w.seq, w.previous = r.Seq, digest
+	return nil
 }
 
 func (w *Witness) commit(r record, c change) (cp.Receipt, error) {
@@ -264,7 +321,7 @@ func (w *Witness) replay(homeID string, journal, index io.Reader) error {
 				return ErrCorrupt
 			}
 			if w.seq == 0 {
-				return ErrNotInitialized
+				return ErrCorrupt
 			}
 			return w.proveTail(frame.Bytes(), entry.Bytes())
 		}
@@ -280,6 +337,9 @@ func (w *Witness) replay(homeID string, journal, index io.Reader) error {
 		if w.seq == 0 {
 			if r.Op != "create" || r.ReservedSettlement || r.Identity == nil || r.Body != nil || r.HomeProof != nil || r.SessionProof != nil || r.ID != nil || r.Slot != nil {
 				return ErrCorrupt
+			}
+			if r.HomeKeyID == "" {
+				return ErrLegacyFormat
 			}
 			if *r.Identity != w.identity || r.HomeKeyID != homeID {
 				return ErrIdentity
