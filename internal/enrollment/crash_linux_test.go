@@ -101,9 +101,20 @@ func TestAdvanceCuts(t *testing.T) {
 			}
 
 			if !tc.appended {
-				f.refused(t, Interrupted)
-				if f.state(t) != state {
-					t.Fatal("promoted or discarded an unappended intent")
+				before := contents(t, p)
+				f.refused(t, Occupied)
+				if f.state(t) != state || !bytes.Equal(before, contents(t, p)) {
+					t.Fatal("changed unappended intent before claim")
+				}
+				f.release(t)
+				if tc.point != "stage.created" {
+					// Release changed the full Expected state of this intact intent.
+					f.refused(t, Interrupted)
+					return
+				}
+				f.open(t, nil)
+				if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) || f.state(t).Head != state.Head {
+					t.Fatal("empty stage survived admission or changed head", err)
 				}
 				return
 			}
@@ -247,6 +258,38 @@ func TestSwappedDirectoryNeverAdmitted(t *testing.T) {
 				check(t, s.Close())
 			}
 			want(t, err, IdentityMismatch)
+		})
+	}
+}
+
+func TestTornStageNeedsCleanEqualLedger(t *testing.T) {
+	for _, kind := range []string{"equal", "ahead", "torn ledger"} {
+		t.Run(kind, func(t *testing.T) {
+			f := enrolled(t)
+			s := f.open(t, cut("append.dir-synced"))
+			header := contents(t, f.ledgerPath())
+			want(t, AppendAndAdvance(f.ctx, s, f.seed(t, s, "row")), Interrupted)
+			check(t, s.Close())
+			f.release(t)
+			path := filepath.Join(f.root.Path, stageName)
+			put(t, path, []byte("{"))
+			head := f.state(t).Head
+			switch kind {
+			case "equal":
+				put(t, f.ledgerPath(), header)
+				f.open(t, nil)
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("stage remains", err)
+				}
+			case "ahead":
+				f.refused(t, Interrupted)
+			case "torn ledger":
+				put(t, f.ledgerPath(), append(header, '{'))
+				f.refused(t, Truncated)
+			}
+			if f.state(t).Head != head {
+				t.Fatal("changed witness head")
+			}
 		})
 	}
 }

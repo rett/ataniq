@@ -32,8 +32,12 @@ func (p staged) advance() (checkpoint.Advance, error) {
 }
 
 func (s *Store) inspectStage(ctx context.Context, raw, last []byte, head assignment.Checkpoint, v checkpoint.View) (checkpoint.View, error) {
+	equal := checkpoint.Compare(head, v.Current) == checkpoint.Equal
 	var p staged
 	if err := json.Unmarshal(raw, &p); err != nil {
+		if equal && !json.Valid(raw) {
+			return v, nil
+		}
 		return v, refuse(Interrupted, err)
 	}
 	canonical, err := json.Marshal(p)
@@ -41,6 +45,10 @@ func (s *Store) inspectStage(ctx context.Context, raw, last []byte, head assignm
 		return v, refuse(Interrupted, err)
 	}
 	q, err := p.advance()
+	if err == nil && equal && q.Expected == v.Current && !bytes.Equal(last, p.Record) {
+		// Only local cleanup is eligible, and only after a successful claim.
+		return v, nil
+	}
 	if err != nil || q.Next != head || !bytes.Equal(last, p.Record) {
 		return v, refuse(Interrupted, err)
 	}
