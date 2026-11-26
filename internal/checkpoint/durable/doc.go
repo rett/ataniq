@@ -20,6 +20,23 @@
 // keep admission inhibited while the owner reconciles surviving evidence and
 // provisions a fresh identity and higher epoch.
 //
+// Each store serves exactly one home public key. Create binds its fingerprint
+// into genesis and Open checks it against Config.HomePin. The per-store limit
+// is 65,536 ordinary receipts and fences by default. ReceiptLimit may reduce
+// admission. Release and retirement retain room for one entry per claim and
+// enrollment. At the ordinary limit the owner has a separate allowance of
+// ReceiptLimit new settlement fences (65,536 by default). An exact settlement
+// lookup spends no credit. The absolute maximum is 196,608 entries plus genesis.
+// There is no compaction, on purpose: prior receipts and fences are permanent.
+//
 // Open and Create start inhibited and without home grants. The service supplies
 // current grants and explicitly enables mutations after checking its guard.
+// Before journal I/O the witness durably creates recovery.pending. A clean close
+// removes it. A reported commit storage error poisons the handle and leaves the
+// marker in place. Process death also leaves the marker. On Open, successful
+// replay can recover exact receipts, but every new transition stays inhibited
+// until the local owner calls Administration().AcknowledgeStorageError after
+// investigating the failure. The service guard still applies. Closing or
+// reopening an unacknowledged store preserves the marker. Torn or corrupt
+// evidence still prevents Open and cannot be cleared by acknowledgement.
 package durable

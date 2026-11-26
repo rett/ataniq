@@ -22,15 +22,17 @@ const journalDomain = "ataniq.checkpoint.durable.v1\x00"
 const maxRecord = 2*cp.MaxFrame + 4096
 
 type record struct {
-	Seq          uint64    `json:"seq,string"`
-	Previous     string    `json:"previous"`
-	Op           string    `json:"op"`
-	Identity     *Identity `json:"identity,omitempty"`
-	Slot         *cp.Slot  `json:"slot,omitempty"`
-	ID           *cp.ID    `json:"id,omitempty"`
-	Body         []byte    `json:"body,omitempty"`
-	HomeProof    []byte    `json:"home_proof,omitempty"`
-	SessionProof []byte    `json:"session_proof,omitempty"`
+	Seq                uint64    `json:"seq,string"`
+	HomeKeyID          string    `json:"home_key_id,omitempty"`
+	ReservedSettlement bool      `json:"reserved_settlement,omitempty"`
+	Previous           string    `json:"previous"`
+	Op                 string    `json:"op"`
+	Identity           *Identity `json:"identity,omitempty"`
+	Slot               *cp.Slot  `json:"slot,omitempty"`
+	ID                 *cp.ID    `json:"id,omitempty"`
+	Body               []byte    `json:"body,omitempty"`
+	HomeProof          []byte    `json:"home_proof,omitempty"`
+	SessionProof       []byte    `json:"session_proof,omitempty"`
 }
 
 func readPart(in io.Reader, b []byte, atBoundary bool) error {
@@ -67,7 +69,6 @@ func decode(in io.Reader, pin ed25519.PublicKey) (record, [32]byte, error) {
 }
 
 func (w *Witness) commit(r record, c change) (cp.Receipt, error) {
-	r.Seq = w.seq + 1
 	r.Previous = hex.EncodeToString(w.previous[:])
 	body, err := canonical(r)
 	if err != nil || len(body) > maxRecord {
@@ -81,7 +82,11 @@ func (w *Witness) commit(r record, c change) (cp.Receipt, error) {
 	if err = w.after("before-append"); err != nil {
 		return cp.Receipt{}, errors.Join(cp.ErrUnavailable, err)
 	}
-	if _, err = w.journal.Write(frame); err == nil {
+	n, err := w.writeFrame(frame)
+	if n != len(frame) && err == nil {
+		err = io.ErrShortWrite
+	}
+	if err == nil {
 		err = w.after("appended")
 	}
 	if err == nil {
@@ -106,13 +111,13 @@ func (w *Witness) commit(r record, c change) (cp.Receipt, error) {
 }
 
 func (w *Witness) syncJournal() error {
-	if err := w.journal.Sync(); err != nil {
+	if err := w.syncFile(w.journal); err != nil {
 		return err
 	}
 	if err := w.after("journal-synced"); err != nil {
 		return err
 	}
-	if err := w.dir.Sync(); err != nil {
+	if err := w.syncFile(w.dir); err != nil {
 		return err
 	}
 	return w.after("directory-synced")
@@ -144,13 +149,13 @@ func (w *Witness) finish(r record, c change, digest [32]byte) ([]byte, error) {
 	if err := w.after("receipt-appended"); err != nil {
 		return nil, err
 	}
-	if err := w.lockFile.Sync(); err != nil {
+	if err := w.syncFile(w.lockFile); err != nil {
 		return nil, err
 	}
 	if err := w.after("receipt-synced"); err != nil {
 		return nil, err
 	}
-	if err := w.dir.Sync(); err != nil {
+	if err := w.syncFile(w.dir); err != nil {
 		return nil, err
 	}
 	return sig, w.after("receipt-directory-synced")
@@ -179,7 +184,7 @@ func readEntry(in io.Reader, digest [32]byte) ([]byte, error) {
 	return sig, readPart(in, sig, false)
 }
 
-func (w *Witness) replay() error {
+func (w *Witness) replay(homeID string) error {
 	frames, entries := bufio.NewReader(w.journal), bufio.NewReader(w.lockFile)
 	for {
 		r, digest, err := decode(frames, w.pin)
@@ -194,13 +199,16 @@ func (w *Witness) replay() error {
 				return ErrTorn
 			}
 			// A process crash can leave complete unsynced entries in the page cache.
-			if err := w.journal.Sync(); err != nil {
+			if err := w.arm(); err != nil {
 				return err
 			}
-			if err := w.lockFile.Sync(); err != nil {
+			if err := w.syncFile(w.journal); err != nil {
 				return err
 			}
-			return w.dir.Sync()
+			if err := w.syncFile(w.lockFile); err != nil {
+				return err
+			}
+			return w.syncFile(w.dir)
 		}
 		if err != nil {
 			return fmt.Errorf("frame %d: %w", w.seq+1, err)
@@ -210,14 +218,14 @@ func (w *Witness) replay() error {
 		}
 		var c change
 		if w.seq == 0 {
-			if r.Op != "create" || r.Identity == nil || r.Body != nil || r.HomeProof != nil || r.SessionProof != nil || r.ID != nil || r.Slot != nil {
+			if r.Op != "create" || r.ReservedSettlement || r.Identity == nil || r.Body != nil || r.HomeProof != nil || r.SessionProof != nil || r.ID != nil || r.Slot != nil {
 				return ErrCorrupt
 			}
-			if *r.Identity != w.identity {
+			if *r.Identity != w.identity || r.HomeKeyID != homeID {
 				return ErrIdentity
 			}
 		} else {
-			if r.Op == "create" || r.Identity != nil {
+			if r.Op == "create" || r.HomeKeyID != "" || r.Identity != nil {
 				return ErrCorrupt
 			}
 			c, _, err = w.prepare(r, true)
@@ -234,6 +242,9 @@ func (w *Witness) replay() error {
 					return err
 				}
 				return ErrCorrupt
+			}
+			if err = w.arm(); err != nil {
+				return err
 			}
 			if err = w.syncJournal(); err != nil {
 				return err

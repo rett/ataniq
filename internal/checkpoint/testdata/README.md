@@ -8,7 +8,7 @@ Each line of `transcript.jsonl` contains a name, an exact canonical body
 (without LF), and the detached signatures indexed by role. Owner-local
 release and retirement requests have no peer signature. The signed read
 retrieves the historical advance receipt. Each acknowledgement carries the
-previous receipt digest in its result. Hashing the completed acknowledgement
+witness-wide journal position and previous receipt digest in its result. Hashing the completed acknowledgement
 produces the digest for the next CAS.
 
 The transcript was derived independently with sorted compact JSON in Python

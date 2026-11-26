@@ -12,6 +12,31 @@ import (
 
 const journalName = "journal.v1"
 const lockName = "witness.lock"
+const recoveryName = "recovery.pending"
+
+// Persist the marker before any journal write or replay sync. A failed device
+// may be unable to record that it failed. The lock serializes marker ownership.
+func (w *Witness) arm() error {
+	if w.armed {
+		return nil
+	}
+	marker, err := openFile(w.dir, recoveryName, syscall.O_RDWR|syscall.O_CREAT|syscall.O_EXCL)
+	if errors.Is(err, os.ErrExist) {
+		w.recoveryRequired = true
+		marker, err = openFile(w.dir, recoveryName, syscall.O_RDONLY)
+	}
+	if err != nil {
+		return err
+	}
+	if err := errors.Join(marker.Sync(), marker.Close()); err != nil {
+		return err
+	}
+	if err := w.dir.Sync(); err != nil {
+		return err
+	}
+	w.armed = true
+	return nil
+}
 
 // Require an absolute, clean path. Hold the opened parent while looking up
 // each child. O_PATH permits traversal of execute-only ancestors.

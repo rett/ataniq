@@ -116,6 +116,7 @@ type stateRecord struct {
 	Header            assignment.Header `json:"header"`
 	Head              headRecord        `json:"head"`
 	Epoch             uint64            `json:"epoch,string"`
+	JournalSequence   uint64            `json:"journal_sequence,string"`
 	Revision          uint64            `json:"revision,string"`
 	Fence             uint64            `json:"fence,string"`
 	HomeKeyID         string            `json:"home_key_id"`
@@ -125,10 +126,10 @@ type stateRecord struct {
 }
 
 func recordState(s State) stateRecord {
-	return stateRecord{s.Slot, s.Header, head(s.Head), s.Epoch, s.Revision, s.Fence, s.HomeKeyID, s.SessionKeyID, s.Status, s.LastReceiptDigest}
+	return stateRecord{s.Slot, s.Header, head(s.Head), s.Epoch, s.JournalSequence, s.Revision, s.Fence, s.HomeKeyID, s.SessionKeyID, s.Status, s.LastReceiptDigest}
 }
 func (s stateRecord) state() State {
-	return State{s.Slot, s.Header, assignment.Checkpoint(s.Head), s.Epoch, s.Revision, s.Fence, s.HomeKeyID, s.SessionKeyID, s.Status, s.LastReceiptDigest}
+	return State{s.Slot, s.Header, assignment.Checkpoint(s.Head), s.Epoch, s.Revision, s.Fence, s.JournalSequence, s.HomeKeyID, s.SessionKeyID, s.Status, s.LastReceiptDigest}
 }
 func validState(s State) bool {
 	h, p := s.Header, s.Head
@@ -138,7 +139,7 @@ func validState(s State) bool {
 	}
 	return s.Slot.valid() && s.Slot.Authority == h.Authority && s.Slot.Store == h.Store &&
 		h.Authority == p.Authority && h.Store == p.Store && h.Incarnation == p.Incarnation && h.LedgerID == p.LedgerID &&
-		digestOK(p.Digest) && s.HomeKeyID == h.KeyID && s.Epoch != 0 && s.Revision != 0 &&
+		digestOK(p.Digest) && s.HomeKeyID == h.KeyID && s.Epoch != 0 && s.Revision != 0 && s.JournalSequence != 0 &&
 		(s.Status == Active || s.Status == Retired && s.SessionKeyID == "") &&
 		(s.SessionKeyID == "" || textOK(s.SessionKeyID) && s.Fence > 0) && digestOK(s.LastReceiptDigest)
 }
@@ -328,7 +329,7 @@ func verifyView(pin ed25519.PublicKey, keyID string, q ReadRequest, v View) erro
 	}
 	if v.Prior != nil {
 		a, err := verifyReceipt(pin, keyID, *v.Prior)
-		if err != nil || a.ID != q.ReceiptID || a.State.Slot != q.Slot {
+		if err != nil || a.ID != q.ReceiptID || a.State.Slot != q.Slot || a.State.JournalSequence > v.Current.JournalSequence {
 			return &Reason{Kind: InvalidRequest}
 		}
 	}

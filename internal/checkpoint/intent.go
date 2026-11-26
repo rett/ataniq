@@ -196,6 +196,10 @@ func MatchReceipt(pin ed25519.PublicKey, epoch uint64, op string, body []byte, r
 		}
 		s.Revision++
 	}
+	if a.State.JournalSequence <= m.Expected.JournalSequence {
+		return ErrUnknownOutcome
+	}
+	s.JournalSequence = a.State.JournalSequence
 	s.LastReceiptDigest = ReceiptDigest(r)
 	if a.ID != m.ID || a.PredecessorDigest != m.Expected.LastReceiptDigest || a.State != s {
 		return ErrUnknownOutcome

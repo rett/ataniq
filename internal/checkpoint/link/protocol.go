@@ -105,8 +105,8 @@ func parseRead(b []byte, wid, op string) (cp.ReadRequest, uint64, error) {
 
 // Send only contract error codes. An unclassified backend error may have
 // happened after commit. Its diagnostic never goes on the wire.
-var categories = []error{cp.ErrNotApplied, cp.ErrRefused, cp.ErrStale, cp.ErrRetired, cp.ErrUnavailable, cp.ErrUnknownOutcome}
-var reasons = []cp.ReasonKind{cp.InvalidRequest, cp.Unauthorized, cp.KeyRoleConflict, cp.NotEnrolled, cp.MutationConflict,
+var categories = []error{cp.ErrNotApplied, cp.ErrRefused, cp.ErrStale, cp.ErrRetired, cp.ErrCapacity, cp.ErrUnavailable, cp.ErrUnknownOutcome}
+var reasons = []cp.ReasonKind{cp.InvalidRequest, cp.Unauthorized, cp.HomeMismatch, cp.KeyRoleConflict, cp.NotEnrolled, cp.MutationConflict,
 	cp.Superseded, cp.PredecessorMismatch, cp.SessionConflict, cp.EnrollmentConflict, cp.CounterExhausted, cp.InvalidSuccessor}
 
 func errorCode(err error) string {

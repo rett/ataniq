@@ -28,6 +28,7 @@ func protocolState(s cp.State) map[string]any {
 			"digest":      h.Digest,
 		},
 		"epoch":               decimal(s.Epoch),
+		"journal_sequence":    decimal(s.JournalSequence),
 		"revision":            decimal(s.Revision),
 		"fence":               decimal(s.Fence),
 		"home_key_id":         s.HomeKeyID,
@@ -71,7 +72,7 @@ func (w *Witness) ReadHome(ctx context.Context, q cp.ReadRequest, home ed25519.P
 		return cp.View{}, err
 	}
 	defer w.unlock()
-	if err := w.authorize(q.Slot, home, false); err != nil {
+	if err := w.checkGrant(q.Slot, home, false); err != nil {
 		return cp.View{}, err
 	}
 	return w.read(q)
@@ -96,7 +97,7 @@ func (w *Witness) read(q cp.ReadRequest) (cp.View, error) {
 		}
 	}
 	guard := "ready"
-	if w.inhibited {
+	if w.inhibited || w.recoveryRequired {
 		guard = "inhibited"
 	}
 	b, err := canonical(map[string]any{"schema": 1, "operation": "read", "audience": q.Slot.Authority, "key_id": w.keyID,

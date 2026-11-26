@@ -56,6 +56,7 @@ func tlsIdentity(t *testing.T, label string) seatgate.Identity {
 
 func TestReopenedWitnessOverLink(t *testing.T) {
 	c := config(t, testKey("link witness"))
+	c.ReceiptLimit = 3
 	w := create(t, c)
 	q := fixtureEnrollment(t, w)
 	enrolled, err := w.Administration().Enroll(t.Context(), q)
@@ -108,5 +109,9 @@ func TestReopenedWitnessOverLink(t *testing.T) {
 	_, err = client.Settle(ctx, c.Identity.Epoch, q.Slot, cp.ID{4})
 	if !errors.Is(err, cp.ErrNotApplied) {
 		t.Fatal("signed fence disposition", err)
+	}
+	_, err = client.Settle(ctx, c.Identity.Epoch, q.Slot, cp.ID{5})
+	if !errors.Is(err, cp.ErrCapacity) || errors.Is(err, cp.ErrUnavailable) {
+		t.Fatalf("link capacity disposition: %v", err)
 	}
 }

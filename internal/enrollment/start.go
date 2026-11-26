@@ -18,17 +18,18 @@ import (
 
 // Store owns the local writer lock and the admitted witness session.
 type Store struct {
-	mu          sync.Mutex
-	files       lockedLedger
-	b           Binding
-	client      checkpoint.Client
-	session     ed25519.PrivateKey
-	verifier    assignment.Verifier
-	ledger      assignment.Ledger
-	lastReceipt *AdvanceReceipt
-	state       checkpoint.State
-	fault       Fault
-	stopped     bool
+	mu               sync.Mutex
+	files            lockedLedger
+	b                Binding
+	client           checkpoint.Client
+	session          ed25519.PrivateKey
+	verifier         assignment.Verifier
+	ledger           assignment.Ledger
+	lastReceipt      *AdvanceReceipt
+	retainedPosition uint64
+	state            checkpoint.State
+	fault            Fault
+	stopped          bool
 }
 
 // Ledger returns the last admitted projection, for preparing a signed event.
@@ -72,8 +73,8 @@ func (s *Store) read(ctx context.Context, prior checkpoint.ID) (checkpoint.View,
 	return v, nil
 }
 
-func compare(head assignment.Checkpoint, state checkpoint.State) error {
-	switch checkpoint.Compare(head, state) {
+func compare(head assignment.Checkpoint, state checkpoint.State, retained ...uint64) error {
+	switch checkpoint.Compare(head, state, retained...) {
 	case checkpoint.Equal:
 		return nil
 	case checkpoint.HomeAhead:
@@ -184,6 +185,9 @@ func (s *Store) start(ctx context.Context, header []byte) error {
 		return err
 	}
 	if err := s.loadReceipt(ctx, ledger.Checkpoint(), last, recovered); err != nil {
+		return err
+	}
+	if err := compare(ledger.Checkpoint(), v.Current, s.retainedPosition); err != nil {
 		return err
 	}
 	if err := s.files.check(); err != nil {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 
 	cp "ataniq/internal/checkpoint"
@@ -271,9 +272,9 @@ func TestOwnerRetryMutants(t *testing.T) {
 // An unchecked client returns the delivered acknowledgement even when its
 // operation, evidence, result or signature disagrees with the request.
 func TestUncheckedReceiptMutant(t *testing.T) {
-	for _, field := range []string{"operation", "id", "request_digest", "predecessor", "head", "fence", "session", "epoch", "replay", "signer"} {
+	for _, field := range []string{"operation", "id", "request_digest", "predecessor", "head", "fence", "session", "epoch", "replay", "signer", "sequence not bound", "sequence goes backwards"} {
 		t.Run(field, func(t *testing.T) {
-			rejectMutant(t, "lying_advance_"+field, "got <nil>, want checkpoint: unknown mutation outcome", func(h *checkpointtest.Harness) {
+			rejectMutant(t, "lying_advance_"+strings.ReplaceAll(field, " ", "_"), "got <nil>, want checkpoint: unknown mutation outcome", func(h *checkpointtest.Harness) {
 				var delivered cp.Receipt
 				transform := h.TransformNextReply
 				h.TransformNextReply = func(change func(cp.Receipt) cp.Receipt) {

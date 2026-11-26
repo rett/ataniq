@@ -31,7 +31,7 @@ func config(t *testing.T, k ed25519.PrivateKey) Config {
 	must(t, os.Mkdir(dir, 0700))
 	keyPath := filepath.Join(root, "key")
 	must(t, os.WriteFile(keyPath, k.Seed(), 0600))
-	return Config{Directory: dir, KeyPath: keyPath, Pin: public(k), Identity: Identity{"witness", "store", "incarnation", 1}}
+	return Config{HomePin: public(testKey("fixture home")), Directory: dir, KeyPath: keyPath, Pin: public(k), Identity: Identity{"witness", "store", "incarnation", 1}}
 }
 
 // Delivery faults are outside the backend, between its durable commit and
@@ -88,14 +88,14 @@ func harness(t *testing.T, c Config, w *Witness) checkpointtest.Harness {
 	t.Cleanup(func() { must(t, w.Close()) })
 	w.Inhibit(false)
 	d := new(delivery)
-	return checkpointtest.Harness{
+	return checkpointtest.Harness{HomeKey: testKey("fixture home"),
 		Restart: func() checkpointtest.Harness {
 			grants := w.grants // independently supplied service configuration
 			must(t, w.Close())
 			next, err := Open(c)
 			must(t, err)
 			for s, g := range grants {
-				must(t, next.Grant(s, g.pin, g.write))
+				must(t, next.Grant(s, c.HomePin, g))
 			}
 			return harness(t, c, next)
 		},

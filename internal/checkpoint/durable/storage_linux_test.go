@@ -61,7 +61,7 @@ func TestWitnessChild(t *testing.T) {
 		return
 	}
 	root := os.Getenv(childDirectory)
-	c := Config{Directory: root, KeyPath: filepath.Join(filepath.Dir(root), "key"), Pin: public(testKey("process")), Identity: Identity{"witness", "store", "incarnation", 1}}
+	c := Config{HomePin: public(testKey("fixture home")), Directory: root, KeyPath: filepath.Join(filepath.Dir(root), "key"), Pin: public(testKey("process")), Identity: Identity{"witness", "store", "incarnation", 1}}
 	w, err := Open(c)
 	if stage == "compete" {
 		if !errors.Is(err, ErrLocked) {
@@ -109,6 +109,7 @@ func TestProcessCrashBoundaries(t *testing.T) {
 			child(t, c, stage, 79)
 			recovered := reopen(t, c)
 			q := fixtureEnrollment(t, recovered)
+			must(t, recovered.Administration().AcknowledgeStorageError(t.Context()))
 			found, err := recovered.HasReceipt(t.Context(), q.Slot, q.ID)
 			must(t, err)
 			if found != (stage != "before-append") {
@@ -156,8 +157,109 @@ func TestSyncFailureStopsServing(t *testing.T) {
 	w.journal = nil // closed by fault injection
 	must(t, w.Close())
 	again := reopen(t, c)
-	_, err = again.Administration().Settle(t.Context(), 1, q.Slot, q.ID)
+	original, err := again.Administration().Settle(t.Context(), 1, q.Slot, q.ID)
 	must(t, err)
+	for i := 0; i < 2; i++ {
+		again.Inhibit(false)
+		_, err = again.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{9})
+		if !errors.Is(err, cp.ErrUnavailable) {
+			t.Fatalf("ordinary guard cleared storage inhibition: %v", err)
+		}
+		saved, err := again.Administration().Settle(t.Context(), 1, q.Slot, q.ID)
+		must(t, err)
+		if !bytes.Equal(saved.Signature, original.Signature) || !bytes.Equal(saved.Body, original.Body) {
+			t.Fatal("inhibition changed receipt")
+		}
+		must(t, again.Close())
+		again = reopen(t, c)
+	}
+	// Acknowledgement clears only storage inhibition. The startup guard remains.
+	must(t, again.Administration().AcknowledgeStorageError(t.Context()))
+	_, err = again.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{9})
+	if !errors.Is(err, cp.ErrUnavailable) {
+		t.Fatal("acknowledgement bypassed service guard", err)
+	}
+	again.Inhibit(false)
+	_, err = again.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{9})
+	if !errors.Is(err, cp.ErrNotApplied) {
+		t.Fatal("owner acknowledgement did not restore admission", err)
+	}
+	must(t, again.Close())
+	again = reopen(t, c)
+	again.Inhibit(false)
+	_, err = again.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{10})
+	if !errors.Is(err, cp.ErrNotApplied) {
+		t.Fatal("clean restart lost acknowledgement", err)
+	}
+}
+
+func TestJournalStorageFaults(t *testing.T) {
+	for site, name := range []string{"partial write", "journal sync", "journal directory sync", "index sync", "index directory sync"} {
+		t.Run(name, func(t *testing.T) {
+			c := config(t, testKey("storage faults"))
+			w := create(t, c)
+			q := fixtureEnrollment(t, w)
+			expected := syscall.EIO
+			var partial []byte
+			path := filepath.Join(c.Directory, journalName)
+			before := readFile(t, path)
+			if site == 0 {
+				expected = syscall.ENOSPC
+				w.writeFrame = func(frame []byte) (int, error) {
+					partial = bytes.Clone(frame[:len(frame)/2])
+					n, err := w.journal.Write(partial)
+					must(t, err)
+					return n, syscall.ENOSPC
+				}
+			} else {
+				files := []*os.File{w.journal, w.dir, w.lockFile, w.dir}
+				calls := 0
+				w.syncFile = func(f *os.File) error {
+					if f != files[calls] {
+						t.Fatalf("unexpected sync at site %d", calls+1)
+					}
+					calls++
+					if calls == site {
+						return syscall.EIO
+					}
+					return f.Sync()
+				}
+			}
+			r, err := w.Administration().Enroll(t.Context(), q)
+			if !errors.Is(err, expected) || !errors.Is(err, cp.ErrUnknownOutcome) || r.Body != nil || r.Signature != nil {
+				t.Fatalf("storage failure returned receipt or wrong outcome: %+v, %v", r, err)
+			}
+			if _, err := w.SignDisposition(t.Context(), [32]byte{}, "granted"); !errors.Is(err, cp.ErrUnavailable) {
+				t.Fatal("poisoned signer available", err)
+			}
+			if err := w.Administration().AcknowledgeStorageError(t.Context()); !errors.Is(err, cp.ErrUnavailable) {
+				t.Fatal("poisoned handle acknowledged", err)
+			}
+			must(t, w.Close())
+			if site == 0 {
+				if _, err := Open(c); !errors.Is(err, ErrTorn) {
+					t.Fatal("accepted partial frame", err)
+				}
+				if !bytes.Equal(readFile(t, path), append(before, partial...)) {
+					t.Fatal("partial write evidence changed")
+				}
+				return
+			}
+			next := reopen(t, c)
+			next.Inhibit(false)
+			historical, err := next.Administration().Settle(t.Context(), 1, q.Slot, q.ID)
+			must(t, err)
+			ack, err := cp.VerifyReceipt(c.Pin, historical)
+			must(t, err)
+			if ack.State.JournalSequence != 2 {
+				t.Fatal("replay changed receipt position")
+			}
+			_, err = next.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{3})
+			if !errors.Is(err, cp.ErrUnavailable) {
+				t.Fatal("new transition after storage error", err)
+			}
+		})
+	}
 }
 
 func TestRefuseDamagedFiles(t *testing.T) {
@@ -225,7 +327,7 @@ func TestIdentityAndCreation(t *testing.T) {
 	}
 	for _, edit := range []func(*Config){
 		func(c *Config) { c.Identity.Witness += "x" }, func(c *Config) { c.Identity.Store += "x" }, func(c *Config) { c.Identity.Incarnation += "x" },
-		func(c *Config) { c.Identity.Epoch++ }, func(c *Config) { c.Pin = public(testKey("other")) },
+		func(c *Config) { c.HomePin = public(testKey("foreign")) }, func(c *Config) { c.Identity.Epoch++ }, func(c *Config) { c.Pin = public(testKey("other")) },
 	} {
 		given := c
 		edit(&given)
@@ -305,9 +407,10 @@ func TestTypedCapacityAfterRestart(t *testing.T) {
 	must(t, w.Close())
 	w = reopen(t, c)
 	w.Inhibit(false)
-	_, err = w.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{3})
+	must(t, w.Grant(q.Slot, q.HomePublicKey, true))
+	_, err = w.SettleHome(t.Context(), 1, q.Slot, cp.ID{3}, q.HomePublicKey)
 	var capErr *CapacityError
-	if !errors.As(err, &capErr) || capErr.Limit != 2 || !errors.Is(err, cp.ErrUnavailable) {
+	if !errors.As(err, &capErr) || capErr.Limit != 2 || !errors.Is(err, cp.ErrCapacity) {
 		t.Fatal(err)
 	}
 	_, err = w.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{2})
@@ -433,4 +536,90 @@ func TestCancelledWaitForCommit(t *testing.T) {
 	if _, err := w.SignDisposition(ctx, [32]byte{}, "granted"); !errors.Is(err, cp.ErrUnavailable) {
 		t.Fatal(err)
 	}
+}
+
+// Both fixtures use exactly the same key, identity and enrollment. Only the
+// number of earlier, independently valid journal transitions differs.
+func TestReviewReceiptPosition(t *testing.T) {
+	enrollAt := func(extraFence bool) (uint64, cp.Receipt) {
+		c := config(t, testKey("review position"))
+		w := create(t, c)
+		q := fixtureEnrollment(t, w)
+		if extraFence {
+			_, err := w.Administration().Settle(t.Context(), c.Identity.Epoch, q.Slot, cp.ID{9})
+			if !errors.Is(err, cp.ErrNotApplied) {
+				t.Fatal(err)
+			}
+		}
+		r, err := w.Administration().Enroll(t.Context(), q)
+		must(t, err)
+		a, err := cp.VerifyReceipt(c.Pin, r)
+		must(t, err)
+		if a.State.JournalSequence != w.seq {
+			t.Fatalf("signed position %d, journal position %d", a.State.JournalSequence, w.seq)
+		}
+		return w.seq, r
+	}
+	p, a := enrollAt(false)
+	q, b := enrollAt(true)
+	if p == q {
+		t.Fatal("fixture did not distinguish journal positions")
+	}
+	if bytes.Equal(a.Body, b.Body) {
+		t.Fatalf("journal positions %d and %d have identical signed receipt bodies (signatures identical=%t)", p, q, bytes.Equal(a.Signature, b.Signature))
+	}
+}
+
+func TestHomePinAndOwnerAllowance(t *testing.T) {
+	c := config(t, testKey("home isolation"))
+	c.ReceiptLimit = 1
+	w := create(t, c)
+	q := fixtureEnrollment(t, w)
+	foreignKey := testKey("foreign")
+	foreign := public(foreignKey)
+	other := q
+	other.HomePublicKey = foreign
+	other.ProofOfPossession, _ = cp.ProveEnrollment(foreignKey, other)
+	for name, request := range map[string]func() error{
+		"grant":   func() error { return w.Grant(q.Slot, foreign, true) },
+		"connect": func() error { _, err := w.Connect(q.Slot, foreignKey, testKey("session"), c.Pin); return err },
+		"check":   func() error { return w.CheckHome(t.Context(), q.Slot, foreign) },
+		"read": func() error {
+			_, err := w.ReadHome(t.Context(), cp.ReadRequest{Slot: q.Slot, Challenge: cp.ID{2}}, foreign)
+			return err
+		},
+		"settle": func() error { _, err := w.SettleHome(t.Context(), 1, q.Slot, q.ID, foreign); return err },
+		"enroll": func() error { _, err := w.Administration().Enroll(t.Context(), other); return err },
+		"submit": func() error { _, err := w.RawSubmit(t.Context(), q.Slot, foreign, "claim", nil, nil, nil); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			var reason *cp.Reason
+			if err := request(); !errors.As(err, &reason) || reason.Kind != cp.HomeMismatch {
+				t.Fatalf("foreign key: %v", err)
+			}
+		})
+	}
+
+	must(t, w.Grant(q.Slot, q.HomePublicKey, true))
+	_, err := w.Administration().Enroll(t.Context(), q)
+	must(t, err)
+	_, err = w.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{8})
+	if !errors.Is(err, cp.ErrNotApplied) {
+		t.Fatalf("owner could not settle at normal limit: %v", err)
+	}
+	must(t, w.Close())
+	w = reopen(t, c)
+	w.Inhibit(false)
+	_, err = w.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{8})
+	if !errors.Is(err, cp.ErrNotApplied) {
+		t.Fatal("lost owner fence", err)
+	}
+	_, err = w.Administration().Settle(t.Context(), 1, q.Slot, cp.ID{9})
+	if !errors.Is(err, cp.ErrCapacity) {
+		t.Fatal("reopen lost owner reserve accounting", err)
+	}
+	v, err := w.Administration().Read(t.Context(), cp.ReadRequest{Slot: q.Slot, Challenge: cp.ID{2}})
+	must(t, err)
+	_, err = w.Administration().Retire(t.Context(), cp.Retirement{Mutation: cp.Mutation{Expected: v.Current, ID: cp.ID{10}}, DispositionDigest: v.Current.Head.Digest})
+	must(t, err)
 }
