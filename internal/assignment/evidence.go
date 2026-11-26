@@ -83,10 +83,17 @@ func (t *Transfer) capture(p *evidenceSet, required []string) error {
 }
 
 func (t *Transfer) inventoryEffects(p *evidenceSet) error {
-	for _, e := range p.group("effect", "outstanding") {
+	effects := p.group("effect", "outstanding")
+	for _, e := range effects {
 		if !slices.Contains(t.Routes, e.Route) {
 			return ErrEvidence
 		}
+	}
+	return t.addEffects(effects)
+}
+
+func (t *Transfer) addEffects(effects []Evidence) error {
+	for _, e := range effects {
 		effect := Effect{e.Subject, e.Route}
 		i := slices.IndexFunc(t.Outstanding, func(x Effect) bool { return x.ID == e.Subject })
 		if i < 0 {
@@ -127,38 +134,34 @@ func receipt(p *evidenceSet, routes []string, existing []Evidence, outcome strin
 
 // dispute recognizes a second attestation for the same sealed or installed
 // route. proofs has already matched every reference to the receipt scope.
-func (t *Transfer) dispute(h *Head, p *evidenceSet, existing []Evidence) (bool, error) {
+func (t *Transfer) dispute(h *Head, p *evidenceSet, prior Evidence) error {
 	for _, report := range *p {
 		if report.Kind != "route" {
 			continue
 		}
-		for _, prior := range existing {
-			if prior.Subject != report.Subject {
-				continue
-			}
-			if prior.Issuer != report.Issuer || prior == report || slices.Contains(t.Disputes, report) {
-				return false, ErrEvidence
-			}
-			if _, err := p.take("route", report.Subject, report.Outcome); err != nil {
-				return false, err
-			}
-			for _, effect := range *p {
-				if effect.Kind != "effect" || effect.Route != report.Subject {
-					return false, ErrEvidence
-				}
-			}
-			if err := t.inventoryEffects(p); err != nil {
-				return false, err
-			}
-			if h.Phase != PhaseReceiptDisputed {
-				t.BeforeDispute = h.Phase
-			}
-			t.Disputes = append(t.Disputes, report)
-			h.Phase, h.TransferID, t.Disposition = PhaseReceiptDisputed, t.ID, "uncertain"
-			return true, nil
+		if prior.Issuer != report.Issuer || prior.Digest == report.Digest {
+			return ErrEvidence
 		}
+		if _, err := p.take("route", report.Subject, report.Outcome); err != nil {
+			return err
+		}
+		// The acknowledged historical route may already have retired.
+		for _, e := range *p {
+			if e.Kind != "effect" || e.Route != report.Subject {
+				return ErrEvidence
+			}
+		}
+		if err := t.addEffects(p.group("effect", "outstanding")); err != nil {
+			return err
+		}
+		if h.Phase != PhaseReceiptDisputed {
+			t.BeforeDispute = h.Phase
+		}
+		t.Disputes = append(t.Disputes, report)
+		h.Phase, h.TransferID, t.Disposition = PhaseReceiptDisputed, t.ID, "uncertain"
+		return nil
 	}
-	return false, nil
+	return ErrEvidence
 }
 
 // A verified resolution identifies each contradictory object and accounts
