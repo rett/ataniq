@@ -731,3 +731,22 @@ func TestReadSignsDirectoryPositionAfterFence(t *testing.T) {
 		t.Fatalf("missing signed directory position after fence: %+v", head)
 	}
 }
+
+func TestCopiedStoreWithSameKeyFile(t *testing.T) {
+	c := config(t, testKey("shared file"))
+	original := create(t, c)
+	copyConfig := c
+	copyConfig.Directory = t.TempDir()
+	must(t, os.Chmod(copyConfig.Directory, 0700))
+	for _, name := range []string{journalName, lockName} {
+		must(t, os.WriteFile(filepath.Join(copyConfig.Directory, name), readFile(t, filepath.Join(c.Directory, name)), 0600))
+	}
+	if other, err := Open(copyConfig); !errors.Is(err, ErrLocked) {
+		if other != nil {
+			other.Close()
+		}
+		t.Fatal("copy served concurrently with same key file", err)
+	}
+	must(t, original.Close())
+	reopen(t, copyConfig)
+}

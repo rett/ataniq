@@ -136,7 +136,7 @@ func openFile(dir *os.File, name string, flags int) (*os.File, error) {
 	return f, nil
 }
 
-func loadKey(path string) (ed25519.PrivateKey, error) {
+func openKey(path string) (*os.File, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return nil, ErrUnsafe
 	}
@@ -145,11 +145,10 @@ func loadKey(path string) (ed25519.PrivateKey, error) {
 		return nil, err
 	}
 	defer dir.Close()
-	key, err := openFile(dir, filepath.Base(path), syscall.O_RDONLY)
-	if err != nil {
-		return nil, err
-	}
-	defer key.Close()
+	return openFile(dir, filepath.Base(path), syscall.O_RDONLY)
+}
+
+func readKey(key *os.File) (ed25519.PrivateKey, error) {
 	seed, err := io.ReadAll(io.LimitReader(key, ed25519.SeedSize+1))
 	defer clear(seed)
 	if err != nil {
@@ -159,4 +158,12 @@ func loadKey(path string) (ed25519.PrivateKey, error) {
 		return nil, ErrIdentity
 	}
 	return ed25519.NewKeyFromSeed(seed), nil
+}
+
+func exclusive(file *os.File) error {
+	err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if errors.Is(err, syscall.EWOULDBLOCK) {
+		return ErrLocked
+	}
+	return err
 }

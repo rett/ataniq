@@ -27,6 +27,12 @@
 // keep admission inhibited while the owner reconciles surviving evidence and
 // provisions a fresh identity and higher epoch.
 //
+// The index flock excludes concurrent writers to one directory instance.
+// A second flock covers the signing key file while the witness is open.
+// A copy of both the directory and key file has independent locks and can
+// serve the same identity. Retained signed sequences and head digests permit
+// detection when the copies present conflicting evidence.
+//
 // Each store serves exactly one home public key. Create binds its fingerprint
 // into genesis and Open checks it against Config.HomePin. The per-store limit
 // is 65,536 ordinary receipts and fences by default. ReceiptLimit may reduce

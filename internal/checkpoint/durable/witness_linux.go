@@ -79,28 +79,28 @@ type enrollment struct {
 
 // Witness owns the files and the serialized transaction and replay indexes.
 type Witness struct {
-	transaction                chan struct{}
-	dir, journal, lockFile     *os.File
-	identity                   Identity
-	pin, homePin               ed25519.PublicKey
-	keyID                      string
-	signRecord                 func([]byte) []byte
-	sign                       func([]byte) ([]byte, error)
-	seq                        uint64
-	previous                   [32]byte
-	limit, reservedSettlements uint64
-	inhibited, stopped         bool
-	slots                      map[cp.Slot]*enrollment
-	history                    map[item]accepted // a zero receipt denotes a permanent Settle fence
-	grants                     map[cp.Slot]bool
-	fault                      func(string) error
-	closingRecords             int64 // one retirement per live slot and one release per active writer
-	journalSpace, indexSpace   int64 // ends of ranges reserved on these descriptors
-	allocate                   func(*os.File, int64, int64) error
-	writeEntry                 func([]byte) (int, error)
-	writeFrame                 func([]byte) (int, error)
-	syncFile                   func(*os.File) error
-	armed, recoveryRequired    bool
+	transaction                     chan struct{}
+	dir, journal, lockFile, keyFile *os.File
+	identity                        Identity
+	pin, homePin                    ed25519.PublicKey
+	keyID                           string
+	signRecord                      func([]byte) []byte
+	sign                            func([]byte) ([]byte, error)
+	seq                             uint64
+	previous                        [32]byte
+	limit, reservedSettlements      uint64
+	inhibited, stopped              bool
+	slots                           map[cp.Slot]*enrollment
+	history                         map[item]accepted // a zero receipt denotes a permanent Settle fence
+	grants                          map[cp.Slot]bool
+	fault                           func(string) error
+	closingRecords                  int64 // one retirement per live slot and one release per active writer
+	journalSpace, indexSpace        int64 // ends of ranges reserved on these descriptors
+	allocate                        func(*os.File, int64, int64) error
+	writeEntry                      func([]byte) (int, error)
+	writeFrame                      func([]byte) (int, error)
+	syncFile                        func(*os.File) error
+	armed, recoveryRequired         bool
 }
 
 // Create exclusively initializes both files. A failed creation leaves its
@@ -126,7 +126,17 @@ func start(c Config, create bool) (*Witness, error) {
 	if err != nil || bytes.Equal(c.HomePin, c.Pin) {
 		return nil, ErrIdentity
 	}
-	key, err := loadKey(c.KeyPath)
+	keyFile, err := openKey(c.KeyPath)
+	if err != nil {
+		return nil, err
+	}
+	// Transfer the descriptor to the witness only on successful startup.
+	defer func() {
+		if keyFile != nil {
+			keyFile.Close()
+		}
+	}()
+	key, err := readKey(keyFile)
 	if err != nil {
 		return nil, err
 	}
@@ -171,10 +181,10 @@ func start(c Config, create bool) (*Witness, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err = syscall.Flock(int(w.lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, ErrLocked
-		}
+	if err = exclusive(w.lockFile); err != nil {
+		return nil, err
+	}
+	if err = exclusive(keyFile); err != nil {
 		return nil, err
 	}
 	w.journal, err = openFile(w.dir, journalName, flags)
@@ -203,6 +213,7 @@ func start(c Config, create bool) (*Witness, error) {
 	if err != nil || !cp.VerifyDisposition(c.Pin, id.Epoch, probe, "startup-probe", sig) {
 		return nil, ErrIdentity
 	}
+	w.keyFile, keyFile = keyFile, nil
 	ok = true
 	return w, nil
 }
@@ -227,12 +238,12 @@ func (w *Witness) Close() error {
 			err = w.poison(err)
 		}
 	}
-	for _, f := range []*os.File{w.lockFile, w.dir} {
+	for _, f := range []*os.File{w.lockFile, w.dir, w.keyFile} {
 		if f != nil {
 			err = errors.Join(err, f.Close())
 		}
 	}
-	w.dir, w.lockFile, w.journal = nil, nil, nil
+	w.dir, w.lockFile, w.journal, w.keyFile = nil, nil, nil, nil
 	w.armed = false
 	w.sign, w.signRecord, w.writeFrame = nil, nil, nil
 	return err
