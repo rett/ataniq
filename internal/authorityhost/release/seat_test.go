@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"ataniq/internal/authorityhost/noaicheck"
 	"ataniq/internal/authorityhost/switcher"
 )
 
@@ -146,8 +147,8 @@ func mustRead(t *testing.T, p string) []byte {
 func unitKeys(text string) map[string][]string {
 	keys := map[string][]string{}
 	section := ""
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
+	for line := range strings.Lines(text) {
+		line = noaicheck.TrimUnitSpace(line)
 		switch {
 		case line == "" || line[0] == '#' || line[0] == ';':
 		case line[0] == '[':

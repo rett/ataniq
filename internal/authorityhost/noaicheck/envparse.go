@@ -475,8 +475,8 @@ func pamLines(data string) []string {
 // is not NAME=VALUE, an unclosed quote or a path with a specifier is
 // syntax the check cannot parse.
 func parseSystemd(r *envParse, data string) {
-	for line := range strings.SplitSeq(data, "\n") {
-		line = strings.TrimSpace(line)
+	for line := range strings.Lines(data) {
+		line = TrimUnitSpace(line)
 		if line == "" || line[0] == '#' || line[0] == ';' || line[0] == '[' {
 			continue
 		}
@@ -484,8 +484,8 @@ func parseSystemd(r *envParse, data string) {
 		if !ok {
 			continue
 		}
-		value = strings.TrimSpace(value)
-		switch strings.TrimSpace(key) {
+		value = TrimUnitSpace(value)
+		switch TrimUnitSpace(key) {
 		case "Environment", "DefaultEnvironment", "ManagerEnvironment":
 			words, ok := splitSystemd(value)
 			if !ok {

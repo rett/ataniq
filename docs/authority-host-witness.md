@@ -185,6 +185,9 @@ runuser -u ataniq-witness -- WITNESS check --config CONFIG
 ```
 
 Link the release-managed unit and create the firewall drop-in as local root.
+Use ASCII spaces or tabs around directives. The release and host checks report
+`unit-syntax` for non-ASCII whitespace, U+200B–U+200F, U+2060 or U+FEFF
+anywhere in a unit or drop-in.
 
 ```sh
 ln -s /opt/authority-host/current/etc/systemd/system/ataniq-witness.service /etc/systemd/system/ataniq-witness.service

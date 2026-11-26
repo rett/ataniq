@@ -11,12 +11,18 @@ import (
 // UnitSyntax is the finding for a unit or drop-in outside the supported text format.
 const UnitSyntax = "unit-syntax"
 
+// TrimUnitSpace removes a physical line ending, if present, and trims only
+// the ASCII space and tab that systemd ignores around unit fields.
+func TrimUnitSpace(s string) string {
+	if line, ended := strings.CutSuffix(s, "\n"); ended {
+		s = strings.TrimSuffix(line, "\r")
+	}
+	return strings.Trim(s, " \t")
+}
+
 // UnitTextSafe accepts BOM-free UTF-8 physical lines with LF or CRLF endings.
 // Check comments too, before any parser can discard or join a directive.
 func UnitTextSafe(text string) bool {
-	if strings.HasPrefix(text, "\ufeff") {
-		return false
-	}
 	for raw := range strings.Lines(text) {
 		line, ended := strings.CutSuffix(raw, "\n")
 		if ended {
@@ -26,7 +32,12 @@ func UnitTextSafe(text string) bool {
 			return false
 		}
 		for _, r := range line {
-			if r != '\t' && unicode.IsControl(r) {
+			switch {
+			case r != '\t' && unicode.IsControl(r):
+				return false
+			case r > unicode.MaxASCII && unicode.IsSpace(r):
+				return false
+			case r >= '\u200b' && r <= '\u200f', r == '\u2060', r == '\ufeff':
 				return false
 			}
 		}
@@ -59,8 +70,8 @@ func ReleaseExecsSafe(text, releaseDir string, shipped func(string) bool) bool {
 		return true
 	}
 	section := ""
-	for line := range strings.SplitSeq(text, "\n") {
-		line = strings.TrimSpace(line)
+	for line := range strings.Lines(text) {
+		line = TrimUnitSpace(line)
 		if strings.HasPrefix(line, "[") {
 			section = line
 			continue
@@ -69,9 +80,9 @@ func ReleaseExecsSafe(text, releaseDir string, shipped func(string) bool) bool {
 		if !ok || section != "[Service]" && section != "[Socket]" {
 			continue
 		}
-		switch strings.TrimSpace(key) {
+		switch TrimUnitSpace(key) {
 		case "ExecCondition", "ExecStart", "ExecStartPre", "ExecStartPost", "ExecReload", "ExecStop", "ExecStopPost", "ExecStopPre":
-			if value = strings.TrimSpace(value); value != "" {
+			if value = TrimUnitSpace(value); value != "" {
 				name := ReleaseProgram(value, releaseDir)
 				if name == "" || !shipped(name) {
 					return false

@@ -224,8 +224,8 @@ func (c *checker) units(root *os.Root, files map[string]entry, relDir string, wi
 // It collects ExecStart values and checks for conditions on the inhibit.
 func parseUnit(text string) (execs []string, gated bool) {
 	inService := false
-	for line := range strings.SplitSeq(text, "\n") {
-		line = strings.TrimSpace(line)
+	for line := range strings.Lines(text) {
+		line = noaicheck.TrimUnitSpace(line)
 		if line == "" || line[0] == '#' || line[0] == ';' {
 			continue
 		}
@@ -237,7 +237,7 @@ func parseUnit(text string) (execs []string, gated bool) {
 		if !ok {
 			continue
 		}
-		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+		key, value = noaicheck.TrimUnitSpace(key), noaicheck.TrimUnitSpace(value)
 		if (strings.HasPrefix(key, "Condition") || strings.HasPrefix(key, "Assert")) && strings.Contains(value, "decisions.inhibit") {
 			gated = true
 		}
