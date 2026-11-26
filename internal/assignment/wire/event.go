@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 
 	"ataniq/internal/assignment"
 )
@@ -13,6 +14,19 @@ const Namespace = "ataniq.assignment.event.v1"
 const domain = Namespace + "\x00"
 
 var errProjection = errors.New("assignment wire: invalid schema-1 projection")
+
+// Digests in the public projection use lowercase hexadecimal SHA-256.
+func validDigest(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			return false
+		}
+	}
+	return true
+}
 
 // Marshal returns the canonical public object without framing. Leave Signature
 // empty for a signing body. Set it to the armor to encode the signed envelope.
@@ -40,6 +54,18 @@ func Marshal(p assignment.PublicEnvelope) ([]byte, error) {
 	for _, s := range [...]string{p.CommitRevision, p.Generation, p.PreviousGeneration, p.PreviousRevision, p.Revision} {
 		n, err := strconv.ParseUint(s, 10, 64)
 		if err != nil || strconv.FormatUint(n, 10) != s {
+			return nil, errProjection
+		}
+	}
+	if !validDigest(p.EventID) || (p.InventoryDigest != "" && !validDigest(p.InventoryDigest)) ||
+		(p.PreviousPublicDigest != "" && !validDigest(p.PreviousPublicDigest)) {
+		return nil, errProjection
+	}
+	if len(p.EvidenceDigests) > recordLimit/64 {
+		return nil, assignment.ErrLimit
+	}
+	for _, s := range p.EvidenceDigests {
+		if !validDigest(s) {
 			return nil, errProjection
 		}
 	}

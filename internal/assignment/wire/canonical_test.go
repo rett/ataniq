@@ -74,6 +74,8 @@ func TestProjectionRefusals(t *testing.T) {
 		{`"Seed"`, `"Unknown"`}, {`"Ed25519"`, `"other"`}, {`"revision":"1"`, `"revision":1`},
 		{`"revision":"1"`, `"revision":"00"`}, {`"revision":"1"`, `"revision":"18446744073709551616"`},
 		{`"role_id":""`, `"role_id":"\udfff"`}, {`"role_id":""`, `"signature":"","role_id":""`},
+		{strings.Repeat("a", 64), strings.Repeat("A", 64)}, {`"inventory_digest":""`, `"inventory_digest":"unknown"`},
+		{`"evidence_digests":[]`, `"evidence_digests":[""]`}, {`"previous_public_digest":""`, `"previous_public_digest":"0"`},
 	} {
 		s := strings.Replace(string(b), pair[0], pair[1], 1)
 		if _, err := Unmarshal([]byte(s)); err == nil {
