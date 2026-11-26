@@ -13,7 +13,11 @@ import (
 	"ataniq/internal/assignment/wire"
 )
 
-const maxFrame = 16 << 10
+// Advance repeats at most 16 variable identifiers: audience (1), slot (3),
+// ledger header (4), expected head (4), successor (4). JSON marshaling may
+// escape each byte as six ASCII bytes before canonicalization. Reserve 2 KiB
+// for member names, punctuation, fingerprints, digests and full-width counters.
+const maxFrame = 16*6*assignment.MaxReferenceBytes + 2048
 const maxDepth = 8
 
 func textOK(s string) bool {
