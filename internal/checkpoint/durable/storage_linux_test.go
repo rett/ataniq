@@ -1084,8 +1084,24 @@ func TestDecodeErrorWithFinalBytes(t *testing.T) {
 		_, _, err := decode(in, c.Pin)
 		if end == io.EOF {
 			must(t, err)
-		} else if !errors.Is(err, end) {
+		} else if !errors.Is(err, end) || errors.Is(err, ErrTorn) {
 			t.Errorf("final bytes with %v: got %v", end, err)
 		}
+	}
+}
+
+func TestReplayUnexpectedEOFInFrame(t *testing.T) {
+	// The last read supplies three bytes of the four-byte length and its error.
+	partial := func() io.Reader {
+		return iotest.DataErrReader(io.MultiReader(bytes.NewReader([]byte{0, 0, 0}), iotest.ErrReader(io.ErrUnexpectedEOF)))
+	}
+	w := new(Witness)
+	err := w.replay("", partial(), bytes.NewReader(nil))
+	if !errors.Is(err, ErrTorn) || !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("unindexed partial frame: %v", err)
+	}
+	err = w.replay("", partial(), bytes.NewReader([]byte{1}))
+	if !errors.Is(err, ErrCorrupt) {
+		t.Errorf("index outlives partial frame: %v", err)
 	}
 }

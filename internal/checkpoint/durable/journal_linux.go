@@ -55,6 +55,9 @@ func readPart(in io.Reader, b []byte, atBoundary bool) error {
 			}
 		}
 		if err != nil {
+			if len(b) > 0 && errors.Is(err, io.ErrUnexpectedEOF) {
+				return errors.Join(ErrTorn, err)
+			}
 			return err
 		}
 	}
@@ -310,8 +313,9 @@ func classifyFrameError(err error, prefix []byte, frames, entries *bufio.Reader)
 				return e
 			}
 		}
+		return ErrTorn
 	}
-	return ErrTorn
+	return err
 }
 
 func (w *Witness) replay(homeID string, journal, index io.Reader) error {
