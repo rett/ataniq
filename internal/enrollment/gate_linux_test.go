@@ -467,3 +467,30 @@ func TestStageRefusalReasons(t *testing.T) {
 	f.w.Inhibit(true)
 	f.refused(t, Unreachable)
 }
+
+func TestRetainedReceiptPosition(t *testing.T) {
+	f := enrolled(t)
+	s := f.open(t, nil)
+	first, err := AppendAndAdvance(f.ctx, s, f.seed(t, s, "first"))
+	check(t, err)
+	second, err := AppendAndAdvance(f.ctx, s, f.seed(t, s, "second"))
+	check(t, err)
+	want(t, s.saveReceipt(*first), Interrupted)
+	check(t, s.Close())
+	f.release(t)
+	latest, err := f.open(t, nil).LastReceipt()
+	check(t, err)
+	if latest.ID != second.ID {
+		t.Fatal("older receipt replaced the latest advance")
+	}
+}
+
+func TestStartReportsWitnessCapacity(t *testing.T) {
+	f := enrolled(t)
+	f.w.SetReceiptLimit(1) // Enrollment consumed the single ordinary receipt.
+	s, err := f.start(nil)
+	if s != nil || !errors.Is(err, cp.ErrCapacity) {
+		t.Fatalf("claim at capacity: store=%v err=%v", s, err)
+	}
+	want(t, err, Capacity)
+}

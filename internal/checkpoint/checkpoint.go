@@ -21,11 +21,19 @@ var (
 	ErrRefused     = errors.New("checkpoint: refused")
 	ErrStale       = errors.New("checkpoint: stale or conflicting request")
 	ErrRetired     = errors.New("checkpoint: retired")
+	ErrCapacity    = errors.New("checkpoint: history capacity exhausted")
 	ErrUnavailable = errors.New("checkpoint: unavailable")
 	// ErrNotApplied proves that this slot and ID are permanently fenced.
 	ErrNotApplied     = errors.New("checkpoint: mutation fenced without commit")
 	ErrUnknownOutcome = errors.New("checkpoint: unknown mutation outcome")
 )
+
+// FormatError identifies evidence from an unsupported witness format.
+type FormatError string
+
+func (e FormatError) Error() string { return string(e) }
+
+const ErrLegacyFormat FormatError = "checkpoint: legacy format requires fresh provisioning"
 
 const (
 	Active  = "active"
@@ -44,6 +52,7 @@ type State struct {
 	Header                    assignment.Header
 	Head                      assignment.Checkpoint
 	Epoch, Revision, Fence    uint64
+	JournalSequence           uint64 // Witness-wide position of the transition that last changed this slot.
 	HomeKeyID, SessionKeyID   string
 	Status, LastReceiptDigest string
 }

@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"net"
@@ -309,6 +310,34 @@ func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, e
 			prior = *v.Prior
 		}
 		return []frame.Message{frame.New(frame.View, current), frame.New(frame.Fresh, v.Fresh.Body, v.Fresh.Signature), frame.New(frame.Prior, prior.Body, prior.Signature)}, nil
+	case frame.OwnerStatus, frame.OwnerAcknowledge:
+		admin, ok := a.(cp.RecoveryAdministration)
+		if w != nil || !ok {
+			return nil, cp.ErrRefused
+		}
+		if !s.limits.allow(true, ordinary) {
+			return nil, cp.ErrUnavailable
+		}
+		if m.Kind == frame.OwnerStatus {
+			if len(f[0]) != len(cp.ID{}) {
+				return nil, frame.ErrProtocol
+			}
+			status, err := admin.Status(ctx, cp.ID(f[0]))
+			if err != nil {
+				return nil, err
+			}
+			return []frame.Message{frame.New(frame.DirectoryStatus, status.Body, status.Signature)}, nil
+		}
+		if len(f[0]) != 8 {
+			return nil, frame.ErrProtocol
+		}
+		if binary.BigEndian.Uint64(f[0]) != evidence.WitnessEpoch() {
+			return nil, cp.ErrStale
+		}
+		if err := admin.AcknowledgeStorageError(ctx); err != nil {
+			return nil, err
+		}
+		return []frame.Message{frame.New(frame.Granted)}, nil
 	case frame.Claim, frame.Advance:
 		if w == nil {
 			return nil, cp.ErrRefused

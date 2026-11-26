@@ -116,6 +116,7 @@ type stateRecord struct {
 	Header            assignment.Header `json:"header"`
 	Head              headRecord        `json:"head"`
 	Epoch             uint64            `json:"epoch,string"`
+	JournalSequence   uint64            `json:"journal_sequence,string,omitempty"`
 	Revision          uint64            `json:"revision,string"`
 	Fence             uint64            `json:"fence,string"`
 	HomeKeyID         string            `json:"home_key_id"`
@@ -125,10 +126,10 @@ type stateRecord struct {
 }
 
 func recordState(s State) stateRecord {
-	return stateRecord{s.Slot, s.Header, head(s.Head), s.Epoch, s.Revision, s.Fence, s.HomeKeyID, s.SessionKeyID, s.Status, s.LastReceiptDigest}
+	return stateRecord{s.Slot, s.Header, head(s.Head), s.Epoch, s.JournalSequence, s.Revision, s.Fence, s.HomeKeyID, s.SessionKeyID, s.Status, s.LastReceiptDigest}
 }
 func (s stateRecord) state() State {
-	return State{s.Slot, s.Header, assignment.Checkpoint(s.Head), s.Epoch, s.Revision, s.Fence, s.HomeKeyID, s.SessionKeyID, s.Status, s.LastReceiptDigest}
+	return State{s.Slot, s.Header, assignment.Checkpoint(s.Head), s.Epoch, s.Revision, s.Fence, s.JournalSequence, s.HomeKeyID, s.SessionKeyID, s.Status, s.LastReceiptDigest}
 }
 func validState(s State) bool {
 	h, p := s.Header, s.Head
@@ -138,7 +139,7 @@ func validState(s State) bool {
 	}
 	return s.Slot.valid() && s.Slot.Authority == h.Authority && s.Slot.Store == h.Store &&
 		h.Authority == p.Authority && h.Store == p.Store && h.Incarnation == p.Incarnation && h.LedgerID == p.LedgerID &&
-		digestOK(p.Digest) && s.HomeKeyID == h.KeyID && s.Epoch != 0 && s.Revision != 0 &&
+		digestOK(p.Digest) && s.HomeKeyID == h.KeyID && s.Epoch != 0 && s.Revision != 0 && s.JournalSequence != 0 &&
 		(s.Status == Active || s.Status == Retired && s.SessionKeyID == "") &&
 		(s.SessionKeyID == "" || textOK(s.SessionKeyID) && s.Fence > 0) && digestOK(s.LastReceiptDigest)
 }
@@ -245,16 +246,18 @@ type ackRecord struct {
 }
 type readRecord struct {
 	recordHeader
-	Challenge   string      `json:"challenge"`
-	Guard       string      `json:"guard"`
-	Current     stateRecord `json:"current"`
-	ReceiptID   string      `json:"receipt_id"`
-	PriorDigest string      `json:"prior_digest"`
+	JournalSequence uint64      `json:"journal_sequence,string,omitempty"`
+	PreviousDigest  string      `json:"previous_digest,omitempty"`
+	Challenge       string      `json:"challenge"`
+	Guard           string      `json:"guard"`
+	Current         stateRecord `json:"current"`
+	ReceiptID       string      `json:"receipt_id"`
+	PriorDigest     string      `json:"prior_digest"`
 }
 
-func readBody(keyID string, q ReadRequest, v View, guard string) ([]byte, error) {
+func expectedRead(keyID string, q ReadRequest, v View, guard string) (readRecord, error) {
 	if q.Challenge == (ID{}) || q.Slot != v.Current.Slot || !validState(v.Current) {
-		return nil, &Reason{Kind: InvalidRequest}
+		return readRecord{}, &Reason{Kind: InvalidRequest}
 	}
 	r := readRecord{recordHeader: recordHeader{1, "read", q.Slot.Authority, keyID}, Challenge: idString(q.Challenge), Guard: guard, Current: recordState(v.Current)}
 	if q.ReceiptID != (ID{}) {
@@ -263,9 +266,9 @@ func readBody(keyID string, q ReadRequest, v View, guard string) ([]byte, error)
 			r.PriorDigest = ReceiptDigest(*v.Prior)
 		}
 	} else if v.Prior != nil {
-		return nil, &Reason{Kind: InvalidRequest}
+		return readRecord{}, &Reason{Kind: InvalidRequest}
 	}
-	return encode(r)
+	return r, nil
 }
 
 // Acknowledgement binds one immutable result to its request and predecessor.
@@ -305,6 +308,11 @@ func verifyReceipt(pin ed25519.PublicKey, keyID string, r Receipt) (Acknowledgem
 		(a.Operation != "enroll" && !digestOK(prior)) {
 		return Acknowledgement{}, &Reason{Kind: InvalidRequest}
 	}
+	// Strict re-encoding rejects an explicitly zero sequence. An omitted
+	// field in this otherwise authenticated acknowledgement is the old format.
+	if a.Result.JournalSequence == 0 {
+		return Acknowledgement{}, ErrLegacyFormat
+	}
 	state := a.Result.state()
 	state.LastReceiptDigest = ReceiptDigest(r)
 	if !validState(state) {
@@ -328,20 +336,32 @@ func verifyView(pin ed25519.PublicKey, keyID string, q ReadRequest, v View) erro
 	}
 	if v.Prior != nil {
 		a, err := verifyReceipt(pin, keyID, *v.Prior)
-		if err != nil || a.ID != q.ReceiptID || a.State.Slot != q.Slot {
+		if err != nil || a.ID != q.ReceiptID || a.State.Slot != q.Slot || a.State.JournalSequence > v.Current.JournalSequence {
 			return &Reason{Kind: InvalidRequest}
 		}
 	}
-	for _, guard := range []string{"ready", "inhibited"} {
-		b, err := readBody(keyID, q, v, guard)
-		if err == nil && bytes.Equal(v.Fresh.Body, b) {
-			if guard == "inhibited" {
-				return ErrUnavailable
-			}
-			return nil
-		}
+	var signed readRecord
+	if decode(v.Fresh.Body, &signed) != nil || (signed.Guard != "ready" && signed.Guard != "inhibited") {
+		return &Reason{Kind: InvalidRequest}
 	}
-	return &Reason{Kind: InvalidRequest}
+	expected, err := expectedRead(keyID, q, v, signed.Guard)
+	if err != nil {
+		return err
+	}
+	// Memory witnesses and older reads omit the durable directory position.
+	if signed.JournalSequence != 0 || signed.PreviousDigest != "" {
+		if signed.JournalSequence < v.Current.JournalSequence || !digestOK(signed.PreviousDigest) {
+			return &Reason{Kind: InvalidRequest}
+		}
+		expected.JournalSequence, expected.PreviousDigest = signed.JournalSequence, signed.PreviousDigest
+	}
+	if signed != expected {
+		return &Reason{Kind: InvalidRequest}
+	}
+	if signed.Guard == "inhibited" {
+		return ErrUnavailable
+	}
+	return nil
 }
 
 func idString(id ID) string { return hex.EncodeToString(id[:]) }

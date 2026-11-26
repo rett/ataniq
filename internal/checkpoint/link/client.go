@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -121,7 +122,7 @@ type owner struct{ transport }
 
 // Administration dials the separately served owner endpoint with its pinned
 // client certificate. An owner read requires neither a home nor a session key.
-func (e Remote) Administration(id seatgate.Identity) (cp.Administration, error) {
+func (e Remote) Administration(id seatgate.Identity) (cp.RecoveryAdministration, error) {
 	if e.Network != "unix" || id.Fingerprint() == "" {
 		return nil, cp.ErrRefused
 	}
@@ -332,11 +333,17 @@ func (t transport) exchangeOn(ctx context.Context, conn *tls.Conn, kind frame.Ki
 		}
 		return answer{}, err
 	}
-	if kind == frame.Connect {
+	if kind == frame.Connect || kind == frame.OwnerAcknowledge {
 		if reply.Kind != frame.Granted || !cp.VerifyDisposition(t.WitnessPin, t.Epoch, sha256.Sum256(data), "granted", reply.Fields[0]) {
 			return answer{}, result
 		}
 		return answer{}, nil
+	}
+	if kind == frame.OwnerStatus {
+		if reply.Kind != frame.DirectoryStatus {
+			return answer{}, result
+		}
+		return answer{receipt: receiptOf(reply)}, nil
 	}
 	if mutation {
 		if reply.Kind != frame.Receipt {
@@ -530,4 +537,22 @@ func (t transport) mutate(ctx context.Context, m frame.Message, b []byte) (cp.Re
 		return cp.Receipt{}, err
 	}
 	return a.receipt, nil
+}
+
+func (c *owner) Status(ctx context.Context, challenge cp.ID) (cp.Receipt, error) {
+	if challenge == (cp.ID{}) {
+		return cp.Receipt{}, &cp.Reason{Kind: cp.InvalidRequest}
+	}
+	a, err := c.exchange(ctx, frame.New(frame.OwnerStatus, challenge[:]))
+	if err != nil {
+		return cp.Receipt{}, err
+	}
+	if _, err = cp.VerifyDirectoryStatus(c.WitnessPin, c.Epoch, challenge, a.receipt); err != nil {
+		return cp.Receipt{}, err
+	}
+	return a.receipt, nil
+}
+func (c *owner) AcknowledgeStorageError(ctx context.Context) error {
+	_, err := c.exchange(ctx, frame.New(frame.OwnerAcknowledge, binary.BigEndian.AppendUint64(nil, c.Epoch)))
+	return err
 }

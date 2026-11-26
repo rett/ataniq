@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"math"
 
 	"ataniq/internal/assignment"
@@ -133,12 +134,16 @@ func MatchReceipt(pin ed25519.PublicKey, epoch uint64, op string, body []byte, r
 	if err != nil {
 		return ErrUnknownOutcome
 	}
-	intent, err := ParseIntent(op, wid, body)
-	if err != nil {
+	a, err := verifyReceipt(pin, wid, r)
+	if errors.Is(err, ErrLegacyFormat) {
+		// Keep uncertain delivery pending while identifying the format to the owner.
+		return errors.Join(ErrUnknownOutcome, err)
+	}
+	if err != nil || a.Operation != op || a.RequestDigest != RequestDigest(body) || a.State.Epoch != epoch {
 		return ErrUnknownOutcome
 	}
-	a, err := verifyReceipt(pin, wid, r)
-	if err != nil || a.Operation != op || a.RequestDigest != RequestDigest(body) || a.State.Epoch != epoch {
+	intent, err := ParseIntent(op, wid, body)
+	if err != nil {
 		return ErrUnknownOutcome
 	}
 	var s State
@@ -196,6 +201,10 @@ func MatchReceipt(pin ed25519.PublicKey, epoch uint64, op string, body []byte, r
 		}
 		s.Revision++
 	}
+	if a.State.JournalSequence <= m.Expected.JournalSequence {
+		return ErrUnknownOutcome
+	}
+	s.JournalSequence = a.State.JournalSequence
 	s.LastReceiptDigest = ReceiptDigest(r)
 	if a.ID != m.ID || a.PredecessorDigest != m.Expected.LastReceiptDigest || a.State != s {
 		return ErrUnknownOutcome
