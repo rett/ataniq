@@ -119,14 +119,22 @@ func TestAdvanceCuts(t *testing.T) {
 				f.session = saved
 				f.connect(t)
 			}
-			// The original client can finish the exact staged CAS. A second
-			// Start cannot take over the occupied session, even with its key.
+			// A refused claim cannot commit even the original session's CAS.
+			stageBefore, stageErr := os.ReadFile(p)
 			f.refused(t, Occupied)
 			current := f.state(t)
-			if current.Head.Sequence != 1 || current.Revision != 3 {
-				t.Fatal("advance must commit exactly once", current)
+			if current != state {
+				t.Fatal("occupied start mutated witness", current)
+			}
+			stageAfter, err := os.ReadFile(p)
+			if !bytes.Equal(stageBefore, stageAfter) || (err == nil) != (stageErr == nil) {
+				t.Fatal("occupied start mutated stage")
 			}
 			f.release(t)
+			if !tc.committed {
+				f.refused(t, Interrupted)
+				return
+			}
 			s = f.open(t, nil)
 			l, err := s.Ledger()
 			check(t, err)

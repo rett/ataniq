@@ -109,12 +109,8 @@ func (s *Store) confirm(ctx context.Context, op string, q checkpoint.Intent, r c
 	return v.Current, nil
 }
 
-// Start takes ownership of a locked ledger on success. A fresh client/session
-// must claim the witness even after an interrupted advance is completed.
-// Only a caller still holding the original session capability can retry its
-// outstanding CAS. Loss or release of that key leaves a pending suffix closed.
-// A committed advance with a lost reply can be verified by its receipt even
-// after the owner releases the old session.
+// Start authenticates the ledger and any staged evidence before claiming a
+// fresh session. A committed advance can be verified by its historical receipt.
 func Start(ctx context.Context, root LedgerStore, b Binding, client checkpoint.Client, session ed25519.PrivateKey, fault Fault) (*Store, error) {
 	if len(session) != ed25519.PrivateKeySize {
 		return nil, refuse(Unknown, checkpoint.ErrRefused)
@@ -173,7 +169,7 @@ func (s *Store) start(ctx context.Context, header []byte) error {
 		return err
 	}
 	if stage != nil {
-		v, err = s.finishStage(ctx, stage, last, ledger.Checkpoint(), v)
+		v, err = s.inspectStage(ctx, stage, last, ledger.Checkpoint(), v)
 		if err != nil {
 			return err
 		}

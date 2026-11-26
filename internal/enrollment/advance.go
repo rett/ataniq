@@ -31,7 +31,7 @@ func (p staged) advance() (checkpoint.Advance, error) {
 	return q, err
 }
 
-func (s *Store) finishStage(ctx context.Context, raw, last []byte, head assignment.Checkpoint, v checkpoint.View) (checkpoint.View, error) {
+func (s *Store) inspectStage(ctx context.Context, raw, last []byte, head assignment.Checkpoint, v checkpoint.View) (checkpoint.View, error) {
 	var p staged
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return v, refuse(Interrupted, err)
@@ -56,21 +56,10 @@ func (s *Store) finishStage(ctx context.Context, raw, last []byte, head assignme
 		if v.Current != q.Expected || !bytes.Equal(p.Session, s.session.Public().(ed25519.PublicKey)) {
 			return v, refuse(Interrupted, checkpoint.ErrStale)
 		}
-		// A process can die after write but before fsync. Page-cache bytes
-		// that replay correctly must be made durable before the exact retry.
-		if err := s.files.Sync(); err != nil {
-			return v, refuse(Interrupted, err)
-		}
-		if err := s.files.Check(); err != nil {
-			return v, err
-		}
-		r, err := s.client.Advance(ctx, q)
-		if err != nil {
-			return v, refuse(Interrupted, err)
-		}
-		if err = checkpoint.MatchReceipt(s.b.WitnessPin, s.b.Epoch, "advance", p.Intent, r); err != nil {
-			return v, refuse(Interrupted, err)
-		}
+		// The signed predecessor has an active session. Claim would return
+		// SessionConflict, even for the same public key. Release changes the
+		// predecessor and fence, so replay cannot transplant this intent.
+		return v, refuse(Occupied, checkpoint.ErrStale)
 	case checkpoint.Equal:
 	default:
 		return v, compare(head, v.Current)

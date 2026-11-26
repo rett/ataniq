@@ -13,7 +13,11 @@
 // predecessor is indistinguishable from one that never received that intent.
 //
 // Start acquires a local lock, replays read-only, compares a challenged witness
-// read, claims a process session and checks the head again. A successful start
+// read and inspects staged evidence before its first witness mutation, the
+// session claim. It confirms the claim before local cleanup and checks the
+// named ledger again before admission. A staged CAS binds an occupied fence.
+// A new claim cannot preserve its predecessor, so an uncommitted suffix
+// requires owner reconciliation. A successful start
 // is a startup decision. Actual dispatch still requires a live route fence.
 // Close releases the local lock. Replacing a claimed session requires the
 // owner's independent fencing and checkpoint.Administration.Release.
