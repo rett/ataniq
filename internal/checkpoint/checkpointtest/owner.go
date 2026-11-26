@@ -70,3 +70,38 @@ func tombstone(t *testing.T, factory Factory, field string) {
 		t.Fatal("permanent tombstone changed")
 	}
 }
+
+func conflictingOwnerID(t *testing.T, factory Factory, op string) {
+	f := start(t, factory)
+	h := f.home(t, "west", "s", "one", true)
+	current := f.enroll(t, h)
+	var err error
+	switch op {
+	case "enroll":
+		header := current.Header
+		header.LedgerID += "other"
+		h.e.HeaderBytes, err = header.Bytes()
+		check(t, err)
+		h.e.ProofOfPossession, err = cp.ProveEnrollment(h.private, h.e)
+		check(t, err)
+		_, err = f.Admin.Enroll(f.ctx, h.e)
+	case "release":
+		m := mutation(f.claim(t, h, current, "claim"), "release")
+		_, err = f.Admin.Release(f.ctx, m)
+		check(t, err)
+		current = f.state(t, h, "released")
+		m.Expected = current
+		_, err = f.Admin.Release(f.ctx, m)
+	case "retire":
+		q := cp.Retirement{Mutation: mutation(current, "retire"), DispositionDigest: digest("first")}
+		_, err = f.Admin.Retire(f.ctx, q)
+		check(t, err)
+		current = f.state(t, h, "retired")
+		q.DispositionDigest = digest("different")
+		_, err = f.Admin.Retire(f.ctx, q)
+	}
+	want(t, err, cp.ErrStale)
+	if current != f.state(t, h, "after conflict") {
+		t.Fatal("conflict changed current state")
+	}
+}

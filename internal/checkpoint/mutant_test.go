@@ -175,3 +175,39 @@ func TestTombstoneMutants(t *testing.T) {
 		})
 	}
 }
+
+func TestOwnerRetryMutants(t *testing.T) {
+	for _, op := range []string{"enroll", "release", "retire"} {
+		t.Run(op, func(t *testing.T) {
+			rejectMutant(t, "conflicting_"+op, "got <nil>, want checkpoint: stale", func(h *checkpointtest.Harness) {
+				a := ownerAdapter{Administration: h.Admin}
+				saved := map[cp.ID]cp.Receipt{}
+				replay := func(id cp.ID, call func() (cp.Receipt, error)) (cp.Receipt, error) {
+					if r, ok := saved[id]; ok {
+						return r, nil
+					}
+					r, err := call()
+					if err == nil {
+						saved[id] = r
+					}
+					return r, err
+				}
+				switch op {
+				case "enroll":
+					a.enroll = func(ctx context.Context, q cp.Enrollment) (cp.Receipt, error) {
+						return replay(q.ID, func() (cp.Receipt, error) { return a.Administration.Enroll(ctx, q) })
+					}
+				case "release":
+					a.release = func(ctx context.Context, q cp.Mutation) (cp.Receipt, error) {
+						return replay(q.ID, func() (cp.Receipt, error) { return a.Administration.Release(ctx, q) })
+					}
+				case "retire":
+					a.retire = func(ctx context.Context, q cp.Retirement) (cp.Receipt, error) {
+						return replay(q.ID, func() (cp.Receipt, error) { return a.Administration.Retire(ctx, q) })
+					}
+				}
+				h.Admin = a
+			})
+		})
+	}
+}

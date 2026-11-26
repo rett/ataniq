@@ -148,6 +148,9 @@ func Run(t *testing.T, newWitness Factory) {
 	for _, field := range []string{"release", "retire", "ledger", "incarnation", "key"} {
 		t.Run("tombstone "+field, func(t *testing.T) { tombstone(t, newWitness, field) })
 	}
+	for _, op := range []string{"enroll", "release", "retire"} {
+		t.Run("conflicting "+op, func(t *testing.T) { conflictingOwnerID(t, newWitness, op) })
+	}
 	t.Run("enrollment", func(t *testing.T) {
 		f := start(t, newWitness)
 		h := f.home(t, "west", "shared", "one", true)
