@@ -42,14 +42,14 @@ func lyingReply(t *testing.T, factory Factory, op, field string) {
 			if field == "profile_session" {
 				namespace = cp.SessionNamespace
 			}
-			sig, err := cp.Sign(namespace, key("test witness"), r.Body)
+			sig, err := cp.Sign(namespace, f.witness, r.Body)
 			check(t, err)
 			return cp.Receipt{Body: r.Body, Signature: sig}
 		}
 		var body map[string]any
 		check(t, json.Unmarshal(r.Body, &body))
 		result := body["result"].(map[string]any)
-		signer := key("test witness")
+		signer := f.witness
 		switch field {
 		case "operation":
 			body["operation"] = "release"

@@ -1,7 +1,10 @@
 package checkpoint_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"errors"
 	"testing"
 
 	cp "ataniq/internal/checkpoint"
@@ -29,4 +32,25 @@ func TestLastClaimOnlyMutant(t *testing.T) {
 			}}
 		})
 	})
+}
+
+func TestOverlappingSessionMutants(t *testing.T) {
+	for _, role := range []string{"home", "witness"} {
+		t.Run(role, func(t *testing.T) {
+			rejectMemoryMutant(t, "session_equals_"+role, "got <nil>, want checkpoint: refused", func(h *checkpointtest.Harness, w *cp.Memory) {
+				h.Connect = func(slot cp.Slot, home, session ed25519.PrivateKey, pin ed25519.PublicKey) (cp.Client, error) {
+					c, err := w.Connect(slot, home, session, pin)
+					conflicting := home.Public().(ed25519.PublicKey)
+					if role == "witness" {
+						conflicting = pin
+					}
+					var reason *cp.Reason
+					if errors.As(err, &reason) && reason.Kind == cp.KeyRoleConflict && bytes.Equal(session.Public().(ed25519.PublicKey), conflicting) {
+						return w.ClientWithOverlappingRoles(slot, home, session, pin), nil
+					}
+					return c, err
+				}
+			})
+		})
+	}
 }

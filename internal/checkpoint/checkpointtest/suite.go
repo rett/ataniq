@@ -44,13 +44,14 @@ func digest(label string) string                 { d := id(label); return hex.En
 
 type fixture struct {
 	Harness
-	ctx context.Context
-	pin ed25519.PublicKey
+	ctx     context.Context
+	pin     ed25519.PublicKey
+	witness ed25519.PrivateKey
 }
 
 func start(t *testing.T, factory Factory) fixture {
 	k := key("test witness")
-	return fixture{factory(t, k), t.Context(), pub(k)}
+	return fixture{Harness: factory(t, k), ctx: t.Context(), pin: pub(k), witness: k}
 }
 
 type home struct {
@@ -158,6 +159,18 @@ func (f fixture) reconnect(t *testing.T, h home, session ed25519.PrivateKey) hom
 // The factory must provision a separate directory for each call, including
 // calls with identical keys used to model independent restores.
 func Run(t *testing.T, newWitness Factory) {
+	for _, role := range []string{"home", "witness"} {
+		t.Run("session equals "+role, func(t *testing.T) {
+			f := start(t, newWitness)
+			h := f.home(t, "west", "s", "one", true)
+			session := h.private
+			if role == "witness" {
+				session = f.witness
+			}
+			_, err := f.Connect(h.slot, h.private, session, f.pin)
+			want(t, err, cp.ErrRefused)
+		})
+	}
 	t.Run("shared home key slot scope", func(t *testing.T) {
 		f := start(t, newWitness)
 		west := f.home(t, "west", "shared", "one", true)
