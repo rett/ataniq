@@ -18,7 +18,7 @@ A server allows eight simultaneous connections across its listeners. The handsha
 
 ## Lost acknowledgements
 
-The client backs off on connection failures before sending, up to the caller's deadline or 30 seconds. A typed witness refusal ends the call. A broken exchange after a mutation write begins, an unrecognized reply or a receipt that fails `checkpoint.MatchReceipt` leaves the outcome unknown.
+The client uses jittered reconnect delays capped at one second on transient connection failures before sending, up to the caller's deadline or 30 seconds. A permanent TLS refusal ends the call, including a certificate alert received before any reply bytes. A rejected write that transferred zero mutation bytes returns `link.ErrNotSent`. A broken exchange after a mutation write begins, an unrecognized reply or a receipt that fails `checkpoint.MatchReceipt` leaves the outcome unknown.
 
 Keep the original intent. Reconnect and issue a fresh challenged read with its mutation ID in `ReceiptID`. Verify the prior receipt against the saved intent and compare the current state and fence before publication. An authorized retry of the exact latest mutation can recover the original acknowledgement. A superseded receipt is historical evidence. Unresolved outcomes stay suspended for operator reconciliation.
 

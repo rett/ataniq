@@ -10,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	jitter "math/rand/v2"
 	"net"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	cp "ataniq/internal/checkpoint"
@@ -106,6 +108,44 @@ func (e Endpoint) Administration(id seatgate.Identity) (cp.Administration, error
 	return &owner{t}, nil
 }
 
+// ErrNotSent means no bytes of the mutation were delivered to the stream.
+var ErrNotSent = fmt.Errorf("checkpoint: mutation not sent: %w", cp.ErrUnavailable)
+
+type countedConn struct {
+	net.Conn
+	written atomic.Uint64
+}
+
+func (c *countedConn) Write(b []byte) (int, error) {
+	n, err := c.Conn.Write(b)
+	c.written.Add(uint64(n))
+	return n, err
+}
+func retryDelay(limit time.Duration) time.Duration {
+	return limit/2 + jitter.N(limit/2+1)
+}
+
+// TLS over streams wraps its private alert type in a remote net.OpError.
+// Match the closed set by its standard-library AlertError representation.
+func handshakeRefusal(err error) bool {
+	var op *net.OpError
+	if !errors.As(err, &op) || op.Op != "remote error" || op.Err == nil {
+		return false
+	}
+	for _, a := range []tls.AlertError{40, 42, 43, 44, 45, 46, 48, 49, 70, 71, 116, 120} {
+		if op.Err.Error() == a.Error() {
+			return true
+		}
+	}
+	return false
+}
+func replyReadError(err error, consumed int64, fallback error) error {
+	if consumed == 0 && handshakeRefusal(err) {
+		return cp.ErrRefused
+	}
+	return fallback
+}
+
 // Retry connection establishment before sending any request. Each call has
 // a total time bound, including every handshake and backoff.
 func (t transport) connect(ctx context.Context) (*tls.Conn, error) {
@@ -125,7 +165,7 @@ func (t transport) connect(ctx context.Context) (*tls.Conn, error) {
 				done()
 				return nil, cp.ErrUnavailable
 			}
-			conn := tls.Client(raw, t.tls)
+			conn := tls.Client(&countedConn{Conn: raw}, t.tls)
 			err = conn.HandshakeContext(ctx)
 			if err == nil {
 				done()
@@ -134,6 +174,10 @@ func (t transport) connect(ctx context.Context) (*tls.Conn, error) {
 			raw.Close()
 		}
 		done()
+		var header tls.RecordHeaderError
+		if handshakeRefusal(err) || errors.As(err, &header) {
+			return nil, cp.ErrRefused
+		}
 		if errors.Is(err, cp.ErrRefused) {
 			return nil, err
 		}
@@ -146,7 +190,7 @@ func (t transport) connect(ctx context.Context) (*tls.Conn, error) {
 		select {
 		case <-ctx.Done():
 			return nil, errors.Join(cp.ErrUnavailable, ctx.Err())
-		case <-time.After(delay):
+		case <-time.After(retryDelay(delay)):
 		}
 		delay = min(2*delay, time.Second)
 	}
@@ -166,8 +210,12 @@ func (t transport) exchange(ctx context.Context, m frame.Message) (answer, error
 	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
+	mutation := m.Kind != frame.Connect && m.Kind != frame.Read && m.Kind != frame.OwnerRead
 	conn, err := t.connect(ctx)
 	if err != nil {
+		if mutation && errors.Is(err, cp.ErrUnavailable) {
+			return answer{}, errors.Join(ErrNotSent, ctx.Err())
+		}
 		return answer{}, err
 	}
 	raw := conn.NetConn()
@@ -176,20 +224,29 @@ func (t transport) exchange(ctx context.Context, m frame.Message) (answer, error
 	defer stop()
 	deadline, _ := ctx.Deadline()
 	if raw.SetDeadline(deadline) != nil || ctx.Err() != nil {
+		if mutation {
+			return answer{}, errors.Join(ErrNotSent, ctx.Err())
+		}
 		return answer{}, errors.Join(cp.ErrUnavailable, ctx.Err())
 	}
-	mutation := m.Kind != frame.Connect && m.Kind != frame.Read && m.Kind != frame.OwnerRead
+
 	result := cp.ErrUnavailable
 	if mutation {
 		result = cp.ErrUnknownOutcome
 	}
+	counter := raw.(*countedConn)
+	before := counter.written.Load()
 	n, err := conn.Write(data)
 	if err != nil || n != len(data) {
+		if mutation && counter.written.Load() == before {
+			return answer{}, errors.Join(ErrNotSent, ctx.Err())
+		}
 		return answer{}, errors.Join(result, ctx.Err())
 	}
-	reply, err := frame.ReadMessage(conn)
+	first := io.LimitedReader{R: conn, N: cp.MaxFrame + 4}
+	reply, err := frame.ReadMessage(&first)
 	if err != nil {
-		return answer{}, errors.Join(result, ctx.Err())
+		return answer{}, errors.Join(replyReadError(err, cp.MaxFrame+4-first.N, result), ctx.Err())
 	}
 	if reply.Kind == frame.Failure {
 		err := decodeError(reply.Fields[0])
