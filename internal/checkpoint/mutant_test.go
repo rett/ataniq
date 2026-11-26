@@ -76,3 +76,59 @@ func TestHistoricalHeadMutant(t *testing.T) {
 		}
 	})
 }
+
+type ownerAdapter struct {
+	cp.Administration
+	enroll  func(context.Context, cp.Enrollment) (cp.Receipt, error)
+	release func(context.Context, cp.Mutation) (cp.Receipt, error)
+	retire  func(context.Context, cp.Retirement) (cp.Receipt, error)
+}
+
+func (a ownerAdapter) Enroll(ctx context.Context, q cp.Enrollment) (cp.Receipt, error) {
+	if a.enroll != nil {
+		return a.enroll(ctx, q)
+	}
+	return a.Administration.Enroll(ctx, q)
+}
+func (a ownerAdapter) Release(ctx context.Context, q cp.Mutation) (cp.Receipt, error) {
+	if a.release != nil {
+		return a.release(ctx, q)
+	}
+	return a.Administration.Release(ctx, q)
+}
+func (a ownerAdapter) Retire(ctx context.Context, q cp.Retirement) (cp.Receipt, error) {
+	if a.retire != nil {
+		return a.retire(ctx, q)
+	}
+	return a.Administration.Retire(ctx, q)
+}
+func TestOwnerCASMutant(t *testing.T) {
+	for _, op := range []string{"release", "retire"} {
+		t.Run(op, func(t *testing.T) {
+			rejectMutant(t, "stale_owner_"+op, "got <nil>, want checkpoint: stale", func(h *checkpointtest.Harness) {
+				var reader cp.Client
+				wrapConnect(h, func(c cp.Client) cp.Client { reader = c; return c })
+				a := ownerAdapter{Administration: h.Admin}
+				current := func(ctx context.Context, s cp.Slot) cp.State {
+					v, err := reader.Read(ctx, cp.ReadRequest{Slot: s, Challenge: cp.ID{1}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					return v.Current
+				}
+				if op == "release" {
+					a.release = func(ctx context.Context, m cp.Mutation) (cp.Receipt, error) {
+						m.Expected = current(ctx, m.Expected.Slot)
+						return a.Administration.Release(ctx, m)
+					}
+				} else {
+					a.retire = func(ctx context.Context, q cp.Retirement) (cp.Receipt, error) {
+						q.Expected = current(ctx, q.Expected.Slot)
+						return a.Administration.Retire(ctx, q)
+					}
+				}
+				h.Admin = a
+			})
+		})
+	}
+}

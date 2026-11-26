@@ -142,6 +142,9 @@ func (f fixture) reconnect(t *testing.T, h home, session ed25519.PrivateKey) hom
 // The factory must provision a separate directory for each call, including
 // calls with identical keys used to model independent restores.
 func Run(t *testing.T, newWitness Factory) {
+	for _, op := range []string{"release", "retire"} {
+		t.Run("stale owner "+op, func(t *testing.T) { ownerCAS(t, newWitness, op) })
+	}
 	t.Run("enrollment", func(t *testing.T) {
 		f := start(t, newWitness)
 		h := f.home(t, "west", "shared", "one", true)
