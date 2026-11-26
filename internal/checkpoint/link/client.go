@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"slices"
@@ -54,6 +55,10 @@ type client struct {
 	slot          cp.Slot
 	home, session ed25519.PrivateKey
 }
+
+func (client) String() string                    { return "[redacted checkpoint client]" }
+func (c client) GoString() string                { return c.String() }
+func (c client) Format(out fmt.State, verb rune) { io.WriteString(out, c.String()) }
 
 func validPrivate(k ed25519.PrivateKey) bool {
 	return len(k) == ed25519.PrivateKeySize && k.Equal(ed25519.NewKeyFromSeed(k.Seed()))
