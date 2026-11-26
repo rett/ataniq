@@ -41,3 +41,26 @@ func TestExplicitRollbackStopsDepartingWitness(t *testing.T) {
 		})
 	}
 }
+
+func TestRollbackFromUnverifiableRelease(t *testing.T) {
+	e := active(t)
+	e.write(filepath.Join(e.relDir(rel2), "unlisted"), "extra", 0644)
+	e.write(filepath.Join(e.root, PolicyDir, HostStopList), "stop-host\n", 0644)
+	e.runner.fail["stop-host"] = 1
+	if code := e.rollBack("previous"); code != ExitFailed {
+		t.Fatalf("host stop failure: exit %d", code)
+	}
+	if _, inhibited := e.inhibited(); !inhibited {
+		t.Fatal("failed stop cleared the inhibit")
+	}
+	e.ran(map[string]int{"stop-host": 1, "stop-app": 0, "reload-units": 0})
+	e.runner.reset()
+	if code := e.rollBack("previous"); code != ExitOK {
+		t.Fatalf("retry: %s", e.last)
+	}
+	e.links(rel1, rel2)
+	e.ran(map[string]int{"stop-host": 1, "stop-app": 0, "reload-units": 1, "health-probe": 1})
+	if _, inhibited := e.inhibited(); inhibited || !strings.Contains(e.last, CodeFileNotListed) {
+		t.Fatalf("inhibited %v: %s", inhibited, e.last)
+	}
+}

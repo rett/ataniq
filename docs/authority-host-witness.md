@@ -322,8 +322,8 @@ recorded epoch. A new epoch fences future requests. It cannot reconstruct
 the missing interval. [Durable storage contract](../internal/checkpoint/durable/doc.go)
 
 For a software rollback use the signed switch procedure
-`ah-switch --rollback-to previous`. The switch runs the host stop list and the departing
-release’s stop list before reloading the target. If a stop fails, decisions
+`ah-switch --rollback-to previous`. The switch runs the host stop list before reloading the target.
+It also runs the departing release’s stop list when that release still verifies. If a stop fails, decisions
 stay inhibited. Correct the cause and retry the rollback. A target that carries the witness restarts its own
 binary against the existing store. Verify storage-format compatibility,
 pins, epoch and signed status before resuming admission. Back to a release

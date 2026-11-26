@@ -237,7 +237,7 @@ func linkText(target string) string {
 	return q(target)
 }
 
-// stopDeparting runs both lists even if one of their commands fails. Keep
+// stopDeparting runs the host list, then the departing list if verified. Keep
 // the journal in its current phase on failure so a retry repeats the stops
 // before the target's reload list can start any shared service again.
 func (s *Switcher) stopDeparting(ctx context.Context, t *txn) error {
@@ -250,7 +250,7 @@ func (s *Switcher) stopDeparting(ctx context.Context, t *txn) error {
 	}
 	departing, err := s.fallback(ctx, t)
 	if err != nil {
-		failures = append(failures, "departing release: "+describe(err))
+		s.printf("stop: skipped the departing release stop list because verification failed (%s)", describe(err))
 	} else {
 		failures = append(failures, s.runStops(ctx, departing.id.Name, departing.stops)...)
 	}
