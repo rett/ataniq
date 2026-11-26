@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -76,12 +77,16 @@ func TestWitnessChild(t *testing.T) {
 	must(t, err)
 	q := fixtureEnrollment(t, w)
 	w.fault = func(s string) error {
-		if s == stage {
+		if s == strings.TrimPrefix(stage, "settle-") {
 			os.Exit(79)
 		}
 		return nil
 	}
-	_, err = w.Administration().Enroll(t.Context(), q)
+	if strings.HasPrefix(stage, "settle-") {
+		_, err = w.Administration().Settle(t.Context(), 1, q.Slot, q.ID)
+	} else {
+		_, err = w.Administration().Enroll(t.Context(), q)
+	}
 	t.Fatalf("process missed boundary %s: %v", stage, err)
 }
 func child(t *testing.T, c Config, stage string, want int) {
@@ -749,4 +754,34 @@ func TestCopiedStoreWithSameKeyFile(t *testing.T) {
 	}
 	must(t, original.Close())
 	reopen(t, copyConfig)
+}
+
+func TestSettleCrashBoundaries(t *testing.T) {
+	for _, stage := range []string{"before-append", "appended", "journal-synced", "directory-synced", "receipt-appended", "receipt-synced", "receipt-directory-synced"} {
+		t.Run(stage, func(t *testing.T) {
+			c := config(t, testKey("process"))
+			w := create(t, c)
+			must(t, w.Close())
+			child(t, c, "settle-"+stage, 79)
+			w = reopen(t, c)
+			q := fixtureEnrollment(t, w)
+			must(t, w.Administration().AcknowledgeStorageError(t.Context()))
+			_, err := w.Administration().Enroll(t.Context(), q)
+			if stage == "before-append" {
+				must(t, err)
+			} else if !errors.Is(err, cp.ErrNotApplied) {
+				t.Fatal("lost fence after restart", err)
+			}
+		})
+	}
+}
+func TestSettleSyncBarrier(t *testing.T) {
+	w := create(t, config(t, testKey("settle sync")))
+	q := fixtureEnrollment(t, w)
+	var last string
+	w.fault = func(s string) error { last = s; return nil }
+	_, err := w.Administration().Settle(t.Context(), 1, q.Slot, q.ID)
+	if !errors.Is(err, cp.ErrNotApplied) || last != "receipt-directory-synced" {
+		t.Fatalf("settlement returned at %q: %v", last, err)
+	}
 }

@@ -151,3 +151,35 @@ func TestSettlementBoundaryMutants(t *testing.T) {
 		})
 	})
 }
+
+type settleClient struct {
+	cp.Client
+	settle cp.Settler
+}
+
+func (c settleClient) Settle(ctx context.Context, epoch uint64, s cp.Slot, id cp.ID) (cp.Receipt, error) {
+	return c.settle.Settle(ctx, epoch, s, id)
+}
+
+func TestSettleAuthorityMutants(t *testing.T) {
+	for _, role := range []string{"owner", "home"} {
+		t.Run(role, func(t *testing.T) {
+			rejectMutant(t, "settle_epoch_"+role, "wrong epoch", func(h *checkpointtest.Harness) {
+				admin := h.Admin
+				ignoreEpoch := settleAdmin{admin, func(ctx context.Context, _ uint64, s cp.Slot, id cp.ID) (cp.Receipt, error) {
+					return admin.Settle(ctx, 1, s, id)
+				}}
+				if role == "owner" {
+					h.Admin = ignoreEpoch
+				} else {
+					wrapConnect(h, func(c cp.Client) cp.Client { return settleClient{c, ignoreEpoch} })
+				}
+			})
+		})
+	}
+	t.Run("foreign", func(t *testing.T) {
+		rejectMutant(t, "settle_foreign_home", "foreign home settlement", func(h *checkpointtest.Harness) {
+			wrapConnect(h, func(c cp.Client) cp.Client { return settleClient{c, h.Admin} })
+		})
+	})
+}

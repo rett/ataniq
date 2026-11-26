@@ -244,6 +244,15 @@ func Run(t *testing.T, newWitness Factory) {
 		}
 		_, err := first.c.Claim(f.ctx, cp.Claim{Mutation: mutation(s, "reuse first"), NewSessionPublicKey: pub(first.session)})
 		want(t, err, cp.ErrStale)
+		f.Harness = f.Restart()
+		first = f.reconnect(t, first, first.session)
+		_, err = first.c.Claim(f.ctx, cp.Claim{Mutation: mutation(s, "reuse after restart"), NewSessionPublicKey: pub(first.session)})
+		if !errors.Is(err, cp.ErrStale) {
+			t.Fatalf("restart accepted released session: %v", err)
+		}
+		wantReason(t, err, cp.ErrStale, cp.SessionConflict)
+		fresh := f.reconnect(t, first, key("fresh writer"))
+		f.claim(t, fresh, s, "claim after release and restart")
 	})
 	for _, op := range []string{"release", "retire"} {
 		t.Run("stale owner "+op, func(t *testing.T) { ownerCAS(t, newWitness, op) })
