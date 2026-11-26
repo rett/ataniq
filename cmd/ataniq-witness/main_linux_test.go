@@ -33,8 +33,9 @@ func fixture(t *testing.T) (config, string) {
 	c := config{Identity: durable.Identity{Witness: "witness", Store: "directory", Incarnation: "first", Epoch: 7},
 		Slot:  cp.Slot{Witness: "witness", Authority: "authority", Store: "ledger"},
 		State: filepath.Join(dir, "state"), Seed: filepath.Join(dir, "seed"), Guard: filepath.Join(dir, "guard"),
-		Socket: filepath.Join(dir, "admin.sock"), ServiceTLS: filepath.Join(dir, "tls"), OwnerTLS: filepath.Join(dir, "owner"),
+		Socket: filepath.Join(dir, "run", "admin.sock"), ServiceTLS: filepath.Join(dir, "tls"), OwnerTLS: filepath.Join(dir, "owner"),
 		Home: "192.0.2.4:7443", HomePin: strings.Repeat("a", 64)}
+	must(t, os.Mkdir(filepath.Dir(c.Socket), 0700))
 	must(t, os.Mkdir(c.State, 0700))
 	must(t, os.Mkdir(c.Guard, 0755))
 	service, err := seatgate.WriteIdentityFiles(c.ServiceTLS, "witness")
@@ -107,12 +108,13 @@ func TestWitnessRefusesUnsafeInputs(t *testing.T) {
 			t.Fatal("diagnostic exposed input")
 		}
 	}
+	originalSocket := c.Socket
 	c.Socket = "tcp://192.0.2.5:80"
 	writeConfig(t, path, c)
 	for _, op := range []string{"status", "acknowledge", "run"} {
 		call(t, path, op, 1)
 	}
-	c.Socket = filepath.Join(c.State, "sock")
+	c.Socket = originalSocket
 	writeConfig(t, path, c)
 	must(t, os.Chmod(c.State, 0750))
 	call(t, path, "init", 1)
@@ -230,5 +232,67 @@ func TestWitnessCheckEgress(t *testing.T) {
 		if got := call(t, configPath, op, 1); got != "invalid witness egress drop-in\n" {
 			t.Fatal(got)
 		}
+	}
+}
+
+func TestWitnessOwnerSocketPreflight(t *testing.T) {
+	c, path := fixture(t)
+	call(t, path, "init", 0)
+	for _, tc := range []struct{ name, socket string }{
+		{"occupied", c.Socket}, {"missing parent", filepath.Join(filepath.Dir(c.Socket), "missing", "socket")},
+		{"overlong", filepath.Join(filepath.Dir(c.Socket), strings.Repeat("x", 108))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := c
+			s.Socket = tc.socket
+			if tc.name == "occupied" {
+				must(t, os.WriteFile(s.Socket, nil, 0600))
+			}
+			writeConfig(t, path, s)
+			for _, op := range []string{"check", "run", "recover"} {
+				if got := call(t, path, op, 1); got != "owner socket already present or unusable\n" {
+					t.Fatal(got)
+				}
+			}
+		})
+	}
+}
+
+func TestWitnessStaleOwnerSocket(t *testing.T) {
+	c, path := fixture(t)
+	call(t, path, "init", 0)
+	l := privateListener(t, c.Socket)
+	l.SetUnlinkOnClose(false)
+	must(t, l.Close())
+	if got := call(t, path, "check", 1); got != "owner socket already present or unusable\n" {
+		t.Fatal(got)
+	}
+	if _, err := os.Lstat(c.Socket); err != nil {
+		t.Fatal("check removed the socket", err)
+	}
+}
+
+func TestWitnessOverlappingPaths(t *testing.T) {
+	c, p := fixture(t)
+	for _, tc := range []struct {
+		name   string
+		change func(*config)
+	}{
+		{"socket in state", func(x *config) { x.Socket = filepath.Join(x.State, "s") }},
+		{"guard in state", func(x *config) { x.Guard = filepath.Join(x.State, "g") }},
+		{"guard equals state", func(x *config) { x.Guard = x.State }},
+		{"seed in state", func(x *config) { x.Seed = filepath.Join(x.State, "seed") }},
+		{"owner below service TLS", func(x *config) { x.OwnerTLS = filepath.Join(x.ServiceTLS, "owner") }},
+		{"service below owner TLS", func(x *config) { x.ServiceTLS = filepath.Join(x.OwnerTLS, "service") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			x := c
+			tc.change(&x)
+			writeConfig(t, p, x)
+			_, _, err := loadConfig(p)
+			if !errors.Is(err, errConfig) {
+				t.Fatal(err)
+			}
+		})
 	}
 }

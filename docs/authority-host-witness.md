@@ -19,7 +19,11 @@ Exit 0 indicates success, 1 refusal and 2 incorrect usage. A verified status
 reporting storage failure, an unclean end or interrupted publication also exits
 1. The switch's ordinary decision inhibit allows status to succeed. Local
 root needs its own pinned TLS key to administer the witness. The socket's
-parent must be a service-owned 0700 directory.
+parent must be a service-owned 0700 directory. Keep that directory, state,
+seed, guard and both TLS directories at disjoint paths. Before startup,
+`check` verifies the socket path fits in 107 bytes, its private parent is
+writable and the name is free. It leaves the socket untouched. A bind can
+still fail at startup. Both cases report `owner socket already present or unusable`.
 
 Build the witness for Linux with the release toolchain. On the development
 host, compose the base, seat and notifier release trees as described in
@@ -163,6 +167,8 @@ is shared. Encode the nonzero activation epoch as a decimal string.
 Use a verified copy of the candidate release's executable for these first
 two calls, before switching `current`. In the examples, `WITNESS` stands for
 its absolute path, and `CONFIG` for `/etc/authority-host/witness/config.json`.
+Before running `check` by hand, create `/run/ataniq-witness` owned by the
+witness account with mode 0700. Systemd creates it on subsequent unit starts.
 
 ```sh
 runuser -u ataniq-witness -- WITNESS init --config CONFIG

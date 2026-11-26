@@ -10,7 +10,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -52,6 +51,8 @@ func run(ctx context.Context, hostRoot string, args []string, out, diag io.Write
 		switch {
 		case errors.As(err, &storage):
 			fmt.Fprintln(diag, storage)
+		case errors.Is(err, errSocket):
+			fmt.Fprintln(diag, errSocket)
 		case errors.Is(err, os.ErrExist):
 			fmt.Fprintln(diag, "witness store or socket already exists")
 		case errors.Is(err, cp.ErrUnknownOutcome):
@@ -77,6 +78,11 @@ func execute(ctx context.Context, hostRoot, op, path string, out io.Writer) (ret
 	server, err := serviceConfig(c, store)
 	if err != nil {
 		return err
+	}
+	if op == "check" || op == "run" || op == "recover" {
+		if err := checkSocket(c.Socket); err != nil {
+			return err
+		}
 	}
 	if op == "check" || op == "run" {
 		address, err := noaicheck.WitnessEgressAddress(hostRoot)
@@ -115,14 +121,9 @@ func execute(ctx context.Context, hostRoot, op, path string, out io.Writer) (ret
 			return err
 		}
 	}
-	d, err := directory(filepath.Dir(c.Socket), true)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: c.Socket, Net: "unix"})
 	if err != nil {
-		return err
+		return errSocket
 	}
 	g := &guardedWitness{Witness: w, dir: c.Guard, recoveryOnly: recoveryOnly, turn: make(chan struct{}, 1)}
 	return serve(ctx, server, g, ln, c.OwnerPin, ownerUID)
