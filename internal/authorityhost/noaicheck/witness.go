@@ -94,7 +94,7 @@ func witnessSettings(text string) (map[string][]string, bool) {
 // WitnessUnitSafe checks the candidate release's account, executable and
 // outbound-only contract. Only the owner supplies an address grant on the host.
 func WitnessUnitSafe(rel, text, releaseDir string) bool {
-	_, name, drop := releaseUnitName(rel)
+	_, name, drop := releaseUnitLocation(rel)
 	if rel == WitnessUnit {
 		want, valid := witnessSettings(strings.ReplaceAll(witnessUnitPolicy, "{release}", releaseDir))
 		got, ok := witnessSettings(text)

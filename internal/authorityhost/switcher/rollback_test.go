@@ -412,3 +412,64 @@ func TestWitnessEmergencyStopExitFiveNeedsObservation(t *testing.T) {
 		t.Fatalf("no retryable stop: %+v", j)
 	}
 }
+
+func TestReleaseDepartureDropInOnly(t *testing.T) {
+	const unit = "worker.service"
+	const units = "etc/systemd/system"
+	e := newEnv(t)
+	dir := e.release(rel1, "s")
+	host := filepath.Join(e.root, units)
+	e.write(filepath.Join(host, unit), "[Service]\nExecStart=/usr/bin/true\n", 0644)
+	if err := os.Symlink("/opt/authority-host/current/"+units+"/"+unit+".d", filepath.Join(host, unit+".d")); err != nil {
+		t.Fatal(err)
+	}
+	drop := filepath.Join(dir, units, unit+".d", "10-start.conf")
+	e.write(drop, "[Service]\nExecStart=\nExecStart=/opt/authority-host/current/bin/app\n", 0644)
+	e.write(filepath.Join(dir, units, unit+".d", "20-limit.conf"), "[Service]\nLimitNOFILE=1024\n", 0644)
+	e.write(filepath.Join(dir, units, "other.service.d/10-limit.conf"), "[Service]\nLimitNOFILE=1024\n", 0644)
+	e.withLists(rel1, "start-worker", "health-probe", "systemctl stop "+unit)
+	if e.switchTo(rel1) != ExitOK {
+		t.Fatal(e.last)
+	}
+	inventory := e.record().CurrentUnits
+	if err := os.Remove(drop); err != nil {
+		t.Fatal(err)
+	}
+	e.release(rel2, "s")
+	e.hostList("systemctl stop workr.service\n")
+	active := true
+	e.runner.gate = func(argv []string) error {
+		switch strings.Join(argv, " ") {
+		case "systemctl stop workr.service":
+			return &RunError{Status: 5}
+		case "systemctl stop " + unit:
+			active = false
+		}
+		return nil
+	}
+	queries := 0
+	e.runner.unitState = func(name string) (Output, error) {
+		if name == unit {
+			queries++
+			if active {
+				return Output{Stdout: []byte("active\n")}, nil
+			}
+		}
+		return Output{Stdout: []byte("inactive\n")}, &RunError{Status: 3}
+	}
+	e.runner.reset()
+	code := e.switchTo(rel2)
+	if _, held := e.inhibited(); code != ExitFailed || !held || queries == 0 || e.runner.called("reload-units") != 0 {
+		t.Fatalf("drop-in departure: exit %d, inhibited %t, inventory %v, queries %d, reloads %d", code, held, inventory, queries, e.runner.called("reload-units"))
+	}
+	if want := []string{"app.service", "other.service", unit}; !slices.Equal(inventory, want) {
+		t.Fatalf("recorded inventory %v, want %v", inventory, want)
+	}
+	e.hostList("systemctl stop " + unit + "\n")
+	if e.switchTo(rel2) != ExitOK || active {
+		t.Fatal(e.last)
+	}
+	if _, held := e.inhibited(); held {
+		t.Fatal("successful retry left decisions inhibited")
+	}
+}

@@ -351,9 +351,11 @@ release without the witness, confirm it is stopped. Keep its single-unit
 stop command in the host list. A stop reporting exit 5 still requires
 the manager to confirm that the canonical unit is inactive or absent.
 The switch records the verified service names in the transaction journal
-and the current release’s names in `deploy.json`. If the departure inventory
-is missing, the journal stays open and decisions stay inhibited. Stop the
-decision services by hand and make the original imported release available.
+and the current release’s names in `deploy.json`. A shipped service drop-in
+such as `worker.service.d/10-start.conf` records `worker.service`, even if
+the host provides the unit file. If the departure inventory is missing,
+the journal stays open and decisions stay inhibited. Stop the decision
+services by hand and make the original imported release available.
 Run `ah-switch recover --services-stopped` to record its names, then retry
 the rollback to repeat the stops and manager checks.
 Preserve witness state and keep dependent homes

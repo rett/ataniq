@@ -134,6 +134,11 @@ func TestCheckCoverage(t *testing.T) {
 		{name: "a drop-in names its release", mutate: func(t *testing.T, s string) {
 			set(t, s, "etc/systemd/system/ataniq-seat.service.d/10-env.conf", "[Service]\nEnvironment=RELEASE={release}\n")
 		}},
+		{name: "a host service runs the release through a drop-in", mutate: func(t *testing.T, s string) {
+			set(t, s, "etc/systemd/system/worker.service.d/10-start.conf", "[Service]\nExecStart=\nExecStart={release}/bin/ataniq-seat\n")
+			set(t, s, "share/stop.list", dynStop+"systemctl stop worker.service\n")
+			set(t, s, "share/reload.list", dynReload+"systemctl restart worker.service\n")
+		}},
 		{name: "a drop-in needs no validator of its own", mutate: func(t *testing.T, s string) {
 			set(t, s, "etc/systemd/system/ataniq-seat.service.d/10-hardening.conf", "[Service]\nNoNewPrivileges=yes\n")
 		}},

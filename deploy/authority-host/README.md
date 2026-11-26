@@ -559,10 +559,12 @@ are stopped and decisions stay inhibited, see step 4).
    rename is followed by a sync of the folder. Then the journal says
    `activating`. When replacing a release in either direction, the host stop
    list runs first, then the departing release's stop list if it verifies.
-   The switch asks systemd about every service file shipped by the departing
-   release, including units shared with the target and instances of shipped
-   templates. A unit must be inactive or absent before the target's
-   `share/reload.list` runs. Each reload has a 30-second deadline.
+   The inventory includes shipped service files and the owner of each shipped
+   `NAME.service.d/*.conf`, even when the host supplies `NAME.service`.
+   The switch asks systemd about each of these services, including units
+   shared with the target and instances of shipped templates. A unit must be
+   inactive or absent before the target's `share/reload.list` runs.
+   Each reload has a 30-second deadline.
    Before decisions resume, services unique to the departed release are
    checked again. A failure names the unit and leaves the journal retryable.
    Correct the host stop list or manager failure and repeat the request.

@@ -2,6 +2,7 @@ package switcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 )
@@ -357,8 +358,7 @@ func (s *Switcher) recoverInventory(j *journal, name string, units *[]string) er
 	if err != nil {
 		return err
 	}
-	defer rel.Close()
-	if err := s.checkProvenance(rel); err != nil {
+	if err := errors.Join(s.checkProvenance(rel), rel.Close()); err != nil {
 		return err
 	}
 	if s.cfg.Dry {
