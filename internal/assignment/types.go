@@ -7,6 +7,11 @@
 // Capture, inventory refresh and receipt correction report ErrCapacity with
 // the observed count and operating limit when either budget is exceeded.
 //
+// Adapter obligation: authenticate each issuer and enroll exactly one issuer
+// identity per route per transfer. The ledger records that identity as a
+// string. A contradictory receipt from a different issuer returns ErrEvidence.
+// The adapter must report the refused contradiction to the owner out of band.
+//
 // A same-issuer correction of an accepted fence or confirmation permanently
 // quarantines this key in this store, including during a later transfer. Both
 // bindings lose admission. The owner may acknowledge the quarantine once,
