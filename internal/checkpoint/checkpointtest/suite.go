@@ -23,6 +23,9 @@ import (
 // establishes a new handle and verifies the independently supplied witness pin.
 // LoseNextReply drops a mutation acknowledgement only after its commit.
 type Harness struct {
+	// Restart reopens the same witness storage and returns fresh capabilities.
+	// Callers discard all previous handles. Durable adapters must reopen disk.
+	Restart         func() Harness
 	Admin           cp.Administration
 	Grant           func(cp.Slot, ed25519.PublicKey, bool) error
 	Connect         func(cp.Slot, ed25519.PrivateKey, ed25519.PrivateKey, ed25519.PublicKey) (cp.Client, error)
@@ -163,6 +166,8 @@ func (f fixture) reconnect(t *testing.T, h home, session ed25519.PrivateKey) hom
 // The factory must provision a separate directory for each call, including
 // calls with identical keys used to model independent restores.
 func Run(t *testing.T, newWitness Factory) {
+	settlementBoundaries(t, newWitness)
+	t.Run("settle", func(t *testing.T) { settlement(t, start(t, newWitness)) })
 	for _, op := range []string{"claim", "advance"} {
 		t.Run("raw "+op, func(t *testing.T) { rawProofs(t, newWitness, op) })
 	}
@@ -493,7 +498,9 @@ func Run(t *testing.T, newWitness Factory) {
 		for range cap(results) {
 			v := <-results
 			if v.err != nil {
-				want(t, v.err, cp.ErrStale)
+				if !errors.Is(v.err, cp.ErrBusy) {
+					want(t, v.err, cp.ErrStale)
+				}
 				continue
 			}
 			winners++

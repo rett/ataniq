@@ -34,10 +34,11 @@ type Memory struct {
 	mu                         sync.Mutex
 	witness                    string
 	epoch                      uint64
-	key                        ed25519.PrivateKey
+	key                        *memoryKey
 	keyID                      string
 	grants                     map[Slot]grant
 	slots                      map[Slot]*enrollment
+	fenced                     map[Slot]map[ID]bool
 	inhibited, loseReply       bool
 	transformNextReply         func(Receipt) Receipt
 	receiptCount, receiptLimit uint64
@@ -51,7 +52,7 @@ func NewMemory(witness string, epoch uint64, key ed25519.PrivateKey) (*Memory, e
 	if err != nil {
 		return nil, err
 	}
-	return &Memory{witness: witness, epoch: epoch, key: slices.Clone(key), keyID: id, grants: make(map[Slot]grant), slots: make(map[Slot]*enrollment)}, nil
+	return &Memory{witness: witness, epoch: epoch, key: newMemoryKey(key, witnessProfile), keyID: id, grants: make(map[Slot]grant), slots: make(map[Slot]*enrollment), fenced: make(map[Slot]map[ID]bool)}, nil
 }
 
 // Grant installs an independently selected home pin for the exact slot. A
@@ -109,7 +110,7 @@ func (w *Memory) Administration() Administration { return admin{w} }
 type client struct {
 	w             *Memory
 	slot          Slot
-	home, session ed25519.PrivateKey
+	home, session *memoryKey
 	witnessPin    ed25519.PublicKey
 }
 
@@ -124,26 +125,36 @@ func checkSessionRole(session, home, witness ed25519.PublicKey) error {
 // Connect creates an authenticated handle scoped to one home and process
 // session. Mutations and reads recheck the live grant under the witness lock.
 func (w *Memory) Connect(slot Slot, home, session ed25519.PrivateKey, witnessPin ed25519.PublicKey) (Client, error) {
-	if !bytes.Equal(witnessPin, w.key.Public().(ed25519.PublicKey)) {
+	if !bytes.Equal(witnessPin, w.key.public) {
 		return nil, &Reason{Kind: Unauthorized}
 	}
 	if !validPrivate(home) || !validPrivate(session) {
 		return nil, &Reason{Kind: InvalidRequest}
 	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	g, ok := w.grants[slot]
-	if !ok || !bytes.Equal(home.Public().(ed25519.PublicKey), g.key) {
-		return nil, &Reason{Kind: Unauthorized}
+	h := home.Public().(ed25519.PublicKey)
+	if err := w.CheckHome(slot, h); err != nil {
+		return nil, err
 	}
-	if err := checkSessionRole(session.Public().(ed25519.PublicKey), g.key, witnessPin); err != nil {
+	if err := checkSessionRole(session.Public().(ed25519.PublicKey), h, witnessPin); err != nil {
 		return nil, err
 	}
 	_, err := KeyID(session.Public().(ed25519.PublicKey))
 	if err != nil {
 		return nil, err
 	}
-	return &client{w, slot, slices.Clone(home), slices.Clone(session), slices.Clone(witnessPin)}, nil
+	return &client{w, slot, newMemoryKey(home, homeProfile), newMemoryKey(session, sessionProfile), slices.Clone(witnessPin)}, nil
+}
+
+// CheckHome checks the provisioned home pin independently of enrollment.
+// Success grants no access to a prior enrollment bound to another key.
+func (w *Memory) CheckHome(slot Slot, key ed25519.PublicKey) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	g, ok := w.grants[slot]
+	if !ok || !bytes.Equal(key, g.key) {
+		return &Reason{Kind: Unauthorized}
+	}
+	return nil
 }
 func cloneReceipt(r Receipt) Receipt { return Receipt{slices.Clone(r.Body), slices.Clone(r.Signature)} }
 
@@ -172,20 +183,29 @@ func (w *Memory) authorized(slot Slot, home ed25519.PublicKey, write bool) (*enr
 }
 
 func (c *client) Read(ctx context.Context, q ReadRequest) (View, error) {
-	w := c.w
+	return c.w.readHome(ctx, q, c.slot, c.home.public, c.witnessPin)
+}
+
+// ReadHome checks the current read grant for an already authenticated home key.
+// The transport must verify the caller's signature over the read request first.
+func (w *Memory) ReadHome(ctx context.Context, q ReadRequest, home ed25519.PublicKey) (View, error) {
+	return w.readHome(ctx, q, q.Slot, home, w.key.public)
+}
+
+func (w *Memory) readHome(ctx context.Context, q ReadRequest, slot Slot, home, pin ed25519.PublicKey) (View, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if ctx.Err() != nil {
 		return View{}, ErrUnavailable
 	}
-	if q.Slot != c.slot {
+	if q.Slot != slot {
 		return View{}, &Reason{Kind: Unauthorized}
 	}
-	e, err := w.authorized(q.Slot, c.home.Public().(ed25519.PublicKey), false)
+	e, err := w.authorized(q.Slot, home, false)
 	if err != nil {
 		return View{}, err
 	}
-	return w.read(q, e, c.witnessPin)
+	return w.read(q, e, pin)
 }
 
 func (a admin) Read(ctx context.Context, q ReadRequest) (View, error) {
@@ -202,7 +222,23 @@ func (a admin) Read(ctx context.Context, q ReadRequest) (View, error) {
 	if e == nil {
 		return View{}, &Reason{Kind: NotEnrolled}
 	}
-	return w.read(q, e, w.key.Public().(ed25519.PublicKey))
+	return w.read(q, e, w.key.public)
+}
+
+// HasReceipt probes the immutable history index for admission accounting.
+// A fence without a committed receipt is absent from this index.
+func (w *Memory) HasReceipt(ctx context.Context, slot Slot, id ID) (bool, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	e := w.slots[slot]
+	if e == nil {
+		return false, nil
+	}
+	_, ok := e.history[id]
+	return ok, nil
 }
 
 // read snapshots both ends of the challenged view under the witness lock.
@@ -221,7 +257,7 @@ func (w *Memory) read(q ReadRequest, e *enrollment, pin ed25519.PublicKey) (View
 	if err != nil {
 		return View{}, err
 	}
-	sig, err := witnessProfile.sign(w.key, b)
+	sig, err := w.key.sign(b)
 	if err != nil {
 		return View{}, err
 	}
@@ -252,6 +288,9 @@ func (e *enrollment) retry(id ID, b []byte) (Receipt, bool, error) {
 // The signed result links to the previous receipt. The new receipt digest
 // then becomes part of the next mutation's exact CAS predecessor.
 func (w *Memory) commit(e *enrollment, op string, id ID, body []byte, s State, session ed25519.PublicKey) (Receipt, error) {
+	if w.fenced[s.Slot][id] {
+		return Receipt{}, ErrNotApplied
+	}
 	if op != "release" && op != "retire" && w.receiptLimit != 0 && w.receiptCount >= w.receiptLimit {
 		return Receipt{}, ErrUnavailable
 	}
@@ -260,7 +299,7 @@ func (w *Memory) commit(e *enrollment, op string, id ID, body []byte, s State, s
 	if err != nil {
 		return Receipt{}, err
 	}
-	sig, err := witnessProfile.sign(w.key, b)
+	sig, err := w.key.sign(b)
 	if err != nil {
 		return Receipt{}, err
 	}
@@ -327,7 +366,7 @@ func (a admin) Enroll(ctx context.Context, q Enrollment) (Receipt, error) {
 }
 
 func (c *client) Claim(ctx context.Context, q Claim) (Receipt, error) {
-	if !bytes.Equal(q.NewSessionPublicKey, c.session.Public().(ed25519.PublicKey)) {
+	if !bytes.Equal(q.NewSessionPublicKey, c.session.public) {
 		return Receipt{}, &Reason{Kind: InvalidRequest}
 	}
 	b, err := q.Body("")
@@ -347,15 +386,15 @@ func (c *client) mutate(ctx context.Context, op string, m Mutation, b []byte) (R
 	if m.Expected.Slot != c.slot {
 		return Receipt{}, &Reason{Kind: Unauthorized}
 	}
-	homeSig, err := Sign(HomeNamespace, c.home, b)
+	homeSig, err := c.home.sign(b)
 	if err != nil {
 		return Receipt{}, err
 	}
-	sessionSig, err := Sign(SessionNamespace, c.session, b)
+	sessionSig, err := c.session.sign(b)
 	if err != nil {
 		return Receipt{}, err
 	}
-	r, err := c.w.accept(ctx, c.slot, c.home.Public().(ed25519.PublicKey), op, b, homeSig, sessionSig)
+	r, err := c.w.RawSubmit(ctx, c.slot, c.home.public, op, b, homeSig, sessionSig)
 	if err != nil {
 		return Receipt{}, err
 	}
@@ -365,8 +404,12 @@ func (c *client) mutate(ctx context.Context, op string, m Mutation, b []byte) (R
 	return r, nil
 }
 
-// accept consumes only the signed bytes and independently pinned identities.
+// RawSubmit consumes only the signed bytes and independently pinned identities.
 // The method selects the operation before interpreting its record.
+func (w *Memory) RawSubmit(ctx context.Context, slot Slot, home ed25519.PublicKey, op string, b, homeSig, sessionSig []byte) (Receipt, error) {
+	return w.accept(ctx, slot, home, op, b, homeSig, sessionSig)
+}
+
 func (w *Memory) accept(ctx context.Context, slot Slot, home ed25519.PublicKey, op string, b, homeSig, sessionSig []byte) (reply Receipt, err error) {
 	intent, err := ParseIntent(op, w.keyID, b)
 	if err != nil {
@@ -405,7 +448,7 @@ func (w *Memory) accept(ctx context.Context, slot Slot, home ed25519.PublicKey, 
 	sessionID := e.state.SessionKeyID
 	if op == "claim" {
 		session = claimed
-		if err := checkSessionRole(session, e.home, w.key.Public().(ed25519.PublicKey)); err != nil {
+		if err := checkSessionRole(session, e.home, w.key.public); err != nil {
 			return Receipt{}, err
 		}
 		sessionID, err = KeyID(session)

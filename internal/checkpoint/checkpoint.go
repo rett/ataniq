@@ -16,10 +16,14 @@ import (
 // the latest mutation returns its receipt even during inhibition. ErrUnknownOutcome requires
 // reconciling the saved intent by its ID before publishing a result.
 var (
-	ErrRefused        = errors.New("checkpoint: refused")
-	ErrStale          = errors.New("checkpoint: stale or conflicting request")
-	ErrRetired        = errors.New("checkpoint: retired")
-	ErrUnavailable    = errors.New("checkpoint: unavailable")
+	// ErrBusy identifies a competing call refused before delivery.
+	ErrBusy        = errors.New("checkpoint: endpoint busy")
+	ErrRefused     = errors.New("checkpoint: refused")
+	ErrStale       = errors.New("checkpoint: stale or conflicting request")
+	ErrRetired     = errors.New("checkpoint: retired")
+	ErrUnavailable = errors.New("checkpoint: unavailable")
+	// ErrNotApplied proves that this slot and ID are permanently fenced.
+	ErrNotApplied     = errors.New("checkpoint: mutation fenced without commit")
 	ErrUnknownOutcome = errors.New("checkpoint: unknown mutation outcome")
 )
 
@@ -80,12 +84,23 @@ type View struct {
 	Prior   *Receipt
 }
 
+// Settler reconciles one mutation against the authoritative history.
+type Settler interface {
+	// Settle atomically returns the original receipt (including historical
+	// receipts) or records a permanent tombstone and returns ErrNotApplied.
+	// The expected epoch must match under the commit lock before either action.
+	// Durable implementations must persist the fence before answering and
+	// consult it in the same transaction as every mutation commit.
+	Settle(context.Context, uint64, Slot, ID) (Receipt, error)
+}
+
 // Client is scoped to a single authorized slot and signs with its configured
 // keys. Exact retry returns the original receipt without repeating the change.
 // Superseded receipts are available by ReceiptID through challenged Read.
 // Mutation retries still require current authorization and valid signatures.
 type Client interface {
 	Read(context.Context, ReadRequest) (View, error)
+	Settler
 	Claim(context.Context, Claim) (Receipt, error)
 	Advance(context.Context, Advance) (Receipt, error)
 }
@@ -94,6 +109,7 @@ type Client interface {
 // a home grant or session and supplies the exact Expected for owner mutations.
 type Administration interface {
 	Read(context.Context, ReadRequest) (View, error)
+	Settler
 	Enroll(context.Context, Enrollment) (Receipt, error)
 	Release(context.Context, Mutation) (Receipt, error)
 	Retire(context.Context, Retirement) (Receipt, error)
