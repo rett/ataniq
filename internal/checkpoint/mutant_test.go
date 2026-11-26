@@ -82,6 +82,34 @@ func TestHistoricalHeadMutant(t *testing.T) {
 	})
 }
 
+type unscopedReader struct {
+	cp.Client
+	connect func(cp.Slot) (cp.Client, error)
+}
+
+func (c unscopedReader) Read(ctx context.Context, q cp.ReadRequest) (cp.View, error) {
+	client, err := c.connect(q.Slot)
+	if err != nil {
+		return cp.View{}, err
+	}
+	return client.Read(ctx, q)
+}
+
+func TestUnscopedReadMutant(t *testing.T) {
+	rejectMutant(t, "shared_home_key_slot_scope", "got <nil>, want checkpoint: refused", func(h *checkpointtest.Harness) {
+		connect := h.Connect
+		h.Connect = func(slot cp.Slot, home, session ed25519.PrivateKey, pin ed25519.PublicKey) (cp.Client, error) {
+			c, err := connect(slot, home, session, pin)
+			if err != nil {
+				return nil, err
+			}
+			return unscopedReader{c, func(slot cp.Slot) (cp.Client, error) {
+				return connect(slot, home, session, pin)
+			}}, nil
+		}
+	})
+}
+
 type ownerAdapter struct {
 	cp.Administration
 	enroll  func(context.Context, cp.Enrollment) (cp.Receipt, error)

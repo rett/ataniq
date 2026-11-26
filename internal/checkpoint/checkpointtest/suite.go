@@ -62,8 +62,13 @@ type home struct {
 
 func (f fixture) home(t *testing.T, authority, store, generation string, write bool) home {
 	t.Helper()
+	return f.homeWithKey(t, authority, store, generation, write, key(authority+generation))
+}
+
+func (f fixture) homeWithKey(t *testing.T, authority, store, generation string, write bool, private ed25519.PrivateKey) home {
+	t.Helper()
 	slot := cp.Slot{Witness: "witness", Authority: authority, Store: store}
-	h := home{slot: slot, private: key(authority + generation), session: key("session " + authority + generation)}
+	h := home{slot: slot, private: private, session: key("session " + authority + generation)}
 	keyID, err := cp.KeyID(pub(h.private))
 	check(t, err)
 	header := assignment.Header{Schema: 1, Authority: authority, Store: store, LedgerID: "ledger" + generation, Incarnation: "incarnation" + generation, KeyID: keyID}
@@ -153,6 +158,16 @@ func (f fixture) reconnect(t *testing.T, h home, session ed25519.PrivateKey) hom
 // The factory must provision a separate directory for each call, including
 // calls with identical keys used to model independent restores.
 func Run(t *testing.T, newWitness Factory) {
+	t.Run("shared home key slot scope", func(t *testing.T) {
+		f := start(t, newWitness)
+		west := f.home(t, "west", "shared", "one", true)
+		east := f.homeWithKey(t, "east", "shared", "two", true, west.private)
+		f.enroll(t, west)
+		f.enroll(t, east)
+		q := cp.ReadRequest{Slot: east.slot, ReceiptID: east.e.ID, Challenge: id("foreign slot")}
+		_, err := west.c.Read(f.ctx, q)
+		want(t, err, cp.ErrRefused)
+	})
 	t.Run("permanent retired slot", func(t *testing.T) { retiredSlot(t, newWitness) })
 	for _, op := range []string{"enroll", "claim", "release", "retire"} {
 		t.Run("lost ack "+op, func(t *testing.T) { lostAck(t, newWitness, op) })
