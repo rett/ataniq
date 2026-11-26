@@ -174,3 +174,29 @@ func TestWitnessAttendedEnrollment(t *testing.T) {
 		t.Fatal("missing retirement tombstone")
 	}
 }
+
+func TestWitnessRecoveryGuide(t *testing.T) {
+	data, err := os.ReadFile("../../docs/authority-host-witness.md")
+	must(t, err)
+	_, recovery, ok := strings.Cut(string(data), "## Storage error and interrupted publication")
+	if !ok {
+		t.Fatal("missing storage recovery procedure")
+	}
+	recovery, backup, ok := strings.Cut(recovery, "## Backup, restore and rollback")
+	if !ok {
+		t.Fatal("missing backup procedure")
+	}
+	for _, step := range []string{"ah-switch status", "ah-switch recover", "ah-switch inhibit-clear --asked", "decisions: not inhibited", "WITNESS acknowledge --config CONFIG"} {
+		var found bool
+		_, recovery, found = strings.Cut(recovery, step)
+		if !found {
+			t.Errorf("missing or out-of-order recovery step %q", step)
+			break
+		}
+	}
+	for _, term := range []string{"signing seed separately", "offline custody", "higher externally"} {
+		if !strings.Contains(backup, term) {
+			t.Errorf("missing backup safeguard %q", term)
+		}
+	}
+}

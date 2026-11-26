@@ -246,10 +246,21 @@ request ID to bypass an unresolved mutation.
 
 3. From a second local root terminal, run `WITNESS status --config CONFIG`.
    Compare its verified head, reason and counts with the independent record.
-   After repairing storage and reconciling evidence, the owner may run
-   `WITNESS acknowledge --config CONFIG`, then request fresh status. The
-   switch guard must allow the acknowledgement. Keep the home suspended
-   independently during this step and let the switch manage its guard.
+   After repairing storage and reconciling evidence, keep home admission
+   independently suspended. In the owner's root session run `ah-switch status`.
+   If a transaction is open, including a journal held in the inhibit, end the
+   attended witness process before running `ah-switch recover`. Recovery can
+   reload services. Follow the switch's recovery procedure until the transaction
+   settles, inspect the outcome, then re-establish attended witness recovery
+   with the regular unit stopped.
+
+   A healthy switched release normally has its guard cleared by the switch.
+   If a plain inhibit remains, first verify the active release and that it is
+   safe for **all** decision services to resume. With no open transaction, the
+   owner can run `ah-switch inhibit-clear --asked "WORDS"`, recording what was
+   checked. Never remove `decisions.inhibit` by hand. Confirm `ah-switch status`
+   reports `decisions: not inhibited` before running
+   `WITNESS acknowledge --config CONFIG`, then request fresh signed status.
    A lost acknowledgement reply requires a fresh status read before deciding
    to retry. Recovery mode remains service-inhibited after acknowledgement.
    End the recovery process cleanly, start the verified unit and check status
@@ -266,15 +277,19 @@ request ID to bypass an unresolved mutation.
 
 ## Backup, restore and rollback
 
-Take a consistent backup while the service is stopped, including the complete
-store and the protected identity material. Retain verification keys and
+Stop the service and back up the complete store, including hidden files.
+Back up the signing seed separately, encrypted and in the owner's offline custody.
+Keep private TLS keys out of the store backup as well. Retain verification keys and
 owner-signed activation records outside that backup. Keep signed receipts
 and challenged sequence/digest observations outside the witness after each
 accepted pilot transition. A status line is a verified summary. Retain the
 actual signed receipts when independently verifiable evidence is needed.
 
 After a known restore, isolate all copies of the signer and store, keep
-managed admission closed, and inspect through `recover`. A directory lock
+managed admission closed, and fence the old identity before using any key
+to inspect the evidence through attended `recover`. Never reactivate the old
+seed beside a live instance. Returning a restored store to service requires
+a fresh identity and a higher externally recorded epoch. A directory lock
 and key-file lock protect only those particular filesystem objects. A copied
 directory and copied key can sign conflicting histories. Replay detects a
 journal suffix missing from just one file. Matching truncation of **both**
