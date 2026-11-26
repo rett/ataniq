@@ -40,8 +40,12 @@ func TestCrashAndPartitionTable(t *testing.T) {
 		name  string
 		check func(*testing.T)
 	}{
-		{"Before fresh header sync, after header sync before enrollment CAS, after enrollment CAS before reply", func(t *testing.T) {
-			if _, err := NewLedger(Header{}); err == nil {
+		{"Before fresh header sync / after header sync but before enrollment CAS / after enrollment CAS before reply", func(t *testing.T) {
+			raw, err := header.Bytes()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := NewLedgerFromHeader(raw[:len(raw)/2]); err == nil {
 				t.Fatal("incomplete header")
 			}
 			s := fresh(t)
@@ -52,13 +56,22 @@ func TestCrashAndPartitionTable(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			other := header
+			other.LedgerID = "orphan"
+			orphan, err := NewLedger(other)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if VerifyCheckpoint(orphan.Checkpoint(), s.ledger.Checkpoint()) == nil {
+				t.Fatal("adopted orphan")
+			}
 			if _, ok := l.Row(key); ok {
 				t.Fatal("enrollment assigned a holder")
 			}
 			s.steps(t, "seed", seedSteps[:1])
 			assertHolder(t, s.ledger, legacy, 1, false)
 		}},
-		{"Before append for any table row including receipt, abort, hold or rollback", func(t *testing.T) {
+		{"Before append for any table row, including receipt, abort, hold or rollback", func(t *testing.T) {
 			for _, end := range []Kind{HoldReviewed, RollbackFreeze, Aborted, AbortedClosed} {
 				s := seeded(t)
 				switch end {
@@ -74,6 +87,13 @@ func TestCrashAndPartitionTable(t *testing.T) {
 					before, err := Replay(header, s.events[:i], testKey{})
 					if err != nil {
 						t.Fatal(err)
+					}
+					if e.Command.Kind == Freeze {
+						row, _ := before.Row(key)
+						gate := startGate{projection: row.PublicDigest, qargiAvailable: true}
+						if _, ok := Lookup(before, key, e.Command.TransferID, ""); ok || gate.permits(before, row.Head) {
+							t.Fatal("absent begin reopened locally closed route")
+						}
 					}
 					proposed, _, err := Decide(before, e.Command)
 					if proposed == nil || err != nil {
@@ -96,6 +116,15 @@ func TestCrashAndPartitionTable(t *testing.T) {
 			s := forward(t, 7)
 			pin := s.ledger.Checkpoint()
 			s.steps(t, "T", forwardSteps[7:8])
+			raw, err := s.events[len(s.events)-1].RecordBytes()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, cut := range []int{1, len(raw) / 2, len(raw) - 1} {
+				if _, err := DecodeRecord(raw[:cut]); err == nil {
+					t.Fatal("accepted torn frame", cut)
+				}
+			}
 			if _, err := recoverAt(s.events, pin); !errors.Is(err, ErrCheckpoint) {
 				t.Fatal(err)
 			}
@@ -109,6 +138,19 @@ func TestCrashAndPartitionTable(t *testing.T) {
 			s := forward(t, 8)
 			last := s.events[len(s.events)-1]
 			pin := s.ledger.Checkpoint()
+			old, err := Replay(header, s.events[:len(s.events)-1], testKey{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, sent := recoverPublication(s.events, old.Checkpoint(), true); sent {
+				t.Fatal("broadcast staged commit")
+			}
+			if _, sent := recoverPublication(s.events, pin, false); sent {
+				t.Fatal("published after session loss")
+			}
+			if published, ok := recoverPublication(s.events, pin, true); !ok || published.Result != last.Result {
+				t.Fatal("lost acknowledged publication")
+			}
 			l, err := recoverAt(s.events, pin)
 			if err != nil {
 				t.Fatal(err)
@@ -121,8 +163,9 @@ func TestCrashAndPartitionTable(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
-		{"Before or after writing inventory, belief, decision or other evidence", func(t *testing.T) {
+		{"Before/after writing an inventory, belief, decision or other evidence object", func(t *testing.T) {
 			s := forward(t, 1)
+			objects := objectStore{}
 			for _, step := range forwardSteps[1:4] {
 				c := next(s.ledger, key, step.kind, "T", "")
 				missing := c
@@ -136,12 +179,72 @@ func TestCrashAndPartitionTable(t *testing.T) {
 				bad.Evidence = slices.Clone(c.Evidence)
 				bad.Evidence[0].Digest = ""
 				refused(t, s.ledger, bad, ErrEvidence)
+				ref := c.Evidence[0]
+				if objects.resolves(ref) {
+					t.Fatal("evidence present before write")
+				}
+				content := []byte(ref.Kind + ref.Subject + ref.Outcome)
+				objects[ref.Digest] = content
+				if !objects.resolves(ref) {
+					t.Fatal("bad fixture digest")
+				}
 				s.accept(t, c)
+				saved, _ := s.ledger.Transfer(key, "T")
+				var ack Evidence
+				switch step.kind {
+				case Inventory:
+					ack = saved.Inventory
+				case BeliefAccepted:
+					ack = saved.Belief
+				case Reserve:
+					ack = saved.Decision
+				}
+				if !objects.resolves(ack) {
+					t.Fatal("lost acknowledged reference")
+				}
+				delete(objects, ack.Digest)
+				dependentKind := map[Kind]Kind{Inventory: BeliefAccepted, BeliefAccepted: Reserve, Reserve: FenceReceipt}[step.kind]
+				dependent := next(s.ledger, key, dependentKind, "T", "worker")
+				decideDependent := func() error {
+					if !objects.resolves(ack) {
+						return ErrEvidence
+					}
+					_, _, err := Decide(s.ledger, dependent)
+					return err
+				}
+				if err := decideDependent(); err != ErrEvidence {
+					t.Fatal("gate accepted missing evidence", err)
+				}
+				objects[ack.Digest] = []byte("substituted")
+				if objects.resolves(ack) {
+					t.Fatal("substituted object verified")
+				}
+				objects[ack.Digest] = content
+				if err := decideDependent(); err != nil {
+					t.Fatal("restoring exact object failed", err)
+				}
 			}
 		}},
-		{"Before or after route intent, actual effect start, or outcome write", func(t *testing.T) {
+		{"Before/after route intent, actual effect start, or outcome write", func(t *testing.T) {
 			s := forward(t, 4)
 			c := next(s.ledger, key, FenceReceipt, "T", "worker")
+			child := Effect{"child", "worker"}
+			broker := routeBroker{}
+			if broker.start(child) || !broker.begin(child) {
+				t.Fatal("intent ordering")
+			}
+			restart := routeBroker{journal: broker.journal}
+			if restart.start(child) || !broker.start(child) || broker.start(child) {
+				t.Fatal("effect started without fresh intent")
+			}
+			restart = routeBroker{journal: broker.journal}
+			if restart.begin(child) || restart.start(child) {
+				t.Fatal("retried unresolved effect")
+			}
+			restart.journal.sealed = true
+			if _, ok := restart.journal.fence(c); ok {
+				t.Fatal("sealed with an uncertain outcome")
+			}
 			unsettled := c
 			unsettled.Evidence = c.Evidence[:1]
 			refused(t, s.ledger, unsettled, ErrEvidence)
@@ -150,24 +253,74 @@ func TestCrashAndPartitionTable(t *testing.T) {
 			wrong.Evidence[1].Route = "qargi"
 			refused(t, s.ledger, wrong, ErrEvidence)
 			assertHolder(t, s.ledger, legacy, 1, false)
-			s.accept(t, c)
+			restart.journal.outcome = child
+			durable, ok := restart.journal.fence(c)
+			if !ok {
+				t.Fatal("missing settled receipt")
+			}
+			s.accept(t, durable)
 			tr, _ := s.ledger.Transfer(key, "T")
 			if len(tr.Outstanding) != 0 {
 				t.Fatal("receipt did not settle the child")
 			}
 		}},
-		{"Before or after sealing a route, writing its receipt, or recording the receipt at home", func(t *testing.T) {
-			s := forward(t, 5)
+		{"Before/after sealing a route, writing its receipt, or recording the receipt at home", func(t *testing.T) {
+			s := forward(t, 4)
+			c := next(s.ledger, key, FenceReceipt, "T", "worker")
+			child := Effect{"child", "worker"}
+			route := routeJournal{intent: child, outcome: child}
+			if _, ok := route.fence(c); ok {
+				t.Fatal("receipt without seal")
+			}
+			route.sealed = true
+			reopened := routeBroker{journal: route}
+			if reopened.begin(Effect{"other", "worker"}) {
+				t.Fatal("restart unsealed route")
+			}
+			first, ok := route.fence(c)
+			if !ok {
+				t.Fatal("missing receipt")
+			}
+			recoveredRoute := route
+			retry := c
+			retry.RequestID = "replacement"
+			second, ok := recoveredRoute.fence(retry)
+			if !ok || !reflect.DeepEqual(first, second) {
+				t.Fatal("lost reply changed the sealed receipt")
+			}
+			s.accept(t, second)
 			refused(t, s.ledger, next(s.ledger, key, Fenced, "T", ""), ErrEvidence)
 			refused(t, s.ledger, next(s.ledger, key, FenceReceipt, "T", "worker"), ErrEvidence)
 			s.steps(t, "T", forwardSteps[5:7])
 			assertHolder(t, s.ledger, legacy, 1, false)
 		}},
-		{"Before or after Qargi applies the signed event and records its receipt", func(t *testing.T) {
+		{"Before/after Qargi applies the signed event and records its receipt", func(t *testing.T) {
 			s := forward(t, 8)
 			c := next(s.ledger, key, ConfirmReceipt, "T", "qargi")
 			refused(t, s.ledger, next(s.ledger, key, Open, "T", ""), ErrEvidence)
-			e := s.accept(t, c)
+			commit := s.events[len(s.events)-1]
+			prior := projectionTxn{head: commit.Command.Expected, digest: commit.Public.PreviousPublicDigest}
+			leases := [2]bool{true, false}
+			if partial, err := prior.confirm(commit, c, leases); err != ErrEvidence || !reflect.DeepEqual(partial, prior) {
+				t.Fatal("published partial feature release")
+			}
+			leases[1] = true
+			staged, err := prior.confirm(commit, c, leases)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prior.receipt.RequestID != "" || prior.head == commit.Result.Head {
+				t.Fatal("staged projection visible")
+			}
+			installed := staged
+			if installed.head != commit.Result.Head || !reflect.DeepEqual(installed.receipt, c) {
+				t.Fatal("projection and receipt separated")
+			}
+			recoveredTxn, err := installed.install(commit, Command{})
+			if err != nil || !reflect.DeepEqual(installed, recoveredTxn) {
+				t.Fatal("redelivery changed projection receipt")
+			}
+			e := s.accept(t, recoveredTxn.receipt)
 			recovered, err := recoverAt(s.events, s.ledger.Checkpoint())
 			if err != nil {
 				t.Fatal(err)
@@ -178,7 +331,7 @@ func TestCrashAndPartitionTable(t *testing.T) {
 			}
 			assertHolder(t, recovered, managed, 2, false)
 		}},
-		{"Before or after opening locally on either Open or Aborted", func(t *testing.T) {
+		{"Before/after opening locally on either Open or Aborted", func(t *testing.T) {
 			for _, abort := range []bool{false, true} {
 				s := forward(t, 2)
 				if abort {
@@ -188,20 +341,32 @@ func TestCrashAndPartitionTable(t *testing.T) {
 				}
 				opened := s.events[len(s.events)-1].Result.Head
 				r, _ := s.ledger.Row(key)
-				if !r.Permits(opened) {
+				gate := startGate{projection: r.PublicDigest, qargiAvailable: true}
+				if gate.permits(s.ledger, opened) {
+					t.Fatal("local failure admitted effect")
+				}
+				gate.local = opened
+				if !gate.permits(s.ledger, opened) || !r.Permits(opened) {
 					t.Fatal("missing fresh admission")
 				}
 				s.accept(t, next(s.ledger, key, Freeze, "U", ""))
 				r, _ = s.ledger.Row(key)
-				if r.Permits(opened) {
+				if gate.permits(s.ledger, opened) || r.Permits(opened) {
 					t.Fatal("delayed local open")
 				}
 			}
 		}},
-		{"Lost begin, commit, abort, confirmation or rollback reply, duplicate or reordered request", func(t *testing.T) {
-			s := forward(t, 8)
+		{"Lost begin, commit, abort, confirmation or rollback reply; duplicate or reordered request", func(t *testing.T) {
+			s := forward(t, 10)
 			s.steps(t, "U", []step{{kind: RollbackFreeze}, {kind: AbortPrepared}, {kind: AbortedClosed}})
+			recovered, err := recoverAt(s.events, s.ledger.Checkpoint())
+			if err != nil {
+				t.Fatal(err)
+			}
 			for _, e := range s.events {
+				if got, ok := Lookup(recovered, key, e.Command.TransferID, e.Command.RequestID); !ok || got != e.Result {
+					t.Fatal("lost operation after restart")
+				}
 				dup, res, err := Decide(s.ledger, e.Command)
 				if err != nil || dup != nil || res != e.Result {
 					t.Fatal(e.Command.Kind, res, err)
@@ -209,6 +374,15 @@ func TestCrashAndPartitionTable(t *testing.T) {
 				bad := e.Command
 				bad.Expected.Generation++
 				refused(t, s.ledger, bad, ErrConflict)
+			}
+			found := false
+			for _, event := range s.events {
+				if event.Command.TransferID == "T" && event.Command.Kind == ConfirmReceipt {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("trace lost no forward confirmation reply")
 			}
 			got, _ := Lookup(s.ledger, key, "T", "")
 			if got.Disposition != "committed" {
@@ -221,6 +395,22 @@ func TestCrashAndPartitionTable(t *testing.T) {
 			a, b := trace{ledger: s.ledger}, trace{ledger: s.ledger}
 			a.steps(t, "A", forwardSteps[:2])
 			b.steps(t, "B", forwardSteps[:1])
+			baseRow, _ := s.ledger.Row(key)
+			cursor := projectionTxn{head: baseRow.Head, digest: baseRow.PublicDigest}
+			if _, err := cursor.install(a.events[1], Command{}); err != ErrChain {
+				t.Fatal("projection skipped a revision")
+			}
+			first, err := cursor.install(a.events[0], Command{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := first.install(b.events[0], Command{}); err != ErrChain {
+				t.Fatal("conflicting signed revision")
+			}
+			stale := startGate{baseRow.Head, s.events[len(s.events)-1].Public.PreviousPublicDigest, true}
+			if !(startGate{baseRow.Head, cursor.digest, true}).permits(s.ledger, baseRow.Head) || stale.permits(s.ledger, baseRow.Head) {
+				t.Fatal("stale projection admitted")
+			}
 			if _, err := Apply(s.ledger, a.events[1]); !errors.Is(err, ErrChain) {
 				t.Fatal(err)
 			}
@@ -239,7 +429,23 @@ func TestCrashAndPartitionTable(t *testing.T) {
 			}
 		}},
 		{"Home, witness or potentially executing peer unreachable", func(t *testing.T) {
-			s := forward(t, 5)
+			s := forward(t, 4)
+			s.steps(t, "T", []step{{kind: FenceReceipt, route: "qargi"}})
+			open := seeded(t)
+			row, _ := open.ledger.Row(key)
+			gate := startGate{row.Head, row.PublicDigest, true}
+			if !gate.permits(open.ledger, row.Head) || gate.permits(Ledger{}, row.Head) {
+				t.Fatal("start without home")
+			}
+			restored, err := recoverAt(s.events, s.ledger.Checkpoint())
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.ledger = restored
+			tr, _ := s.ledger.Transfer(key, "T")
+			if !slices.Contains(tr.Outstanding, Effect{"child", "worker"}) {
+				t.Fatal("peer partition has no outstanding child")
+			}
 			if _, err := recoverAt(s.events, Checkpoint{}); !errors.Is(err, ErrCheckpoint) {
 				t.Fatal(err)
 			}
@@ -254,15 +460,39 @@ func TestCrashAndPartitionTable(t *testing.T) {
 			refused(t, s.ledger, c, ErrEvidence)
 			s.steps(t, "T", forwardSteps[1:5])
 			refused(t, s.ledger, next(s.ledger, key, Fenced, "T", ""), ErrEvidence)
-			s.steps(t, "T", forwardSteps[5:8])
+			release := next(s.ledger, key, FenceReceipt, "T", "qargi")
+			journal := releaseJournal{release.RequestID: release.Evidence[0]}
+			if _, err := journal.query(release.RequestID, false); err != errUnavailable {
+				t.Fatal("partition resolved release")
+			}
+			if _, err := journal.query("new-attempt", true); err != ErrEvidence {
+				t.Fatal("wrong release request")
+			}
+			proof, err := journal.query(release.RequestID, true)
+			if err != nil || proof != release.Evidence[0] {
+				t.Fatal("original release unavailable")
+			}
+			release.Evidence = []Evidence{proof}
+			s.accept(t, release)
+			s.steps(t, "T", forwardSteps[6:8])
 			s.steps(t, "T", forwardSteps[9:10])
 			refused(t, s.ledger, next(s.ledger, key, Open, "T", ""), ErrEvidence)
 			s.steps(t, "T", forwardSteps[8:9])
 			s.steps(t, "T", forwardSteps[10:])
-			if _, err := recoverAt(s.events, Checkpoint{}); err == nil {
-				t.Fatal("unverified current authority")
+			home, err := recoverAt(s.events, s.ledger.Checkpoint())
+			if err != nil {
+				t.Fatal(err)
 			}
-			assertHolder(t, s.ledger, managed, 2, true)
+			row, _ := home.Row(key)
+			gate := startGate{row.Head, row.PublicDigest, true}
+			if !gate.permits(home, row.Head) {
+				t.Fatal("matching authority unavailable")
+			}
+			gate.qargiAvailable = false
+			if gate.permits(home, row.Head) {
+				t.Fatal("dependent effect started while Qargi unavailable")
+			}
+			assertHolder(t, home, managed, 2, true)
 		}},
 		{"Both sides claim ownership, a delayed legacy restart appears, or evidence shows two actual routes", func(t *testing.T) {
 			s := seeded(t)
@@ -278,8 +508,28 @@ func TestCrashAndPartitionTable(t *testing.T) {
 					t.Fatal("legacy claim")
 				}
 			}
-			s.steps(t, "U", []step{{kind: RollbackFreeze}})
-			assertHolder(t, s.ledger, managed, 2, false)
+			dispute := next(s.ledger, key, ConfirmReceipt, "T", "worker")
+			dispute.Evidence[0].Outcome = "legacy-still-running"
+			dispute.Evidence[0].Digest = sha256Hex([]byte("two routes observed"))
+			s.accept(t, dispute)
+			home, err := recoverAt(s.events, s.ledger.Checkpoint())
+			if err != nil {
+				t.Fatal(err)
+			}
+			closed, _ := home.Row(key)
+			if closed.Permits(closed.Head) || closed.Permits(old) || closed.Permits(r.Head) {
+				t.Fatal("claim elected during conflict")
+			}
+			tr, _ := home.Transfer(key, "T")
+			if !slices.Contains(tr.Disputes, dispute.Evidence[0]) {
+				t.Fatal("lost live-route evidence")
+			}
+			resolve := next(home, key, ReceiptReconciled, "T", "")
+			resolve.Evidence = []Evidence{{Kind: "reconciliation", Issuer: dispute.Evidence[0].Issuer, Subject: dispute.Evidence[0].Digest, Scope: closed.Head, TransferID: "T", Digest: sha256Hex([]byte("old executor stopped and work accounted for")), Revision: "review", Outcome: "reconciled"}}
+			s.accept(t, resolve)
+			refused(t, s.ledger, next(s.ledger, key, Open, "T", ""), ErrEvidence)
+			s.steps(t, "T", forwardSteps[8:])
+			assertHolder(t, s.ledger, managed, 2, true)
 		}},
 		{"Crash during the 14-day hold or reverse transfer", func(t *testing.T) {
 			s := forward(t, len(forwardSteps))
@@ -294,6 +544,18 @@ func TestCrashAndPartitionTable(t *testing.T) {
 			after, _ := l.Transfer(key, "T")
 			if prior.Hold.Preservation == (Evidence{}) || !reflect.DeepEqual(prior, after) {
 				t.Fatal("hold history lost")
+			}
+			row, _ := l.Row(key)
+			if row.Head.TransferID != "U" {
+				t.Fatal("lost reverse transfer")
+			}
+			s.ledger = l
+			s.accept(t, command(row, after, HoldReviewed, "T", ""))
+			s.steps(t, "U", forwardSteps[8:])
+			assertHolder(t, s.ledger, legacy, 3, true)
+			reviewed, _ := s.ledger.Transfer(key, "T")
+			if reviewed.Hold.Review.Subject != prior.Hold.Preservation.Digest {
+				t.Fatal("hold review failed after crash")
 			}
 		}},
 	}
