@@ -170,11 +170,11 @@ func TestCrashAndResume(t *testing.T) {
 	// A links phase puts the links back and then goes back as a failed
 	// health check does: the new release's services stopped, the old
 	// release reloaded and checked.
-	putBack := want{rel2, rel1, ResultRolledBack, "interrupted", "ok", false, with(map[string]int{"stop-app": 1, "reload-old": 1, "health-old": 1})}
+	putBack := want{rel2, rel1, ResultRolledBack, "interrupted", "ok", false, with(map[string]int{"stop-all": 1, "stop-app": 1, "reload-old": 1, "health-old": 1})}
 	completed := want{rel3, rel2, ResultOK, "", "", false, with(map[string]int{"reload-units": 1, "health-probe": 1})}
 	recorded := want{rel3, rel2, ResultOK, "", "", false, with(map[string]int{"reload-units": 1, "health-probe": 1})}
-	restored := want{rel2, rel1, ResultRolledBack, "health", "ok", false, with(map[string]int{"stop-app": 1, "reload-old": 1, "health-old": 1})}
-	restoredRecorded := want{rel2, rel1, ResultRolledBack, "health", "ok", false, with(map[string]int{"reload-old": 1, "health-old": 1})}
+	restored := want{rel2, rel1, ResultRolledBack, "health", "ok", false, with(map[string]int{"stop-all": 1, "stop-app": 1, "reload-old": 1, "health-old": 1})}
+	restoredRecorded := restored
 	stopped := want{rel2, rel1, ResultFailedRecovery, "health", "failed", true, with(map[string]int{"stop-all": 1, "stop-app": 1, "stop-old": 1})}
 	stoppedRecorded := want{rel2, rel1, ResultFailedRecovery, "health", "failed", true, none}
 
@@ -231,7 +231,7 @@ func TestCrashAndResume(t *testing.T) {
 			if got := e.highest(); got != tc.crashed.highest {
 				t.Errorf("highest %q right after the crash, want %s", got, tc.crashed.highest)
 			}
-			if rec := e.record(); rec != before && tc.point != CrashRecord {
+			if rec := e.record(); !reflect.DeepEqual(rec, before) && tc.point != CrashRecord {
 				t.Errorf("deploy.json changed by a crash: %+v", rec)
 			}
 			if got := e.status(); !strings.Contains(got, "interrupted: switch to "+rel3+" in phase "+tc.phase) {
@@ -742,7 +742,7 @@ func TestRestorePreviousFailing(t *testing.T) {
 	}
 	// stop-app: going back first stops rel3's services, then the
 	// stopping phase runs every list.
-	e.ran(map[string]int{"reload-old": 0, "stop-all": 1, "stop-app": 2, "stop-old": 1})
+	e.ran(map[string]int{"reload-old": 0, "stop-all": 2, "stop-app": 2, "stop-old": 1})
 	e.noJournal()
 }
 
@@ -1528,7 +1528,7 @@ func TestAckKeptWhenTheOutcomesCannotBeWritten(t *testing.T) {
 			if _, err := os.Stat(e.owedPath()); err != nil {
 				t.Errorf("owed.json: %v", err)
 			}
-			if rec := e.record(); rec != recBefore {
+			if rec := e.record(); !reflect.DeepEqual(rec, recBefore) {
 				t.Errorf("an acknowledgement was recorded: %+v", rec)
 			}
 			if got := e.owed(); !reflect.DeepEqual(got, owed) {
@@ -1648,7 +1648,7 @@ func TestAckBoundToTheOutcomesSeen(t *testing.T) {
 	if code := e.ackTxns(a, "words for A, again"); code != ExitOK || !strings.Contains(e.last, "recorded already") {
 		t.Errorf("the repeated ack of A: exit %d\n%s", code, e.last)
 	}
-	if e.record() != receipt {
+	if !reflect.DeepEqual(e.record(), receipt) {
 		t.Errorf("the repeated ack changed the receipt: %+v", e.record())
 	}
 	// B settles and is owed; A's ack, repeated once more, leaves it owed.

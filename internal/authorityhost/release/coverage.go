@@ -121,12 +121,16 @@ func (c *checker) coverage(root *os.Root, m switcher.Manifest, id string, files 
 	}
 
 	if hasWitness {
-		const validator = "share/check-witness-unit-link"
-		_, included := files[validator]
-		if !included || !slices.ContainsFunc(l.validators, func(args []string) bool {
-			return slices.Equal(args, []string{"sh", relDir + "/" + validator, "/" + noaicheck.WitnessUnit})
-		}) {
-			c.add(CodeWitness, switcher.ValidatorsList)
+		for _, v := range []struct{ script, arg string }{
+			{"share/check-witness-unit-link", "/" + noaicheck.WitnessUnit},
+			{"share/check-witness-stop", "/etc/authority-host/stop.list"},
+		} {
+			_, included := files[v.script]
+			if !included || !slices.ContainsFunc(l.validators, func(args []string) bool {
+				return slices.Equal(args, []string{"sh", relDir + "/" + v.script, v.arg})
+			}) {
+				c.add(CodeWitness, switcher.ValidatorsList)
+			}
 		}
 	}
 	if hasWitness && !slices.ContainsFunc(l.health, func(args []string) bool {

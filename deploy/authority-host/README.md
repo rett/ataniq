@@ -613,8 +613,10 @@ verifies is not used, and the switch says so (`fallback: none: ...`).
 If the reload, the health check or the post-activation check fails, the
 journal says `restoring` before anything is put back. First the failed
 release's services are stopped, so that nothing only it runs survives
-going back: its own `stop.list` when it still verifies, the host's own
-stop list when it does not. Then `current` is renamed back to the
+going back. The host stop list runs first, followed by the failed release's
+list if it verifies. The manager must report each shipped service inactive
+or absent before the fallback can reload. A failure leaves the journal
+retryable and decisions inhibited. Then `current` is renamed back to the
 fallback, `previous` is put back as it was, both synced, and the
 fallback's own `reload.list` and `health.cmd` run (never the failed
 release's), then the no-AI check of its phase post (the fallback's own
@@ -1300,7 +1302,7 @@ see its messages. The text of a broken state file is not repeated either.
 | No-AI check fails after the reload and health (phase post), or `nft` fails | Back to the old release, as for a failed health check; `failed_step: postcheck` |
 | A validator fails | Refused at validate; nothing reloaded |
 | Crash during the package step | The next command makes sure the step has ended, stops the decision services and records `package-step-interrupted` with the package state unknown; decisions stay inhibited |
-| Reload or health fails after the switch | The new release's stop list (the host's, when it no longer verifies), then back to the old release, with its own reload and health lists and its no-AI check; `rolled-back`, and decisions are no longer inhibited |
+| Reload or health fails after the switch | The host stop list, the verified new release's stops and a manager check of its shipped services, then back to the old release, with its own reload and health lists and its no-AI check; `rolled-back`, and decisions are no longer inhibited |
 | Going back fails (putting `previous` back included), or the old release is not healthy or fails its no-AI check | The host's `stop.list` and the stop lists of both releases run; `failed-recovery` with `restored_health: failed`; decisions stay inhibited; the console is needed |
 | First switch, or the old release missing or no longer verifying, and the new one fails | `current` stays; the host's and the release's stop lists run; `failed` or `failed-recovery`; decisions stay inhibited, across a reboot |
 | `decisions.inhibit` there after a failure | Decision-capable services may run but refuse every decision; a later healthy switch or `inhibit-clear --asked WORDS` removes it |

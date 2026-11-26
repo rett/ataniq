@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -119,7 +120,8 @@ func TestDeployRecord(t *testing.T) {
 		PackageSnapshot: "2026-11-01",
 		CounterUsed:     true,
 	}
-	if rec != want {
+	want.CurrentUnits = []string{"app.service"}
+	if !reflect.DeepEqual(rec, want) {
 		t.Errorf("deploy.json:\n%+v\nwant\n%+v", rec, want)
 	}
 	data, err := os.ReadFile(filepath.Join(e.root, StateDir, DeployFile))

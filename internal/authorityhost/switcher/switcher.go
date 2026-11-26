@@ -448,6 +448,11 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		CheckProgram: check.prog,
 		CheckSHA256:  check.sum,
 	}
+	t.j.CandidateUnits = rel.units
+	t.j.OldUnits = a.rec.CurrentUnits
+	if a.fallback != nil {
+		t.j.OldUnits = a.fallback.units
+	}
 	if rollback {
 		t.j.Direction = DirRollback
 	}
@@ -898,6 +903,9 @@ func (s *Switcher) readState(a *attempt) (Record, int, bool) {
 			s.printf("result: failed before step 1; nothing changed or recorded")
 			return Record{}, ExitFailed, true
 		}
+	}
+	if a.rec.CurrentID == last.CurrentID {
+		a.rec.CurrentUnits = last.CurrentUnits
 	}
 	a.rec.PackageSnapshot = last.PackageSnapshot
 	a.rec.PackageState, a.rec.PackageFrom, a.rec.PackageTo, a.rec.PackageStatedAt = last.PackageState, last.PackageFrom, last.PackageTo, last.PackageStatedAt
