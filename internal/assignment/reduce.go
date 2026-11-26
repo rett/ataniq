@@ -245,7 +245,7 @@ func advance(r *Row, t *Transfer, c Command, p *evidenceSet) error {
 		if _, err := p.take("candidate", t.Candidate.ID, "never-executed"); err != nil {
 			return err
 		}
-		h.Phase = PhaseAborting
+		h.Phase, t.Disposition = PhaseAborting, "pending"
 	case Aborted, AbortedClosed:
 		if h.Phase != PhaseAborting {
 			return ErrPhase

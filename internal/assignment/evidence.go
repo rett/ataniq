@@ -10,10 +10,17 @@ import (
 // the command even when its required assertions were present.
 type evidenceSet []Evidence
 
+func validDigest(s string) bool {
+	if len(s) != 64 || strings.ToLower(s) != s {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
+
 func proofs(c Command, scope Head) (evidenceSet, error) {
 	for i, e := range c.Evidence {
-		digest, err := hex.DecodeString(e.Digest)
-		if (e.Kind == "effect") != (e.Route != "") || err != nil || len(digest) != 32 || strings.ToLower(e.Digest) != e.Digest ||
+		if (e.Kind == "effect") != (e.Route != "") || !validDigest(e.Digest) ||
 			e.Scope != scope || e.TransferID != c.TransferID || e.Kind == "" ||
 			e.Issuer == "" || e.Subject == "" || e.Revision == "" || e.Outcome == "" {
 			return nil, ErrEvidence

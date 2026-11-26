@@ -1,0 +1,271 @@
+package assignment
+
+import (
+	"errors"
+	"math"
+	"reflect"
+	"slices"
+	"strings"
+	"testing"
+)
+
+var header = Header{1, "home", "store", "incarnation", "enrolled-key", "ledger"}
+var errSignature = errors.New("test signature mismatch")
+
+type testKey struct{}
+
+func (testKey) Sign(h Header, e Event) (string, error) {
+	return h.KeyID + "/" + e.Result.EventID, nil
+}
+func (k testKey) Verify(h Header, e Event) error {
+	want, _ := k.Sign(h, e)
+	if e.Signature != want {
+		return errSignature
+	}
+	return nil
+}
+
+var _ Signer = testKey{}
+
+func TestCanonicalCommitments(t *testing.T) {
+	s := fresh(t)
+	c := next(s.ledger, key, Seed, "T", "")
+	other := c
+	c.Actor, c.Authorization = "a\x00b", "c"
+	other.Actor, other.Authorization = "a", "b\x00c"
+	one, _ := requestDigest(c)
+	two, _ := requestDigest(other)
+	if one == two {
+		t.Fatal("field boundary lost")
+	}
+	e := s.accept(t, c)
+	hash, _ := ledgerDigest(e)
+	if hash == one || hash == e.Result.EventID || one == e.Result.EventID {
+		t.Fatal("digest domains")
+	}
+	old := hash
+	e.Signature += "changed"
+	hash, _ = ledgerDigest(e)
+	if hash == old {
+		t.Fatal("ledger omits signature")
+	}
+	other.Evidence = slices.Clone(c.Evidence)
+	slices.Reverse(other.Evidence)
+	other.Actor, other.Authorization = c.Actor, c.Authorization
+	refused(t, s.ledger, other, ErrConflict)
+	other.Actor = strings.Repeat("x", recordLimit)
+	refused(t, s.ledger, other, ErrConflict)
+	other.RequestID = "fresh"
+	refused(t, s.ledger, other, ErrLimit)
+}
+
+func TestInterleavedRows(t *testing.T) {
+	s := fresh(t)
+	other := key
+	other.Project = "second"
+	for _, step := range seedSteps {
+		for _, k := range []Key{key, other} {
+			e := s.accept(t, next(s.ledger, k, step.kind, "same", step.route))
+			if e.Sequence != uint64(len(s.events)) {
+				t.Fatal(e.Sequence)
+			}
+		}
+	}
+	l, err := Replay(header, s.events, testKey{})
+	if err != nil || !reflect.DeepEqual(l, s.ledger) {
+		t.Fatal(err)
+	}
+	a, _ := Lookup(l, key, "same", "")
+	b, _ := Lookup(l, other, "same", "")
+	if a.Head.Key != key || b.Head.Key != other || a.Head.Revision != b.Head.Revision || a.EventID == b.EventID {
+		t.Fatal(a, b)
+	}
+}
+
+type trace struct {
+	ledger Ledger
+	events []Event
+}
+
+func fresh(t *testing.T) trace {
+	t.Helper()
+	l, err := NewLedger(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return trace{ledger: l}
+}
+
+func next(l Ledger, key Key, k Kind, id, route string) Command {
+	r, ok := l.Row(key)
+	if !ok {
+		r.Head.Key = key
+	}
+	tr, _ := l.Transfer(key, r.LastTransferID)
+	return command(r, tr, k, id, route)
+}
+
+func (s *trace) accept(t *testing.T, c Command) Event {
+	t.Helper()
+	e, result, err := Decide(s.ledger, c)
+	if err != nil || e == nil || e.Result != result {
+		t.Fatalf("decide %s: %v, %+v", c.Kind, err, result)
+	}
+	e.Signature, err = (testKey{}).Sign(header, *e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.ledger, err = Apply(s.ledger, *e)
+	if err != nil {
+		t.Fatalf("apply %s: %v", c.Kind, err)
+	}
+	s.events = append(s.events, *e)
+	return *e
+}
+
+func (s *trace) steps(t *testing.T, id string, steps []step) {
+	t.Helper()
+	for _, x := range steps {
+		s.accept(t, next(s.ledger, key, x.kind, id, x.route))
+	}
+}
+
+func seeded(t *testing.T) trace {
+	t.Helper()
+	s := fresh(t)
+	s.steps(t, "seed", seedSteps)
+	return s
+}
+
+func refused(t *testing.T, l Ledger, c Command, want error) {
+	t.Helper()
+	e, _, err := Decide(l, c)
+	if e != nil || !errors.Is(err, want) {
+		t.Fatalf("%s: got event %v, error %v; want %v", c.Kind, e, err, want)
+	}
+}
+
+func TestHistoryAndIsolation(t *testing.T) {
+	s := seeded(t)
+	start := s.ledger
+	c := next(start, key, Freeze, "T", "")
+	competing := next(start, key, Freeze, "U", "")
+	e := s.accept(t, c)
+	c.Evidence[0].Subject = "changed"
+	refused(t, s.ledger, c, ErrConflict)
+	if e.Command.Evidence[0].Subject == "changed" {
+		t.Fatal("decision aliases caller evidence")
+	}
+	tr, _ := s.ledger.Transfer(key, "T")
+	tr.Routes[0] = "changed"
+	refused(t, s.ledger, competing, ErrStale)
+	s.steps(t, "T", forwardSteps[1:])
+	got, ok := Lookup(s.ledger, key, "T", "")
+	if !ok || got.Disposition != "confirmed" {
+		t.Fatal(got, ok)
+	}
+	dup, res, err := Decide(s.ledger, e.Command)
+	if err != nil || dup != nil || res != e.Result {
+		t.Fatal(dup, res, err)
+	}
+	if got, ok := Lookup(s.ledger, key, "T", c.RequestID); !ok || got != e.Result {
+		t.Fatal(got, ok)
+	}
+	if _, ok := Lookup(start, key, "T", ""); ok {
+		t.Fatal("older ledger changed")
+	}
+	c = next(s.ledger, key, Freeze, "T", "")
+	refused(t, s.ledger, c, ErrConflict)
+	replayed, err := Replay(header, s.events, testKey{})
+	if err != nil || !reflect.DeepEqual(replayed, s.ledger) {
+		t.Fatalf("replayed indexes: %v", err)
+	}
+}
+
+func TestAllCASFields(t *testing.T) {
+	s := seeded(t)
+	s.steps(t, "T", forwardSteps[:1])
+	for name, mutate := range map[string]func(*Command){
+		"project":         func(c *Command) { c.Expected.Key.Project += "2" },
+		"role":            func(c *Command) { c.Expected.Key.Role += "2" },
+		"generation":      func(c *Command) { c.Expected.Generation++ },
+		"revision":        func(c *Command) { c.Expected.Revision-- },
+		"binding":         func(c *Command) { c.Expected.BindingID = "other" },
+		"active transfer": func(c *Command) { c.Expected.TransferID = "U" },
+		"phase":           func(c *Command) { c.Expected.Phase = PhaseReserved },
+		"operation transfer": func(c *Command) {
+			c.TransferID = "U"
+			for i := range c.Evidence {
+				c.Evidence[i].TransferID = "U"
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := next(s.ledger, key, Inventory, "T", "")
+			mutate(&c)
+			refused(t, s.ledger, c, ErrStale)
+		})
+	}
+}
+
+func TestReplayChecksChainAndReduction(t *testing.T) {
+	s := seeded(t)
+	before := s.ledger
+	s.steps(t, "T", forwardSteps[:2])
+	for name, mutate := range map[string]func(*Event){
+		"gap":             func(e *Event) { e.Sequence++ },
+		"previous hash":   func(e *Event) { e.PreviousHash = "fork" },
+		"row predecessor": func(e *Event) { e.Command.Expected.Revision++; e.RequestDigest, _ = requestDigest(e.Command) },
+		"request digest":  func(e *Event) { e.Command.Actor = "other" },
+		"result":          func(e *Event) { e.Result.Head.Phase = PhaseConfirmed },
+		"schema":          func(e *Event) { e.Schema++ },
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := s.events[len(seedSteps)]
+			mutate(&e)
+			l, err := Apply(before, e)
+			if err == nil || !reflect.DeepEqual(l, before) {
+				t.Fatal("accepted or partially applied invalid event")
+			}
+		})
+	}
+	short, err := Replay(header, s.events[:len(seedSteps)], testKey{})
+	if err != nil || VerifyCheckpoint(short.Checkpoint(), before.Checkpoint()) != nil {
+		t.Fatal(err)
+	}
+	if VerifyCheckpoint(short.Checkpoint(), s.ledger.Checkpoint()) == nil {
+		t.Fatal("restored prefix matched newer pin")
+	}
+	fork := trace{ledger: before}
+	fork.steps(t, "U", forwardSteps[:1])
+	if _, err := Apply(fork.ledger, s.events[len(seedSteps)+1]); !errors.Is(err, ErrChain) {
+		t.Fatal(err)
+	}
+	bad := slices.Clone(s.events)
+	bad[1].Signature = "other"
+	if l, err := Replay(header, bad, testKey{}); !errors.Is(err, errSignature) || l.checkpoint != (Checkpoint{}) {
+		t.Fatal(err)
+	}
+}
+
+func TestCounterExhaustion(t *testing.T) {
+	s := seeded(t)
+	s.steps(t, "T", forwardSteps[:7])
+	for _, counter := range []string{"sequence", "revision", "generation"} {
+		t.Run(counter, func(t *testing.T) {
+			l := s.ledger
+			l.rows = map[Key]Row{key: l.rows[key]}
+			r := l.rows[key]
+			switch counter {
+			case "sequence":
+				l.checkpoint.Sequence = math.MaxUint64
+			case "revision":
+				r.Head.Revision = math.MaxUint64
+			case "generation":
+				r.Head.Generation = math.MaxUint64
+			}
+			l.rows[key] = r
+			refused(t, l, next(l, key, Commit, "T", ""), ErrOverflow)
+		})
+	}
+}
