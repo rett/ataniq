@@ -540,6 +540,10 @@ func ownerSettingsRun(a *app, o *ownerFlags, cfg *leaddaemon.Config) (scratchLoa
 	case s.keysPrefix || s.sinceSet:
 		// The key list alone: neither the settings folder nor the gate is
 		// looked at.
+		if err := a.requireInstance(*cfg); err != nil {
+			fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(err.Error()))
+			return nil, leaddaemon.ExitCode(err)
+		}
 		return nil, a.keysCheck(s, cfg.StateDir)
 	case !s.dirSet:
 		fmt.Fprint(a.stderr, "ataniqd run: --check needs --owner-settings DIR\n")
@@ -562,7 +566,7 @@ func ownerSettingsRun(a *app, o *ownerFlags, cfg *leaddaemon.Config) (scratchLoa
 // make, the socket paths of every lead's holder (a holder meets that limit
 // only when it starts, during the sitting), one line each, with what passes
 // and why a refusal fails, then what the daemon would read. It binds, locks,
-// makes and starts nothing. It ends 0 when nothing is refused, else 10.
+// makes and starts nothing. An identity refusal has the same exit code as run.
 func (a *app) ownerSettingsCheck(o *ownerFlags, cfg *leaddaemon.Config, p settingsPlace) int {
 	w := a.stdout
 	fails := 0
@@ -645,13 +649,11 @@ func (a *app) ownerSettingsCheck(o *ownerFlags, cfg *leaddaemon.Config, p settin
 			}
 		}
 	}
-	leads, err := p.cfg.Config.Leads()
-	if err != nil {
-		line("the root marker", err, "")
-	} else {
-		line("the root marker", canaryroot.Check(p.cfg.Config.StateRoot, p.cfg.Config.RuntimeRoot, leads[0].Role.Project(), p.getenv),
-			"the scratch place's marker is in "+p.state+", and neither root is, lies in or holds a default folder of the account")
+	leads, placeErr := p.cfg.Config.Leads()
+	if placeErr == nil {
+		placeErr = canaryroot.Check(p.cfg.Config.StateRoot, p.cfg.Config.RuntimeRoot, leads[0].Role.Project(), p.getenv)
 	}
+	line("the root marker", placeErr, "the scratch place's marker is in "+p.state+", and neither root is, lies in or holds a default folder of the account")
 	if o.gateSet {
 		var msg bytes.Buffer
 		quiet := *a
@@ -668,6 +670,17 @@ func (a *app) ownerSettingsCheck(o *ownerFlags, cfg *leaddaemon.Config, p settin
 		}
 	} else {
 		fmt.Fprintf(w, "note  the seat gate: no --seat-gate, so the daemon serves no gate\n")
+	}
+	exit := leaddaemon.ExitConfig
+	if placeErr != nil {
+		skip("instance identity", "the scratch place is refused")
+	} else {
+		identityErr := a.requireInstance(*cfg)
+		if identityErr != nil && fails == 0 {
+			exit = leaddaemon.ExitCode(identityErr)
+			fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(identityErr.Error()))
+		}
+		line("instance identity", identityErr, p.state)
 	}
 	sockErr := socketPaths(p, leads)
 	line("the socket paths", sockErr, fmt.Sprintf("the daemon's socket and every lead's holder sockets fit in a Unix socket address (%d bytes)", maxUnixSocketPath))
@@ -691,8 +704,8 @@ func (a *app) ownerSettingsCheck(o *ownerFlags, cfg *leaddaemon.Config, p settin
 		fmt.Fprintf(w, "check: %d refusal(s): the sitting failed preflight (exit %d): the daemon would start, but the start of the lead's holder would fail (its socket path does not fit); nothing was bound, locked, made or started\n", fails, leaddaemon.ExitConfig)
 		return leaddaemon.ExitConfig
 	case fails > 0:
-		fmt.Fprintf(w, "check: %d refusal(s): the sitting failed preflight (exit %d): the daemon would not start; nothing was bound, locked, made or started\n", fails, leaddaemon.ExitConfig)
-		return leaddaemon.ExitConfig
+		fmt.Fprintf(w, "check: %d refusal(s): the sitting failed preflight (exit %d): the daemon would not start; nothing was bound, locked, made or started\n", fails, exit)
+		return exit
 	}
 	fmt.Fprintf(w, "check: no refusal: the daemon would read these and start; nothing was bound, locked, made or started\n")
 	return leaddaemon.ExitOK

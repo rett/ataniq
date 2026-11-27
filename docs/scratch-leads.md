@@ -116,9 +116,12 @@ In order, by the owner's hand. The daemon never runs `ataniq-canary`.
    that carries the canary's marker, or a marker that is not the one this
    command writes, is refused. It makes no lead folder, no mirror and no runtime
    root. Exit status: 0 done, 1 failed, 2 usage.
-4. Start `ataniqd run --scratch CONFIG`. The daemon makes the runtime folder
+4. With the daemon stopped, run `ataniqd init --state-dir STATE_ROOT` once,
+   using the config's `state_root`. Record the authority and incarnation.
+   Any daemon build has this command.
+5. Start `ataniqd run --scratch CONFIG`. The daemon makes the runtime folder
    itself, like the skeleton does.
-5. Drive the leads from the console ([the console guide](terminal-console.md)),
+6. Drive the leads from the console ([the console guide](terminal-console.md)),
    which defines, starts, stops, messages and attaches.
 
 To read the leads' replies on the phone as well, run the daemon of the build
@@ -1266,7 +1269,7 @@ keeps its sample leads.
 **What the owner prepares**, on the daemon's host, before the first start:
 
 1. The scratch roots and the config, as in [the owner's steps](#the-owners-steps)
-   1 to 3: private roots that are not the account's defaults, the config of
+   1 to 4: private roots that are not the account's defaults, the config of
    mode 0600 outside both roots, the holder and sandbox inputs, and local
    throwaway source repositories. `ataniq-canary scratch-init --config CONFIG`
    writes only the root marker: it provisions no lead and does not set up the

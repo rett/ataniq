@@ -29,6 +29,7 @@ STEP  WHAT YOU DO
   9   Enter (the stand-in and probe copies are compared with the built ones).
  10   Start the daemon in T2 BEFORE pressing Enter at step 10, wait for the
       listening line, then Enter in T1:
+        @BIN@/ataniqd init --state-dir "@ROOT@/state"
         @BIN@/ataniqd run --canary @CONFIG@
       (Not before step 8: it needs its marker file. Waits a minute.) Then: yes.
  12   Lead: yes (the probe reported once, every assertion ok except 10).
@@ -54,7 +55,6 @@ STEP  WHAT YOU DO
       At step 26 stop the daemon with Ctrl-C first (in T2), then Enter in T1.
       Delete the roots yourself, then Enter in T1:
         rm -rf -- @ROOT@/state @ROOT@/runtime
-
 IF IT FAILS   Stop the daemon with Ctrl-C (T2), answer the clean-up prompts,
   then: sh @RESET@ --root @ROOT@  (type the word reset)
   and run preflight again.

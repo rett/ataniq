@@ -14,6 +14,7 @@ import (
 
 	"ataniq/internal/approval/hostadapter"
 	"ataniq/internal/approval/ownerjournal"
+	"ataniq/internal/instanceid"
 	"ataniq/internal/leaddaemon"
 	"ataniq/internal/leadholder/canaryroot"
 	"ataniq/internal/seatgate"
@@ -69,6 +70,7 @@ func newSettingsWorldIn(t *testing.T, dir string) *settingsWorld {
 	if code := ti.run([]string{"trial", "init", "--state-dir", w.state}); code != 0 {
 		t.Fatalf("trial init: %d %s", code, ti.err.String())
 	}
+	initTestState(t, w.state)
 	w.gateFP = gateInit(t, w.state)
 	w.seat = newSeat(t, "seat")
 	writePins(t, w.state, w.seat.Fingerprint()+"\n", 0o600)
@@ -588,7 +590,7 @@ func TestOwnerSettingsCheckPrintsWhatTheDaemonWouldRead(t *testing.T) {
 		"pass  " + ruleNamed + ": is not, lies not in and holds not the drop folder, the mirror, the work folder or the sandbox template",
 		"pass  the scratch roots, the drop folder and the mirror: ",
 		"pass  the suite: ",
-		"pass  the root marker: ",
+		"pass  the root marker: ", "pass  instance identity: " + w.state,
 		"pass  the seat gate: 127.0.0.1:7443, key fingerprint " + w.gateFP + ", 1 seat pin(s)",
 		"pass  the socket paths: ",
 		"read  " + w.settings + "/scratch.json: the owner channel's settings, read only",
@@ -710,5 +712,39 @@ func TestOwnerSettingsCheckFailsASocketPathThatDoesNotFit(t *testing.T) {
 		!strings.Contains(out, "check: 1 refusal(s): the sitting failed preflight (exit 10): the daemon would start, but the start of the lead's holder would fail") ||
 		strings.Contains(out, "the daemon would not start") {
 		t.Fatalf("--check with a long runtime root: exit %d:\n%s%s", code, out, msg)
+	}
+}
+
+func TestOwnerSettingsCheckIdentityMatchesRun(t *testing.T) {
+	useSuite(t, cmdSuite{})
+	noListen(t)
+	for _, tc := range []struct {
+		name   string
+		change func(string) error
+	}{
+		{"missing", os.Remove},
+		{"unsafe", func(p string) error { return os.Chmod(p, 0640) }},
+		{"damaged", func(p string) error { return os.Truncate(p, 1) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newSettingsWorld(t)
+			if err := tc.change(filepath.Join(w.state, instanceid.FileName)); err != nil {
+				t.Fatal(err)
+			}
+			before := treeOf(t, w.state)
+			code, out, msg := w.run(t, w.runArgs(w.settings, "--check")...)
+			if code != leaddaemon.ExitState || !strings.Contains(out, "FAIL  instance identity: ") || !strings.HasPrefix(msg, "ataniqd: state:") {
+				t.Fatalf("check: %d, %s%s", code, out, msg)
+			}
+			if code, _, runMsg := w.run(t, w.runArgs(w.settings)...); code != leaddaemon.ExitState || !strings.HasSuffix(runMsg, msg) {
+				t.Fatalf("run: %d, %s; check said %s", code, runMsg, msg)
+			}
+			if code, _, keyMsg := keysRun(t, w, "--keys-prefix"); code != leaddaemon.ExitState || keyMsg != msg {
+				t.Fatalf("key check: %d, %s", code, keyMsg)
+			}
+			if !sameTreeOf(before, treeOf(t, w.state)) {
+				t.Fatal("refusal changed the root")
+			}
+		})
 	}
 }

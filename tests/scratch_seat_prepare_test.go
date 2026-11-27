@@ -294,7 +294,7 @@ func TestScratchSeatPrepareSelfTest(t *testing.T) {
 	k := newScratchSeatKit(t)
 	before := scratchSeatFiles(t, k.dir)
 	out, code := k.run(t, nil, "--self-test")
-	if code != 0 || !strings.Contains(out, "checks passed; nothing was read, written or run") || strings.Count(out, "\n") != 1 {
+	if code != 0 || !strings.Contains(out, " init --state-dir /srv/sample/trial-state") || !strings.Contains(out, "checks passed; nothing was read, written or run") || strings.Count(out, "\n") != 1 {
 		t.Fatalf("--self-test: exit %d:\n%s", code, out)
 	}
 	for _, c := range []struct {
@@ -436,6 +436,7 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root, daemon string, live
 		"Nothing of the trial is renamed, moved or masked: the proof's daemon reads its settings from " + root + "/owner-settings.",
 		"OWNER ONLY (starts pasta, bubblewrap, curl and a throwaway user unit): { sh " + root + "/netcheck.sh; echo \"netcheck: exit status $?\"; } 2>&1 | tee -a " + root + "/evidence/netcheck.txt",
 		"scratch-init --config " + root + "/scratch.json",
+		daemon + " init --state-dir \"" + state + "\"",
 		"--status" + prep + " --record   (the daemon's check, which must end \"check: no refusal\", then the baseline: it must end \"status: recorded\")",
 		"--status" + prep + " --compare   (the daemon's check; the trial's files against the record of g, which lists all six; the daemon's check of the key list since g)",
 		"OWNER ONLY: systemctl --user stop -- \"$TRIAL_UNIT\"",
@@ -484,10 +485,10 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root, daemon string, live
 	if live && !strings.Contains(out, "chat set live-3 off") || !live && !strings.Contains(out, "chat set standin-3 off") {
 		t.Errorf("the off step, live %v:\n%s", live, out)
 	}
-	order := []string{"scratch-init", "--status", " --record ", "systemctl --user stop", "--owner-settings " + root + "/owner-settings |",
+	order := []string{"scratch-init", " init --state-dir ", "--status", " --record ", "systemctl --user stop", "--owner-settings " + root + "/owner-settings |",
 		"d on standin-3", "--compare", "key list since g", "start the trial again"}
 	if live {
-		order = append(order[:6], append([]string{"The drop rule", "d on live-3"}, order[6:]...)...)
+		order = append(order[:7], append([]string{"The drop rule", "d on live-3"}, order[7:]...)...)
 	}
 	for i := 1; i < len(order); i++ {
 		if strings.Index(out, order[i-1]) > strings.Index(out, order[i]) {

@@ -66,7 +66,7 @@ imports the injection library's message rules.
 
 | Package or command | What it is | What the daemon does with it today |
 | --- | --- | --- |
-| [`cmd/ataniqd`](../cmd/ataniqd/doc.go) | The command: `run`, `status`, `version`; in a build with the `ataniq_canary` tag also `run --canary`, `run --scratch`, `canary` and `--version`; in a build with the `ataniq_ownerchannel` tag also `run --owner-channel`, `run --seat-gate` and `seat-gate`. | It is the daemon. |
+| [`cmd/ataniqd`](../cmd/ataniqd/doc.go) | The command: `init`, `run`, `status`, `version`; in a build with the `ataniq_canary` tag also `run --canary`, `run --scratch`, `canary` and `--version`; in a build with the `ataniq_ownerchannel` tag also `run --owner-channel`, `run --seat-gate` and `seat-gate`. | It is the daemon. |
 | [`internal/leaddaemon`](../internal/leaddaemon/doc.go) | Start-up order, shutdown, exit codes, the status handler and the status client. | All of it. |
 | [`internal/clientapi`](../internal/clientapi/doc.go) | The client protocol `ataniq.client/1`: socket, server, client. | Serves `hello` and `status`. |
 | [`internal/leadregistry`](../internal/leadregistry/doc.go) | The durable journal of lead roles. | Opens it and reads it. The reconcile at start writes what it finds about a role; nothing defines a role or launches one. |
@@ -104,6 +104,7 @@ The command is Linux only. On another platform it prints that and exits 1.
 ### Commands and flags
 
 ```text
+ataniqd init [--state-dir DIR] [--label TEXT | --restored]
 ataniqd run [--state-dir DIR] [--runtime-dir DIR] [--owner-channel [--seat-gate ADDR]]
 ataniqd status [--socket PATH] [--json]
 ataniqd version
@@ -154,12 +155,18 @@ file, not the daemon lock.
 
 ### Start-up order
 
+Before the first start on a new or existing root, stop the daemon, run
+`ataniqd init --state-dir DIR` as the daemon user and record the authority
+and incarnation. Omit the flag for the default root. For scratch and canary
+use the config's `state_root` after provisioning its marker. See the
+[identity and restore procedure](federation.md#instance-identity).
+
 `ataniqd run` takes these steps in this order and stops at the first that
 fails, with one line on standard error:
 
 1. **config**: refuse to run as root; check that both folders are clean
    absolute paths.
-2. **state**: create or check the state folder.
+2. **state**: check the private state folder and load its instance identity.
 3. **lock**: take `daemon.lock`. A second daemon fails here and the message
    shows the holder's pid text as a hint, not as proof.
 4. **runtime lock**: make the runtime folder and take `daemon.sock.lock` in
