@@ -146,27 +146,6 @@ func (f *fileLedger) createFile(name string, data []byte, op string) (*os.File, 
 	return file, nil
 }
 
-func (f *fileLedger) createLedger(header []byte) (Identity, error) {
-	if names, err := f.dir.Readdirnames(1); err != io.EOF || len(names) != 0 {
-		if err != nil {
-			return Identity{}, err
-		}
-		return Identity{}, errors.New("enrollment requires an empty root")
-	}
-	file, err := f.createFile(ledgerName, header, "header")
-	if err != nil {
-		return Identity{}, err
-	}
-	f.ledger = file
-	st, err := inspect(file, false)
-	if err != nil {
-		return Identity{}, err
-	}
-	f.size, f.changed = int64(len(header)), st.Ctim
-	f.identity.LedgerDevice, f.identity.LedgerInode = uint64(st.Dev), st.Ino
-	return f.identity, nil
-}
-
 func (f *fileLedger) readLedger() (io.Reader, Identity, error) {
 	file, st, err := f.open(ledgerName, syscall.O_RDONLY)
 	if errors.Is(err, os.ErrNotExist) {

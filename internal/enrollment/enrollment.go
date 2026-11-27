@@ -12,6 +12,19 @@
 // A restored witness exactly matching an outstanding signed intent's original
 // predecessor is indistinguishable from one that never received that intent.
 //
+// Prepare creates the home ledger in place. Carry EncodePrepared's version-1
+// JSON object to the owner. Its fields, in order, are version, epoch (a decimal
+// string), witness_key (padded standard base64), intent (padded standard base64 of the checkpoint's
+// canonical enrollment body), proof (the checkpoint proof of possession) and
+// signature (the home signature over the preceding fields). Both signatures
+// are unpadded base64url SSHSIG text. DecodePrepared requires the exact compact
+// encoding, including field order, with no extra members or trailing newline.
+// Submit returns a raw receipt: byte 1, a four-byte big-endian body length,
+// the exact signed checkpoint body, then its unpadded base64url signature.
+// Finalize authenticates this frame against the home stage and witness pin.
+// ResumePrepared returns the same request after an interrupted Prepare.
+// Retrying Finalize at genesis recovers the same binding after a lost return.
+//
 // Start acquires a local lock, replays read-only, compares a challenged witness
 // read and inspects staged evidence before its first witness mutation, the
 // session claim. It confirms the claim before local cleanup and checks the
@@ -31,7 +44,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 
 	"ataniq/internal/assignment"
 	"ataniq/internal/checkpoint"
@@ -102,7 +114,7 @@ func witnessError(err error) error {
 // Identity pins the locked root and regular ledger file at enrollment.
 type Identity struct{ RootDevice, RootInode, LedgerDevice, LedgerInode uint64 }
 
-// Binding is the owner's installation record. Only Enroll issues it, after
+// Binding is the owner's installation record. Finalize issues it after
 // durable header creation and authenticated create-only registration.
 type Binding struct {
 	Identity            Identity
@@ -123,7 +135,11 @@ type LedgerStore interface {
 
 // lockedLedger owns the file descriptors and exclusive cooperating-writer lock.
 type lockedLedger interface {
-	createLedger(header []byte) (Identity, error)
+	createLedger(Prepared) error
+	resumePrepared() (preparedRecord, error)
+	prepared() ([]byte, error)
+	complete([]byte) error
+	clearPrepared() error
 	readLedger() (io.Reader, Identity, error)
 	check() error           // recheck the locked root and the ledger observed by replay
 	stage() ([]byte, error) // nil for absent
@@ -166,65 +182,20 @@ func (b Binding) request() (checkpoint.Enrollment, error) {
 // owner-selected slot and key. No binding is issued on failure, including a
 // lost enrollment reply. Retire any uncertain registration before replacing it.
 func Enroll(ctx context.Context, root LedgerStore, admin checkpoint.Administration, slot checkpoint.Slot, epoch uint64, home ed25519.PrivateKey, witness ed25519.PublicKey, fault Fault) (Binding, error) {
-	f, err := root.lock(fault)
+	p, err := Prepare(ctx, root, slot, epoch, home, witness, fault)
 	if err != nil {
 		return Binding{}, refuse(EnrollmentFailed, err)
 	}
-	b, err := enroll(ctx, f, admin, slot, epoch, home, witness, fault)
-	err = errors.Join(err, f.close())
+	raw, err := Submit(ctx, admin, p)
+	if err == nil {
+		err = after(fault, "enroll.registered")
+	}
+	if err != nil {
+		return Binding{}, refuse(EnrollmentFailed, err)
+	}
+	b, err := finalize(ctx, root, p, raw, witness, fault)
 	if err != nil {
 		return Binding{}, refuse(EnrollmentFailed, err)
 	}
 	return b, nil
-}
-
-func enroll(ctx context.Context, f lockedLedger, admin checkpoint.Administration, slot checkpoint.Slot, epoch uint64, home ed25519.PrivateKey, witness ed25519.PublicKey, fault Fault) (Binding, error) {
-	if len(home) != ed25519.PrivateKeySize || epoch == 0 {
-		return Binding{}, checkpoint.ErrRefused
-	}
-	if _, err := checkpoint.KeyID(witness); err != nil {
-		return Binding{}, err
-	}
-	pub := home.Public().(ed25519.PublicKey)
-	keyID, err := checkpoint.KeyID(pub)
-	if err != nil {
-		return Binding{}, err
-	}
-	b := Binding{
-		Header: assignment.Header{
-			Authority: slot.Authority, Store: slot.Store, Schema: 1,
-			LedgerID: newName(), Incarnation: newName(), KeyID: keyID,
-		},
-		Slot: slot, Epoch: epoch, HomePin: pub, WitnessPin: slices.Clone(witness), EnrollmentID: id(),
-	}
-	q, err := b.request()
-	if err != nil {
-		return Binding{}, err
-	}
-	q.ProofOfPossession, err = checkpoint.ProveEnrollment(home, q)
-	if err != nil {
-		return Binding{}, err
-	}
-	b.Identity, err = f.createLedger(q.HeaderBytes)
-	if err != nil {
-		return Binding{}, err
-	}
-	if err := f.check(); err != nil {
-		return Binding{}, err
-	}
-	b.Receipt, err = admin.Enroll(ctx, q)
-	if err != nil {
-		return Binding{}, err
-	}
-	if err = after(fault, "enroll.registered"); err != nil {
-		return Binding{}, err
-	}
-	body, err := q.Body("")
-	if err != nil {
-		return Binding{}, err
-	}
-	if err = checkpoint.MatchReceipt(witness, epoch, "enroll", body, b.Receipt); err != nil {
-		return Binding{}, err
-	}
-	return b, f.check()
 }

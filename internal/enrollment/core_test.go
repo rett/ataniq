@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"io"
 	"testing"
@@ -15,8 +16,9 @@ import (
 // owner creation panics, so these tests also guard the startup write boundary.
 type readOnlyLedger struct {
 	lockedLedger
-	header []byte
-	locked bool
+	header        []byte
+	pending, done []byte
+	locked        bool
 }
 
 func (m *readOnlyLedger) lock(Fault) (lockedLedger, error) {
@@ -27,13 +29,21 @@ func (m *readOnlyLedger) lock(Fault) (lockedLedger, error) {
 	return m, nil
 }
 
-func (m *readOnlyLedger) createLedger(b []byte) (Identity, error) {
+func (m *readOnlyLedger) createLedger(p Prepared) error {
 	if m.header != nil {
-		return Identity{}, errors.New("nonempty")
+		return refuse(Occupied, nil)
 	}
-	m.header = bytes.Clone(b)
-	return Identity{RootInode: 1, LedgerInode: 2}, nil
+	q, err := p.request()
+	if err != nil {
+		return err
+	}
+	m.header = bytes.Clone(q.HeaderBytes)
+	m.pending, err = json.Marshal(preparedRecord{p, Identity{RootInode: 1, LedgerInode: 2}})
+	return err
 }
+func (m *readOnlyLedger) prepared() ([]byte, error) { return m.pending, nil }
+func (m *readOnlyLedger) complete(raw []byte) error { m.done = bytes.Clone(raw); return nil }
+func (m *readOnlyLedger) clearPrepared() error      { m.pending = nil; return nil }
 
 func (m *readOnlyLedger) readLedger() (io.Reader, Identity, error) {
 	return bytes.NewReader(m.header), Identity{RootInode: 1, LedgerInode: 2}, nil
@@ -41,7 +51,7 @@ func (m *readOnlyLedger) readLedger() (io.Reader, Identity, error) {
 
 func (m *readOnlyLedger) check() error { return nil }
 
-func (m *readOnlyLedger) receipt() ([]byte, error) { return nil, nil }
+func (m *readOnlyLedger) receipt() ([]byte, error) { return m.done, nil }
 
 func (m *readOnlyLedger) stage() ([]byte, error) { return nil, nil }
 

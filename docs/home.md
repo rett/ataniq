@@ -72,3 +72,11 @@ usage or a reserved command. The reserved commands `serve`, `enroll`,
 
 The witness operator records the home's public values in the witness
 configuration. [Authority-host witness guide](authority-host-witness.md)
+
+The enrollment library creates the ledger at its final home path. Carry the
+versioned prepared JSON to the authority host over an authenticated channel,
+submit it through the local owner capability, and return the raw signed receipt
+to the home. Archive the receipt independently. After an interruption, resume
+the saved request and replay that exact submission. Finalization checks the
+witness signature, epoch, header and original inode. Repeating it at genesis
+recovers the binding. Keep the binding outside the ledger root's restore domain.
