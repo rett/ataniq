@@ -248,19 +248,19 @@ func sendFirst(conn *tls.Conn, data []byte, dialed bool) (reply frame.Message, w
 		if err == nil && n != len(data) {
 			err = io.ErrShortWrite
 		}
-		if err != nil {
-			conn.NetConn().Close()
-		}
 		return err
 	}
 	if !dialed {
 		if err := write(); err != nil {
+			conn.NetConn().Close()
 			return frame.Message{}, err, nil
 		}
 		reply, err := frame.ReadMessage(conn)
 		return reply, nil, err
 	}
 	written := make(chan error, 1)
+	// A failed write can race a queued certificate alert. Leave the read
+	// side open until it receives the reply or reaches the exchange deadline.
 	go func() { written <- write() }()
 	first := io.LimitedReader{R: conn, N: cp.MaxFrame + 4}
 	reply, err := frame.ReadMessage(&first)

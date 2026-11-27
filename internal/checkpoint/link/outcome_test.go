@@ -8,10 +8,12 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	cp "ataniq/internal/checkpoint"
 	"ataniq/internal/checkpoint/link/internal/frame"
+	"ataniq/internal/seatgate"
 )
 
 type rejectApplication struct {
@@ -96,6 +98,61 @@ func TestFirstReadAlert(t *testing.T) {
 		if got := replyReadError(err, 1, cp.ErrUnknownOutcome); !errors.Is(got, cp.ErrUnknownOutcome) {
 			t.Fatal("partial reply lost uncertainty")
 		}
+	}
+}
+
+// Installed after the client handshake. Let the request writer finish
+// handling its error before the reader picks up the server's TLS record.
+type failedRequestWrite struct{ net.Conn }
+
+func (failedRequestWrite) Write([]byte) (int, error) { return 0, syscall.EPIPE }
+func (c failedRequestWrite) Read(p []byte) (int, error) {
+	synctest.Wait()
+	return c.Conn.Read(p)
+}
+
+func TestOwnerReadWriteFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		provideCert bool
+		want        error
+	}{
+		{"pending certificate alert", false, cp.ErrRefused},
+		{"silent peer", true, cp.ErrUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				witness, owner := identity(t, "witness"), identity(t, "owner")
+				clientSide, serverSide := net.Pipe()
+				defer clientSide.Close()
+				go func() {
+					defer serverSide.Close()
+					server := tls.Server(serverSide, serverTLS(witness, owner.Fingerprint()))
+					if server.Handshake() == nil {
+						// An authenticated peer waits for the request until
+						// the client's exchange deadline closes the pipe.
+						server.Read(make([]byte, 1))
+					}
+				}()
+				var id seatgate.Identity
+				if tc.provideCert {
+					id = owner
+				}
+				raw := &countedConn{Conn: clientSide}
+				conn := tls.Client(raw, clientTLS(witness.Fingerprint(), id))
+				must(t, conn.Handshake())
+				raw.Conn = failedRequestWrite{clientSide}
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				defer cancel()
+				request := frame.New(frame.OwnerRead, nil)
+				data, err := request.Marshal()
+				must(t, err)
+				_, err = (transport{}).exchangeOn(ctx, conn, request.Kind, data, true)
+				if !errors.Is(err, tc.want) {
+					t.Fatalf("owner read: want %v, got %v", tc.want, err)
+				}
+			})
+		})
 	}
 }
 
