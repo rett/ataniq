@@ -78,11 +78,11 @@
 // lead.start, lead.stop, lead.ticket and lead.inject of package leadwire,
 // through the client protocol's call for registered operations. Like the
 // owner channel's client it is in every build, behind no build tag, and
-// whether a daemon has lead control is found at run time from the operations
-// its hello lists: all six, none ([ErrNoLeadControl]) or some
-// ([ErrLeadsVersion]). The client is for any front end, so it knows nothing
-// of terminals, units or sandboxes beyond the values package leadwire
-// defines, and a test holds that.
+// the daemon's hello determines what the client can do on that connection.
+// The directory needs lead.list. Each command needs its own operation and
+// a ticket needs the requested attach role. The client is for any front end.
+// Its knowledge of terminals, units and sandboxes is limited to the values
+// package leadwire defines, and a test holds that.
 //
 // What it keeps to:
 //
@@ -92,9 +92,8 @@
 //     operation and arguments repeats the kept id, so the daemon runs the
 //     command at most once. A final receipt, or a list that shows the id as
 //     a lead's last command with a final status, forgets it.
-//   - A lost answer is asked for before anything else: the same id and
-//     arguments are sent once on a new connection, and what the daemon holds
-//     for the id comes back. When that fails too the call returns
+//   - After a lost answer the client repeats the same id and arguments once
+//     if the new connection offers the action. If recovery fails it returns
 //     [ErrAnswerLost] and the id is kept. A new id is never made for a
 //     command that has no final receipt; the one id the client lets go
 //     without a final receipt is one the daemon answers "conflict" for,

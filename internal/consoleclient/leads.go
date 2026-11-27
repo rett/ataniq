@@ -7,8 +7,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -48,17 +50,18 @@ var (
 	// ErrNoLeadControl says the daemon's hello lists no operation of the lead
 	// control plane.
 	ErrNoLeadControl = errors.New(NoLeadControlText)
-	// ErrLeadsVersion says the daemon lists some of the lead control's
-	// operations and not all of them.
+	// ErrLeadsVersion says the peer offers lead operations but no directory.
 	ErrLeadsVersion = errors.New("the daemon's lead control is not of this console's version")
+	// ErrLeadCapability says the connection does not offer the requested action.
+	ErrLeadCapability = errors.New("unavailable lead action")
 	// ErrLeadsClosed is the answer to every call after [Leads.Close].
 	ErrLeadsClosed = errors.New("the lead client is closed")
 	// ErrLeadRequest says that the arguments are not ones the daemon takes.
 	// Nothing was sent.
 	ErrLeadRequest = errors.New("that request is not one the daemon takes, so nothing was sent")
-	// ErrAnswerLost says that a command was sent and no answer came back,
-	// also to the one repeat of it on a new connection. The command may have
-	// been admitted. Calling again with the same arguments repeats the
+	// ErrAnswerLost says that a command was sent and its outcome could not
+	// be recovered. The command may have been admitted. When offered again,
+	// calling with the same arguments repeats the
 	// command's id, so nothing is done twice; reading the leads shows where
 	// it stands.
 	ErrAnswerLost = errors.New("no answer came back, so the command may or may not have been taken: read the leads to see where it stands")
@@ -151,11 +154,12 @@ type LeadDelivery struct {
 // LeadRow is one lead of a [LeadListing]. Role is exactly as the daemon sent
 // it, because every command is sent with it; the other strings are cleaned.
 type LeadRow struct {
-	Key       string
-	Role      string
-	Defined   bool
-	Provision string
-	State     string
+	Capabilities LeadCapabilities
+	Key          string
+	Role         string
+	Defined      bool
+	Provision    string
+	State        string
 	// StateReason is the reason code the registry shows with State, a word of
 	// the closed grammar, empty with none. A row of a daemon built before the
 	// member has none.
@@ -217,6 +221,116 @@ type leadKey struct {
 	body      string
 }
 
+// LeadCapabilities describes the operations advertised by a single hello.
+// A listing row also takes account of that lead's message switch.
+type LeadCapabilities struct {
+	Directory, Conversation, Viewer, Writer bool
+	Define, Start, Stop, Inject             bool
+}
+
+// leadHelloResult extends the v1 hello with optional ticket_roles. An explicit
+// list narrows lead.ticket to those roles. Without the field, the full legacy
+// scratch interface supports both roles. For a partial offer a ticket alone
+// suffices to view, while a writer needs an explicit offer.
+type leadHelloResult struct {
+	clientapi.HelloResult
+	TicketRoles json.RawMessage `json:"ticket_roles"`
+}
+
+// The hello determines which calls can go out. Reject ambiguous offer fields
+// before encoding/json can fold their case or overwrite an earlier value.
+func (h *leadHelloResult) UnmarshalJSON(raw []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return clientapi.ErrBadResponse
+	}
+	seen := make(map[string]bool)
+	for dec.More() {
+		tok, err := dec.Token()
+		key, ok := tok.(string)
+		if err != nil || !ok {
+			return clientapi.ErrBadResponse
+		}
+		for _, field := range []string{"protocols", "operations", "ticket_roles"} {
+			if strings.EqualFold(key, field) {
+				if key != field || seen[field] {
+					return clientapi.ErrBadResponse
+				}
+				seen[field] = true
+			}
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return err
+		}
+	}
+	type plainHello leadHelloResult
+	return json.Unmarshal(raw, (*plainHello)(h))
+}
+
+func (h leadHelloResult) capabilities() (LeadCapabilities, error) {
+	has := func(op string) bool { return slices.Contains(h.Operations, op) }
+	c := LeadCapabilities{
+		Directory: has(leadwire.OpList), Conversation: has("conversation.read"),
+		Define: has(leadwire.OpDefine), Start: has(leadwire.OpStart),
+		Stop: has(leadwire.OpStop), Inject: has(leadwire.OpInject),
+	}
+	if has(leadwire.OpTicket) {
+		if h.TicketRoles == nil {
+			c.Viewer = true
+			c.Writer = c.Directory && c.Define && c.Start && c.Stop && c.Inject
+		} else {
+			var roles []string
+			if err := json.Unmarshal(h.TicketRoles, &roles); err != nil || roles == nil {
+				return LeadCapabilities{}, &Unavailable{State: StateBadAnswer}
+			}
+			c.Viewer = slices.Contains(roles, leadwire.AttachViewer)
+			c.Writer = slices.Contains(roles, leadwire.AttachWriter)
+		}
+	}
+	return c, nil
+}
+
+// CheckCommand reports whether a control for this lead can send the command.
+// It returns a fixed refusal reason suitable for showing beside the action.
+// writer selects the attach role for LeadOpTicket.
+func (c LeadCapabilities) CheckCommand(op LeadOp, writer bool) error {
+	var offered bool
+	var action string
+	switch op {
+	case LeadOpDefine:
+		offered, action = c.Define, "defining this lead"
+	case LeadOpStart:
+		offered, action = c.Start, "starting this lead"
+	case LeadOpStop:
+		offered, action = c.Stop, "stopping this lead"
+	case LeadOpInject:
+		offered, action = c.Inject, "sending a message to this lead"
+	case LeadOpTicket:
+		offered, action = c.Viewer, "a viewer ticket for this lead"
+		if writer {
+			offered, action = c.Writer, "a writer ticket for this lead"
+		}
+	default:
+		return ErrLeadRequest
+	}
+	if !offered {
+		return fmt.Errorf("%w: the daemon does not offer %s", ErrLeadCapability, action)
+	}
+	return nil
+}
+
+// leadRPC is the part of a clientapi connection used by the lead client.
+type leadRPC interface {
+	Call(context.Context, string, any, any) error
+	Close() error
+}
+
+type leadConnection struct {
+	leadRPC
+	caps LeadCapabilities
+}
+
 // Leads is the console's client of the daemon's lead control plane: the six
 // operations of package leadwire over the client protocol. It satisfies the
 // method set of the console's leads view through an adapter (the view's
@@ -226,12 +340,9 @@ type leadKey struct {
 //
 // The rules it keeps:
 //
-//   - Whether the daemon has lead control is found at run time, from the
-//     operations its hello lists: all six is a daemon with it, none is
-//     [ErrNoLeadControl] and some is [ErrLeadsVersion]. A connection to a
-//     daemon that is neither is not kept. The client is in every build, behind
-//     no build tag, and knows nothing of terminals, units or sandboxes beyond
-//     what package leadwire names.
+//   - Each connection's hello determines which actions it can serve.
+//     Directory access needs only lead.list. A command needs its advertised
+//     operation and a ticket also needs the requested attach role.
 //   - Each command is sent with an id of 128 random bits and a client string
 //     that names this run. The client keeps the id and the arguments of every
 //     command it sent that has no final receipt. A call with the same
@@ -242,8 +353,8 @@ type leadKey struct {
 //     of a lead with a final status. A final receipt of an id that an
 //     earlier call kept has [LeadReceipt.Earlier] set: it answers that
 //     call's command, which may be long past. An answer that is lost is asked for by
-//     repeating the same id and arguments once on a new connection, before
-//     anything else; if that is lost too the call returns [ErrAnswerLost]
+//     repeating the same id and arguments once if the new connection offers
+//     the action. If recovery fails the call returns [ErrAnswerLost]
 //     and the id is kept. A new id is never sent for a command that has no
 //     final receipt. The one case in which the client lets an id go without
 //     a final receipt is an answer that says the id is not held ("conflict"),
@@ -264,12 +375,13 @@ type Leads struct {
 	random  io.Reader
 
 	closed atomic.Bool
-	live   atomic.Pointer[clientapi.Client]
+	live   atomic.Pointer[leadConnection]
 
 	// connMu is held while a connection is made, and while it is read or
 	// dropped.
 	connMu sync.Mutex
-	conn   *clientapi.Client
+	conn   *leadConnection
+	dial   func(context.Context, string) (leadRPC, error)
 
 	// mu guards the commands and the source of ids.
 	mu      sync.Mutex
@@ -293,6 +405,7 @@ func NewLeads(cfg LeadsConfig) (*Leads, error) {
 	}
 	l := &Leads{
 		dir:     cfg.Dir,
+		dial:    func(ctx context.Context, path string) (leadRPC, error) { return clientapi.Dial(ctx, path) },
 		timeout: cfg.Timeout,
 		random:  cfg.Random,
 		pending: map[leadKey]string{},
@@ -321,36 +434,29 @@ func (l *Leads) Close() error {
 	return nil
 }
 
-// Detect connects when there is no connection and reports whether the daemon
-// has lead control: nil when its hello lists the six operations,
-// [ErrNoLeadControl] when it lists none, [ErrLeadsVersion] when it lists some,
-// and an [*Unavailable] when the daemon could not be asked. It sends no
-// operation but hello.
+// Detect reports whether the lead directory can be opened.
 func (l *Leads) Detect() error {
-	_, err := l.connect()
+	caps, err := l.Capabilities()
+	if err == nil && !caps.Directory {
+		return ErrLeadsVersion
+	}
 	return err
 }
 
-// leadOperationsListed counts the lead control's operations among the
-// operations a hello listed, and says whether it listed every one.
-func leadOperationsListed(listed []string) (have int, all bool) {
-	ops := leadwire.Operations()
-	for _, op := range ops {
-		for _, x := range listed {
-			if x == op {
-				have++
-				break
-			}
-		}
+// Capabilities reads the current connection's offer. It sends only hello.
+func (l *Leads) Capabilities() (LeadCapabilities, error) {
+	c, err := l.connect()
+	if err != nil {
+		return LeadCapabilities{}, err
 	}
-	return have, have == len(ops)
+	return c.caps, nil
 }
 
 // connect returns the connection, making one when there is none: it dials,
 // reads the hello and checks that the daemon speaks this protocol and lists
 // the lead control's operations. A daemon that fails any step leaves no
 // connection behind.
-func (l *Leads) connect() (*clientapi.Client, error) {
+func (l *Leads) connect() (*leadConnection, error) {
 	if l.closed.Load() {
 		return nil, ErrLeadsClosed
 	}
@@ -361,30 +467,34 @@ func (l *Leads) connect() (*clientapi.Client, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), l.timeout)
 	defer cancel()
-	c, err := clientapi.Dial(ctx, clientapi.SocketPath(l.dir))
+	peer, err := l.dial(ctx, clientapi.SocketPath(l.dir))
 	if err != nil {
 		return nil, &Unavailable{State: dialState(err)}
 	}
-	fail := func(err error) (*clientapi.Client, error) {
-		c.Close()
+	fail := func(err error) (*leadConnection, error) {
+		peer.Close()
 		return nil, err
 	}
-	hello, err := c.Hello(ctx)
-	if err != nil {
+	var hello leadHelloResult
+	if err := peer.Call(ctx, clientapi.OpHello, nil, &hello); err != nil {
 		return fail(&Unavailable{State: callState(err)})
 	}
 	if !speaksProtocol(hello.Protocols) {
 		return fail(&Unavailable{State: StateOtherProtocol})
 	}
-	switch have, all := leadOperationsListed(hello.Operations); {
-	case have == 0:
+	caps, err := hello.capabilities()
+	if err != nil {
+		return fail(err)
+	}
+	// A ticket operation can explicitly offer neither known attach role.
+	// Keep that offer so Ticket can explain which role is unavailable.
+	if caps == (LeadCapabilities{}) && !slices.Contains(hello.Operations, leadwire.OpTicket) {
 		return fail(ErrNoLeadControl)
-	case !all:
-		return fail(ErrLeadsVersion)
 	}
 	if l.closed.Load() {
 		return fail(ErrLeadsClosed)
 	}
+	c := &leadConnection{leadRPC: peer, caps: caps}
 	l.conn = c
 	l.live.Store(c)
 	return c, nil
@@ -392,7 +502,7 @@ func (l *Leads) connect() (*clientapi.Client, error) {
 
 // drop closes c, which a call has found unusable, and forgets it when it is
 // still the connection, so that the next call makes a new one.
-func (l *Leads) drop(c *clientapi.Client) {
+func (l *Leads) drop(c *leadConnection) {
 	l.connMu.Lock()
 	defer l.connMu.Unlock()
 	c.Close()
@@ -403,7 +513,7 @@ func (l *Leads) drop(c *clientapi.Client) {
 }
 
 // call sends one request on c and reads the raw result.
-func (l *Leads) call(c *clientapi.Client, op string, params any) (json.RawMessage, error) {
+func (l *Leads) call(c *leadConnection, op string, params any) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), l.timeout)
 	defer cancel()
 	var raw json.RawMessage
@@ -433,6 +543,9 @@ func (l *Leads) List() (LeadListing, error) {
 		if err != nil {
 			return LeadListing{}, err
 		}
+		if !c.caps.Directory {
+			return LeadListing{}, ErrLeadsVersion
+		}
 		raw, err := l.call(c, leadwire.OpList, nil)
 		if err != nil {
 			var e *clientapi.Error
@@ -456,7 +569,7 @@ func (l *Leads) List() (LeadListing, error) {
 			l.drop(c)
 			return LeadListing{}, &Unavailable{State: StateBadAnswer}
 		}
-		out, ok := buildListing(res)
+		out, ok := buildListing(res, c.caps)
 		if !ok {
 			l.drop(c)
 			return LeadListing{}, &Unavailable{State: StateBadAnswer}
@@ -585,7 +698,19 @@ func (l *Leads) reconcile(lst LeadListing) {
 // for an id.
 func (l *Leads) command(k leadKey, mk func(id string) any) (LeadReceipt, error) {
 	c, err := l.connect()
+	op := LeadOp(strings.TrimPrefix(k.op, "lead."))
+	writer := k.attach == leadwire.AttachWriter
+	if err == nil {
+		err = c.caps.CheckCommand(op, writer)
+	}
 	if err != nil {
+		// A failure to send this time cannot settle an earlier attempt.
+		l.mu.Lock()
+		_, pending := l.pending[k]
+		l.mu.Unlock()
+		if pending && !errors.Is(err, ErrLeadsClosed) {
+			return LeadReceipt{}, ErrAnswerLost
+		}
 		return LeadReceipt{}, err
 	}
 	id, kept, err := l.claim(k)
@@ -622,6 +747,10 @@ func (l *Leads) command(k leadKey, mk func(id string) any) (LeadReceipt, error) 
 			}
 			return LeadReceipt{}, ErrAnswerLost
 		}
+		if c.caps.CheckCommand(op, writer) != nil {
+			// The first request may have been admitted. Keep its id.
+			return LeadReceipt{}, ErrAnswerLost
+		}
 	}
 	return l.settle(c, k, id, kept, raw)
 }
@@ -630,7 +759,7 @@ func (l *Leads) command(k leadKey, mk func(id string) any) (LeadReceipt, error) 
 // the daemon answer with an error, so what it says is what was or was not
 // admitted; "internal" is the exception, because a handler that failed may
 // have admitted the command, and it keeps the id.
-func (l *Leads) refusal(c *clientapi.Client, k leadKey, id string, e *clientapi.Error) error {
+func (l *Leads) refusal(c *leadConnection, k leadKey, id string, e *clientapi.Error) error {
 	if endsConnection(e.Code) {
 		// Answered before the operation was served.
 		l.drop(c)
@@ -657,7 +786,7 @@ func (l *Leads) refusal(c *clientapi.Client, k leadKey, id string, e *clientapi.
 // command's id when the receipt is final, and builds the caller's value. kept
 // says that the id was kept from an earlier call, so a final receipt is the
 // answer to that call's command.
-func (l *Leads) settle(c *clientapi.Client, k leadKey, id string, kept bool, raw json.RawMessage) (LeadReceipt, error) {
+func (l *Leads) settle(c *leadConnection, k leadKey, id string, kept bool, raw json.RawMessage) (LeadReceipt, error) {
 	bad := func() (LeadReceipt, error) {
 		l.drop(c)
 		return LeadReceipt{}, &Unavailable{State: StateBadAnswer}
@@ -725,7 +854,7 @@ func fillResult(out *LeadReceipt, k leadKey, raw json.RawMessage) bool {
 // buildListing turns the result of lead.list into a listing. It says false
 // for an answer that is not valid: a last receipt that is not one of a
 // lead's commands.
-func buildListing(res leadwire.ListResult) (LeadListing, bool) {
+func buildListing(res leadwire.ListResult, caps LeadCapabilities) (LeadListing, bool) {
 	out := LeadListing{MaxRunning: nonNegative(res.MaxRunning), Running: nonNegative(res.Running)}
 	for i := range res.Leads {
 		w := &res.Leads[i]
@@ -733,7 +862,10 @@ func buildListing(res leadwire.ListResult) (LeadListing, bool) {
 			out.LeftOut++
 			continue
 		}
+		rowCaps := caps
+		rowCaps.Inject = caps.Inject && w.Inject
 		row := LeadRow{
+			Capabilities: rowCaps,
 			Key:          clean(w.Key),
 			Role:         w.Role,
 			Defined:      w.Defined,
@@ -742,7 +874,7 @@ func buildListing(res leadwire.ListResult) (LeadListing, bool) {
 			StateReason:  leadWord(w.StateReason),
 			Epoch:        w.Epoch,
 			Unit:         clean(w.Unit),
-			Inject:       w.Inject,
+			Inject:       rowCaps.Inject,
 			MessageSpent: w.MessageSpent,
 			MessageResult: LeadDelivery{
 				Outcome: leadWord(w.MessageResult.Outcome),
