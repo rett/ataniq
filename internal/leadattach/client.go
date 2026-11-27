@@ -27,6 +27,10 @@ type Client struct {
 	clock Clock
 	sink  *inputSink
 
+	// A viewer ticket service issues a fresh ticket for each dial attempt.
+	// Scratch ticket files are consumed only after the dial succeeds.
+	issueBeforeDial bool
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -100,13 +104,14 @@ func New(cfg Config) *Client {
 }
 
 // NewViewer returns a read-only client that obtains a ticket from source
-// after each successful dial, including reconnects for a new snapshot.
+// before each dial attempt, including reconnects for a new snapshot.
 // It ignores cfg.Mode and the scratch ticket callbacks in cfg.
 func NewViewer(cfg Config, source TicketSource) *Client {
 	cfg.Mode = ModeViewer
 	cfg.TicketReady, cfg.Tickets = nil, nil
 	c := New(cfg)
 	if source != nil {
+		c.issueBeforeDial = true
 		c.cfg.Tickets = func() (string, error) { return source.ViewerTicket(c.ctx) }
 	}
 	return c
@@ -357,7 +362,7 @@ func (c *Client) run() {
 	defer c.wg.Done()
 	var (
 		resync bool
-		// fails counts consecutive protocol errors and resyncs counts
+		// fails counts protocol errors and role mismatches, and resyncs counts
 		// consecutive client-side resyncs; both go back to zero only when a
 		// Check past the snapshot's position matched on a connection, not
 		// when a snapshot was applied, and not on the Check the holder sends
@@ -375,30 +380,27 @@ func (c *Client) run() {
 			return
 		}
 		wait = 0
-		// With a presence check, a ticket that is not there means no
-		// connection at all: the holder would count and log each one as a
-		// refused handshake. The check takes nothing; an error that is not
-		// ErrNoTicket is the reason it gives, and the status shows it.
-		if ready := c.cfg.TicketReady; ready != nil {
-			if rerr := ready(); rerr != nil {
-				if c.ctx.Err() != nil {
-					return
-				}
-				// A client that is resyncing keeps that state through the
-				// first ask.
-				if !(resync && !missed) {
-					c.setWaiting(rerr)
-				}
-				missed = true
-				wait = TicketPoll
-				continue
-			}
+		// Check the scratch file without consuming it, or ask the viewer
+		// service for this attempt's ticket. An empty poll never reaches
+		// the holder's handshake.
+		var ticket string
+		var err error
+		if c.issueBeforeDial {
+			ticket, err = c.askTicket()
+		} else if ready := c.cfg.TicketReady; ready != nil {
+			err = ready()
 		}
-		// Dial first, then read the ticket: a ticket is single use and the
-		// source empties it when it gives it, so a ticket taken before a
-		// dial that fails would be lost. With no ticket (a source with no
-		// presence check, or a ticket taken by another reader since) the
-		// connection is closed again and the next try is after a TicketPoll.
+		if err != nil {
+			if c.ctx.Err() != nil {
+				return
+			}
+			if !(resync && !missed) {
+				c.setWaiting(err)
+			}
+			missed = true
+			wait = TicketPoll
+			continue
+		}
 		nc, err := c.dial()
 		if err != nil {
 			if c.ctx.Err() != nil {
@@ -408,7 +410,11 @@ func (c *Client) run() {
 			resync, wait = false, TicketPoll
 			continue
 		}
-		ticket, err := c.askTicket()
+		// Read a scratch ticket only now so a failed dial leaves it in
+		// the file. Another reader may have taken it since the check.
+		if !c.issueBeforeDial {
+			ticket, err = c.askTicket()
+		}
 		if err != nil {
 			_ = nc.Close()
 			if c.ctx.Err() != nil {
@@ -455,7 +461,7 @@ func (c *Client) run() {
 				wait = TicketPoll * time.Duration(min(1<<min(resyncs-1, 6), maxBackoffPolls))
 				c.setResyncWait(wait)
 			}
-		case outProtocol:
+		case outProtocol, outRoleMismatch:
 			fails++
 			c.setDisconnected(out.reason)
 			wait = TicketPoll * time.Duration(min(1<<min(fails, 6), maxBackoffPolls))

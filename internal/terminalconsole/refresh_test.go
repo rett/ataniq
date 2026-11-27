@@ -115,6 +115,31 @@ func (r *rig) refresh(d time.Duration) {
 	r.answer(r.refreshTick(d))
 }
 
+func TestCockpitOfflineKeepsLeadsDraftAndStopConfirmation(t *testing.T) {
+	for _, tc := range []struct{ name, keys, want string }{
+		{"draft", "mhello", "hello"},
+		{"stop", "x", "Stop alpha (epoch 3)?"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &fakeSource{p: Projection{Projects: []Project{{HomeID: "home", ID: "project"}}}}
+			m := NewWithOptions(src, Options{Leads: &leadsFake{}})
+			t.Cleanup(m.Close)
+			m.after = func(time.Duration, func(time.Time) tea.Msg) tea.Cmd { return nil }
+			r := &leadsRig{t: t, m: m}
+			r.send(tea.WindowSizeMsg{Width: 140, Height: 45})
+			r.press("L" + tc.keys)
+			r.see("LEAD CONTROL", tc.want)
+
+			src.set(Projection{Offline: true}, nil)
+			r.send(refreshTickMsg{at: time.Unix(1, 0)})
+			if !m.directoryOffline {
+				t.Fatal("cockpit did not apply the offline refresh")
+			}
+			r.see("LEAD CONTROL", tc.want)
+		})
+	}
+}
+
 // selectedNames returns the names of the selected project and lead, and the
 // text of the row under the tree cursor.
 func (r *rig) selectedNames() (project, lead, cursor string) {

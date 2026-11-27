@@ -796,11 +796,6 @@ func (m *Model) onDone(v doneMsg) (tea.Cmd, Action) {
 		r.Op = v.op
 	}
 	m.status, m.statusTarget = &r, pending.target
-	if pending.invalid.Load() {
-		// Keep the receipt of the dispatched command. Its ticket or message
-		// result cannot be used for a newly selected binding.
-		return tea.Batch(cmds...), Action{}
-	}
 	if r.Earlier {
 		// The answer to an earlier command is shown as that and settles
 		// nothing for this press: no attach with a ticket that may be
@@ -808,13 +803,15 @@ func (m *Model) onDone(v doneMsg) (tea.Cmd, Action) {
 		// shows otherwise.
 		return tea.Batch(cmds...), Action{}
 	}
-	if v.op == OpInject {
+	// The outstanding message survives a list outage. A successful list
+	// that removes or replaces its target already dropped that entry.
+	if v.op == OpInject && m.unconfirmed[pending.target] {
 		m.noteDelivery(pending.target, r)
+		if clearOfMessage(r) {
+			delete(m.unconfirmed, pending.target)
+		}
 	}
-	if v.op == OpInject && clearOfMessage(r) {
-		delete(m.unconfirmed, pending.target)
-	}
-	if v.op == OpTicket && r.Status == Done {
+	if v.op == OpTicket && r.Status == Done && !pending.invalid.Load() {
 		if act, ok := m.attach(v, r); ok {
 			return tea.Batch(cmds...), act
 		}

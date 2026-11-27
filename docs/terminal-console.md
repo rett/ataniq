@@ -35,8 +35,8 @@ choose one. The console draws on the alternate screen.
 ## Layout
 
 A window of at least 100 columns by 30 rows shows the three-pane cockpit.
-A smaller window shows single-column pages instead (see
-[Small windows](#small-windows)).
+A smaller window shows single-column pages, or the live terminal with
+`--attach`. See [Small windows](#small-windows).
 
 The cockpit has these parts:
 
@@ -65,12 +65,16 @@ replay continues at the new size.
 
 ### Small windows
 
-Below 100x30 the console shows single-column pages: projects, leads, a lead's
+Below 100x30 the demo and daemon console show single-column pages: projects, leads, a lead's
 conversation, project tasks, help and the action list. Use arrows or j/k to
 select, Enter to open, t for project tasks, Escape to go back, ? for help,
 Ctrl+K for the action list and q or Ctrl+C to quit. In longer views the arrows
 scroll. The a key explains why full attach is unavailable. These pages have no
 session terminal, no zoom and no replay key.
+
+With `--attach`, a small window such as 80x24 or 60x20 shows the live
+terminal below a compact header. Press PgUp or PgDn to page through recent
+output and `q` to detach.
 
 The demo identity takes priority at height one. At height two the selected
 project or lead takes the remaining line on the projects and leads pages, and
@@ -247,6 +251,9 @@ session focus, shortened to its count, or left out, when it would hide the
 return hint.
 
 The list shows the waiting cards, the recent decisions and the standing rules.
+Waiting and recent card rows show a four-word binding tag when the list
+supplies the card's digest. "open for binding tag" means to open the card
+to see its tag.
 Up, Down, j and k move, Enter opens a card, `L` opens the limit's screen for
 the project under the cursor and Esc closes the view. Below 80 columns by 24
 rows a card is not offered for a decision and says so. While a field is open
@@ -256,8 +263,15 @@ list, cockpit.
 ### The card
 
 The card shows its plan, diff summary, flagged paths and evidence. Text a lead
-wrote is drawn apart, under the label "unverified lead data". The keys on the
-card are:
+wrote is drawn apart, under the label "unverified lead data".
+
+Compare the four words on the "Binding tag" line when checking the same card
+on two displays. The words are a short checksum of the card's binding SHA-256
+and help catch mix-ups. Different digests can yield the same four words.
+Decisions use the full digest. "Binding tag unavailable" means the digest
+is missing or malformed.
+
+The keys on the card are:
 
 | Key | Action |
 | --- | --- |
@@ -389,17 +403,22 @@ lead must ask again.
 
 ## Lead control (scratch daemon only)
 
-With `--daemon DIR` the console asks the daemon for `hello` when it starts and
-offers the leads view only when the answer lists all
-six operations of the lead control plane (`lead.list`, `lead.define`,
-`lead.start`, `lead.stop`, `lead.ticket` and `lead.inject`). Only a daemon built
-with the canary tag and started with `ataniqd run --scratch CONFIG` lists them
-(see [the scratch leads guide](scratch-leads.md)); the console client is in every
-build and behind no tag. **When the daemon lists none, the console has no lead
-control.** `L` then opens a screen that says "no lead control in this daemon",
-and Esc closes it. A daemon that lists only some of the six is treated the same
-way. The console asks once, when it starts, so start it again after the daemon
-was started with `--scratch`.
+With `--daemon DIR`, the console offers the leads view when the daemon's
+`hello` lists `lead.list`. That operation alone is enough to browse. Without
+it at startup, `L` shows "no lead control in this daemon" and Esc returns to
+the cockpit. The scratch daemon offers lead control when built with the
+canary tag and started with `ataniqd run --scratch CONFIG`. The console
+client is in every build. See [the scratch leads guide](scratch-leads.md).
+
+The lead client reads the capabilities again on each reconnect. Each action
+needs its own offer. For `d`, `s`, `x` and `m` these are `lead.define`,
+`lead.start`, `lead.stop` and `lead.inject`, respectively. Both `w` and `v`
+need `lead.ticket` for the requested role. The client refuses a missing
+capability with "the daemon does not offer …" and the action's name, for
+example "the daemon does not offer a writer ticket for this lead". The view
+can show a generic no-answer message for this refusal. If an earlier command
+has an unresolved outcome, the client keeps its original command ID across
+reconnects, including when the new connection lacks the capability to retry it.
 
 ### Opening the view and what it shows
 
@@ -407,6 +426,15 @@ was started with `--scratch`.
 session focus, where every key goes to the session, and in the approvals list
 `L` is still that view's own key (the limit's screen). Below the cockpit's size
 the single-column pages take it too, but not over a live session.
+
+A late or failed cockpit status read leaves an open leads view, its message
+draft and its stop confirmation in place. The view reads the lead list
+through its own connection.
+
+If the selected lead disappears or its epoch changes, the view clears the
+selection and any open editor or stop question. Use j or k to choose a lead
+again. When a lead list read fails, its last rows stay visible as stale.
+Stale rows cannot be selected.
 
 The view lists the daemon's leads, one row each, with the daemon's `max_running`
 and how many leads count against it:
@@ -476,6 +504,11 @@ While a command for a lead has no answer yet, the keys that would send another
 for that lead do nothing and say so. `m` says why it does nothing when the lead
 has no epoch, when messages are off, when the epoch's message was sent, and when
 an earlier message of the epoch has no final answer.
+
+If the lead list goes offline while a message is in flight, its receipt still
+counts for the original lead and epoch. When the list returns, select the lead
+again. If the receipt confirms nothing was sent and the epoch's message is
+free, `m` opens a new editor.
 
 ### Receipts
 
@@ -777,6 +810,12 @@ as `live scratch session · lead NAME · writer · epoch 7`, and the Session blo
 and the evidence pane show the role, the holder's runtime and version, the
 holder's screen size, the connection, the holder's counters and the notices.
 
+Below cockpit size, the first line keeps the `q detach` hint, role and
+connection state. The next line gives the lead and epoch or a status message.
+The terminal uses the remaining rows. A writer requests that viewport size.
+A viewer sees the top-left portion of the holder's screen and leaves its size
+alone.
+
 The connection shows as one of: connecting, attached, resyncing, waiting for a
 ticket, or disconnected, with the reason when there is one. Over the session
 pane a banner says WAITING FOR A TICKET, DISCONNECTED or CONNECTING, and
@@ -800,7 +839,8 @@ it detaches or the holder's operator removes it with
 If the holder grants the writer place to a console started with `--viewer`,
 or the viewer place to one started without it, the console immediately detaches
 and frees the place. It sends no input and shows the requested and granted
-roles. To attach, write a fresh ticket for the requested role to the ticket
+roles. The retry delay doubles after each role mismatch, up to 30 seconds.
+To attach, write a fresh ticket for the requested role to the ticket
 file. For a scratch viewer, use `ataniq-scratch ticket NAME --viewer`.
 
 An attached viewer shows the screen at the holder's size, cut or padded at the
@@ -841,10 +881,15 @@ The holder holds some keys back, and the console shows a notice when it does:
 The return key, Ctrl+\ by default, is the console's and never reaches the
 session in session focus.
 
-A client gets the visible screen only: there is no scrollback, and a console
-that attaches late shows the screen as it is, not what scrolled away. What you
-select and copy is that screen. The session's own requests to the clipboard
-(OSC 52) are dropped and counted, as in the fixture.
+The holder sends a snapshot of the visible screen. Rows that scrolled away
+before attachment are unavailable. From then on, this client keeps up to 64
+rows that scroll off the main screen. Output on the alternate screen adds no
+rows to this history. Restoring a holder snapshot clears it.
+
+In the narrow attach layout, PgUp moves one page back and PgDn moves one
+page forward. The page stays fixed while new output arrives. Keep pressing
+PgDn to return to live output. The session's own clipboard requests (OSC 52)
+are dropped and counted, as in the fixture.
 
 ### Tickets
 
