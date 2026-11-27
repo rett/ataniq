@@ -77,6 +77,8 @@ Choose one home instance for the project and its long-lived branches. Its lead
 owns coordination and integration. The other instance runs offered work, such
 as member runs and suites, and returns results and patches to the home lead.
 The owner records the same designation on each participating instance.
+The executor-only rule and its `project-home-foreign` refusal are spelled out
+in the [scratch lead instructions](../internal/leadcanary/provision/instructions.go).
 
 For a new or existing root, run both commands as the daemon user while the
 daemon is stopped. Use the same state directory for both.
