@@ -15,6 +15,13 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 	if err != nil {
 		return core.Decoded{}, err
 	}
+	// A pending decision belongs to the turn that raised the question.
+	before := c.controlTurn()
+	defer func() {
+		if c.controlTurn() != before {
+			clear(c.pending)
+		}
+	}()
 	if e.Method == nil {
 		return c.answer(e)
 	}
@@ -100,7 +107,6 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 			}
 			c.removeLiveTurn(p.Turn.ID)
 			c.liveTurns = append(c.liveTurns, p.Turn.ID)
-			c.setControlTurn(p.Turn.ID)
 			return state("busy"), nil
 		}
 		switch p.Turn.Status {
@@ -113,9 +119,6 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 		}
 		if p.Turn.ID == c.reservation.turnID {
 			c.reservation = turnReservation{}
-		}
-		if c.controlTurn == p.Turn.ID {
-			c.setControlTurn("")
 		}
 		if c.removeLiveTurn(p.Turn.ID) && len(c.liveTurns) == 0 {
 			return state(c.threadState), nil
@@ -133,17 +136,9 @@ func (c *codec) removeLiveTurn(turn string) bool {
 	return true
 }
 
-func (c *codec) setControlTurn(turn string) {
-	if turn != c.controlTurn {
-		clear(c.pending)
-		c.controlTurn = turn
-	}
-}
-
 func (c *codec) closeThread() {
 	c.reservation = turnReservation{}
 	c.liveTurns = nil
-	c.setControlTurn("")
 	c.closed = true
 	c.threadState = "unknown"
 }
@@ -178,9 +173,6 @@ func (c *codec) status(s threadStatus) (core.Decoded, error) {
 		return core.Decoded{}, core.ErrInvalidFrame
 	}
 	c.threadState = observed
-	if s.Type != "active" && c.controlTurn != c.reservation.turnID {
-		c.setControlTurn("")
-	}
 	if s.Type == "idle" && len(c.liveTurns) != 0 {
 		return core.Decoded{}, nil
 	}
@@ -222,12 +214,9 @@ func (c *codec) answer(e envelope) (core.Decoded, error) {
 				c.reservation.turnID = result.Turn.ID
 				c.reservation.completed = nil
 				// An answer may arrive after a newer turn/started. Keep that
-				// interrupt target and its outstanding permission requests.
+				// interrupt target ahead of a turn known only from its answer.
 				if !slices.Contains(c.liveTurns, result.Turn.ID) {
 					c.liveTurns = slices.Insert(c.liveTurns, 0, result.Turn.ID)
-				}
-				if c.liveTurns[len(c.liveTurns)-1] == result.Turn.ID {
-					c.setControlTurn(result.Turn.ID)
 				}
 				return d, nil
 			}

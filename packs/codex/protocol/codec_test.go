@@ -149,6 +149,13 @@ func TestConversation(t *testing.T) {
 	observe(t, c, f[5], core.Event{Kind: "ended"})
 }
 
+func sendMessage(t *testing.T, c protocol.Codec, id string) {
+	t.Helper()
+	if _, err := c.Encode(id, core.Request{Operation: core.Message, Text: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStaleTurn(t *testing.T) {
 	c, f := fresh(t), frames(t, "events")
 	refuse := func(c protocol.Codec, thread, turn string) {
@@ -160,6 +167,7 @@ func TestStaleTurn(t *testing.T) {
 	refuse(c, "", "")
 	startThread(t, c)
 	observe(t, c, f[0])
+	sendMessage(t, c, "first")
 	observe(t, c, f[1], core.Event{Kind: "state", State: "busy"})
 	refuse(fresh(t), "thread-a", "turn-a")
 	refuse(c, "other", "turn-a")
@@ -219,6 +227,7 @@ func TestThreadStartBinding(t *testing.T) {
 		t.Fatal("replaced pending start")
 	}
 	acceptStart(t, c)
+	sendMessage(t, c, "first")
 	observe(t, c, f[0])
 	observe(t, c, f[1], core.Event{Kind: "state", State: "busy"})
 	if b, err := c.Steer("r", "thread-a", "turn-a", "text"); b == nil || err != nil {
@@ -365,7 +374,7 @@ func TestRejectedTurnStartPreservesObservedTurn(t *testing.T) {
 	equalJSON(t, frame, `{"method":"turn/interrupt","id":"stop","params":{"threadId":"thread-a","turnId":"turn-b"}}`)
 }
 
-func TestOverlappingTurnKeepsOutstandingPermission(t *testing.T) {
+func TestOverlappingTurnRevokesOutstandingPermission(t *testing.T) {
 	c, f := fresh(t), frames(t, "events")
 	startThread(t, c)
 	if _, err := c.Encode("first", core.Request{Operation: core.Message, Text: "hello"}); err != nil {
@@ -380,14 +389,17 @@ func TestOverlappingTurnKeepsOutstandingPermission(t *testing.T) {
 	if _, err := c.Decode([]byte(turnStartAnswer)); err != nil {
 		t.Fatal(err)
 	}
-	observe(t, c, f[4]) // only turn-a completed
-	g, err := c.DecodeGrant(req, frames(t, "grants")[0])
-	if err != nil {
-		t.Fatal(err)
+	g := protocol.Grant{Scope: "turn", Permissions: &protocol.Permissions{}}
+	if _, err := c.DecodeGrant(req, frames(t, "grants")[0]); !errors.Is(err, protocol.ErrTurn) {
+		t.Fatalf("decoded permission for turn-b: %v", err)
 	}
-	if _, err := c.EncodeGrant(req, g); err != nil {
-		t.Fatalf("lost outstanding permission for turn-b: %v", err)
+	if frame, err := c.EncodeGrant(req, g); frame != nil || !errors.Is(err, protocol.ErrTurn) {
+		t.Fatalf("encoded permission for turn-b: %s, %v", frame, err)
 	}
+	wantPermissionDecline(t, c, req, "7")
+	observePermission(t, c, f[3]) // the same server ID is available on turn-a
+	observe(t, c, f[4])           // only turn-a completed
+	wantPermissionDecline(t, c, req, "7")
 }
 
 type sessionPack struct {
@@ -608,8 +620,8 @@ func TestThreadStatus(t *testing.T) {
 		{`{"type":"active","activeFlags":[]}`, []core.Event{{Kind: "state", State: "busy"}}, true},
 		{`{"type":"active","activeFlags":["waitingOnApproval"]}`, []core.Event{{Kind: "state", State: "blocked"}}, true},
 		{`{"type":"active","activeFlags":["waitingOnUserInput"]}`, []core.Event{{Kind: "state", State: "asking"}}, true},
-		{`{"type":"idle"}`, nil, false},
-		{`{"type":"notLoaded"}`, []core.Event{{Kind: "state", State: "unknown"}}, false},
+		{`{"type":"idle"}`, nil, true},
+		{`{"type":"notLoaded"}`, []core.Event{{Kind: "state", State: "unknown"}}, true},
 		{`{"type":"systemError"}`, []core.Event{{Kind: "state", State: "unknown"}}, false},
 	} {
 		c, _ := active(t)

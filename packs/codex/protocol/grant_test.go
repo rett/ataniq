@@ -16,6 +16,7 @@ func active(t *testing.T) (protocol.Codec, []byte) {
 	t.Helper()
 	c, f := fresh(t), frames(t, "events")
 	startThread(t, c)
+	sendMessage(t, c, "first")
 	observe(t, c, f[0])
 	observe(t, c, f[1], core.Event{Kind: "state", State: "busy"})
 	return c, f[3]

@@ -60,7 +60,6 @@ type codec struct {
 	reservation turnReservation
 	thread      string
 	liveTurns   []string // interrupt preference increases from first to last
-	controlTurn string   // turn authorized for steering and permission requests
 	closed      bool
 	threadState agentsession.State // latest status reported for the bound thread
 	// Outstanding permission requests on this turn, keyed by string or
@@ -140,8 +139,18 @@ func (c *codec) Forget(id string) {
 	}
 }
 
+func (c *codec) controlTurn() string {
+	if c.reservation.turnID != "" {
+		return c.reservation.turnID
+	}
+	if c.reservation.requestID != "" && len(c.liveTurns) > 0 {
+		return c.liveTurns[len(c.liveTurns)-1]
+	}
+	return ""
+}
+
 func (c *codec) current(thread, turn string) bool {
-	return turn != "" && turn == c.controlTurn && thread == c.thread
+	return turn != "" && turn == c.controlTurn() && thread == c.thread
 }
 
 func (c *codec) Steer(id, thread, expectedTurn, text string) ([]byte, error) {
