@@ -63,6 +63,13 @@ func TestFilterProgram(t *testing.T) {
 			t.Fatalf("no kernel control for syscall %d", nr)
 		}
 	}
+	// The operation table also pins the required deny list when the
+	// environment cannot run a control. Legacy clone has a flags rule.
+	for nr := range seen {
+		if nr != unix.SYS_CLONE && !slices.Contains(denied[:], nr) {
+			t.Fatalf("missing deny rule for syscall %d", nr)
+		}
+	}
 	for i, a := range attr {
 		b := prod[i]
 		if b.Code == unix.BPF_RET|unix.BPF_K && b.K&0xffff0000 == unix.SECCOMP_RET_ERRNO {
@@ -168,15 +175,34 @@ func selfGroup() (string, error) {
 }
 
 func TestHP8(t *testing.T) {
+	// Register the gate before setup so that it also sees a skipped matrix.
+	filtered := 0
+	defer func() {
+		t.Run("kernel-coverage", func(t *testing.T) { checkKernelCoverage(t, filtered) })
+	}()
+
 	marker := filepath.Join(t.TempDir(), "marker")
 	build := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "build", "-o", marker, "./testdata/marker")
 	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOTOOLCHAIN=local", "GOPROXY=off")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("static exec marker: %v\n%s", err, out)
 	}
+	// Count only completed filtered cases. Skip ends the subtest's
+	// goroutine, and a successful unfiltered control proves no filter ran.
+	run := func(op operation, mode string) {
+		t.Run(mode+"/"+op.name, func(t *testing.T) {
+			if mode == "kill" {
+				runChild(t, op, "abi-control", marker)
+			}
+			runChild(t, op, mode, marker)
+			if mode != "control" {
+				filtered++
+			}
+		})
+	}
 	for _, op := range operations() {
 		for _, mode := range []string{"control", "production", "attribution"} {
-			t.Run(mode+"/"+op.name, func(t *testing.T) { runChild(t, op, mode, marker) })
+			run(op, mode)
 		}
 	}
 	positive := []string{"accept-peer", "accepted-io", "stop", "threads"}
@@ -184,8 +210,50 @@ func TestHP8(t *testing.T) {
 		positive = append(positive, "pthread")
 	}
 	for _, name := range positive {
-		t.Run("positive/"+name, func(t *testing.T) { runChild(t, operation{name: name}, "positive", marker) })
+		run(operation{name: name}, "positive")
 	}
+	for _, abi := range []string{"x32", "i386"} {
+		run(operation{name: abi}, "kill")
+	}
+}
+
+func checkKernelCoverage(t *testing.T, filtered int) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHP8Child$", "--", "probe", "", "")
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 77 && bytes.HasPrefix(out, []byte("UNAVAILABLE ")) {
+		unavailable(t, strings.TrimSpace(string(out)))
+	}
+	if err != nil || string(out) != "PROBED\n" {
+		t.Fatalf("seccomp capability probe: %v %q", err, out)
+	}
+	if filtered == 0 {
+		t.Fatal("seccomp TSYNC is permitted but no filtered kernel case completed")
+	}
+}
+
+// Probe the kernel directly, independently of holderProgram, install and
+// runChild. A defect that makes every holder installation report EPERM
+// must not also disguise a kernel capable of installing a TSYNC filter.
+func probeSeccomp() {
+	runtime.LockOSThread()
+	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+		childError("probe no_new_privs", err, true)
+	}
+	allow := unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW}
+	prog := unix.SockFprog{Len: 1, Filter: &allow}
+	tid, _, errno := unix.RawSyscall(unix.SYS_SECCOMP, unix.SECCOMP_SET_MODE_FILTER, unix.SECCOMP_FILTER_FLAG_TSYNC, uintptr(unsafe.Pointer(&prog)))
+	runtime.KeepAlive(prog)
+	if errno != 0 {
+		childError("probe TSYNC", errno, true)
+	}
+	if tid != 0 {
+		childError("probe TSYNC", errors.New("incomplete thread synchronization"), false)
+	}
+	fmt.Println("PROBED")
+	os.Exit(0)
 }
 
 func runChild(t *testing.T, op operation, mode, marker string) {
@@ -228,12 +296,26 @@ func runChild(t *testing.T, op operation, mode, marker string) {
 		program = attribution()
 	}
 	want := "READY " + digest(program) + "\n"
-	if mode == "control" {
+	if mode == "control" || mode == "abi-control" {
 		want = "CONTROL\n"
 	}
 	tail, ok := bytes.CutPrefix(out, []byte(want))
 	if !ok {
 		t.Fatalf("missing installation/control marker: %v %q %s", err, out, stderr.Bytes())
+	}
+	if mode == "kill" || mode == "abi-control" {
+		// An enclosing filter that already kills this benign ABI probe
+		// cannot supply evidence for the holder's own kill rule.
+		killed := exit != nil && exit.Sys().(syscall.WaitStatus).Signal() == unix.SIGSYS
+		if mode == "abi-control" && killed && len(tail) == 0 {
+			unavailable(t, "unfiltered "+op.name+" getpid killed by SIGSYS")
+		}
+		if mode == "kill" {
+			if !killed || len(tail) != 0 {
+				t.Fatalf("expected SIGSYS after installation: %v %q %s", err, tail, stderr.Bytes())
+			}
+			return
+		}
 	}
 	if mode == "attribution" {
 		// si_signo, si_errno (rule mark), SYS_SECCOMP, si_syscall, si_arch.
@@ -273,6 +355,9 @@ func TestHP8Child(t *testing.T) {
 		return
 	}
 	mode, name, marker := os.Args[sep+1], os.Args[sep+2], os.Args[sep+3]
+	if mode == "probe" {
+		probeSeccomp()
+	}
 	runtime.LockOSThread()
 	// Keep a second, known thread alive across installation.
 	checkOld := make(chan chan error)
@@ -290,7 +375,21 @@ func TestHP8Child(t *testing.T) {
 		childError("working directory", err, false)
 	}
 	var invoke call
-	if mode == "positive" {
+	if mode == "kill" || mode == "abi-control" {
+		invoke = func() error {
+			switch name {
+			case "x32":
+				unix.RawSyscall(0x40000000|unix.SYS_GETPID, 0, 0, 0)
+			case "i386":
+				probe.I386Getpid()
+			default:
+				return errors.New("unknown ABI")
+			}
+			// A native kernel without the x32 syscall table may return
+			// ENOSYS. Any return distinguishes the control from SIGSYS.
+			return nil
+		}
+	} else if mode == "positive" {
 		invoke, err = positiveCase(name, dir, marker, checkOld)
 	} else {
 		var found bool
@@ -309,7 +408,7 @@ func TestHP8Child(t *testing.T) {
 		childError("prepare "+name, err, true)
 	}
 	switch mode {
-	case "production", "positive":
+	case "production", "positive", "kill":
 		filter, err := InstallFilter()
 		if err != nil {
 			childError("install production", err, true)
@@ -330,7 +429,7 @@ func TestHP8Child(t *testing.T) {
 		if e != 0 || n != uintptr(len(marker)) {
 			os.Exit(1)
 		}
-	case "control":
+	case "control", "abi-control":
 		fmt.Println("CONTROL")
 	default:
 		childError("mode", errors.New("unknown mode"), false)

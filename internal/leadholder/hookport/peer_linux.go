@@ -1,6 +1,11 @@
 // Package hookport serves the holder's per-intent observation socket on Linux.
 // Admission checks the connecting process's uid, cgroup and liveness before
 // reading. Any admitted peer can forge events or pass on its connection.
+//
+// The holder's seccomp filter denies process_vm_readv and process_vm_writev.
+// It cannot filter the pathname /proc/<pid>/mem. The holder can still read
+// or write memory through that file where ptrace permissions, including the
+// host's Yama policy, allow it.
 package hookport
 
 import (
@@ -19,14 +24,17 @@ import (
 const procLimit = 4096
 
 var errPeer = errors.New("hookport: peer refused")
+var errLeaderState = fmt.Errorf("%w: leader state", errPeer)
 
 // PeerReader supplies kernel evidence. PIDFD transfers ownership to the caller.
-// FDInfo and Cgroup return a complete proc record or an error on overflow.
+// Proc records are complete or return an error on overflow.
 type PeerReader interface {
 	Credentials(net.Conn) (*unix.Ucred, error)
 	PIDFD(net.Conn) (int, error)
 	FDInfo(fd int) ([]byte, error)
-	Cgroup(pid int) ([]byte, error)
+	Status(pid int) ([]byte, error)
+	Threads(pid int) ([]string, error)
+	Cgroup(pid int, tid string) ([]byte, error)
 	Alive(fd int) (bool, error)
 	CloseFD(fd int) error
 }
@@ -74,8 +82,21 @@ func (KernelPeers) FDInfo(fd int) ([]byte, error) {
 	return readProc("/proc/self/fdinfo/" + strconv.Itoa(fd))
 }
 
-func (KernelPeers) Cgroup(pid int) ([]byte, error) {
-	return readProc("/proc/" + strconv.Itoa(pid) + "/cgroup")
+func (KernelPeers) Status(pid int) ([]byte, error) {
+	return readProc("/proc/" + strconv.Itoa(pid) + "/status")
+}
+
+func (KernelPeers) Threads(pid int) ([]string, error) {
+	dir, err := os.Open("/proc/" + strconv.Itoa(pid) + "/task")
+	if err != nil {
+		return nil, err
+	}
+	defer dir.Close()
+	return dir.Readdirnames(-1)
+}
+
+func (KernelPeers) Cgroup(pid int, tid string) ([]byte, error) {
+	return readProc("/proc/" + strconv.Itoa(pid) + "/task/" + tid + "/cgroup")
 }
 
 func (KernelPeers) Alive(fd int) (bool, error) {
@@ -104,8 +125,28 @@ func withinGroup(ref, group string) bool {
 	return validGroup(ref) && ref != "/" && validGroup(group) && (group == ref || strings.HasPrefix(group, ref+"/"))
 }
 
+// liveLeader requires one recognizable non-exited task state from proc status.
+func liveLeader(status []byte) bool {
+	if len(status) > procLimit {
+		return false
+	}
+	found := false
+	for line := range strings.SplitSeq(string(status), "\n") {
+		value, ok := strings.CutPrefix(line, "State:")
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(value)
+		if found || len(fields) == 0 || len(fields[0]) != 1 || !strings.Contains("RSDTtPI", fields[0]) {
+			return false
+		}
+		found = true
+	}
+	return found
+}
+
 // admit checks the connecting process at admission, before any read. The
-// pidfd spans the numeric PID lookup, cgroup read and final liveness poll.
+// pidfd spans the numeric PID lookup, all task reads and final liveness poll.
 // A later migration, inheritance or transfer of the connection is invisible.
 func admit(c net.Conn, p PeerReader, ref string) error {
 	cred, err := p.Credentials(c)
@@ -140,12 +181,33 @@ func admit(c net.Conn, p PeerReader, ref string) error {
 	if pid == 0 {
 		return errPeer
 	}
-	record, err := p.Cgroup(pid)
+	// An exited leader can keep reporting its former cgroup while the
+	// remaining threads keep the pidfd alive.
+	status, err := p.Status(pid)
 	if err != nil {
 		return err
 	}
-	group, err := ControlGroup(record)
-	if err != nil || !withinGroup(ref, group) {
+	if !liveLeader(status) {
+		return errLeaderState
+	}
+	threads, err := p.Threads(pid)
+	if err != nil {
+		return err
+	}
+	leader := strconv.Itoa(pid)
+	leaderSeen := false
+	for _, tid := range threads {
+		record, err := p.Cgroup(pid, tid)
+		if err != nil {
+			return err
+		}
+		group, err := ControlGroup(record)
+		if err != nil || !withinGroup(ref, group) {
+			return errPeer
+		}
+		leaderSeen = leaderSeen || tid == leader
+	}
+	if !leaderSeen {
 		return errPeer
 	}
 	alive, err := p.Alive(fd)

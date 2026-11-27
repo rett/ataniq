@@ -1,5 +1,10 @@
 #include "textflag.h"
 
+TEXT ·I386Getpid(SB),NOSPLIT|NOFRAME,$0-0
+ MOVL $20, AX // i386 __NR_getpid
+ INT $0x80
+ RET
+
 TEXT ·Handler(SB),NOSPLIT,$0-16
  LEAQ trap<>(SB), AX
  MOVQ AX, entry+0(FP)

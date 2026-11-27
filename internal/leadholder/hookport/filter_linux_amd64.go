@@ -12,10 +12,12 @@ import (
 )
 
 // Native x86-64 ABI only. Neither the compat ABI nor x32 uses this table.
+// Seccomp cannot inspect open pathnames. Access to /proc/<pid>/mem
+// remains subject to the kernel's ptrace access checks.
 var denied = [...]uint32{
 	unix.SYS_EXECVE, unix.SYS_EXECVEAT,
 	unix.SYS_SOCKET, unix.SYS_SOCKETPAIR, unix.SYS_CONNECT,
-	unix.SYS_PTRACE, unix.SYS_PIDFD_GETFD, unix.SYS_PROCESS_VM_WRITEV,
+	unix.SYS_PTRACE, unix.SYS_PIDFD_GETFD, unix.SYS_PROCESS_VM_READV, unix.SYS_PROCESS_VM_WRITEV,
 	unix.SYS_UNSHARE, unix.SYS_SETNS,
 	unix.SYS_MOUNT, unix.SYS_UMOUNT2, unix.SYS_PIVOT_ROOT,
 	unix.SYS_FSOPEN, unix.SYS_FSCONFIG, unix.SYS_FSMOUNT, unix.SYS_FSPICK,
