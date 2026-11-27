@@ -264,7 +264,7 @@ const idleStatus = `{"method":"thread/status/changed","params":{"threadId":"thre
 const turnStartAnswer = `{"id":"first","result":{"turn":{"id":"turn-a"}}}`
 
 func TestAcceptedTurnStartSurvivesStaleIdle(t *testing.T) {
-	c := fresh(t)
+	c, f := fresh(t), frames(t, "events")
 	startThread(t, c)
 	msg := core.Request{Operation: core.Message, Text: "hello"}
 	if _, err := c.Encode("first", msg); err != nil {
@@ -273,10 +273,24 @@ func TestAcceptedTurnStartSurvivesStaleIdle(t *testing.T) {
 	if _, err := c.Decode([]byte(turnStartAnswer)); err != nil {
 		t.Fatal(err)
 	}
-	observe(t, c, []byte(idleStatus), core.Event{Kind: "state", State: "idle"})
+	stop := func() {
+		t.Helper()
+		frame, err := c.Encode("stop", core.Request{Operation: core.StopTurn})
+		if err != nil {
+			t.Fatal(err)
+		}
+		equalJSON(t, frame, `{"method":"turn/interrupt","id":"stop","params":{"threadId":"thread-a","turnId":"turn-a"}}`)
+	}
+	stop()
+	observe(t, c, f[1], core.Event{Kind: "state", State: "busy"})
+	observe(t, c, []byte(idleStatus))
+	observe(t, c, f[2], core.Event{Kind: "progress", Text: "two words"})
+	stop()
 	if _, err := c.Encode("second", msg); !errors.Is(err, protocol.ErrTurn) {
 		t.Fatalf("stale idle after success permitted a retry: %v", err)
 	}
+	observe(t, c, []byte(`{"method":"thread/status/changed","params":{"threadId":"thread-a","status":{"type":"notLoaded"}}}`), core.Event{Kind: "state", State: "unknown"})
+	stop()
 }
 
 func TestTurnStartSurvivesIdleObservation(t *testing.T) {
@@ -376,22 +390,14 @@ func TestForgottenTurnStartCompletes(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.Forget("first")
-	observe(t, c, f[4]) // No turn has been identified yet.
+	observe(t, c, f[1], core.Event{Kind: "state", State: "busy"})
+	observe(t, c, f[4], core.Event{Kind: "state", State: "idle"})
 	if _, err := c.Encode("second", msg); !errors.Is(err, protocol.ErrTurn) {
 		t.Fatalf("unmatched completion permitted a retry: %v", err)
-	}
-	observe(t, c, bytes.ReplaceAll(f[1], []byte("turn-a"), []byte("turn-b")), core.Event{Kind: "state", State: "busy"})
-	if _, err := c.Encode("second", msg); !errors.Is(err, protocol.ErrTurn) {
-		t.Fatalf("started turn permitted a retry: %v", err)
 	}
 	if _, err := c.Decode([]byte(turnStartAnswer)); err != nil {
 		t.Fatal(err)
 	}
-	observe(t, c, bytes.ReplaceAll(f[4], []byte("turn-a"), []byte("turn-b")), core.Event{Kind: "state", State: "idle"})
-	if _, err := c.Encode("second", msg); !errors.Is(err, protocol.ErrTurn) {
-		t.Fatalf("completion of other observed turn permitted a retry: %v", err)
-	}
-	observe(t, c, f[4], core.Event{Kind: "state", State: "idle"})
 	if _, err := c.Encode("second", msg); err != nil {
 		t.Fatalf("completed turn prevented a retry: %v", err)
 	}

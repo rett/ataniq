@@ -36,15 +36,19 @@ type Codec interface {
 
 // A turnReservation records the request ID of a successful Encode(Message),
 // which requires an observed idle thread and no outstanding reservation.
-// Only an error answer to that request or turn/completed for the turn ID
-// named by its success answer (result.turn.id) releases it back to idle.
+// An error answer releases it back to idle. A success answer (result.turn.id)
+// and turn/completed for that turn on this thread also release it, in either
+// order. Until the answer names the turn, the reservation remembers the IDs
+// that complete on this thread. Once named, the current reserved turn stays
+// available for progress and interruption across a stale idle status.
 // thread/closed and systemError discard it and make the thread unusable.
-// Idle status, turn/started and other completions only update observations.
+// Idle status, turn/started and other completions leave it reserved.
 // Forget keeps the request ID for a late answer. Without a definitive
 // outcome, every further Message returns ErrTurn until the session restarts.
 type turnReservation struct {
 	requestID string
 	turnID    string
+	completed map[string]bool
 }
 
 type codec struct {
@@ -112,7 +116,7 @@ func (c *codec) Encode(id string, req core.Request) ([]byte, error) {
 		}
 		b, err := c.message(id, "turn/start", "", req.Text)
 		if err == nil {
-			c.reservation = turnReservation{requestID: id}
+			c.reservation = turnReservation{requestID: id, completed: make(map[string]bool)}
 		}
 		return b, err
 	case core.StopTurn:

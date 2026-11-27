@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"errors"
+	"maps"
 	"slices"
 	"testing"
 
@@ -18,25 +19,35 @@ func messageAllowed(history []string) bool {
 	if answer < 0 {
 		return false
 	}
-	later := history[answer+1:]
+	released := answer
 	if history[answer] == "success" {
-		completed := slices.Index(later, "completed")
+		completed := slices.Index(history, "completed")
 		if completed < 0 {
 			return false
 		}
-		later = later[completed+1:]
+		released = max(answer, completed)
 	}
-	idle, started := true, false
-	for _, observation := range later {
+	idle, turn := true, ""
+	for _, observation := range history[released+1:] {
 		switch observation {
 		case "started":
-			idle, started = false, true
+			idle, turn = false, "a"
+		case "started other":
+			idle, turn = false, "b"
 		case "completed":
-			if started {
-				idle, started = true, false
+			if turn == "a" {
+				idle, turn = true, ""
 			}
+		case "completed other":
+			if turn == "b" {
+				idle, turn = true, ""
+			}
+		case "completed on another thread":
+			// A foreign notification has no effect on this thread.
 		case "idle":
-			idle, started = true, false
+			idle, turn = true, ""
+		case "notLoaded":
+			idle, turn = false, ""
 		case "active":
 			idle = false
 		}
@@ -49,10 +60,13 @@ func TestTurnReservationSequences(t *testing.T) {
 		{"success", `{"id":"first","result":{"turn":{"id":"a"}}}`},
 		{"error", `{"id":"first","error":{"code":-1,"message":"failed"}}`},
 		{"started", `{"method":"turn/started","params":{"threadId":"t","turn":{"id":"a","items":[],"status":"inProgress"}}}`},
+		{"started other", `{"method":"turn/started","params":{"threadId":"t","turn":{"id":"b","items":[],"status":"inProgress"}}}`},
 		{"completed", `{"method":"turn/completed","params":{"threadId":"t","turn":{"id":"a","items":[],"status":"completed"}}}`},
 		{"completed other", `{"method":"turn/completed","params":{"threadId":"t","turn":{"id":"b","items":[],"status":"completed"}}}`},
+		{"completed on another thread", `{"method":"turn/completed","params":{"threadId":"other","turn":{"id":"a","items":[],"status":"completed"}}}`},
 		{"idle", `{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"idle"}}}`},
 		{"active", `{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"active","activeFlags":[]}}}`},
+		{"notLoaded", `{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"notLoaded"}}}`},
 		{"closed", `{"method":"thread/closed","params":{"threadId":"t"}}`},
 		{"systemError", `{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"systemError"}}}`},
 		{"forget", ""},
@@ -62,11 +76,10 @@ func TestTurnReservationSequences(t *testing.T) {
 	if _, err := c.Encode("first", msg); err != nil {
 		t.Fatal(err)
 	}
-	var path [6]string
+	var path [5]string
 	var visit func(codec, int)
 	visit = func(atPrefix codec, depth int) {
-		// No path carries permission requests. A value copy isolates both
-		// the probe's Encode and each sibling's event from this prefix.
+		// The probe's Encode creates its own reservation on success.
 		probe := atPrefix
 		frame, err := probe.Encode("second", msg)
 		allowed := messageAllowed(path[:depth])
@@ -78,6 +91,8 @@ func TestTurnReservationSequences(t *testing.T) {
 		}
 		for _, event := range events {
 			next := atPrefix
+			// Each sibling must see only its own early completions.
+			next.reservation.completed = maps.Clone(atPrefix.reservation.completed)
 			path[depth] = event.name
 			if event.name == "forget" {
 				next.Forget("first")
@@ -99,7 +114,7 @@ func TestSystemErrorDiscardsPendingStart(t *testing.T) {
 	if _, err := c.Decode([]byte(`{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"systemError"}}}`)); err != nil {
 		t.Fatal(err)
 	}
-	if c.reservation != (turnReservation{}) {
+	if c.reservation.requestID != "" || c.reservation.turnID != "" || c.reservation.completed != nil {
 		t.Fatal("systemError retained the start reservation")
 	}
 }
