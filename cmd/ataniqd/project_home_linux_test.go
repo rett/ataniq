@@ -42,7 +42,7 @@ func TestProjectHomeEnrollment(t *testing.T) {
 		t.Fatal(err)
 	}
 	args[4] = peer.Authority
-	if code := ta.run(args); code != leaddaemon.ExitState || !strings.Contains(ta.err.String(), "different assignment") {
+	if code := ta.run(args); code != leaddaemon.ExitState || !strings.Contains(ta.err.String(), "home_authority="+id.Authority) {
 		t.Fatalf("conflicting enrollment: exit %d: %s", code, ta.err.String())
 	}
 	after, err := os.ReadFile(path)
@@ -74,6 +74,17 @@ func TestProjectHomeExecutorConfirmation(t *testing.T) {
 	}
 	if code := enroll("self", "--confirm-self"); code != leaddaemon.ExitState || !strings.Contains(ta.err.String(), "different assignment") {
 		t.Fatalf("confirmation alone replaced a home: exit %d: %s", code, ta.err.String())
+	}
+	if code := enroll("self", "--replace"); code != leaddaemon.ExitState || !strings.Contains(ta.err.String(), "--confirm-self") {
+		t.Fatalf("unconfirmed replacement: exit %d: %s", code, ta.err.String())
+	}
+	for range 2 {
+		if code := enroll("self", "--confirm-self", "--replace"); code != 0 || !strings.Contains(ta.err.String(), "warning:") {
+			t.Fatalf("confirmed replacement: exit %d: %s", code, ta.err.String())
+		}
+	}
+	if code := enroll("self"); code != leaddaemon.ExitState || !strings.Contains(ta.err.String(), peer) {
+		t.Fatal("lost executor history after reopening a now-local home")
 	}
 }
 

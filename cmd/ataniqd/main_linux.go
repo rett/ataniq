@@ -23,7 +23,7 @@ var version = leaddaemon.DefaultVersion
 
 var usage = baseUsage + canaryUsage
 
-const projectHomeUsage = "ataniqd project-home --state-dir DIR --home self|AUTHORITY [--confirm-self] PROJECT"
+const projectHomeUsage = "ataniqd project-home --state-dir DIR --home self|AUTHORITY [--replace] [--confirm-self] PROJECT"
 
 const baseUsage = `usage: ataniqd run [--state-dir DIR] [--runtime-dir DIR]
        ataniqd init [--state-dir DIR] [--label TEXT | --restored [--leave-old-journal]]
@@ -38,7 +38,7 @@ stops and manages no unit and defines no lead, and no flag changes that.
            --label TEXT       optional display label on first initialization
            --restored         give a restored key a new store incarnation
            --leave-old-journal  acknowledge the old journal will be unusable
-  project-home   enroll a project once, with the daemon stopped
+  project-home   enroll or correct a project home with the daemon stopped
                  --home self uses this root's authority ID
   run      take the daemon lock and the runtime folder lock, open the
            registry, reconcile once and serve until SIGTERM or SIGINT

@@ -196,6 +196,82 @@ func TestCompetingProjectHomesAfterCrash(t *testing.T) {
 	}
 }
 
+func TestReplaceProjectHome(t *testing.T) {
+	dir, self := instanceRegistry(t)
+	_, peer := instanceRegistry(t)
+	project := "sample"
+	enroll := func(home string, replace bool) error {
+		_, err := EnrollProjectHome(filepath.Dir(dir), home, project, EnrollmentOptions{Replace: replace, ConfirmSelf: true})
+		return err
+	}
+	if err := enroll(self, true); !errors.Is(err, ErrHomeMissing) {
+		t.Fatal(err)
+	}
+	if err := enroll(peer, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := enroll(self, true); err != nil {
+		t.Fatal(err)
+	}
+	size := journalSize(t, dir)
+	if err := enroll(self, true); err != nil || journalSize(t, dir) != size {
+		t.Fatalf("retry changed the journal: %v", err)
+	}
+	r := openReg(t, dir)
+	row, err := r.ProjectHome(project)
+	if err != nil || row.ProjectVersion != (ProjectVersion{2, 2}) || row.HomeAuthority != self {
+		t.Fatalf("reopened correction: %+v, %v", row, err)
+	}
+	role := lead(t, project)
+	if _, err := r.DefineAt(role, ManagerAtaniq, goodProfile(), ProjectVersion{1, 1}); !errors.Is(err, ErrStaleGeneration) {
+		t.Fatal(err)
+	}
+	if err := r.SetProjectAssignment(project, self, row.ProjectVersion, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetProjectAssignment(project, self, ProjectVersion{2, 3}, true); err != nil {
+		t.Fatal(err)
+	}
+	okf(t)(r.Define(role, ManagerAtaniq, goodProfile()))
+	closeHomeRegistry(t, r)
+	size = journalSize(t, dir)
+	if err := enroll(peer, true); !errors.Is(err, ErrAssignmentBusy) || journalSize(t, dir) != size {
+		t.Fatalf("replaced a defined lead: %v", err)
+	}
+	r = openReg(t, dir)
+	if _, err := r.BeginLaunch(role); err != nil {
+		t.Fatal(err)
+	}
+	closeHomeRegistry(t, r)
+	if err := enroll(peer, true); !errors.Is(err, ErrAssignmentBusy) {
+		t.Fatalf("replaced a pending launch: %v", err)
+	}
+}
+
+func TestReplacementReplayChecksOldHome(t *testing.T) {
+	dir, self := instanceRegistry(t)
+	_, peer := instanceRegistry(t)
+	r := openReg(t, dir)
+	role := lead(t, "sample")
+	if err := r.SetProjectAssignment(role.Project(), self, ProjectVersion{}, true); err != nil {
+		t.Fatal(err)
+	}
+	body := &replaceHomePayload{PreviousHome: peer, ProjectAssignment: ProjectAssignment{
+		HomeAuthority: peer, ProjectVersion: ProjectVersion{2, 2}, Holder: &LeadRef{peer, role}, ExecutingInstance: peer,
+	}}
+	_, line, _, err := r.prepare(kindReplaceHome, role, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.f.Write(line); err != nil {
+		t.Fatal(err)
+	}
+	closeHomeRegistry(t, r)
+	if _, err := Open(dir, Options{}); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("replayed correction against the wrong predecessor: %v", err)
+	}
+}
+
 func TestHomeRequiredAfterMigration(t *testing.T) {
 	data, _ := readV1Base(t)
 	dir := writeJournal(t, data)

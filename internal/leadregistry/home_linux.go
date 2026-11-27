@@ -2,6 +2,7 @@ package leadregistry
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"path/filepath"
 
@@ -12,6 +13,7 @@ import (
 // EnrollmentOptions holds the owner acknowledgements for offline enrollment.
 type EnrollmentOptions struct {
 	ConfirmSelf bool
+	Replace     bool
 }
 
 // Enrollment identifies the requested authority and any foreign home in the
@@ -50,13 +52,22 @@ func EnrollProjectHome(state, home, project string, opts EnrollmentOptions) (res
 	row, err := r.ProjectHome(project)
 	switch {
 	case errors.Is(err, ErrHomeMissing):
+		if opts.Replace {
+			return result, err
+		}
 		if err := r.SetProjectAssignment(project, authority, ProjectVersion{}, true); err != nil {
 			return result, err
 		}
 	case err != nil:
 		return result, err
+	case row.HomeAuthority != authority && opts.Replace:
+		role, err := leadrole.Lead(project)
+		if err != nil {
+			return result, err
+		}
+		return result, r.replaceHome(role, row, authority)
 	case row.HomeAuthority != authority || row.Holder == nil:
-		return result, errors.New("project already enrolled with a different assignment")
+		return result, fmt.Errorf("project already enrolled with a different assignment: home_authority=%s home_generation=%d revision=%d", row.HomeAuthority, row.HomeGeneration, row.Revision)
 	}
 	return result, nil
 }
@@ -117,7 +128,7 @@ func (r *Registry) SetProjectAssignment(project, home string, expected ProjectVe
 	if err := cur.compare(expected); err != nil {
 		return err
 	}
-	next := &ProjectAssignment{HomeAuthority: home, ProjectVersion: ProjectVersion{HomeGeneration: 1, Revision: cur.Revision + 1}}
+	next := &ProjectAssignment{HomeAuthority: home, ProjectVersion: ProjectVersion{HomeGeneration: max(1, cur.HomeGeneration), Revision: cur.Revision + 1}}
 	if assigned {
 		next.Holder = &LeadRef{Authority: home, Role: role}
 		next.ExecutingInstance = home
@@ -128,14 +139,49 @@ func (r *Registry) SetProjectAssignment(project, home string, expected ProjectVe
 	if err := r.validateAssignment(role, next); err != nil {
 		return err
 	}
-	rec, line, sum, err := r.prepare(kindProjectHome, role, next)
+	return r.writeAssignment(kindProjectHome, role, next, next)
+}
+
+// replaceHome runs only on the private, exclusively locked offline registry.
+func (r *Registry) replaceHome(role leadrole.Role, old ProjectAssignment, authority string) error {
+	p := &replaceHomePayload{PreviousHome: old.HomeAuthority, ProjectAssignment: ProjectAssignment{
+		ProjectVersion: ProjectVersion{HomeGeneration: old.HomeGeneration + 1, Revision: old.Revision + 1},
+		HomeAuthority:  authority, Holder: &LeadRef{Authority: authority, Role: role}, ExecutingInstance: authority,
+	}}
+	if err := r.validateReplacement(role, p); err != nil {
+		return err
+	}
+	return r.writeAssignment(kindReplaceHome, role, p, &p.ProjectAssignment)
+}
+
+func (r *Registry) validateReplacement(role leadrole.Role, p *replaceHomePayload) error {
+	old, ok := r.homes[role.Project()]
+	if !ok || p.PreviousHome != old.HomeAuthority || p.HomeAuthority == old.HomeAuthority || p.Holder == nil {
+		return invalid("home correction must replace the recorded home with a different assigned home")
+	}
+	if old.HomeGeneration == math.MaxUint64 || p.HomeGeneration != old.HomeGeneration+1 {
+		return ErrStaleGeneration
+	}
+	if old.Revision == math.MaxUint64 || p.Revision != old.Revision+1 {
+		return ErrStaleRevision
+	}
+	for defined := range r.roles {
+		if defined.Project() == role.Project() {
+			return fmt.Errorf("%w: %s is defined", ErrAssignmentBusy, defined)
+		}
+	}
+	return nil
+}
+
+func (r *Registry) writeAssignment(kind string, role leadrole.Role, body payload, next *ProjectAssignment) error {
+	rec, line, sum, err := r.prepare(kind, role, body)
 	if err != nil {
 		return err
 	}
 	if err := r.commit(rec, line, sum); err != nil {
 		return err
 	}
-	r.recordAssignment(project, next)
+	r.recordAssignment(role.Project(), next)
 	return nil
 }
 

@@ -474,6 +474,12 @@ func (r *Registry) replayLine(n int, line []byte) error {
 			return &CorruptError{Line: n, Reason: err.Error()}
 		}
 		r.recordAssignment(rec.role.Project(), next)
+	case rec.kind == kindReplaceHome:
+		p := rec.payload.(*replaceHomePayload)
+		if err := r.validateReplacement(rec.role, p); err != nil {
+			return &CorruptError{Line: n, Reason: err.Error()}
+		}
+		r.recordAssignment(rec.role.Project(), &p.ProjectAssignment)
 	case rec.kind == kindRecovered || rec.kind == kindRecoveryAck:
 		next, err := applyRecovery(r.recovery, rec)
 		if err != nil {

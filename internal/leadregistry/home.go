@@ -31,6 +31,11 @@ type ProjectAssignment struct {
 	ExecutingInstance string   `json:"executing_instance"`
 }
 
+type replaceHomePayload struct {
+	PreviousHome string `json:"previous_home_authority"`
+	ProjectAssignment
+}
+
 // HomeRefusal is the stable code of a refused project admission or assignment write.
 type HomeRefusal string
 

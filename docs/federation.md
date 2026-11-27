@@ -147,7 +147,15 @@ role `scratch-alpha/lead`. On the executor, use
 `ataniqd project-home --state-dir DIR --home AUTHORITY PROJECT`, with the
 home's full authority ID from `ataniqd init`. The subcommand takes the registry's
 exclusive lock. It prints the project and recorded home. Repeating the same
-enrollment confirms it. A conflicting enrollment fails.
+enrollment confirms it. A conflicting enrollment prints the recorded home.
+
+To correct an erroneous designation, stop the daemon and run
+`ataniqd project-home --state-dir DIR --home self|AUTHORITY --replace PROJECT`
+with the intended home. Add `--confirm-self` when claiming a former executor
+project. Replacement requires an existing home and no defined project lead
+or coordinator, including stopped roles. The journal records the old and new
+authorities and increments both home generation and assignment revision.
+Repeating a successful correction confirms the row at the same generation.
 
 The journal records the home authority, home generation, assignment revision,
 qualified holder (authority and role), and executing instance together. At

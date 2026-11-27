@@ -18,6 +18,7 @@ func (a *app) projectHomeCmd(args []string) int {
 	state := fs.String("state-dir", "", "initialized daemon state directory")
 	home := fs.String("home", "", "self or the home instance's authority ID")
 	confirmSelf := fs.Bool("confirm-self", false, "acknowledge the recorded executor-only history")
+	replace := fs.Bool("replace", false, "correct the home before any project lead is defined")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return leaddaemon.ExitOK
@@ -33,7 +34,7 @@ func (a *app) projectHomeCmd(args []string) int {
 		fmt.Fprintln(a.stderr, "ataniqd project-home: refusing to enroll as root")
 		return leaddaemon.ExitConfig
 	}
-	result, err := leadregistry.EnrollProjectHome(*state, *home, project, leadregistry.EnrollmentOptions{ConfirmSelf: *confirmSelf})
+	result, err := leadregistry.EnrollProjectHome(*state, *home, project, leadregistry.EnrollmentOptions{ConfirmSelf: *confirmSelf, Replace: *replace})
 	if result.PriorForeignHome != "" {
 		fmt.Fprintf(a.stderr, "warning: project %s previously recorded foreign home_authority=%s on this executor\n", project, result.PriorForeignHome)
 	}
