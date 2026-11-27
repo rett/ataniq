@@ -193,6 +193,13 @@ func TestHP8(t *testing.T) {
 	for _, name := range positive {
 		t.Run("positive/"+name, func(t *testing.T) { runChild(t, operation{name: name}, "positive", marker) })
 	}
+	for _, abi := range []string{"x32", "i386"} {
+		t.Run("kill/"+abi, func(t *testing.T) {
+			op := operation{name: abi}
+			runChild(t, op, "abi-control", marker)
+			runChild(t, op, "kill", marker)
+		})
+	}
 }
 
 func runChild(t *testing.T, op operation, mode, marker string) {
@@ -235,12 +242,26 @@ func runChild(t *testing.T, op operation, mode, marker string) {
 		program = attribution()
 	}
 	want := "READY " + digest(program) + "\n"
-	if mode == "control" {
+	if mode == "control" || mode == "abi-control" {
 		want = "CONTROL\n"
 	}
 	tail, ok := bytes.CutPrefix(out, []byte(want))
 	if !ok {
 		t.Fatalf("missing installation/control marker: %v %q %s", err, out, stderr.Bytes())
+	}
+	if mode == "kill" || mode == "abi-control" {
+		// An enclosing filter that already kills this benign ABI probe
+		// cannot supply evidence for the holder's own kill rule.
+		killed := exit != nil && exit.Sys().(syscall.WaitStatus).Signal() == unix.SIGSYS
+		if mode == "abi-control" && killed && len(tail) == 0 {
+			unavailable(t, "unfiltered "+op.name+" getpid killed by SIGSYS")
+		}
+		if mode == "kill" {
+			if !killed || len(tail) != 0 {
+				t.Fatalf("expected SIGSYS after installation: %v %q %s", err, tail, stderr.Bytes())
+			}
+			return
+		}
 	}
 	if mode == "attribution" {
 		// si_signo, si_errno (rule mark), SYS_SECCOMP, si_syscall, si_arch.
@@ -297,7 +318,21 @@ func TestHP8Child(t *testing.T) {
 		childError("working directory", err, false)
 	}
 	var invoke call
-	if mode == "positive" {
+	if mode == "kill" || mode == "abi-control" {
+		invoke = func() error {
+			switch name {
+			case "x32":
+				unix.RawSyscall(0x40000000|unix.SYS_GETPID, 0, 0, 0)
+			case "i386":
+				probe.I386Getpid()
+			default:
+				return errors.New("unknown ABI")
+			}
+			// A native kernel without the x32 syscall table may return
+			// ENOSYS. Any return distinguishes the control from SIGSYS.
+			return nil
+		}
+	} else if mode == "positive" {
 		invoke, err = positiveCase(name, dir, marker, checkOld)
 	} else {
 		var found bool
@@ -316,7 +351,7 @@ func TestHP8Child(t *testing.T) {
 		childError("prepare "+name, err, true)
 	}
 	switch mode {
-	case "production", "positive":
+	case "production", "positive", "kill":
 		filter, err := InstallFilter()
 		if err != nil {
 			childError("install production", err, true)
@@ -337,7 +372,7 @@ func TestHP8Child(t *testing.T) {
 		if e != 0 || n != uintptr(len(marker)) {
 			os.Exit(1)
 		}
-	case "control":
+	case "control", "abi-control":
 		fmt.Println("CONTROL")
 	default:
 		childError("mode", errors.New("unknown mode"), false)
