@@ -91,6 +91,8 @@ func (p *Pane) Restore(snapshot []byte) error {
 	if err := p.emu.SetState(st); err != nil {
 		return fmt.Errorf("%w: %v", ErrBadSnapshot, err)
 	}
+	// SetState starts a new local scrollback at the snapshot.
+	p.recent = recentPage{}
 	p.cols, p.rows = st.Width, st.Height
 	p.title = title
 	p.dec = decModes{}

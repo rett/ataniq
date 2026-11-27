@@ -992,6 +992,7 @@ func TestPaneInventoryCoversEveryField(t *testing.T) {
 		"graphemes":   "not carried: the outer terminal's, set by the caller",
 		"dec":         "derived: from the modes, set again by Restore",
 		"syncOut":     "carried as mode 2026 (on); the held frame is a presentation copy and is dropped",
+		"recent":      "not carried: the client's viewing state since attach",
 		"title":       "carried",
 		"clipboard":   "not carried: a counter",
 		"titlesCut":   "not carried: a counter",

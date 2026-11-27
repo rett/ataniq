@@ -26,6 +26,10 @@ const replyBuffer = 4096
 // Options configures a pane. The zero value is a fixture pane: replies and
 // input are discarded.
 type Options struct {
+	// RecentOutput keeps up to RecentRowLimit main-screen rows for local
+	// paging. Only a live attach client enables it.
+	RecentOutput bool
+
 	// Replies receives each chunk of the emulator's answers to the session's
 	// queries, as a copy the receiver may keep. It is called on the pane's
 	// drain goroutine, never under the pane's lock. It must return promptly
@@ -66,6 +70,7 @@ type Pane struct {
 
 	dec       decModes
 	syncOut   syncState
+	recent    recentPage
 	title     string
 	clipboard int
 	// titlesCut counts the titles that lost characters to the length cap.
@@ -104,10 +109,11 @@ func New(cols, rows int, o Options) *Pane {
 	if p.input == nil {
 		p.input = Discard{}
 	}
-	// The pane keeps no scrollback: a client gets the visible screen only.
-	// SetScrollbackSize reaches the main screen only, and the patched x/vt
-	// gives the alternate screen none.
-	p.emu.SetScrollbackSize(0)
+	rowsToKeep := 0
+	if o.RecentOutput {
+		rowsToKeep = RecentRowLimit
+	}
+	p.emu.SetScrollbackSize(rowsToKeep)
 	// Closing the writer, rather than calling the emulator's Close, ends the
 	// reader without writing the emulator's closed flag, which its Read
 	// checks on the drain goroutine without a lock.
@@ -243,6 +249,8 @@ func (p *Pane) Close() {
 	p.mu.Lock()
 	if !p.closed {
 		p.closed = true
+		p.recent = recentPage{}
+		p.emu.SetScrollbackSize(0)
 		_ = p.pipe.Close()
 	}
 	p.mu.Unlock()
