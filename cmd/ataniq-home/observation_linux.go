@@ -197,12 +197,3 @@ func saveObservation(state string, o any) error {
 	}
 	return syncDirectory(fd)
 }
-
-func syncDirectory(fd int) error {
-	d, err := unix.Openat(fd, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return err
-	}
-	defer unix.Close(d)
-	return unix.Fsync(d)
-}

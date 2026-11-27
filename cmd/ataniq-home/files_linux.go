@@ -86,3 +86,16 @@ func readRegular(d *os.File, name string, limit int64, private bool) ([]byte, er
 	}
 	return b, nil
 }
+
+func syncDirectory(fd int) error {
+	return syncAt(fd, ".", unix.Fsync)
+}
+
+// Open relative to the pinned directory. Its own descriptor may be O_PATH.
+func syncAt(dir int, name string, fsync func(int) error) error {
+	fd, err := unix.Openat(dir, name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return err
+	}
+	return errors.Join(fsync(fd), unix.Close(fd))
+}

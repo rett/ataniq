@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func must(t *testing.T, err error) {
@@ -222,4 +225,42 @@ func TestIdentityInitConcurrent(t *testing.T) {
 		t.Fatalf("concurrent init exit codes %v", codes)
 	}
 	call(t, path, "pins")
+}
+
+func TestIdentityInitSyncOrder(t *testing.T) {
+	want := []string{"transport/tls/key.pem", "transport/tls/cert.pem", "transport/tls", "transport", "signing/seed", "signing"}
+	failure := errors.New("injected sync error")
+	for _, stop := range append(slices.Clone(want), "success") {
+		t.Run(stop, func(t *testing.T) {
+			root := t.TempDir()
+			for _, parent := range []string{"transport", "signing"} {
+				must(t, os.Mkdir(filepath.Join(root, parent), 0700))
+			}
+			c := config{TLSDir: filepath.Join(root, "transport", "tls"), HomeKey: filepath.Join(root, "signing", "seed")}
+			var synced []string
+			err := identityInitWithSync(c, func(fd int) error {
+				path, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
+				must(t, err)
+				name, err := filepath.Rel(root, path)
+				must(t, err)
+				synced = append(synced, name)
+				if name == stop {
+					return failure
+				}
+				return unix.Fsync(fd)
+			})
+			if stop == "success" {
+				must(t, err)
+				if !slices.Equal(synced, want) {
+					t.Fatal("sync order", synced)
+				}
+				return
+			}
+			if !errors.Is(err, failure) || !slices.Equal(synced, want[:slices.Index(want, stop)+1]) {
+				t.Fatal("sync failure", stop, synced, err)
+			}
+			// Failure unwinds only this attempt's exclusive creations.
+			must(t, identityInit(c))
+		})
+	}
 }
