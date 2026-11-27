@@ -189,7 +189,7 @@ func LoadAt(root int) (Identity, error) {
 	}
 	key := ed25519.NewKeyFromSeed(body[len(magic):seedEnd])
 	defer clear(key)
-	pub := sha256.Sum256(key.Public().(ed25519.PublicKey))
+	pub := sha256.Sum256(append([]byte("ataniq-instance-authority/1"), key.Public().(ed25519.PublicKey)...))
 	return Identity{
 		Binding: Binding{
 			Authority:   hex.EncodeToString(pub[:]),

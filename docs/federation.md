@@ -12,8 +12,9 @@ Federation does not require a central instance or a shared provider.
 Before the first run, use `ataniqd init --state-dir DIR [--label TEXT]` as the
 daemon user. Omitting `--state-dir` selects the same default as `run`. The
 command creates `DIR/instance.key`, a singly linked, user-owned 0600 file in
-the private state root. The authority ID is the SHA-256 digest of the raw
-32-byte Ed25519 public key, encoded as 64 lowercase hexadecimal digits. The
+the private state root. The authority ID is 64 lowercase hexadecimal digits encoding SHA-256 over the
+ASCII bytes of `ataniq-instance-authority/1` immediately followed by the
+32 raw bytes of the Ed25519 public key (no separator or trailing newline). The
 store incarnation is an independent random 16-byte value encoded as 32
 lowercase hexadecimal digits. Recreating and initializing the root generates
 both values afresh. The optional label is for display only.

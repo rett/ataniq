@@ -56,7 +56,7 @@ func TestAuthorityEncodingAndDisplayLabel(t *testing.T) {
 	// RFC 8032 test vector 1 (public test seed).
 	seed, _ := hex.DecodeString("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
 	pub, _ := hex.DecodeString("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
-	fingerprint := sha256.Sum256(pub)
+	fingerprint := sha256.Sum256(append([]byte("ataniq-instance-authority/1"), pub...))
 	path := filepath.Join(t.TempDir(), "state")
 	makeID(t, path, "")
 	for _, label := range []string{"", "North desk", "South desk"} {
