@@ -365,6 +365,31 @@ func TestRejectedTurnStartPreservesObservedTurn(t *testing.T) {
 	equalJSON(t, frame, `{"method":"turn/interrupt","id":"stop","params":{"threadId":"thread-a","turnId":"turn-b"}}`)
 }
 
+func TestOverlappingTurnKeepsOutstandingPermission(t *testing.T) {
+	c, f := fresh(t), frames(t, "events")
+	startThread(t, c)
+	if _, err := c.Encode("first", core.Request{Operation: core.Message, Text: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	turnB := func(frame []byte) []byte {
+		return bytes.ReplaceAll(frame, []byte("turn-a"), []byte("turn-b"))
+	}
+	observe(t, c, turnB(f[1]), core.Event{Kind: "state", State: "busy"})
+	req := turnB(f[3])
+	observePermission(t, c, req)
+	if _, err := c.Decode([]byte(turnStartAnswer)); err != nil {
+		t.Fatal(err)
+	}
+	observe(t, c, f[4]) // only turn-a completed
+	g, err := c.DecodeGrant(req, frames(t, "grants")[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.EncodeGrant(req, g); err != nil {
+		t.Fatalf("lost outstanding permission for turn-b: %v", err)
+	}
+}
+
 type sessionPack struct {
 	pack.Pack
 	codec protocol.Codec
@@ -576,25 +601,25 @@ func TestStartedTurnRequiresInProgress(t *testing.T) {
 
 func TestThreadStatus(t *testing.T) {
 	for _, tc := range []struct {
-		status       string
-		want         core.Event
-		steer, start bool
+		status string
+		want   []core.Event
+		steer  bool
 	}{
-		{`{"type":"active","activeFlags":[]}`, core.Event{Kind: "state", State: "busy"}, true, false},
-		{`{"type":"active","activeFlags":["waitingOnApproval"]}`, core.Event{Kind: "state", State: "blocked"}, true, false},
-		{`{"type":"active","activeFlags":["waitingOnUserInput"]}`, core.Event{Kind: "state", State: "asking"}, true, false},
-		{`{"type":"idle"}`, core.Event{Kind: "state", State: "idle"}, false, true},
-		{`{"type":"notLoaded"}`, core.Event{Kind: "state", State: "unknown"}, false, false},
-		{`{"type":"systemError"}`, core.Event{Kind: "state", State: "unknown"}, false, false},
+		{`{"type":"active","activeFlags":[]}`, []core.Event{{Kind: "state", State: "busy"}}, true},
+		{`{"type":"active","activeFlags":["waitingOnApproval"]}`, []core.Event{{Kind: "state", State: "blocked"}}, true},
+		{`{"type":"active","activeFlags":["waitingOnUserInput"]}`, []core.Event{{Kind: "state", State: "asking"}}, true},
+		{`{"type":"idle"}`, nil, false},
+		{`{"type":"notLoaded"}`, []core.Event{{Kind: "state", State: "unknown"}}, false},
+		{`{"type":"systemError"}`, []core.Event{{Kind: "state", State: "unknown"}}, false},
 	} {
 		c, _ := active(t)
-		observe(t, c, []byte(`{"method":"thread/status/changed","params":{"threadId":"thread-a","status":`+tc.status+`}}`), tc.want)
+		observe(t, c, []byte(`{"method":"thread/status/changed","params":{"threadId":"thread-a","status":`+tc.status+`}}`), tc.want...)
 		_, err := c.Steer("r", "thread-a", "turn-a", "x")
 		if (err == nil) != tc.steer {
 			t.Fatal(tc, err)
 		}
 		_, err = c.Encode("r", core.Request{Operation: core.Message, Text: "x"})
-		if (err == nil) != tc.start {
+		if !errors.Is(err, protocol.ErrTurn) {
 			t.Fatal(tc, err)
 		}
 	}

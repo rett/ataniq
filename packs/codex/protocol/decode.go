@@ -87,7 +87,7 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 		if p.TurnID == "" || p.ItemID == "" || p.Delta == nil {
 			return core.Decoded{}, core.ErrInvalidFrame
 		}
-		if c.current(p.ThreadID, p.TurnID) {
+		if slices.Contains(c.liveTurns, p.TurnID) {
 			return event(core.Event{Kind: "progress", Text: *p.Delta}), nil
 		}
 	case "turn/started", "turn/completed":
@@ -98,8 +98,9 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 			if p.Turn.Status != "inProgress" {
 				return core.Decoded{}, core.ErrInvalidFrame
 			}
-			c.setTurn(p.Turn.ID)
-			c.idle = false
+			c.removeLiveTurn(p.Turn.ID)
+			c.liveTurns = append(c.liveTurns, p.Turn.ID)
+			c.setControlTurn(p.Turn.ID)
 			return state("busy"), nil
 		}
 		switch p.Turn.Status {
@@ -112,28 +113,39 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 		}
 		if p.Turn.ID == c.reservation.turnID {
 			c.reservation = turnReservation{}
-		} else if !c.current(p.ThreadID, p.Turn.ID) {
-			break
 		}
-		c.setTurn("")
-		c.idle = true
-		return state("idle"), nil
+		if c.controlTurn == p.Turn.ID {
+			c.setControlTurn("")
+		}
+		if c.removeLiveTurn(p.Turn.ID) && len(c.liveTurns) == 0 {
+			return state(c.threadState), nil
+		}
 	}
 	return core.Decoded{}, nil
 }
 
-func (c *codec) setTurn(turn string) {
-	if turn != c.turn {
+func (c *codec) removeLiveTurn(turn string) bool {
+	i := slices.Index(c.liveTurns, turn)
+	if i < 0 {
+		return false
+	}
+	c.liveTurns = slices.Delete(c.liveTurns, i, i+1)
+	return true
+}
+
+func (c *codec) setControlTurn(turn string) {
+	if turn != c.controlTurn {
 		clear(c.pending)
-		c.turn = turn
+		c.controlTurn = turn
 	}
 }
 
 func (c *codec) closeThread() {
 	c.reservation = turnReservation{}
-	c.setTurn("")
+	c.liveTurns = nil
+	c.setControlTurn("")
 	c.closed = true
-	c.idle = false
+	c.threadState = "unknown"
 }
 
 type threadStatus struct {
@@ -143,26 +155,19 @@ type threadStatus struct {
 
 func (c *codec) status(s threadStatus) (core.Decoded, error) {
 	var observed agentsession.State
-	reservedTurn := c.turn != "" && c.turn == c.reservation.turnID
 	switch s.Type {
 	case "idle":
-		if reservedTurn {
-			return core.Decoded{}, nil
-		}
 		observed = "idle"
-		c.idle = true
 	case "systemError":
 		c.closeThread()
 		return state("unknown"), nil
 	case "notLoaded":
 		observed = "unknown"
-		c.idle = false
 	case "active":
 		if s.Flags == nil {
 			return core.Decoded{}, core.ErrInvalidFrame
 		}
 		observed = "busy"
-		c.idle = false
 		if slices.Contains(s.Flags, "waitingOnApproval") {
 			observed = "blocked"
 		}
@@ -172,8 +177,12 @@ func (c *codec) status(s threadStatus) (core.Decoded, error) {
 	default:
 		return core.Decoded{}, core.ErrInvalidFrame
 	}
-	if s.Type != "active" && !reservedTurn {
-		c.setTurn("")
+	c.threadState = observed
+	if s.Type != "active" && c.controlTurn != c.reservation.turnID {
+		c.setControlTurn("")
+	}
+	if s.Type == "idle" && len(c.liveTurns) != 0 {
+		return core.Decoded{}, nil
 	}
 	return state(observed), nil
 }
@@ -212,8 +221,14 @@ func (c *codec) answer(e envelope) (core.Decoded, error) {
 			if !c.reservation.completed[result.Turn.ID] {
 				c.reservation.turnID = result.Turn.ID
 				c.reservation.completed = nil
-				c.setTurn(result.Turn.ID)
-				c.idle = false
+				// An answer may arrive after a newer turn/started. Keep that
+				// interrupt target and its outstanding permission requests.
+				if !slices.Contains(c.liveTurns, result.Turn.ID) {
+					c.liveTurns = slices.Insert(c.liveTurns, 0, result.Turn.ID)
+				}
+				if c.liveTurns[len(c.liveTurns)-1] == result.Turn.ID {
+					c.setControlTurn(result.Turn.ID)
+				}
 				return d, nil
 			}
 		}

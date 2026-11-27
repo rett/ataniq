@@ -10,6 +10,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 
+	"ataniq/internal/agentsession"
 	core "ataniq/internal/agentsession/protocol"
 	"ataniq/internal/leadholder/wire"
 )
@@ -35,13 +36,15 @@ type Codec interface {
 }
 
 // A turnReservation records the request ID of a successful Encode(Message),
-// which requires an observed idle thread and no outstanding reservation.
+// which requires an observed idle thread, no live turns and no reservation.
 // An error answer releases the reservation and preserves the observed turn
 // and thread status. A success answer (result.turn.id) and turn/completed
 // for that turn on this thread also release the reservation, in either order.
 // Until the answer names the turn, the reservation remembers the IDs
-// that complete on this thread. Once named, the current reserved turn stays
-// available for progress and interruption across a stale idle status.
+// that complete on this thread. A completion retires only its named turn.
+// Thread status applies to admission independently of those lifetimes.
+// Deltas from each live turn are accepted. StopTurn targets the latest live
+// turn/started notification, falling back to the turn named by the answer.
 // thread/closed and systemError discard it and make the thread unusable.
 // Idle status, turn/started and other completions leave it reserved.
 // Forget keeps the request ID for a late answer. Without a definitive
@@ -56,9 +59,10 @@ type codec struct {
 	startID     string // the one thread/start whose result may establish the binding
 	reservation turnReservation
 	thread      string
-	turn        string
+	liveTurns   []string // interrupt preference increases from first to last
+	controlTurn string   // turn authorized for steering and permission requests
 	closed      bool
-	idle        bool
+	threadState agentsession.State // latest status reported for the bound thread
 	// Outstanding permission requests on this turn, keyed by string or
 	// integer wire ID. The digest binds the decision to the observed bytes.
 	pending map[any][sha256.Size]byte
@@ -112,7 +116,7 @@ func (c *codec) Encode(id string, req core.Request) ([]byte, error) {
 	case core.Open:
 		return request(id, "initialize", map[string]any{"clientInfo": map[string]string{"name": "ataniq", "version": "1"}})
 	case core.Message:
-		if !c.idle || c.reservation.requestID != "" {
+		if c.threadState != "idle" || len(c.liveTurns) != 0 || c.reservation.requestID != "" {
 			return nil, ErrTurn
 		}
 		b, err := c.message(id, "turn/start", "", req.Text)
@@ -121,10 +125,10 @@ func (c *codec) Encode(id string, req core.Request) ([]byte, error) {
 		}
 		return b, err
 	case core.StopTurn:
-		if c.turn == "" {
+		if len(c.liveTurns) == 0 {
 			return nil, ErrTurn
 		}
-		return request(id, "turn/interrupt", map[string]string{"threadId": c.thread, "turnId": c.turn})
+		return request(id, "turn/interrupt", map[string]string{"threadId": c.thread, "turnId": c.liveTurns[len(c.liveTurns)-1]})
 	default:
 		return nil, core.ErrUnsupported
 	}
@@ -137,7 +141,7 @@ func (c *codec) Forget(id string) {
 }
 
 func (c *codec) current(thread, turn string) bool {
-	return turn != "" && turn == c.turn && thread == c.thread
+	return turn != "" && turn == c.controlTurn && thread == c.thread
 }
 
 func (c *codec) Steer(id, thread, expectedTurn, text string) ([]byte, error) {
