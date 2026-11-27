@@ -155,12 +155,18 @@ Keep managed admission closed throughout the pilot.
    receipt and the challenged read have the same sequence and digest,
    followed by `observation: agree` and `managed_starts=0 launches=0`.
 
-   On the authority host, record the signed witness status and obtain a
-   freshly challenged **slot** read through the authenticated owner channel.
-   Verify the slot, epoch and home header. Retain that evidence off-host
-   and write the slot sequence and digest to the one-line archive described
-   below. After the observer exits, fence its writer and release its claimed
-   session on the owner channel. Bring the archive to the home and run
+   After the observer exits, fence its writer. As local root on the authority
+   host, record witness status, archive the challenged slot head, and release
+   the claimed session. Substitute the witness configuration for CONFIG and
+   describe the fencing evidence in WORDS.
+
+   ```sh
+   ataniq-witness status --config CONFIG
+   ataniq-witness slot-read --config CONFIG --archive-out ARCHIVE
+   ataniq-witness slot-release --config CONFIG --asked "WORDS"
+   ```
+
+   Save the result lines off-host, transfer the archive to the home, and run
 
    ```sh
    ataniq-home observe --config FILE --events 0 --archive ARCHIVE
@@ -195,12 +201,10 @@ Keep managed admission closed throughout the pilot.
 
    **Retire and enroll at epoch 2.** Stop and fence the disposable writer.
    Run `ataniq-home retire --config FILE` and check `retired=true` in local
-   status. On the authority host, have the owner issue the separate
-   `ataniq-witness` owner operation `Retire` through its authenticated Unix
-   socket. Supply the exact challenged slot state, a fresh mutation ID and
-   the digest of the owner's disposition. Archive the verified receipt
-   and a freshly challenged tombstone. The current witness executable
-   exposes retirement through its typed owner API.
+   status. As local root on the authority host, run
+   `ataniq-witness slot-retire --config CONFIG --asked "WORDS"`. Describe
+   the disposition of the fenced writer in WORDS. Retain the printed
+   retirement receipt digest and exact disposition off-host.
 
    Preserve the old state and installation records. Prepare an empty home
    root, new seed and TLS paths, and a fresh binding directory. Configure
@@ -238,7 +242,7 @@ Supply a protected regular archive file with exactly one ASCII line,
 assignment sequence (no leading zeroes) and its 64 lowercase digest digits.
 Keep the original signed evidence off-host. The witness CLI in this checkout
 prints directory journal position and digest in its status summary. Obtain
-the slot head from the owner client's authenticated slot read. Copying the
+the slot head with `ataniq-witness slot-read --config CONFIG --archive-out ARCHIVE`. Copying the
 directory position or an enrollment receipt digest will give a disagreement.
 
 ## Retire the local home

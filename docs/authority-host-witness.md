@@ -13,6 +13,9 @@ separate files under protected directories.
 | `status` | Local root | Verifies a fresh signed status and prints the epoch, directory sequence, predecessor digest, counts and inhibition reason. |
 | `acknowledge` | Local root | Sends a pinned, epoch-bound acknowledgement over the owner socket. |
 | `enroll-submit --config FILE --prepared FILE --receipt-out FILE [--expect-digest HEX]` | Local root | Checks the signed home request and its pairing, submits it over the owner socket, writes the signed receipt and prints both digests and verified witness status. |
+| `slot-read --config FILE [--archive-out FILE]` | Local root | Verifies a freshly challenged read of the configured slot and prints `sequence=N head=HEX`. The optional archive is a new 0600 file containing that line. |
+| `slot-release --config FILE --asked WORDS` | Local root | After fencing the writer, releases its claimed session against the challenged state. Prints the verified release receipt digest and the owner's quoted words. |
+| `slot-retire --config FILE --asked WORDS` | Local root | Permanently retires the challenged slot. The disposition digest is SHA-256 of the exact words. Prints the verified retirement receipt digest and quoted words. |
 | `recover` | Witness service, under owner control | Re-proves storage and serves only the owner socket with decisions inhibited. |
 | `complete-publication` | Witness service, offline | Finishes publication of one unambiguous staged signed genesis pair and prints `witness publication completed`. |
 
@@ -404,13 +407,13 @@ check continues to check the witness account after its unit link is removed.
 ## Retire and enroll a replacement
 
 Drain the old home, fence every former writer and route, and record the
-disposition of outstanding work. On the authenticated local owner link,
-`Read` the exact slot with a fresh challenge. If a session needs explicit
-release, submit `Release` against the verified state and read again.
-Submit `Retire` with a fresh mutation ID, the exact current state and the
-digest of the owner's disposition record. Keep the saved intent, verified
-retirement receipt and a new challenged view showing the permanent
-tombstone. The owner can retire after losing the home's key.
+disposition of outstanding work. As local root, run
+`WITNESS slot-read --config CONFIG --archive-out ARCHIVE` to capture the final
+assignment head. If the writer still holds a session, run
+`WITNESS slot-release --config CONFIG --asked "WORDS"`, describing the fence.
+Then run `WITNESS slot-retire --config CONFIG --asked "WORDS"` with the owner's
+disposition. Keep the printed receipt digest and exact words in the off-host
+record. Each mutation uses a fresh ID and the exact challenged state. The owner can retire after losing the home's key.
 
 Stop the old instance cleanly and preserve its store and verification keys.
 For the replacement prepare a fresh home key, store, incarnation and ledger

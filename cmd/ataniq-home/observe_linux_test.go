@@ -102,7 +102,7 @@ func TestObserveArchive(t *testing.T) {
 	}
 	path := filepath.Join(filepath.Dir(f.path), "archive")
 	cmd.events, cmd.archive = 0, path
-	must(t, os.WriteFile(path, []byte(head.String()+"\n"), 0600))
+	must(t, enrollment.WriteHeadArchive(path, f.state(t).Head))
 	f.release(t)
 	out, err = f.run(t, cmd, nil)
 	must(t, err)

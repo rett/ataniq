@@ -56,7 +56,7 @@ func TestEnrollSubmitReceiptAndReplay(t *testing.T) {
 	must(t, err)
 	defer w.Close()
 	must(t, w.Grant(c.Slot, store.HomePin, true))
-	admin := ownerAdmin{&guardedWitness{Witness: w, dir: filepath.Join(filepath.Dir(cmd.configPath), guardDirectory), turn: make(chan struct{}, 1)}}
+	admin := ownerAdmin{&guardedWitness{Witness: w, slot: c.Slot, dir: filepath.Join(filepath.Dir(cmd.configPath), guardDirectory), turn: make(chan struct{}, 1)}}
 	// The client has no service TLS key, signing seed or state at these
 	// paths. Its only private key on disk is the local owner's TLS key.
 	c.Seed += "-absent"
