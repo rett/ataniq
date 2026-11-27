@@ -70,12 +70,15 @@ func TestCF01(t *testing.T) {
 	}
 	// Model a separately witnessed enrollment for the positive format cases.
 	cred := ScratchSKCredential{ID: d.CredentialID, PublicKey: pub, Provenance: SKWitnessed, Counter: 0x1020303}
+	scope := ScratchSKScope{
+		AllowFeatureFinish: true, DeskClass: "laptop", DisposableLocal: true, CardClass: "ref-move", Verb: "feature finish",
+	}
 	v := skVector{"sk-ssh-ed25519@openssh.com", "ssh:ataniq-console", "ataniq-console-decision-v1", "", "sha512", 0x05, 0x1020304}
 	msg := vectorDecision(d, "security-key", "console-decision")
 	sig := v.sign(key, msg)
 	refuse := func(t *testing.T, c ScratchSKCredential, expected ScratchSKDecision, blob []byte) error {
 		t.Helper()
-		counter, err := VerifyScratchSK(c, expected, blob)
+		counter, err := VerifyScratchSK(c, expected, scope, blob)
 		if err == nil || counter != 0 {
 			t.Fatalf("accepted invalid vector or returned counter on failure: %v, %d", err, counter)
 		}
@@ -92,12 +95,8 @@ func TestCF01(t *testing.T) {
 		if err != nil || !bytes.Equal(got, msg) {
 			t.Fatal("desk signing bytes differ from vector", err)
 		}
-		for _, provenance := range []SKProvenance{SKWitnessed, SKAttested} {
-			c := cred
-			c.Provenance = provenance
-			if count, err := VerifyScratchSK(c, d, sig); err != nil || count != v.counter {
-				t.Fatalf("got counter %d, err %v", count, err)
-			}
+		if count, err := VerifyScratchSK(cred, d, scope, sig); err != nil || count != v.counter {
+			t.Fatalf("got counter %d, err %v", count, err)
 		}
 		c := cred
 		c.PublicKey = nil
@@ -118,6 +117,47 @@ func TestCF01(t *testing.T) {
 			refuse(t, cred, d, damaged)
 		}
 		refuse(t, cred, d, append(bytes.Clone(sig), 0))
+	})
+
+	t.Run("InvalidKey", func(t *testing.T) {
+		zeros, ones := strings.Repeat("00", 30), strings.Repeat("ff", 30)
+		for name, encoded := range map[string]string{
+			"identity":       "01" + zeros + "00",
+			"order2":         "ec" + ones + "7f",
+			"order4positive": "00" + zeros + "00",
+			"order4negative": "00" + zeros + "80",
+			"order8a":        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+			"order8b":        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+			"order8c":        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+			"order8d":        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+			"negativeZero":   "01" + zeros + "80",
+			"unreduced":      "f6" + ones + "7f",
+			"offCurve":       "02" + zeros + "00",
+			"short":          hex.EncodeToString(pub[:31]),
+		} {
+			t.Run(name, func(t *testing.T) {
+				c := cred
+				var err error
+				c.PublicKey, err = hex.DecodeString(encoded)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(c.PublicKey) != ed25519.PublicKeySize {
+					// Key validation precedes even a missing signature tail.
+					if _, err := VerifyScratchSK(c, d, scope, skPrefix(c.PublicKey)); err != ErrKey {
+						t.Fatalf("malformed key length: got %v, want %v", err, ErrKey)
+					}
+				}
+				// Keep the signed fixture's suffix. The malformed enrolled key
+				// must be rejected even when the SSHSIG header matches it.
+				blob := append(skPrefix(c.PublicKey), sig[len(skPrefix(pub)):]...)
+				wantErr(t, "stored key", refuse(t, c, d, blob), ErrKey)
+				wantErr(t, "enrollment key", ValidateScratchSKKey(c.PublicKey), ErrKey)
+			})
+		}
+		if err := ValidateScratchSKKey(pub); err != nil {
+			t.Fatalf("valid enrollment key: %v", err)
+		}
 	})
 
 	t.Run("BadCounter", func(t *testing.T) {
@@ -171,7 +211,7 @@ func TestCF01(t *testing.T) {
 	})
 
 	t.Run("SoftwareProvenance", func(t *testing.T) {
-		for _, provenance := range []SKProvenance{"", "software", "unrecognized"} {
+		for _, provenance := range []SKProvenance{"", "software", "attested", "unrecognized"} {
 			c := cred
 			c.Provenance = provenance
 			wantErr(t, "unqualified key", refuse(t, c, d, sig), ErrSKProvenance)
@@ -205,6 +245,8 @@ func TestCF01(t *testing.T) {
 		for _, change := range []func(*ScratchSKDecision){
 			func(d *ScratchSKDecision) { d.HomeID = "" },
 			func(d *ScratchSKDecision) { d.SessionID = strings.Repeat("s", 1025) },
+			func(d *ScratchSKDecision) { d.GateFingerprint = [32]byte{} },
+			func(d *ScratchSKDecision) { d.FrameSHA256 = [32]byte{} },
 			func(d *ScratchSKDecision) { d.Nonce = [32]byte{} },
 			func(d *ScratchSKDecision) { d.ExporterSHA256 = [32]byte{} },
 			func(d *ScratchSKDecision) { d.Decision = "login" },
@@ -219,10 +261,43 @@ func TestCF01(t *testing.T) {
 		}
 	})
 
+	t.Run("TailLength", func(t *testing.T) {
+		// Use an incomplete expectation to distinguish a framing rejection
+		// from a failure later in verification. Keep the credential ID matched.
+		incomplete := ScratchSKDecision{CredentialID: cred.ID}
+		wantErr(t, "complete tail", refuse(t, cred, incomplete, sig), ErrExpect)
+		wantErr(t, "extra tail byte", refuse(t, cred, incomplete, append(bytes.Clone(sig), 0)), ErrSignature)
+	})
+
+	t.Run("ScratchScope", func(t *testing.T) {
+		for name, change := range map[string]func(*ScratchSKScope){
+			"empty":        func(s *ScratchSKScope) { *s = ScratchSKScope{} },
+			"noOptIn":      func(s *ScratchSKScope) { s.AllowFeatureFinish = false },
+			"aiHost":       func(s *ScratchSKScope) { s.DeskClass = "ai-host" },
+			"unknownDesk":  func(s *ScratchSKScope) { s.DeskClass = "" },
+			"outsideTrial": func(s *ScratchSKScope) { s.DisposableLocal = false },
+			"otherClass":   func(s *ScratchSKScope) { s.CardClass = "publish" },
+			"otherVerb":    func(s *ScratchSKScope) { s.Verb = "feature start" },
+		} {
+			t.Run(name, func(t *testing.T) {
+				other := scope
+				change(&other)
+				if counter, err := VerifyScratchSK(cred, d, other, sig); counter != 0 || err != ErrNotAccepted {
+					t.Fatalf("ineligible desk or card: counter %d, err %v", counter, err)
+				}
+			})
+		}
+	})
+
 	t.Run("KindPolicy", func(t *testing.T) {
 		sk := Policy{Accepted: []string{NameSecurityKey}}
-		if NameSecurityKey != "security-key" || sk.Check() != nil || !sk.Accepts(NameSecurityKey) || !(Policy{}).Accepts(NameSecurityKey) {
-			t.Fatal("security-key missing from policy")
+		for _, policy := range []Policy{{}, sk, {Accepted: []string{NameVault, NameSecurityKey}}} {
+			if policy.Accepts(NameSecurityKey) {
+				t.Errorf("phone policy %v accepts security-key", policy.Accepted)
+			}
+			if len(policy.Accepted) > 0 {
+				wantErr(t, "security-key in phone settings", policy.Check(), ErrPolicy)
+			}
 		}
 		for _, k := range Kinds() {
 			if sk.Accepts(k.Name()) || (Policy{Accepted: []string{k.Name()}}).Accepts(NameSecurityKey) {

@@ -20,26 +20,37 @@ const (
 
 var (
 	ErrSKCounter    = errors.New("credkind: security-key counter did not advance")
-	ErrSKProvenance = errors.New("credkind: security-key enrollment requires witnessed or attested origin")
+	ErrSKProvenance = errors.New("credkind: security-key enrollment requires witnessed origin")
 )
 
 // SKProvenance records the independent evidence for a dedicated enrolled key.
 // Only the trusted enrollment supplies this value. A signature cannot prove it.
 type SKProvenance string
 
-const (
-	SKWitnessed SKProvenance = "witnessed"
-	SKAttested  SKProvenance = "attested"
-)
+// SKWitnessed records the physical enrollment ceremony. Attested origin
+// requires an attestation verifier before it can be admitted.
+const SKWitnessed SKProvenance = "witnessed"
 
 // ScratchSKCredential is the verifier's trusted record for a credential.
-// Enrollment supplies the validated public key, and Counter is the last value
+// Enrollment must call ValidateScratchSKKey, and Counter is the last value
 // durably spent for this credential.
 type ScratchSKCredential struct {
 	ID         string
 	PublicKey  ed25519.PublicKey
 	Provenance SKProvenance
 	Counter    uint32
+}
+
+// ScratchSKScope is the home's authorization context. AllowFeatureFinish is
+// an explicit project opt-in, DeskClass comes from the authenticated desk's
+// enrollment, and the remaining fields come from the pending card and trial.
+// These values must be obtained independently of the submitted signature.
+type ScratchSKScope struct {
+	AllowFeatureFinish bool
+	DeskClass          string
+	DisposableLocal    bool
+	CardClass          string
+	Verb               string
 }
 
 // ScratchSKDecision describes one expected console decision at the home.
@@ -111,12 +122,16 @@ func skPrefix(pub ed25519.PublicKey) []byte {
 // returns the signed counter for the challenge spend. The caller must recheck
 // eligibility, the current counter, expiry and challenge state at spend time
 // and retain the counter atomically with the spend. No decision is issued here.
-func VerifyScratchSK(c ScratchSKCredential, expected ScratchSKDecision, blob []byte) (uint32, error) {
-	if c.Provenance != SKWitnessed && c.Provenance != SKAttested {
+func VerifyScratchSK(c ScratchSKCredential, expected ScratchSKDecision, scope ScratchSKScope, blob []byte) (uint32, error) {
+	if !scope.AllowFeatureFinish || scope.DeskClass != "laptop" || !scope.DisposableLocal ||
+		scope.CardClass != "ref-move" || scope.Verb != "feature finish" {
+		return 0, ErrNotAccepted
+	}
+	if c.Provenance != SKWitnessed {
 		return 0, ErrSKProvenance
 	}
-	if len(c.PublicKey) != ed25519.PublicKeySize {
-		return 0, ErrKey
+	if err := ValidateScratchSKKey(c.PublicKey); err != nil {
+		return 0, err
 	}
 	if c.ID != expected.CredentialID {
 		return 0, ErrCredential
