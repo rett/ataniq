@@ -292,11 +292,13 @@ ataniq-seat --origin-file PATH --socket PATH --client-addr-header NAME \
   --decision-guard DIR
 ```
 
-`--gate`, `--gate-pin-file` and `--identity` go together; without them the seat
-runs unlinked, pairing and login answer `daemon_unavailable` and no card offers a
-decision.
+For a single gate, give `--gate`, `--gate-pin-file` and `--identity` together.
+For several gates, use the [gate directory](#gate-directory). With no gate
+configured the seat runs unlinked, pairing and login answer
+`daemon_unavailable` and no card offers a decision.
 
-`--notify-socket PATH`, an absolute path, is optional and needs the gate link:
+`--notify-socket PATH`, an absolute path, is optional and requires the single
+`--gate` form:
 it names the Unix socket of the notifier, and turns notices on (see
 [Notices](#notices)). Without it the seat tells no one anything, the card list
 shows nothing about notices and the notices' routes answer 404. On the authority
@@ -327,6 +329,21 @@ to this line. Restarting the seat ends every session of the phone.
 On the authority host the seat is not started by hand: its unit is started by
 the switch's reload list (see [the README](../deploy/authority-host/README.md#enabling-it)).
 The daemon on the lead host has no unit; it is started by hand.
+
+### Gate directory
+
+To serve several gates at one seat, give one `--identity DIR` and repeat
+`--gate-entry NAME,HOST:PORT,PIN_FILE` for each gate. Each entry supplies
+its own address and pin file. The pin file follows the same rules as
+`--gate-pin-file`. Give each gate a unique name of up to 32 lowercase
+letters, digits or hyphens, starting with a letter or digit.
+
+Open `/` for the directory and log in to each instance separately. Cards,
+projects and leads link to their own gate under `/g/FINGERPRINT/`, where
+`FINGERPRINT` identifies the pinned gate. When one gate goes offline, its
+last rows for this session stay visible as stale, with their links disabled.
+The other gates remain usable. When pairing from `/pair/`, choose the gate
+that issued the code.
 
 ## Pairing
 
