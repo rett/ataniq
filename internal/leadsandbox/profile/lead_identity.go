@@ -9,7 +9,7 @@ import (
 const authorityTagLen = 16
 
 // QualifiedLeadIdentity names a managed lead using the instance authority
-// (the lowercase SHA-256 fingerprint of its public key). Sixteen hex digits
+// (the domain-separated fingerprint from instanceid). Sixteen hex digits
 // give independent instances a one-in-2^64 chance of sharing a tag.
 func QualifiedLeadIdentity(project, authority string) (string, error) {
 	if err := CheckName("project", project); err != nil {

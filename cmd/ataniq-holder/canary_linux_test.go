@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"ataniq/internal/inject/osc7501"
+	"ataniq/internal/instanceid"
 	"ataniq/internal/leadholder/canaryroot"
 	"ataniq/internal/leadholder/fakeagent"
 	"ataniq/internal/leadholder/injectbridge"
@@ -451,6 +452,19 @@ func TestCanaryCounters(t *testing.T) {
 		if rec.Counters[k] != v {
 			t.Errorf("final record: %s is %d, want %d", k, rec.Counters[k], v)
 		}
+	}
+}
+
+func TestCanaryStartRequiresInstanceIdentity(t *testing.T) {
+	c := newCanaryRig(t)
+	if err := os.Remove(filepath.Join(c.stateRoot, instanceid.FileName)); err != nil {
+		t.Fatal(err)
+	}
+	if code := c.runNow(c.spec("").build()); code != exitSandbox || !strings.Contains(c.errbuf.String(), instanceid.ErrMissing.Error()) {
+		t.Fatalf("missing identity: exit %d, stderr %q", code, c.errbuf.String())
+	}
+	if calls := c.sys.callList(); len(calls) != 0 || len(c.launches()) != 0 {
+		t.Fatalf("start continued after identity refusal: %v", calls)
 	}
 }
 

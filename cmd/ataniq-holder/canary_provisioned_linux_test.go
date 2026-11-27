@@ -49,6 +49,7 @@ type provisionedRig struct {
 func newProvisionedRig(t *testing.T) *provisionedRig {
 	t.Helper()
 	w := provisiontest.New(t)
+	initInstanceIdentity(t, w.State)
 	var log []string
 	if err := provision.Provision(context.Background(), w.Cfg, provision.Options{
 		Getenv: w.Getenv(), Log: func(s string) { log = append(log, s) },

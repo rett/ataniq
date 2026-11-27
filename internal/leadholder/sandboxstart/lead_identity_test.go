@@ -66,16 +66,18 @@ func TestManagedLeadIdentityInStartedSandboxPlan(t *testing.T) {
 
 func TestManagedLeadIdentityRefusedBeforeLaunch(t *testing.T) {
 	for name, tc := range map[string]struct {
+		file   string
 		damage func(string) error
 		want   instanceid.Refusal
 	}{
-		"missing": {os.Remove, instanceid.ErrMissing},
-		"damaged": {func(p string) error { return os.WriteFile(p, []byte("damaged"), 0600) }, instanceid.ErrInvalid},
-		"unsafe":  {func(p string) error { return os.Chmod(p, 0644) }, instanceid.ErrUnsafe},
+		"missing":             {instanceid.FileName, os.Remove, instanceid.ErrMissing},
+		"damaged":             {instanceid.FileName, func(p string) error { return os.WriteFile(p, []byte("damaged"), 0600) }, instanceid.ErrInvalid},
+		"unsafe":              {instanceid.FileName, func(p string) error { return os.Chmod(p, 0644) }, instanceid.ErrUnsafe},
+		"missing incarnation": {instanceid.IncarnationFile, os.Remove, instanceid.ErrInvalid},
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := newWorld(t)
-			if err := tc.damage(filepath.Join(w.state, instanceid.FileName)); err != nil {
+			if err := tc.damage(filepath.Join(w.state, tc.file)); err != nil {
 				t.Fatal(err)
 			}
 			_, err := w.run_()
