@@ -103,15 +103,20 @@ func TestSettleErrorsWhenTheOutputStreamEnded(t *testing.T) {
 	s := e.start("raw; say READY; echo 1; say BYE; exit 0")
 	waitScreen(t, s, "READY")
 	fenced(t, s, func(f Fenced) {
+		// Keep lifecycle at its exit-status update so it cannot apply BYE
+		// itself or close the session before Settle observes the stream end.
+		s.fmu.Lock()
+		defer s.fmu.Unlock()
 		writeFrozen(t, f, "g")
-		// The last of the output is applied, then the error says there is no more.
-		var err error
-		until(t, "Settle to see the stream end", func() bool {
-			_, err = f.Settle(fenceCtx(t), 0, 20*time.Millisecond, time.Second)
-			return err != nil
-		})
-		if !errors.Is(err, ErrStreamEnded) {
-			t.Errorf("Settle = %v, want an error wrapping ErrStreamEnded", err)
+		// At EOF all final bytes are in the fence's buffer.
+		ctx := fenceCtx(t)
+		select {
+		case <-s.readDone:
+		case <-ctx.Done():
+			t.Fatal("the output reader did not finish")
+		}
+		if drained, err := f.Settle(ctx, 0, 0, time.Second); drained || !errors.Is(err, ErrStreamEnded) {
+			t.Errorf("Settle = %v, %v, want false and an error wrapping ErrStreamEnded", drained, err)
 		}
 		if text := screenText(s); !strings.Contains(text, "BYE") {
 			t.Errorf("the output before the end was not applied: %q", text)
