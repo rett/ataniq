@@ -29,7 +29,7 @@ func checkLeadEnvironment(t *testing.T, w *world, env []profile.EnvVar) string {
 
 func TestManagedLeadIdentityAcrossInstances(t *testing.T) {
 	var first string
-	for _, tag := range []string{"0123456789abcdef", "ghijklmnopqrstuz"} {
+	for _, tag := range []string{"0123456789abcdef", "fedcba9876543210"} {
 		w := newWorld(t)
 		w.in.AuthorityTag = tag
 		w.in.AgentEnv = []profile.EnvVar{{Name: profile.EnvQargiActor, Value: sampleRole + "@e1:coord:demo:1"}}
@@ -62,6 +62,7 @@ func TestManagedLeadIdentityRefusedBeforeLaunch(t *testing.T) {
 	for name, tag := range map[string]string{
 		"missing": "", "short": "123456789abcdef", "long": "0123456789abcdef0",
 		"uppercase": "0123456789abcdeF", "punctuation": "0123456789abcd-f",
+		"non-hex letter": "0123456789abcdeg",
 		"newline": "0123456789abcde\n", "non-ascii": "0123456789abcdé",
 	} {
 		t.Run(name, func(t *testing.T) {

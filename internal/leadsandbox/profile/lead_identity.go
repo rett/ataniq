@@ -8,7 +8,7 @@ import (
 
 const authorityTagLen = 16
 
-var authorityTagChars = regexp.MustCompile(`^[a-z0-9]+$`)
+var authorityTagChars = regexp.MustCompile(`^[0-9a-f]+$`)
 
 // ShortAuthorityTag takes the first sixteen hex digits of a public authority fingerprint.
 func ShortAuthorityTag(authority string) (string, error) {
@@ -24,7 +24,7 @@ func QualifiedLeadIdentity(project, tag string) (string, error) {
 		return "", err
 	}
 	if len(tag) != authorityTagLen || !authorityTagChars.MatchString(tag) {
-		return "", refuse("authority tag", "must be %d characters of [a-z0-9]", authorityTagLen)
+		return "", refuse("authority tag", "must be %d lowercase hex digits", authorityTagLen)
 	}
 	const separator = "-lead-"
 	const projectLimit = maxLeadIdentityLen - len(separator) - authorityTagLen
