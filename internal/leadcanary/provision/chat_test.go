@@ -266,8 +266,8 @@ func TestEnsureChatNeedsAProvisionedScratchLead(t *testing.T) {
 }
 
 // The text gives the reader's own numbers and folder, names the reply grammar
-// and its example rightly, holds no host path, and carries the seat paragraph
-// word for word.
+// and its example rightly, states the executor-only rule, holds no host path,
+// and carries the seat paragraph word for word.
 func TestTheLeadInstructionsText(t *testing.T) {
 	text := LeadInstructions()
 	for _, want := range []string{
@@ -284,6 +284,10 @@ func TestTheLeadInstructionsText(t *testing.T) {
 		"Files left in the folder while chat is off are never shown",
 		"plain-text file",
 		"Do not put secrets, private paths or tool output in it",
+		"If a project's home is another instance, this instance is executor-only for that project.",
+		"Run only offered work, such as member runs and suites, and return results and patches to the home lead.",
+		"Never lead, merge or finish that project's features here.",
+		"The daemon refuses a local lead for that project with project-home-foreign.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the text does not say %q", want)
