@@ -222,17 +222,71 @@ func TestReadAuthenticationAndOwnerIsolation(t *testing.T) {
 		}
 	}
 	ownerID := identity(t, "owner")
-	oe := f.endpoint(testOwner(t, f.s, f.w, f.w.Administration(), ownerID.Fingerprint()))
-	for _, id := range []seatgate.Identity{{}, identity(t, "untrusted")} {
-		tr, err := oe.transport(id)
-		must(t, err)
-		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
-		_, err = tr.exchange(ctx, frame.New(frame.OwnerRead, m.Fields[0]))
-		cancel()
-		if !errors.Is(err, cp.ErrRefused) {
-			t.Fatalf("owner read without owner certificate: %v", err)
-		}
+	ownerRead := frame.New(frame.OwnerRead, m.Fields[0])
+	peers := []struct {
+		name  string
+		id    seatgate.Identity
+		alert tls.AlertError
+	}{
+		{"missing certificate", seatgate.Identity{}, 116},       // certificate_required
+		{"untrusted certificate", identity(t, "untrusted"), 42}, // bad_certificate
 	}
+	ready := func(t *testing.T, oe Remote) {
+		t.Helper()
+		tr, err := oe.transport(ownerID)
+		must(t, err)
+		_, err = tr.read(t.Context(), q, ownerRead)
+		must(t, err)
+	}
+	t.Run("owner listener", func(t *testing.T) {
+		oe := f.endpoint(testOwner(t, f.s, f.w, f.w.Administration(), ownerID.Fingerprint()))
+		ready(t, oe)
+		for _, peer := range peers {
+			t.Run(peer.name, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+				defer cancel()
+				tr, err := oe.transport(peer.id)
+				must(t, err)
+				raw, err := oe.DialContext(ctx, oe.Network, oe.Address)
+				must(t, err)
+				defer raw.Close()
+				deadline, _ := ctx.Deadline()
+				must(t, raw.SetDeadline(deadline))
+				conn := tls.Client(raw, tr.tls)
+				err = conn.HandshakeContext(ctx)
+				if err == nil {
+					// TLS 1.3 can deliver the certificate alert after
+					// the client handshake. Read it before writing.
+					_, err = conn.Read(make([]byte, 1))
+				}
+				var op *net.OpError
+				if !errors.As(err, &op) || op.Op != "remote error" || op.Err.Error() != peer.alert.Error() {
+					t.Fatalf("want peer alert %v, got %v", peer.alert, err)
+				}
+			})
+		}
+	})
+	t.Run("owner read exchange", func(t *testing.T) {
+		// On a socket a failed application write can close the client
+		// before it reads the queued alert. On net.Pipe the server's
+		// alert write completes only when the client reads it.
+		oe := f.endpoint(serveNetwork(t, "pipe", func(l net.Listener) error {
+			return f.s.serveOwner(l, f.w.Administration(), f.w, ownerID.Fingerprint(), func(net.Conn) func() { return func() {} })
+		}))
+		ready(t, oe)
+		for _, peer := range peers {
+			t.Run(peer.name, func(t *testing.T) {
+				tr, err := oe.transport(peer.id)
+				must(t, err)
+				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+				defer cancel()
+				_, err = tr.exchange(ctx, ownerRead)
+				if !errors.Is(err, cp.ErrRefused) || errors.Is(err, cp.ErrUnavailable) {
+					t.Fatalf("owner read: want refusal, got %v", err)
+				}
+			})
+		}
+	})
 }
 
 func TestRatesAcrossConnections(t *testing.T) {
