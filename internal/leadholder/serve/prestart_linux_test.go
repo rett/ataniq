@@ -5,7 +5,6 @@ package serve
 import (
 	"bytes"
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -18,43 +17,7 @@ import (
 	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/session"
 	"ataniq/internal/leadholder/wire"
-	"ataniq/internal/pack"
-	"ataniq/packs/holder"
 )
-
-func TestRegisteredIdentities(t *testing.T) {
-	build := buildid.Identity{Version: "v1.2.3", Revision: "abc123"}
-	got, err := registeredIdentities(build)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := pack.New()
-	if err := holder.Register(r); err != nil {
-		t.Fatal(err)
-	}
-	var want []wire.PackIdentity
-	for _, name := range r.Names() {
-		files := map[string][]byte{}
-		for _, path := range []string{pack.ManifestPath, pack.HooksPath, pack.SandboxPath} {
-			data, err := os.ReadFile(filepath.Join("../../../packs", string(name), path))
-			if path != pack.ManifestPath && errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			files[path] = data
-		}
-		digest, err := pack.DeclarationDigest(files)
-		if err != nil {
-			t.Fatal(err)
-		}
-		want = append(want, wire.PackIdentity{Name: string(name) + "@v1.2.3+abc123", DeclarationDigest: digest})
-	}
-	if !reflect.DeepEqual(want, got) {
-		t.Fatalf("registered identities: got %+v, want %+v", got, want)
-	}
-}
 
 func TestLocalHolderHello(t *testing.T) {
 	id, err := buildid.OfProcess(os.Getpid())
@@ -62,13 +25,19 @@ func TestLocalHolderHello(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := wire.HolderBuild{Module: id.Module, Version: id.Version, Revision: id.Revision, Modified: id.Modified}
-	cfg := Config{}
+	packs := []wire.PackIdentity{{Name: "fixture@v1+r1", DeclarationDigest: fmt.Sprintf("%064x", 1)}}
+	cfg := Config{PackIdentities: func(build buildid.Identity) ([]wire.PackIdentity, error) {
+		if build != id {
+			t.Fatalf("pack lookup for build %+v, want %+v", build, id)
+		}
+		return packs, nil
+	}}
 	cfg.withDefaults()
 	h, err := cfg.holderHello()
 	if err != nil || h.Build != want || h.Range != (wire.VersionRange{Min: wire.ControlVersion, Max: wire.PreStartVersion}) {
 		t.Fatalf("local hello %+v, %v", h, err)
 	}
-	if h.Packs == nil || h.HookFrames == nil || len(h.HookFrames) != 0 || h.Session || h.SpecDigest != "" {
+	if !reflect.DeepEqual(h.Packs, packs) || h.HookFrames == nil || len(h.HookFrames) != 0 || h.Session || h.SpecDigest != "" {
 		t.Fatalf("unexpected local capabilities: %+v", h)
 	}
 }
