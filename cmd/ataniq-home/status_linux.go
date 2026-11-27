@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -59,7 +60,7 @@ func status(c config, out io.Writer) error {
 			_, err = fmt.Fprintf(out, "ledger_head_sequence=%d\n", head.Sequence)
 		}
 	}
-	return errors.Join(err, bindingErr, replayErr)
+	return errors.Join(err, bindingErr, replayErr, pilotStatus(c, out))
 }
 
 func bindingStatus(c config, home ed25519.PublicKey) (string, *enrollment.Binding, error) {
@@ -81,4 +82,34 @@ func bindingStatus(c config, home ed25519.PublicKey) (string, *enrollment.Bindin
 		return "invalid", nil, errors.New("binding differs from the configured ledger root, slot, epoch or keys")
 	}
 	return "valid", &b, nil
+}
+
+func pilotStatus(c config, out io.Writer) error {
+	retired, err := isRetired(c)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(out, "retired=%t\n", retired); err != nil {
+		return err
+	}
+	path := filepath.Join(c.State, observationFile)
+	present, err := exists(path)
+	if err != nil || !present {
+		return err
+	}
+	raw, err := readFile(path, 4096, true)
+	if err != nil {
+		return fmt.Errorf("observation.json: %w", err)
+	}
+	var o observation
+	if err := json.Unmarshal(raw, &o); err != nil {
+		return fmt.Errorf("observation.json: %w", err)
+	}
+	canonical, err := json.Marshal(o)
+	if err != nil || !bytes.Equal(raw, canonical) || !o.Home.valid() || !o.Witness.valid() || !o.Fresh.valid() ||
+		(o.Archive != nil && (!o.Archive.valid() || o.ArchiveInvalid)) || o.Result != o.verdict() {
+		return errors.New("invalid observation.json")
+	}
+	_, err = fmt.Fprintln(out, "last_observation="+o.Result)
+	return err
 }
