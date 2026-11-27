@@ -9,8 +9,7 @@ import (
 	"unicode/utf8"
 )
 
-// Status inventories have no wire size limit. The caller bounds capture as
-// appropriate for its transport. Validate the complete input before walking
+// Validate the complete, size-checked input before walking
 // tokens so truncation or a second document cannot yield a partial result.
 func object(data []byte) (map[string]any, error) {
 	if !json.Valid(data) || !validText(data) {

@@ -378,3 +378,27 @@ func TestInventoryEvidenceByFeature(t *testing.T) {
 		})
 	}
 }
+
+func TestDocumentSizeLimit(t *testing.T) {
+	files := archive(t, "cases.zip")
+	body := fixture(t, files, Check, "valid-refs-name")
+	atLimit := append(body, bytes.Repeat([]byte{' '}, MaxDocumentBytes-len(body))...)
+	if d, err := DecodeResult(Check, 0, atLimit, nil); err != nil || !d.ActionsAllowed("app", "r1") {
+		t.Fatalf("exactly MaxDocumentBytes: %v", err)
+	}
+	over := append(atLimit, '{') // A collector may retain just the first excess byte.
+	check := func(d Document, err error) {
+		t.Helper()
+		if err != nil || !d.Incomplete() || d.Fields() != nil || d.RefusalReason() != "" || d.ActionsAllowed("app", "r1") {
+			t.Fatalf("oversize capture: kind=%q, incomplete=%v, err=%v", d.Kind(), d.Incomplete(), err)
+		}
+	}
+	check(Decode(Check, over))
+	check(DecodeResult(Check, 0, over, nil))
+	check(DecodeResult(Check, 0, body, over))
+	check(DecodeResult(Check, 1, over, fixture(t, files, Refusal, "valid")))
+	check(DecodeResult(Check, 1, nil, over))
+	if _, err := Decode(Refusal, over); err == nil {
+		t.Fatal("oversize refusal line accepted")
+	}
+}

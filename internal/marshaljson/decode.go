@@ -17,6 +17,11 @@ const (
 	Refusal Kind = "qargi-refusal"
 )
 
+// MaxDocumentBytes is the decoder's 1 MiB capture limit per output stream.
+// A collector can retain up to MaxDocumentBytes+1 bytes to signal overflow.
+// J1 refusal lines retain their separate 4096-byte wire bound.
+const MaxDocumentBytes = 1 << 20
+
 // Revision is an opaque record revision. Revisions support equality only.
 // Its zero value denotes an unobserved revision and matches no record.
 type Revision struct {
@@ -109,6 +114,7 @@ func (d Document) RefusalReason() string {
 // Decode reads one complete document of the expected kind, including the
 // version prefix for a refusal line. It checks Unicode, duplicate keys and
 // exact integers throughout the input, including in unrecognized fields.
+// An oversized document yields incomplete evidence with no decoded fields.
 // An error always returns the zero document. Use DecodeResult for verb output.
 func Decode(expected Kind, data []byte) (Document, error) {
 	s := schemas[expected]
@@ -122,6 +128,8 @@ func Decode(expected Kind, data []byte) (Document, error) {
 			return Document{}, errors.New("invalid refusal line")
 		}
 		data = body
+	} else if len(data) > MaxDocumentBytes {
+		return Document{kind: expected, incomplete: true}, nil
 	}
 	fields, err := object(data)
 	if err != nil {
@@ -149,10 +157,14 @@ func Decode(expected Kind, data []byte) (Document, error) {
 
 // DecodeResult reads a completed status, check or handoff call. A nonzero
 // status requires one refusal line on stderr and an equal exit field. Warnings
-// may precede the line. Success bytes left by a failed write are never used.
+// may precede the line. If either stream exceeds MaxDocumentBytes, the result
+// is incomplete and classification stops before any bytes are interpreted.
 func DecodeResult(expected Kind, exit int, stdout, stderr []byte) (Document, error) {
 	if expected != Status && expected != Check && expected != Handoff {
 		return Document{}, errors.New("unexpected verb result kind")
+	}
+	if len(stdout) > MaxDocumentBytes || len(stderr) > MaxDocumentBytes {
+		return Document{kind: expected, incomplete: true}, nil
 	}
 	var refusal []byte
 	var warning bool
