@@ -101,16 +101,17 @@ registry before resuming work. Only the lead registry carries this binding today
 
 ### Sandbox identity
 
-At managed sandbox start, the daemon reads the identity from that state root
-and passes the holder only the short tag, from which the holder sets
+At startup the daemon reads the identity from its state root. At managed
+sandbox launch it passes the holder only the short tag in
+`ATANIQ_AUTHORITY_TAG`, from which the holder sets
 `QARGI_LEAD` to `<project>-lead-<tag>`; the holder never reads the key. The tag is the first 16 hex
 digits of the authority ID. Two independently generated keys have a 1 in
 2⁶⁴ chance of sharing that prefix. The full fingerprint identifies the
 authority. For project names over 42 bytes, the holder uses the first 25
 bytes, a hyphen and the first 16 hex digits of SHA-256 of the full project
 name. This keeps the lead name within 64 bytes while distinguishing long
-projects with the same prefix. A missing, damaged or unsafe key refuses the
-start before launch. The layout role used for directories and locks stays
+projects with the same prefix. A missing, damaged or unsafe key refuses
+daemon startup. The layout role used for directories and locks stays
 `<project>-lead`.
 
 When the agent environment declares a coordinator label, the sandbox derives

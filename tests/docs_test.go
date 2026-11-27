@@ -254,6 +254,21 @@ func TestProjectHomeOperatorSteps(t *testing.T) {
 	}
 }
 
+func TestManagedLeadIdentityGuides(t *testing.T) {
+	for _, name := range []string{"lead-sandbox.md", "federation.md"} {
+		data, err := os.ReadFile(filepath.Join(root(t), "docs", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := strings.Join(strings.Fields(string(data)), " ")
+		for _, term := range []string{"`ATANIQ_AUTHORITY_TAG`", "`QARGI_LEAD`", "refuses daemon startup"} {
+			if !strings.Contains(text, term) {
+				t.Errorf("%s omits %s from the managed identity contract", name, term)
+			}
+		}
+	}
+}
+
 func TestFederationStateRootFileTable(t *testing.T) {
 	doc, err := os.ReadFile(filepath.Join(root(t), "docs", "federation.md"))
 	if err != nil {
