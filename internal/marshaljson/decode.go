@@ -211,14 +211,15 @@ func (d *Document) assess() {
 		(f["backend"] == "local") != (remote == "none") || nonemptyList(f["warnings"])
 	rows, hasRows := f["features"].([]any)
 	if d.kind == Handoff && (f["features_omitted"] != nil || f["features_left_out"] != nil ||
-		f["features_left_out_more"] != nil || f["lists_left_out"] != nil) {
-		// Each field describes an omission, even if the summary flag disagrees.
+		f["features_left_out_more"] != nil || f["lists_left_out"] != nil ||
+		!completeEnvironment(f["environment"].(map[string]any))) {
+		// Omissions block the whole handoff, even if its summary flag disagrees.
 		d.incomplete = true
 	}
 	if d.kind == Check {
 		named := f["feature"] != nil
 		if named == hasRows || named != (f["answer"] != nil) ||
-			(f["answer"] == "free-stale") != (f["lead"] != nil) {
+			(f["answer"] == "free-stale") != (f["lead"] != nil) || !completeLead(f["lead"]) {
 			d.incomplete = true
 		}
 	}
@@ -232,14 +233,14 @@ func (d *Document) assess() {
 			name = row["name"].(string)
 			record = row["record"].(map[string]any)
 			data := record["data"].(map[string]any)
-			incomplete = nonemptyList(data["truncated"])
+			incomplete = nonemptyList(data["truncated"]) || !completeSuite(row["suite"].(map[string]any))
 		} else if row["project"] != f["project"] {
 			d.incomplete = true
 		}
 		rev := Revision{value: record["rev"].(int64), observed: true}
 		record["rev"] = rev
 		_, duplicate := d.revisions[name]
-		if duplicate || incomplete || record["status"] == "unled" || record["has_record"] == false ||
+		if duplicate || incomplete || !d.completeRecord(record) || record["status"] == "unled" || record["has_record"] == false ||
 			record["lease"] == "stale" || record["provisional"] == true ||
 			record["integrity"] == "INVALID" || record["integrity"] == "cannot verify" {
 			// Keep the name so later duplicates cannot restore a usable revision.

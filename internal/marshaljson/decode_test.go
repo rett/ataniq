@@ -33,7 +33,7 @@ func TestDocumentEvidence(t *testing.T) {
 		{"inconsistent backend", Check, func(f map[string]any) { f["remote"] = "none" }, false, true, false},
 		{"free stale", Check, func(f map[string]any) {
 			f["answer"] = "free-stale"
-			f["lead"] = map[string]any{"id": "lead", "user": "user", "host": "host", "since": "now"}
+			f["lead"] = map[string]any{"id": "lead", "user": "user", "host": "host", "since": "now", "worktree": "0123456789abcdef"}
 		}, true, false, false},
 		{"warning", Check, func(f map[string]any) { f["warnings"] = []string{"opaque text"} }, false, true, false},
 		{"unnamed without inventory", Check, func(f map[string]any) { f["feature"], f["answer"] = nil, nil }, false, true, false},
@@ -59,7 +59,7 @@ func TestDocumentEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tc.kind == Handoff {
-				f["backend"], f["remote"] = "local", "none"
+				useLocalHandoff(f)
 			}
 			if tc.change != nil {
 				tc.change(f)
@@ -73,6 +73,15 @@ func TestDocumentEvidence(t *testing.T) {
 				t.Fatal("unknown field retained")
 			}
 		})
+	}
+}
+
+// Use the local backend so handoff evidence has current provenance. Local
+// records omit the provisional field that belongs to shared refs.
+func useLocalHandoff(f map[string]any) {
+	f["backend"], f["remote"] = "local", "none"
+	for _, item := range f["features"].([]any) {
+		delete(item.(map[string]any)["record"].(map[string]any), "provisional")
 	}
 }
 
@@ -163,7 +172,7 @@ func TestEvidenceRequiresSameRecordRevision(t *testing.T) {
 			t.Fatal(err)
 		}
 		if kind == Handoff {
-			f["backend"], f["remote"] = "local", "none"
+			useLocalHandoff(f)
 		}
 		d, err := Decode(kind, mustJSON(t, f))
 		if err != nil {
@@ -297,7 +306,7 @@ func TestSuccessfulResultWithStderr(t *testing.T) {
 			t.Fatal(err)
 		}
 		if kind == Handoff {
-			f["backend"], f["remote"] = "local", "none"
+			useLocalHandoff(f)
 		}
 		body := mustJSON(t, f)
 		for _, stderr := range []string{"", "\n", "qargi: warning: damaged record\n", "diagnostic"} {
@@ -351,7 +360,8 @@ func TestInventoryEvidenceByFeature(t *testing.T) {
 			// Keep the real healthy and unled rows. Add a third, damaged row.
 			damaged := firstRow(other)
 			if tc.kind == Handoff {
-				f["backend"], f["remote"] = "local", "none"
+				useLocalHandoff(f)
+				useLocalHandoff(other)
 				damaged["name"] = "r3"
 			} else {
 				damaged["feature"] = "r3"
