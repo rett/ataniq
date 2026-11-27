@@ -137,12 +137,14 @@ func TestConversation(t *testing.T) {
 	acceptStart(t, c)
 	send(core.Message, "a\nb", `{"method":"turn/start","id":"req","params":{"threadId":"thread-a","input":[{"type":"text","text":"a\nb"}]}}`)
 	observe(t, c, f[1], core.Event{Kind: "state", State: "busy"})
+	id = "steer"
 	b, err = c.Steer(id, "thread-a", "turn-a", "extra")
 	if err != nil {
 		t.Fatal(err)
 	}
-	equalJSON(t, b, `{"id":"req","method":"turn/steer","params":{"threadId":"thread-a","expectedTurnId":"turn-a","input":[{"type":"text","text":"extra"}]}}`)
-	send(core.StopTurn, "", `{"method":"turn/interrupt","id":"req","params":{"threadId":"thread-a","turnId":"turn-a"}}`)
+	equalJSON(t, b, `{"id":"steer","method":"turn/steer","params":{"threadId":"thread-a","expectedTurnId":"turn-a","input":[{"type":"text","text":"extra"}]}}`)
+	id = "stop"
+	send(core.StopTurn, "", `{"method":"turn/interrupt","id":"stop","params":{"threadId":"thread-a","turnId":"turn-a"}}`)
 	observe(t, c, f[2], core.Event{Kind: "progress", Text: "two words"})
 	observe(t, c, f[3], core.Event{Kind: "question", Text: "Permission requested"})
 	observe(t, c, f[4], core.Event{Kind: "state", State: "idle"})
@@ -251,6 +253,42 @@ func TestThreadStartFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	startThread(t, c)
+}
+
+func TestOutstandingStartIDsCannotBeReused(t *testing.T) {
+	c, f := fresh(t), frames(t, "events")
+	refused := func(b []byte, err error) {
+		t.Helper()
+		if b != nil || !errors.Is(err, protocol.ErrTurn) {
+			t.Fatalf("got %s, %v; want ErrTurn", b, err)
+		}
+	}
+	if _, err := c.StartThread("start"); err != nil {
+		t.Fatal(err)
+	}
+	refused(c.Encode("start", core.Request{Operation: core.Open}))
+	acceptStart(t, c)
+	sendMessage(t, c, "first")
+	observe(t, c, f[1], core.Event{Kind: "state", State: "busy"})
+	c.Forget("first")
+	refused(c.Steer("first", "thread-a", "turn-a", "text"))
+	refused(c.StartThread("first"))
+	refused(c.Encode("first", core.Request{Operation: core.Open}))
+	refused(c.Encode("first", core.Request{Operation: core.StopTurn}))
+
+	// An error for the steer must leave the message awaiting its own answer.
+	if _, err := c.Steer("steer", "thread-a", "turn-a", "text"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Decode([]byte(`{"id":"steer","error":{"code":-1,"message":"failed"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	observe(t, c, f[4], core.Event{Kind: "state", State: "idle"})
+	refused(c.Encode("second", core.Request{Operation: core.Message, Text: "text"}))
+	if _, err := c.Decode([]byte(turnStartAnswer)); err != nil {
+		t.Fatal(err)
+	}
+	sendMessage(t, c, "second")
 }
 
 func TestTurnStartConsumesIdle(t *testing.T) {

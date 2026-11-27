@@ -85,16 +85,19 @@ func (c *codec) StartThread(id string) ([]byte, error) {
 	if c.startID != "" || c.thread != "" {
 		return nil, ErrTurn
 	}
-	b, err := request(id, "thread/start", map[string]string{"approvalPolicy": "on-request", "sandbox": "read-only"})
+	b, err := c.request(id, "thread/start", map[string]string{"approvalPolicy": "on-request", "sandbox": "read-only"})
 	if err == nil {
 		c.startID = id
 	}
 	return b, err
 }
 
-func request(id, method string, params any) ([]byte, error) {
+func (c *codec) request(id, method string, params any) ([]byte, error) {
 	if id == "" {
 		return nil, core.ErrInvalidFrame
+	}
+	if id == c.reservation.requestID || id == c.startID {
+		return nil, ErrTurn
 	}
 	b, err := json.Marshal(map[string]any{"id": id, "method": method, "params": params}, json.Deterministic(true))
 	if err != nil {
@@ -112,7 +115,7 @@ func (c *codec) Encode(id string, req core.Request) ([]byte, error) {
 	}
 	switch req.Operation {
 	case core.Open:
-		return request(id, "initialize", map[string]any{"clientInfo": map[string]string{"name": "ataniq", "version": "1"}})
+		return c.request(id, "initialize", map[string]any{"clientInfo": map[string]string{"name": "ataniq", "version": "1"}})
 	case core.Message:
 		if c.threadState != "idle" || len(c.liveTurns) != 0 || c.reservation.requestID != "" {
 			return nil, ErrTurn
@@ -126,7 +129,7 @@ func (c *codec) Encode(id string, req core.Request) ([]byte, error) {
 		if len(c.liveTurns) == 0 {
 			return nil, ErrTurn
 		}
-		return request(id, "turn/interrupt", map[string]string{"threadId": c.thread, "turnId": c.liveTurns[len(c.liveTurns)-1]})
+		return c.request(id, "turn/interrupt", map[string]string{"threadId": c.thread, "turnId": c.liveTurns[len(c.liveTurns)-1]})
 	default:
 		return nil, core.ErrUnsupported
 	}
@@ -164,7 +167,7 @@ func (c *codec) message(id, method, expectedTurn, text string) ([]byte, error) {
 	if expectedTurn != "" {
 		params["expectedTurnId"] = expectedTurn
 	}
-	return request(id, method, params)
+	return c.request(id, method, params)
 }
 
 // Keep request IDs in their original wire type. A server request may use an
