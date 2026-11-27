@@ -172,21 +172,29 @@ func TestManagedDeliveryRechecks(t *testing.T) {
 			}
 		})
 	}
-	t.Run("hello projection revoked", func(t *testing.T) {
-		caps := TargetCapabilities{"a": {"conversation.read"}}
-		stub := &managedStub{policies: map[Principal]TargetCapabilities{p: caps}}
-		m := NewManagedServer(stub, ManagedOptions{ResolvePrincipal: func(context.Context, net.Conn) (Principal, error) {
-			if stub.projections == 1 {
-				caps["a"][0] = "different.op"
+	for _, tc := range []struct {
+		name   string
+		revoke func(TargetCapabilities)
+	}{
+		{"hello projection revoked", func(caps TargetCapabilities) { caps["a"][0] = "different.op" }},
+		{"hello inventory target revoked", func(caps TargetCapabilities) { delete(caps, "inventory") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			caps := TargetCapabilities{"a": {"conversation.read"}, "inventory": {}}
+			stub := &managedStub{policies: map[Principal]TargetCapabilities{p: caps}}
+			m := NewManagedServer(stub, ManagedOptions{ResolvePrincipal: func(context.Context, net.Conn) (Principal, error) {
+				if stub.projections == 1 {
+					tc.revoke(caps)
+				}
+				return p, nil
+			}})
+			r := askManaged(t, m.s, nil, managedHello, ProtocolV2)
+			wantError(t, r, CodeForbidden)
+			if r.Result != nil {
+				t.Fatalf("stale hello = %s", r.Result)
 			}
-			return p, nil
-		}})
-		r := askManaged(t, m.s, nil, managedHello, ProtocolV2)
-		wantError(t, r, CodeForbidden)
-		if r.Result != nil {
-			t.Fatalf("stale hello = %s", r.Result)
-		}
-	})
+		})
+	}
 }
 
 func TestManagedStreamLimits(t *testing.T) {
