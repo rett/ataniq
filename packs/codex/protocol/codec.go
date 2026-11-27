@@ -26,17 +26,30 @@ type Codec interface {
 	core.Codec
 	Initialized() []byte
 	StartThread(id string) ([]byte, error)
-	// Forget retires an abandoned start request's ID. A forgotten turn/start
-	// may have reached the server, so it still takes an idle observation to retry.
+	// Forget abandons a thread/start binding attempt. A forgotten turn/start
+	// keeps its reservation so the codec can still apply a late answer.
 	Forget(id string)
 	Steer(id, thread, expectedTurn, text string) ([]byte, error)
 	DecodeGrant(request, reply []byte) (Grant, error)
 	EncodeGrant(request []byte, grant Grant) ([]byte, error)
 }
 
+// A turnReservation records the request ID of a successful Encode(Message),
+// which requires an observed idle thread and no outstanding reservation.
+// Only an error answer to that request or turn/completed for the turn ID
+// named by its success answer (result.turn.id) releases it back to idle.
+// thread/closed and systemError discard it and make the thread unusable.
+// Idle status, turn/started and other completions only update observations.
+// Forget keeps the request ID for a late answer. Without a definitive
+// outcome, every further Message returns ErrTurn until the session restarts.
+type turnReservation struct {
+	requestID string
+	turnID    string
+}
+
 type codec struct {
 	startID     string // the one thread/start whose result may establish the binding
-	turnStartID string // the turn/start that consumed the observed idle state
+	reservation turnReservation
 	thread      string
 	turn        string
 	closed      bool
@@ -94,13 +107,12 @@ func (c *codec) Encode(id string, req core.Request) ([]byte, error) {
 	case core.Open:
 		return request(id, "initialize", map[string]any{"clientInfo": map[string]string{"name": "ataniq", "version": "1"}})
 	case core.Message:
-		if !c.idle {
+		if !c.idle || c.reservation.requestID != "" {
 			return nil, ErrTurn
 		}
 		b, err := c.message(id, "turn/start", "", req.Text)
 		if err == nil {
-			c.turnStartID = id
-			c.idle = false
+			c.reservation = turnReservation{requestID: id}
 		}
 		return b, err
 	case core.StopTurn:
@@ -113,16 +125,7 @@ func (c *codec) Encode(id string, req core.Request) ([]byte, error) {
 	}
 }
 
-// A definitive answer or observation supersedes the turn/start reservation.
-func (c *codec) setIdle(idle bool) {
-	c.turnStartID = ""
-	c.idle = idle
-}
-
 func (c *codec) Forget(id string) {
-	if id != "" && id == c.turnStartID {
-		c.turnStartID = ""
-	}
 	if id == c.startID {
 		c.startID = ""
 	}

@@ -71,8 +71,8 @@ type Decoded struct {
 // on the wire, including for open and stop requests. It returns ErrUnsupported
 // for an omitted operation. Decode must distinguish answers from notifications
 // and reject malformed answers. Decode transfers ownership of its result to
-// the caller. A codec that reserves state in Encode can implement Forget(string)
-// to release it when the caller abandons the request. One codec serves one
+// the caller. A codec can implement Forget(string) to observe abandonment.
+// It may retain the ID to reconcile a late answer. One codec serves one
 // launch and does no I/O.
 type Codec interface {
 	Framing() Framing

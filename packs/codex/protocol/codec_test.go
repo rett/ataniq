@@ -261,6 +261,23 @@ func TestTurnStartConsumesIdle(t *testing.T) {
 }
 
 const idleStatus = `{"method":"thread/status/changed","params":{"threadId":"thread-a","status":{"type":"idle"}}}`
+const turnStartAnswer = `{"id":"first","result":{"turn":{"id":"turn-a"}}}`
+
+func TestAcceptedTurnStartSurvivesStaleIdle(t *testing.T) {
+	c := fresh(t)
+	startThread(t, c)
+	msg := core.Request{Operation: core.Message, Text: "hello"}
+	if _, err := c.Encode("first", msg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Decode([]byte(turnStartAnswer)); err != nil {
+		t.Fatal(err)
+	}
+	observe(t, c, []byte(idleStatus), core.Event{Kind: "state", State: "idle"})
+	if _, err := c.Encode("second", msg); !errors.Is(err, protocol.ErrTurn) {
+		t.Fatalf("stale idle after success permitted a retry: %v", err)
+	}
+}
 
 func TestTurnStartSurvivesIdleObservation(t *testing.T) {
 	f := frames(t, "events")
@@ -334,12 +351,6 @@ func TestTurnStartRetry(t *testing.T) {
 				if _, err := s.Decode(rejected); !errors.Is(err, core.ErrUnknownAnswer) {
 					t.Fatalf("forgotten answer: %v", err)
 				}
-				if _, _, err := s.Encode(msg); !errors.Is(err, protocol.ErrTurn) {
-					t.Fatalf("forgotten answer permitted a retry: %v", err)
-				}
-				if _, err := s.Decode([]byte(idleStatus + "\n")); err != nil {
-					t.Fatal(err)
-				}
 			} else if _, err := s.Decode(rejected); err != nil {
 				t.Fatal(err)
 			}
@@ -369,9 +380,16 @@ func TestForgottenTurnStartCompletes(t *testing.T) {
 	if _, err := c.Encode("second", msg); !errors.Is(err, protocol.ErrTurn) {
 		t.Fatalf("unmatched completion permitted a retry: %v", err)
 	}
-	observe(t, c, f[1], core.Event{Kind: "state", State: "busy"})
+	observe(t, c, bytes.ReplaceAll(f[1], []byte("turn-a"), []byte("turn-b")), core.Event{Kind: "state", State: "busy"})
 	if _, err := c.Encode("second", msg); !errors.Is(err, protocol.ErrTurn) {
 		t.Fatalf("started turn permitted a retry: %v", err)
+	}
+	if _, err := c.Decode([]byte(turnStartAnswer)); err != nil {
+		t.Fatal(err)
+	}
+	observe(t, c, bytes.ReplaceAll(f[4], []byte("turn-a"), []byte("turn-b")), core.Event{Kind: "state", State: "idle"})
+	if _, err := c.Encode("second", msg); !errors.Is(err, protocol.ErrTurn) {
+		t.Fatalf("completion of other observed turn permitted a retry: %v", err)
 	}
 	observe(t, c, f[4], core.Event{Kind: "state", State: "idle"})
 	if _, err := c.Encode("second", msg); err != nil {
@@ -395,25 +413,21 @@ func TestCloseActiveTurn(t *testing.T) {
 	}
 }
 
-func TestLateTurnStartFailureKeepsObservedState(t *testing.T) {
-	f := frames(t, "events")
-	for _, later := range [][]byte{f[1], f[5], []byte(`{"id":"first","result":{}}`)} {
-		c := fresh(t)
-		startThread(t, c)
-		msg := core.Request{Operation: core.Message, Text: "hello"}
-		if _, err := c.Encode("first", msg); err != nil {
-			t.Fatal(err)
+func TestTurnStartAnswerRequiresTurnID(t *testing.T) {
+	c := fresh(t)
+	startThread(t, c)
+	msg := core.Request{Operation: core.Message, Text: "hello"}
+	if _, err := c.Encode("first", msg); err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range []string{`{}`, `{"turn":null}`, `{"turn":{"id":""}}`, `{"turn":{"id":1}}`} {
+		if _, err := c.Decode([]byte(`{"id":"first","result":` + result + `}`)); !errors.Is(err, core.ErrInvalidFrame) {
+			t.Fatalf("invalid turn/start result %s: %v", result, err)
 		}
-		if _, err := c.Decode(later); err != nil {
-			t.Fatal(err)
-		}
-		c.Forget("first")
-		if _, err := c.Decode([]byte(`{"id":"first","error":{"code":-1,"message":"late"}}`)); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := c.Encode("second", msg); !errors.Is(err, protocol.ErrTurn) {
-			t.Fatalf("released idle after %s: %v", later, err)
-		}
+	}
+	observe(t, c, []byte(idleStatus), core.Event{Kind: "state", State: "idle"})
+	if _, err := c.Encode("second", msg); !errors.Is(err, protocol.ErrTurn) {
+		t.Fatalf("malformed success released the reservation: %v", err)
 	}
 }
 
@@ -506,6 +520,15 @@ func TestThreadStatus(t *testing.T) {
 		if (err == nil) != tc.start {
 			t.Fatal(tc, err)
 		}
+	}
+}
+
+func TestActiveStatusPreventsMessageOnIdleThread(t *testing.T) {
+	c := fresh(t)
+	startThread(t, c)
+	observe(t, c, []byte(`{"method":"thread/status/changed","params":{"threadId":"thread-a","status":{"type":"active","activeFlags":[]}}}`), core.Event{Kind: "state", State: "busy"})
+	if _, err := c.Encode("first", core.Request{Operation: core.Message, Text: "hello"}); !errors.Is(err, protocol.ErrTurn) {
+		t.Fatalf("active thread accepted message: %v", err)
 	}
 }
 

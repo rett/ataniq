@@ -79,9 +79,7 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 	}
 	switch method {
 	case "thread/closed":
-		c.setTurn("")
-		c.closed = true
-		c.setIdle(false)
+		c.closeThread()
 		return event(core.Event{Kind: "ended"}), nil
 	case "thread/status/changed":
 		return c.status(p.Status)
@@ -101,7 +99,7 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 				return core.Decoded{}, core.ErrInvalidFrame
 			}
 			c.setTurn(p.Turn.ID)
-			c.setIdle(false)
+			c.idle = false
 			return state("busy"), nil
 		}
 		switch p.Turn.Status {
@@ -109,11 +107,14 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 		default:
 			return core.Decoded{}, core.ErrInvalidFrame
 		}
-		if c.current(p.ThreadID, p.Turn.ID) {
-			c.setTurn("")
-			c.setIdle(true)
-			return state("idle"), nil
+		if p.Turn.ID == c.reservation.turnID {
+			c.reservation = turnReservation{}
+		} else if !c.current(p.ThreadID, p.Turn.ID) {
+			break
 		}
+		c.setTurn("")
+		c.idle = true
+		return state("idle"), nil
 	}
 	return core.Decoded{}, nil
 }
@@ -123,6 +124,13 @@ func (c *codec) setTurn(turn string) {
 		clear(c.pending)
 		c.turn = turn
 	}
+}
+
+func (c *codec) closeThread() {
+	c.reservation = turnReservation{}
+	c.setTurn("")
+	c.closed = true
+	c.idle = false
 }
 
 type threadStatus struct {
@@ -135,11 +143,13 @@ func (c *codec) status(s threadStatus) (core.Decoded, error) {
 	switch s.Type {
 	case "idle":
 		observed = "idle"
-		// The server may have sent this before it received our turn/start.
-		c.idle = c.turnStartID == ""
-	case "systemError", "notLoaded":
+		c.idle = true
+	case "systemError":
+		c.closeThread()
+		return state("unknown"), nil
+	case "notLoaded":
 		observed = "unknown"
-		c.setIdle(false)
+		c.idle = false
 	case "active":
 		if s.Flags == nil {
 			return core.Decoded{}, core.ErrInvalidFrame
@@ -182,8 +192,22 @@ func (c *codec) answer(e envelope) (core.Decoded, error) {
 	} else if e.Result.Kind() != '{' {
 		return core.Decoded{}, core.ErrInvalidFrame
 	}
-	if id == c.turnStartID {
-		c.setIdle(e.Error != nil)
+	if id == c.reservation.requestID && c.reservation.turnID == "" {
+		if e.Error != nil {
+			c.reservation = turnReservation{}
+			c.setTurn("")
+			c.idle = true
+		} else {
+			var result struct {
+				Turn struct {
+					ID string `json:"id"`
+				} `json:"turn"`
+			}
+			if json.Unmarshal(e.Result, &result) != nil || result.Turn.ID == "" {
+				return core.Decoded{}, core.ErrInvalidFrame
+			}
+			c.reservation.turnID = result.Turn.ID
+		}
 	}
 	if id == c.startID {
 		if e.Error == nil {
