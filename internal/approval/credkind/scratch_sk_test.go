@@ -95,12 +95,8 @@ func TestCF01(t *testing.T) {
 		if err != nil || !bytes.Equal(got, msg) {
 			t.Fatal("desk signing bytes differ from vector", err)
 		}
-		for _, provenance := range []SKProvenance{SKWitnessed, SKAttested} {
-			c := cred
-			c.Provenance = provenance
-			if count, err := VerifyScratchSK(c, d, scope, sig); err != nil || count != v.counter {
-				t.Fatalf("got counter %d, err %v", count, err)
-			}
+		if count, err := VerifyScratchSK(cred, d, scope, sig); err != nil || count != v.counter {
+			t.Fatalf("got counter %d, err %v", count, err)
 		}
 		c := cred
 		c.PublicKey = nil
@@ -215,7 +211,7 @@ func TestCF01(t *testing.T) {
 	})
 
 	t.Run("SoftwareProvenance", func(t *testing.T) {
-		for _, provenance := range []SKProvenance{"", "software", "unrecognized"} {
+		for _, provenance := range []SKProvenance{"", "software", "attested", "unrecognized"} {
 			c := cred
 			c.Provenance = provenance
 			wantErr(t, "unqualified key", refuse(t, c, d, sig), ErrSKProvenance)

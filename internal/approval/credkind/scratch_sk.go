@@ -20,17 +20,16 @@ const (
 
 var (
 	ErrSKCounter    = errors.New("credkind: security-key counter did not advance")
-	ErrSKProvenance = errors.New("credkind: security-key enrollment requires witnessed or attested origin")
+	ErrSKProvenance = errors.New("credkind: security-key enrollment requires witnessed origin")
 )
 
 // SKProvenance records the independent evidence for a dedicated enrolled key.
 // Only the trusted enrollment supplies this value. A signature cannot prove it.
 type SKProvenance string
 
-const (
-	SKWitnessed SKProvenance = "witnessed"
-	SKAttested  SKProvenance = "attested"
-)
+// SKWitnessed records the physical enrollment ceremony. Attested origin
+// requires an attestation verifier before it can be admitted.
+const SKWitnessed SKProvenance = "witnessed"
 
 // ScratchSKCredential is the verifier's trusted record for a credential.
 // Enrollment must call ValidateScratchSKKey, and Counter is the last value
@@ -128,7 +127,7 @@ func VerifyScratchSK(c ScratchSKCredential, expected ScratchSKDecision, scope Sc
 		scope.CardClass != "ref-move" || scope.Verb != "feature finish" {
 		return 0, ErrNotAccepted
 	}
-	if c.Provenance != SKWitnessed && c.Provenance != SKAttested {
+	if c.Provenance != SKWitnessed {
 		return 0, ErrSKProvenance
 	}
 	if err := ValidateScratchSKKey(c.PublicKey); err != nil {
