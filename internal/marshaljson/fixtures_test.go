@@ -62,11 +62,11 @@ func TestPinnedCases(t *testing.T) {
 					if c.File == "valid-unknown-field.json" && !d.Unknown() {
 						t.Fatal("unknown fields went undetected")
 					}
-					if (kind == Refusal || d.Unknown() || c.File == "valid-truncated.json") && d.ActionsAllowed() {
+					if (kind == Refusal || d.Unknown() || c.File == "valid-truncated.json") && d.ActionsAllowed("app", "r1") {
 						t.Fatal("incomplete or refused input enabled actions")
 					}
 				case "invalid":
-					if err == nil || d.ActionsAllowed() {
+					if err == nil || d.ActionsAllowed("app", "r1") {
 						t.Fatal("broken fixture accepted or enabled actions")
 					}
 				default:

@@ -41,21 +41,13 @@ func TestEvidenceForActions(t *testing.T) {
 		{"stale without lead", Check, func(f map[string]any) { f["answer"] = "free-stale" }, true, true, false},
 		{"extension", Check, func(f map[string]any) { f["Answer"] = "free" }, false, false, true},
 		{"status", Status, nil, false, false, false},
-		{"stale lease", Status, func(f map[string]any) { firstRow(f)["lease"] = "stale" }, true, false, false},
 		{"nested extension", Status, func(f map[string]any) { firstRow(f)["lead"].(map[string]any)["extra"] = true }, false, false, true},
-		{"bad signature", Status, func(f map[string]any) { firstRow(f)["integrity"] = "INVALID" }, false, true, false},
-		{"unverified", Status, func(f map[string]any) { firstRow(f)["integrity"] = "cannot verify" }, false, true, false},
-		{"provisional", Status, func(f map[string]any) { firstRow(f)["provisional"] = true }, false, true, false},
 		{"foreign row", Status, func(f map[string]any) { firstRow(f)["project"] = "other" }, false, true, false},
 		{"map data", Status, func(f map[string]any) { firstRow(f)["overlap"] = map[string][]string{"truncated": {"file"}} }, false, false, false},
 		{"handoff", Handoff, nil, false, false, false},
 		{"fallback", Handoff, func(f map[string]any) { f["backend_fallback"] = true }, false, true, false},
 		{"truncated", Handoff, func(f map[string]any) { f["truncated"] = true }, false, true, false},
 		{"omitted despite flag", Handoff, func(f map[string]any) { f["lists_left_out"] = map[string]int{"gates": 1} }, false, true, false},
-		{"record text truncated", Handoff, func(f map[string]any) {
-			record := firstRow(f)["record"].(map[string]any)
-			record["data"].(map[string]any)["truncated"] = []string{"note"}
-		}, false, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			name := "valid-refs"
@@ -74,8 +66,8 @@ func TestEvidenceForActions(t *testing.T) {
 			}
 			d, err := Decode(tc.kind, mustJSON(t, f))
 			if err != nil || d.Unknown() != tc.unknown || d.Stale() != tc.stale || d.Incomplete() != tc.incomplete ||
-				d.ActionsAllowed() != !(tc.unknown || tc.stale || tc.incomplete) {
-				t.Fatalf("unknown=%v stale=%v incomplete=%v allowed=%v err=%v", d.Unknown(), d.Stale(), d.Incomplete(), d.ActionsAllowed(), err)
+				d.ActionsAllowed("app", "r1") != !(tc.unknown || tc.stale || tc.incomplete) {
+				t.Fatalf("unknown=%v stale=%v incomplete=%v allowed=%v err=%v", d.Unknown(), d.Stale(), d.Incomplete(), d.ActionsAllowed("app", "r1"), err)
 			}
 			if _, ok := d.Fields()["Answer"]; ok {
 				t.Fatal("unknown field retained")
@@ -128,7 +120,7 @@ func TestFailedInput(t *testing.T) {
 		{Check, bytes.Replace(body, []byte(`"r1"`), []byte(`"r1","extra":[1.5]`), 1)},
 	} {
 		d, err := Decode(tc.kind, tc.body)
-		if err == nil || d.ActionsAllowed() {
+		if err == nil || d.ActionsAllowed("app", "r1") {
 			t.Fatal("invalid input enabled actions or decoded successfully")
 		}
 	}
@@ -143,7 +135,7 @@ func TestLargeStatusInventory(t *testing.T) {
 	row := firstRow(fields)
 	row["note"] = strings.Repeat("x", 64<<10) + "🌓"
 	d, err := Decode(Status, mustJSON(t, fields))
-	if err != nil || !d.ActionsAllowed() || firstRow(d.Fields())["note"] != row["note"] {
+	if err != nil || !d.ActionsAllowed("app", "r1") || firstRow(d.Fields())["note"] != row["note"] {
 		t.Fatal("large valid status lost", err)
 	}
 }
@@ -170,7 +162,6 @@ func TestActionRequiresSameRecordRevision(t *testing.T) {
 		if err := json.Unmarshal(fixture(t, files, kind, "valid-refs"), &f); err != nil {
 			t.Fatal(err)
 		}
-		f["features"] = []any{firstRow(f)}
 		if kind == Handoff {
 			f["backend"], f["remote"] = "local", "none"
 		}
@@ -242,8 +233,8 @@ func TestVerbResult(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d, err := DecodeResult(Check, tc.exit, tc.stdout, []byte(tc.stderr))
-			if (err != nil) != tc.wantError || d.RefusalReason() != tc.reason || d.ActionsAllowed() != (tc.exit == 0 && !tc.wantError) {
-				t.Errorf("reason=%q allowed=%v err=%v", d.RefusalReason(), d.ActionsAllowed(), err)
+			if (err != nil) != tc.wantError || d.RefusalReason() != tc.reason || d.ActionsAllowed("app", "r1") != (tc.exit == 0 && !tc.wantError) {
+				t.Errorf("reason=%q allowed=%v err=%v", d.RefusalReason(), d.ActionsAllowed("app", "r1"), err)
 			}
 		})
 	}
@@ -257,7 +248,7 @@ func TestReservedRefusalFields(t *testing.T) {
 	line := fixture(t, files, Refusal, "valid")
 	line = bytes.Replace(line, []byte(`"epoch":null`), []byte(`"epoch":{"future":42}`), 1)
 	d, err := Decode(Refusal, line)
-	if err != nil || d.Unknown() || d.ActionsAllowed() || d.RefusalReason() != "conflict" {
+	if err != nil || d.Unknown() || d.ActionsAllowed("app", "r1") || d.RefusalReason() != "conflict" {
 		t.Fatalf("reserved field changed refusal: %v", err)
 	}
 	for _, key := range []string{"epoch", "state", "tx"} {
@@ -273,7 +264,7 @@ func TestHandBuiltDocument(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, d := range []Document{{}, rebuilt} {
-		if d.ActionsAllowed() || d.AllowsRevision("app", "r1", Revision{}) {
+		if d.ActionsAllowed("app", "r1") || d.AllowsRevision("app", "r1", Revision{}) {
 			t.Fatal("undecoded evidence passed a usability check")
 		}
 	}
@@ -312,7 +303,7 @@ func TestSuccessfulResultWithStderr(t *testing.T) {
 		for _, stderr := range []string{"", "\n", "qargi: warning: damaged record\n", "diagnostic"} {
 			d, err := DecodeResult(kind, 0, body, []byte(stderr))
 			warned := len(strings.Trim(stderr, "\n")) != 0
-			if err != nil || d.Incomplete() != warned || d.ActionsAllowed() == warned || d.RefusalReason() != "" {
+			if err != nil || d.Incomplete() != warned || d.ActionsAllowed("app", "r1") == warned || d.RefusalReason() != "" {
 				t.Fatalf("%s stderr %q: incomplete=%v err=%v", kind, stderr, d.Incomplete(), err)
 			}
 		}
@@ -330,5 +321,60 @@ func TestZeroRevisionMatchesNothing(t *testing.T) {
 	observed := firstRow(d.Fields())["rev"].(Revision)
 	if observed == (Revision{}) || !d.AllowsRevision("app", "r1", observed) || d.AllowsRevision("app", "r1", Revision{}) {
 		t.Fatal("an observed revision of zero must be distinct from an unobserved revision")
+	}
+}
+
+func TestInventoryEvidenceByFeature(t *testing.T) {
+	files := archive(t, "cases.zip")
+	for _, tc := range []struct {
+		name   string
+		kind   Kind
+		damage func(map[string]any)
+	}{
+		{"stale", Status, func(r map[string]any) { r["lease"] = "stale" }},
+		{"provisional", Status, func(r map[string]any) { r["provisional"] = true }},
+		{"invalid", Status, func(r map[string]any) { r["integrity"] = "INVALID" }},
+		{"unverifiable", Check, func(r map[string]any) { r["integrity"] = "cannot verify" }},
+		{"overlap warning", Check, func(r map[string]any) { r["warnings"] = []string{"another feature changes the same files"} }},
+		{"truncated record", Handoff, func(r map[string]any) {
+			r["record"].(map[string]any)["data"].(map[string]any)["truncated"] = []string{"goal"}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := fixture(t, files, tc.kind, "valid-refs")
+			var f, other map[string]any
+			for _, dst := range []*map[string]any{&f, &other} {
+				if err := json.Unmarshal(body, dst); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Keep the real healthy and unled rows. Add a third, damaged row.
+			damaged := firstRow(other)
+			if tc.kind == Handoff {
+				f["backend"], f["remote"] = "local", "none"
+				damaged["name"] = "r3"
+			} else {
+				damaged["feature"] = "r3"
+			}
+			tc.damage(damaged)
+			f["features"] = append(f["features"].([]any), damaged)
+			body = mustJSON(t, f)
+			for _, warn := range []string{"", "capture warning"} {
+				d, err := DecodeResult(tc.kind, 0, body, []byte(warn))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, name := range []string{"r1", "r2", "r3", "absent"} {
+					want := warn == "" && name == "r1"
+					rev := Revision{value: 1, observed: true}
+					if name == "r2" {
+						rev.value = 0
+					}
+					if d.ActionsAllowed("app", name) != want || d.AllowsRevision("app", name, rev) != want {
+						t.Errorf("feature %s, stderr %q: want usable and matching = %v", name, warn, want)
+					}
+				}
+			}
+		})
 	}
 }

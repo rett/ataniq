@@ -30,12 +30,17 @@ type Revision struct {
 type Document struct {
 	kind                       Kind
 	fields                     map[string]any
+	revisions                  map[string]Revision
 	unknown, stale, incomplete bool
 }
 
-func (d Document) Kind() Kind       { return d.kind }
-func (d Document) Unknown() bool    { return d.unknown }
-func (d Document) Stale() bool      { return d.stale }
+func (d Document) Kind() Kind    { return d.kind }
+func (d Document) Unknown() bool { return d.unknown }
+
+// Stale reports document-wide staleness, including a stale named check.
+func (d Document) Stale() bool { return d.stale }
+
+// Incomplete reports document-wide omissions, warnings or inconsistencies.
 func (d Document) Incomplete() bool { return d.incomplete }
 
 // Fields returns a deep copy so display code can never alter checked evidence.
@@ -65,36 +70,22 @@ func copyField(v any) any {
 	}
 }
 
-// ActionsAllowed reports whether the whole document can support a dependent
-// action. The caller must also check its project, target and authorization.
-func (d Document) ActionsAllowed() bool {
-	return (d.kind == Status || d.kind == Check || d.kind == Handoff) &&
-		d.fields != nil && !d.unknown && !d.stale && !d.incomplete
-}
-
-// AllowsRevision checks evidence for an action that also depends on a
-// previously observed record. J1 supplies no ordering or lease fence for rev.
-func (d Document) AllowsRevision(project, feature string, expected Revision) bool {
-	if !expected.observed || !d.ActionsAllowed() || d.fields["project"] != project {
+// ActionsAllowed reports whether the snapshot supplies usable evidence for
+// this project and feature. Authorization remains the caller's responsibility.
+func (d Document) ActionsAllowed(project, feature string) bool {
+	if d.fields["project"] != project || d.unknown || d.stale || d.incomplete {
 		return false
 	}
-	rows, _ := d.fields["features"].([]any)
-	found := false
-	for _, item := range rows {
-		row := item.(map[string]any)
-		name := row["feature"]
-		if d.kind == Handoff {
-			name = row["name"]
-			row = row["record"].(map[string]any)
-		}
-		if name == feature {
-			if found || row["status"] == "unled" || row["has_record"] == false || row["rev"] != expected {
-				return false
-			}
-			found = true
-		}
+	if d.kind == Check && d.fields["feature"] == feature {
+		return true // A named check has an answer but no record revision.
 	}
-	return found
+	return d.revisions[feature].observed
+}
+
+// AllowsRevision also requires a previously observed revision of that record.
+// J1 supplies no ordering or lease fence for rev.
+func (d Document) AllowsRevision(project, feature string, expected Revision) bool {
+	return expected.observed && d.ActionsAllowed(project, feature) && d.revisions[feature] == expected
 }
 
 // RefusalReason classifies a decoded refusal by its catalogue code. The
@@ -219,18 +210,29 @@ func (d *Document) assess() {
 			d.incomplete = true
 		}
 	}
+	d.revisions = make(map[string]Revision, len(rows))
 	for _, item := range rows {
 		row := item.(map[string]any)
+		name, _ := row["feature"].(string)
+		record := row
+		incomplete := nonemptyList(row["warnings"])
 		if d.kind == Handoff {
-			row = row["record"].(map[string]any)
-			data := row["data"].(map[string]any)
-			d.incomplete = d.incomplete || nonemptyList(data["truncated"])
-		} else if row["project"] != f["project"] || nonemptyList(row["warnings"]) {
+			name = row["name"].(string)
+			record = row["record"].(map[string]any)
+			data := record["data"].(map[string]any)
+			incomplete = nonemptyList(data["truncated"])
+		} else if row["project"] != f["project"] {
 			d.incomplete = true
 		}
-		row["rev"] = Revision{value: row["rev"].(int64), observed: true}
-		d.stale = d.stale || row["lease"] == "stale"
-		d.incomplete = d.incomplete || row["provisional"] == true ||
-			row["integrity"] == "INVALID" || row["integrity"] == "cannot verify"
+		rev := Revision{value: record["rev"].(int64), observed: true}
+		record["rev"] = rev
+		_, duplicate := d.revisions[name]
+		if duplicate || incomplete || record["status"] == "unled" || record["has_record"] == false ||
+			record["lease"] == "stale" || record["provisional"] == true ||
+			record["integrity"] == "INVALID" || record["integrity"] == "cannot verify" {
+			// Keep the name so later duplicates cannot restore a usable revision.
+			rev = Revision{}
+		}
+		d.revisions[name] = rev
 	}
 }
