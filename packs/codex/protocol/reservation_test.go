@@ -3,80 +3,92 @@ package protocol
 import (
 	"errors"
 	"maps"
-	"slices"
 	"testing"
 
 	core "ataniq/internal/agentsession/protocol"
 )
 
-// Read the history independently of the codec. Find the first answer and
-// the point where the reservation ended, then consider later observations.
-func messageAllowed(history []string) bool {
-	if slices.Contains(history, "closed") || slices.Contains(history, "systemError") {
-		return false
-	}
-	answer := slices.IndexFunc(history, func(s string) bool { return s == "success" || s == "error" })
-	if answer < 0 {
-		return false
-	}
-	released := answer
-	if history[answer] == "success" {
-		completed := slices.Index(history, "completed")
-		if completed < 0 {
-			return false
+// An observation describes the meaning of its wire fixture in the history.
+type observation struct {
+	kind, requestID, turn string
+}
+
+func messageAllowed(history []observation) bool {
+	current := ""
+	idle, usable := true, true
+	// Encode("first") reserved the thread. The answer identifies the turn
+	// whose completion settles the request, in either arrival order.
+	awaitingAnswer, awaitingCompletion := "first", ""
+	completed := map[string]bool{}
+	for _, obs := range history {
+		if !usable {
+			continue
 		}
-		released = max(answer, completed)
-	}
-	idle, turn := true, ""
-	for _, observation := range history[released+1:] {
-		switch observation {
+		switch obs.kind {
 		case "started":
-			idle, turn = false, "a"
-		case "started other":
-			idle, turn = false, "b"
+			current, idle = obs.turn, false
 		case "completed":
-			if turn == "a" {
-				idle, turn = true, ""
+			completed[obs.turn] = true
+			if obs.turn == current || obs.turn == awaitingCompletion {
+				current, idle = "", true
 			}
-		case "completed other":
-			if turn == "b" {
-				idle, turn = true, ""
+			if obs.turn == awaitingCompletion {
+				awaitingCompletion = ""
 			}
-		case "completed on another thread":
-			// A foreign notification has no effect on this thread.
-		case "idle":
-			idle, turn = true, ""
-		case "notLoaded":
-			idle, turn = false, ""
+		case "success", "error":
+			if obs.requestID != awaitingAnswer {
+				continue
+			}
+			awaitingAnswer = ""
+			if obs.kind == "error" {
+				current, idle = "", true
+			} else if !completed[obs.turn] {
+				awaitingCompletion = obs.turn
+				current, idle = obs.turn, false
+			}
+		case "idle", "notLoaded":
+			if awaitingCompletion == "" || current != awaitingCompletion {
+				current, idle = "", obs.kind == "idle"
+			}
 		case "active":
 			idle = false
+		case "closed", "systemError":
+			usable = false
+			awaitingAnswer, awaitingCompletion = "", ""
+			current, idle = "", false
+		case "completed on another thread", "forget":
+			// Neither is an observation of this thread's turn or its outcome.
 		}
 	}
-	return idle
+	return awaitingAnswer == "" && awaitingCompletion == "" && idle && usable
 }
 
 func TestTurnReservationSequences(t *testing.T) {
-	events := []struct{ name, frame string }{
-		{"success", `{"id":"first","result":{"turn":{"id":"a"}}}`},
-		{"error", `{"id":"first","error":{"code":-1,"message":"failed"}}`},
-		{"started", `{"method":"turn/started","params":{"threadId":"t","turn":{"id":"a","items":[],"status":"inProgress"}}}`},
-		{"started other", `{"method":"turn/started","params":{"threadId":"t","turn":{"id":"b","items":[],"status":"inProgress"}}}`},
-		{"completed", `{"method":"turn/completed","params":{"threadId":"t","turn":{"id":"a","items":[],"status":"completed"}}}`},
-		{"completed other", `{"method":"turn/completed","params":{"threadId":"t","turn":{"id":"b","items":[],"status":"completed"}}}`},
-		{"completed on another thread", `{"method":"turn/completed","params":{"threadId":"other","turn":{"id":"a","items":[],"status":"completed"}}}`},
-		{"idle", `{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"idle"}}}`},
-		{"active", `{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"active","activeFlags":[]}}}`},
-		{"notLoaded", `{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"notLoaded"}}}`},
-		{"closed", `{"method":"thread/closed","params":{"threadId":"t"}}`},
-		{"systemError", `{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"systemError"}}}`},
-		{"forget", ""},
+	events := []struct {
+		observation
+		frame string
+	}{
+		{observation{kind: "success", requestID: "first", turn: "a"}, `{"id":"first","result":{"turn":{"id":"a"}}}`},
+		{observation{kind: "success", requestID: "unrelated", turn: "b"}, `{"id":"unrelated","result":{"turn":{"id":"b"}}}`},
+		{observation{kind: "error", requestID: "first"}, `{"id":"first","error":{"code":-1,"message":"failed"}}`},
+		{observation{kind: "started", turn: "a"}, `{"method":"turn/started","params":{"threadId":"t","turn":{"id":"a","items":[],"status":"inProgress"}}}`},
+		{observation{kind: "started", turn: "b"}, `{"method":"turn/started","params":{"threadId":"t","turn":{"id":"b","items":[],"status":"inProgress"}}}`},
+		{observation{kind: "completed", turn: "a"}, `{"method":"turn/completed","params":{"threadId":"t","turn":{"id":"a","items":[],"status":"completed"}}}`},
+		{observation{kind: "completed", turn: "b"}, `{"method":"turn/completed","params":{"threadId":"t","turn":{"id":"b","items":[],"status":"completed"}}}`},
+		{observation{kind: "completed on another thread"}, `{"method":"turn/completed","params":{"threadId":"other","turn":{"id":"a","items":[],"status":"completed"}}}`},
+		{observation{kind: "idle"}, `{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"idle"}}}`},
+		{observation{kind: "active"}, `{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"active","activeFlags":[]}}}`},
+		{observation{kind: "notLoaded"}, `{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"notLoaded"}}}`},
+		{observation{kind: "closed"}, `{"method":"thread/closed","params":{"threadId":"t"}}`},
+		{observation{kind: "systemError"}, `{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"systemError"}}}`},
+		{observation{kind: "forget"}, ""},
 	}
 	msg := core.Request{Operation: core.Message, Text: "hello"}
 	c := codec{thread: "t", idle: true}
 	if _, err := c.Encode("first", msg); err != nil {
 		t.Fatal(err)
 	}
-	var path [5]string
+	var path [5]observation
 	var visit func(codec, int)
 	visit = func(atPrefix codec, depth int) {
 		// The probe's Encode creates its own reservation on success.
@@ -93,8 +105,8 @@ func TestTurnReservationSequences(t *testing.T) {
 			next := atPrefix
 			// Each sibling must see only its own early completions.
 			next.reservation.completed = maps.Clone(atPrefix.reservation.completed)
-			path[depth] = event.name
-			if event.name == "forget" {
+			path[depth] = event.observation
+			if event.kind == "forget" {
 				next.Forget("first")
 			} else if _, err := next.Decode([]byte(event.frame)); err != nil {
 				t.Fatalf("%v: %v", path[:depth+1], err)

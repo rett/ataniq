@@ -403,6 +403,47 @@ func TestForgottenTurnStartCompletes(t *testing.T) {
 	}
 }
 
+func TestLateStartAnswerPreservesBusyThread(t *testing.T) {
+	f := frames(t, "events")
+	checkBlocked := func(t *testing.T, observations ...[]byte) protocol.Codec {
+		t.Helper()
+		c := fresh(t)
+		startThread(t, c)
+		msg := core.Request{Operation: core.Message, Text: "hello"}
+		if _, err := c.Encode("first", msg); err != nil {
+			t.Fatal(err)
+		}
+		for _, frame := range observations {
+			if _, err := c.Decode(frame); err != nil {
+				t.Fatal(err)
+			}
+		}
+		d, err := c.Decode([]byte(turnStartAnswer))
+		if err != nil || d.AnswerTo == nil || *d.AnswerTo != "first" || len(d.Events) != 0 {
+			t.Fatal(d, err)
+		}
+		if frame, err := c.Encode("second", msg); frame != nil || !errors.Is(err, protocol.ErrTurn) {
+			t.Fatalf("late answer permitted a second message: %s, %v", frame, err)
+		}
+		return c
+	}
+	t.Run("started b", func(t *testing.T) {
+		turnB := func(frame []byte) []byte {
+			return bytes.ReplaceAll(frame, []byte("turn-a"), []byte("turn-b"))
+		}
+		c := checkBlocked(t, f[1], f[4], turnB(f[1]))
+		observe(t, c, turnB(f[2]), core.Event{Kind: "progress", Text: "two words"})
+		frame, err := c.Encode("stop", core.Request{Operation: core.StopTurn})
+		if err != nil {
+			t.Fatal(err)
+		}
+		equalJSON(t, frame, `{"method":"turn/interrupt","id":"stop","params":{"threadId":"thread-a","turnId":"turn-b"}}`)
+	})
+	t.Run("status active", func(t *testing.T) {
+		checkBlocked(t, f[4], []byte(`{"method":"thread/status/changed","params":{"threadId":"thread-a","status":{"type":"active","activeFlags":[]}}}`))
+	})
+}
+
 func TestCloseActiveTurn(t *testing.T) {
 	c, req := active(t)
 	observe(t, c, req, core.Event{Kind: "question", Text: "Permission requested"})

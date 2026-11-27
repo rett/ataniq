@@ -216,10 +216,12 @@ func (c *codec) answer(e envelope) (core.Decoded, error) {
 				c.idle = false
 				return d, nil
 			}
+			// The completion was already observed. Keep any newer turn or status.
+		} else {
+			c.setTurn("")
+			c.idle = true
 		}
 		c.reservation = turnReservation{}
-		c.setTurn("")
-		c.idle = true
 	}
 	if id == c.startID {
 		if e.Error == nil {
