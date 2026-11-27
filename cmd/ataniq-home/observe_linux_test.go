@@ -149,6 +149,44 @@ func TestObserveReportsInterruptedAdvance(t *testing.T) {
 		t.Fatal(out, f.state(t))
 	}
 }
+func TestObserveRestartBeforeAppend(t *testing.T) {
+	f := newPilot(t)
+	cut := errors.New("stopped after staging")
+	fault := observeFault(func(point string) error {
+		if point == "stage.dir-synced" {
+			return cut
+		}
+		return nil
+	})
+	_, err := f.run(t, command{events: 2}, fault)
+	if !errors.Is(err, cut) || f.state(t).Head.Sequence != 0 {
+		t.Fatal(err, f.state(t).Head)
+	}
+	stage := filepath.Join(f.c.State, "advance.pending")
+	before := read(t, stage)
+	f.release(t)
+	ep, err := homeEndpoint(f.c, f.p)
+	must(t, err)
+	if pending, ok := ep.PendingMutation(); ok {
+		t.Fatal("unappended intent blocks claim", pending)
+	}
+	if !bytes.Equal(before, read(t, stage)) {
+		t.Fatal("endpoint changed stage before claim")
+	}
+	cmd, ok := parseCommand([]string{"observe", "--config", f.path})
+	if !ok {
+		t.Fatal("invalid observe command")
+	}
+	out, err := f.run(t, cmd, nil)
+	must(t, err)
+	if !strings.Contains(out, "observation: agree\n") || f.state(t).Head.Sequence != uint64(cmd.events) {
+		t.Fatal(out, f.state(t).Head)
+	}
+	if _, err := os.Stat(stage); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("stage after recovery", err)
+	}
+}
+
 func TestObserveRefusesRestores(t *testing.T) {
 	for _, reason := range []enrollment.Reason{enrollment.HomeBehind, enrollment.HomeAhead, enrollment.Fork, enrollment.Occupied, enrollment.Retired} {
 		t.Run(string(reason), func(t *testing.T) {

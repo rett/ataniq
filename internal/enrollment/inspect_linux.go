@@ -13,10 +13,10 @@ import (
 	"ataniq/internal/checkpoint"
 )
 
-// ReadPendingAdvance recovers the signed canonical advance before the home
-// accepts calls. Authenticate its enrollment against the separate binding or
-// the signed receipt retained in the root when there is no external binding.
-func ReadPendingAdvance(root FileRoot, bindingPath string, witness ed25519.PublicKey) (*checkpoint.Advance, error) {
+// PendingForRestart restores an advance only if its record was appended and
+// the request could have reached the witness. It leaves the signed stage in
+// place for Start to reconcile after a challenged read.
+func PendingForRestart(root FileRoot, bindingPath string, slot checkpoint.Slot, epoch uint64, home, witness ed25519.PublicKey) (*checkpoint.Advance, error) {
 	f, err := root.lock(nil)
 	if err != nil {
 		return nil, err
@@ -34,13 +34,17 @@ func ReadPendingAdvance(root FileRoot, bindingPath string, witness ed25519.Publi
 	if err != nil {
 		return nil, refuse(Interrupted, err)
 	}
+	r, identity, err := f.readLedger()
+	if err != nil {
+		return nil, err
+	}
 	var receipt checkpoint.Receipt
 	if bindingPath != "" {
 		b, err := ReadBinding(bindingPath)
 		if err != nil {
 			return nil, err
 		}
-		if b.RootPath != root.Path {
+		if b.RootPath != root.Path || b.Identity != identity {
 			return nil, refuse(IdentityMismatch, nil)
 		}
 		receipt = b.Receipt
@@ -62,6 +66,29 @@ func ReadPendingAdvance(root FileRoot, bindingPath string, witness ed25519.Publi
 	ack, err := checkpoint.VerifyReceipt(witness, receipt)
 	if err != nil || ack.State.Slot != q.Expected.Slot || ack.State.Epoch != q.Expected.Epoch || ack.State.Header != q.Expected.Header {
 		return nil, refuse(IdentityMismatch, err)
+	}
+	homeID, err := checkpoint.KeyID(home)
+	if err != nil || q.Expected.Slot != slot || q.Expected.Epoch != epoch || q.Expected.HomeKeyID != homeID {
+		return nil, refuse(IdentityMismatch, err)
+	}
+	header, err := q.Expected.Header.Bytes()
+	if err != nil {
+		return nil, refuse(IdentityMismatch, err)
+	}
+	verifier, err := wire.NewVerifier(q.Expected.Header, home)
+	if err != nil {
+		return nil, refuse(IdentityMismatch, err)
+	}
+	ledger, last, err := replay(r, header, verifier)
+	if err != nil {
+		return nil, err
+	}
+	if err := f.check(); err != nil {
+		return nil, err
+	}
+	appended, err := p.appended(q, last, ledger.Checkpoint())
+	if err != nil || !appended {
+		return nil, err
 	}
 	return &q, nil
 }
