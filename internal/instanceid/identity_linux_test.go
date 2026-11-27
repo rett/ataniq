@@ -159,3 +159,27 @@ func TestConcurrentInit(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestStateBelowSymlinkedParent(t *testing.T) {
+	parent := t.TempDir()
+	link := filepath.Join(t.TempDir(), "parent")
+	if err := os.Symlink(parent, link); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(link, "nested", "state")
+	id := makeID(t, path, "")
+	got, err := Load(filepath.Join(parent, "nested", "state"))
+	if err != nil || got != id {
+		t.Fatalf("load physical path: %+v, %v", got, err)
+	}
+	key := filepath.Join(path, FileName)
+	if err := os.Rename(key, key+".original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(key+".original", key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); !errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), FileName) || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("linked key: %v", err)
+	}
+}

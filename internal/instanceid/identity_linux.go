@@ -57,7 +57,7 @@ func OpenRoot(path string, create bool) (*os.File, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" {
 		return nil, fmt.Errorf("%w: expected a clean absolute state directory", ErrUnsafe)
 	}
-	const flags = unix.O_DIRECTORY | unix.O_NOFOLLOW | unix.O_CLOEXEC
+	const flags = unix.O_DIRECTORY | unix.O_CLOEXEC
 	fd, err := unix.Open("/", unix.O_PATH|flags, 0)
 	if err != nil {
 		return nil, err
@@ -66,7 +66,7 @@ func OpenRoot(path string, create bool) (*os.File, error) {
 	for i, part := range parts {
 		how := unix.O_PATH | flags
 		if i == len(parts)-1 {
-			how = unix.O_RDONLY | flags
+			how = unix.O_RDONLY | flags | unix.O_NOFOLLOW
 		}
 		next, err := unix.Openat(fd, part, how, 0)
 		if err == unix.ENOENT && create {
@@ -95,7 +95,11 @@ func OpenRoot(path string, create bool) (*os.File, error) {
 			return nil, ErrMissing
 		}
 		if err != nil {
-			return nil, fmt.Errorf("%w: open state path: %w", ErrUnsafe, err)
+			partPath := "/" + strings.Join(parts[:i+1], "/")
+			if err == unix.ENOTDIR || err == unix.ELOOP {
+				return nil, fmt.Errorf("%w: %s is a symlink or not a directory", ErrUnsafe, partPath)
+			}
+			return nil, fmt.Errorf("%w: open %s: %w", ErrUnsafe, partPath, err)
 		}
 		fd = next
 	}
@@ -145,7 +149,11 @@ func Load(path string) (Identity, error) {
 		return Identity{}, err
 	}
 	defer root.Close()
-	return LoadAt(int(root.Fd()))
+	id, err := LoadAt(int(root.Fd()))
+	if err != nil {
+		return Identity{}, fmt.Errorf("%s: %w", path, err)
+	}
+	return id, nil
 }
 
 // LoadAt reads the key relative to a pinned state root.
@@ -155,7 +163,10 @@ func LoadAt(root int) (Identity, error) {
 		return Identity{}, ErrMissing
 	}
 	if err != nil {
-		return Identity{}, fmt.Errorf("%w: open key: %w", ErrUnsafe, err)
+		if err == unix.ELOOP {
+			return Identity{}, fmt.Errorf("%w: %s is a symlink", ErrUnsafe, FileName)
+		}
+		return Identity{}, fmt.Errorf("%w: open %s: %w", ErrUnsafe, FileName, err)
 	}
 	f := os.NewFile(uintptr(fd), FileName)
 	defer f.Close()
