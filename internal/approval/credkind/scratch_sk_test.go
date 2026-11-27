@@ -245,6 +245,8 @@ func TestCF01(t *testing.T) {
 		for _, change := range []func(*ScratchSKDecision){
 			func(d *ScratchSKDecision) { d.HomeID = "" },
 			func(d *ScratchSKDecision) { d.SessionID = strings.Repeat("s", 1025) },
+			func(d *ScratchSKDecision) { d.GateFingerprint = [32]byte{} },
+			func(d *ScratchSKDecision) { d.FrameSHA256 = [32]byte{} },
 			func(d *ScratchSKDecision) { d.Nonce = [32]byte{} },
 			func(d *ScratchSKDecision) { d.ExporterSHA256 = [32]byte{} },
 			func(d *ScratchSKDecision) { d.Decision = "login" },
@@ -257,6 +259,14 @@ func TestCF01(t *testing.T) {
 			b := v.sign(key, vectorDecision(other, "security-key", "console-decision"))
 			wantErr(t, "signed malformed decision", refuse(t, cred, other, b), ErrExpect)
 		}
+	})
+
+	t.Run("TailLength", func(t *testing.T) {
+		// Use an incomplete expectation to distinguish a framing rejection
+		// from a failure later in verification. Keep the credential ID matched.
+		incomplete := ScratchSKDecision{CredentialID: cred.ID}
+		wantErr(t, "complete tail", refuse(t, cred, incomplete, sig), ErrExpect)
+		wantErr(t, "extra tail byte", refuse(t, cred, incomplete, append(bytes.Clone(sig), 0)), ErrSignature)
 	})
 
 	t.Run("ScratchScope", func(t *testing.T) {
