@@ -378,10 +378,6 @@ func (m *Model) clearOffline() {
 	if offline > 0 && offline == len(m.projects) {
 		m.directoryOffline = true
 		m.controls, m.controlUnavailable = nil, "The directory is offline."
-		if m.lc.view != nil {
-			m.lc.view.MarkOffline()
-			m.closeLeads()
-		}
 	}
 	if rows := m.treeRows(); m.treeCursor >= 0 && m.treeCursor < len(rows) && !rows[m.treeCursor].selectable {
 		m.treeCursor = -1

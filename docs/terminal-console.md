@@ -408,6 +408,10 @@ session focus, where every key goes to the session, and in the approvals list
 `L` is still that view's own key (the limit's screen). Below the cockpit's size
 the single-column pages take it too, but not over a live session.
 
+A late or failed cockpit status read leaves an open leads view, its message
+draft and its stop confirmation in place. The view reads the lead list
+through its own connection.
+
 The view lists the daemon's leads, one row each, with the daemon's `max_running`
 and how many leads count against it:
 
