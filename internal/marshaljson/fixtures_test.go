@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -12,9 +11,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
-const fixtureDir = "testdata/qargi-0.3.9"
+const pinnedVersion = "0.3.9"
+const fixtureDir = "testdata/qargi-" + pinnedVersion
 const manifestHash = "46845896d1679464689825440aec9d242355e0aecb7a77a889ba9bea0887a8e8"
 
 var kinds = []Kind{Status, Check, Handoff, Refusal}
@@ -112,12 +113,34 @@ func TestPinnedHashes(t *testing.T) {
 	checkManifest(t, append(lines, hashes(t, archive(t, "registries.zip"), ".")...))
 }
 
+func installedVersionSkip(files fs.FS) string {
+	b, err := fs.ReadFile(files, "VERSION")
+	if err != nil {
+		return fmt.Sprintf("cannot identify installed Qargi: %v", err)
+	}
+	if version := strings.TrimSuffix(string(b), "\n"); version != pinnedVersion {
+		return fmt.Sprintf("installed Qargi version %q differs from fixture pin %s", version, pinnedVersion)
+	}
+	return ""
+}
+
+func TestInstalledVersionGate(t *testing.T) {
+	for _, version := range []string{"0.3.9", "0.3.9\n", "0.3.10\n", "0.3.9-dev", ""} {
+		files := fstest.MapFS{}
+		if version != "" {
+			files["VERSION"] = &fstest.MapFile{Data: []byte(version)}
+		}
+		want := version == "0.3.9" || version == "0.3.9\n"
+		if compare := installedVersionSkip(files) == ""; compare != want {
+			t.Errorf("version %q: compare = %v", version, compare)
+		}
+	}
+}
+
 func TestInstalledFixtureHashes(t *testing.T) {
 	const installed = "/opt/qargi"
-	if _, err := os.Stat(installed); errors.Is(err, fs.ErrNotExist) {
-		t.Skip("Qargi is not installed")
-	} else if err != nil {
-		t.Fatal(err)
+	if reason := installedVersionSkip(os.DirFS(installed)); reason != "" {
+		t.Skip(reason)
 	}
 	files := os.DirFS(installed + "/tests/fixtures/json")
 	var lines []string

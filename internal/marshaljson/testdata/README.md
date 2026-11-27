@@ -7,4 +7,4 @@ JSON and refusal lines with their wire prefix.
 `MANIFEST.sha256` covers the uncompressed contents of both archives. The tests
 check its digest, verify every entry and run every case in memory. A separate
 test compares the same manifest against an installed Qargi fixture tree when
-`/opt/qargi` exists. Qargi uses the same MIT license as Ataniq.
+`/opt/qargi/VERSION` identifies exactly 0.3.9. Qargi uses the same MIT license as Ataniq.
