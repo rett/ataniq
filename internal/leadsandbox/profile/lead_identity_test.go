@@ -10,7 +10,10 @@ import (
 
 func TestQualifiedLeadIdentity(t *testing.T) {
 	const tag = "0123456789abcdef"
-	authority := strings.Repeat(tag, 4)
+	authority := tag + strings.Repeat("f", 48)
+	if got, err := ShortAuthorityTag(authority); err != nil || got != tag {
+		t.Fatalf("short authority tag = %q, %v", got, err)
+	}
 	long := strings.Repeat("p", 63)
 	sum := sha256.Sum256([]byte(long))
 	qargiID := regexp.MustCompile(`^[A-Za-z0-9._@:+-]{1,128}$`)
@@ -19,13 +22,13 @@ func TestQualifiedLeadIdentity(t *testing.T) {
 		strings.Repeat("p", 42): strings.Repeat("p", 42) + "-lead-" + tag,
 		long:                    long[:25] + "-" + hex.EncodeToString(sum[:8]) + "-lead-" + tag,
 	} {
-		got, err := QualifiedLeadIdentity(project, authority)
+		got, err := QualifiedLeadIdentity(project, tag)
 		if err != nil || got != want || !validLeadIdentity(got) || !qargiID.MatchString(got) {
 			t.Errorf("%q: got %q, %v, want %q", project, got, err, want)
 		}
 	}
 	for _, bad := range []string{"", tag, strings.ToUpper(authority), authority[:63] + "z"} {
-		if id, err := QualifiedLeadIdentity("demo", bad); err == nil || id != "" || refusalOf(t, err).Field != "instance authority" {
+		if id, err := ShortAuthorityTag(bad); err == nil || id != "" || refusalOf(t, err).Field != "instance authority" {
 			t.Errorf("invalid authority produced %q, %v", id, err)
 		}
 	}

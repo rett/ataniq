@@ -30,6 +30,7 @@ func writeInputs(t *testing.T, data []byte, mode os.FileMode) string {
 func sampleInputsJSON(t *testing.T) (Inputs, []byte) {
 	t.Helper()
 	in := sampleInputs(realpath(t, t.TempDir()))
+	in.AuthorityTag = "0123456789abcdef"
 	data, err := json.MarshalIndent(in, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -52,7 +53,7 @@ func wantInputsError(t *testing.T, err error, substr string) {
 // fields the holder fills are not in the file.
 func TestReadInputsRoundTrip(t *testing.T) {
 	in, data := sampleInputsJSON(t)
-	for _, key := range []string{"agent_argv", "agent_env", "argv", "env", "expected_digest", "holder_paths", "AgentArgv", "ExpectedDigest", "HolderPaths", "AgentEnv", "no_lead_has_run", "previous_instance_stopped", "NoLeadHasRun", "PreviousInstanceStopped"} {
+	for _, key := range []string{"authority_tag", "AuthorityTag", "agent_argv", "agent_env", "argv", "env", "expected_digest", "holder_paths", "AgentArgv", "ExpectedDigest", "HolderPaths", "AgentEnv", "no_lead_has_run", "previous_instance_stopped", "NoLeadHasRun", "PreviousInstanceStopped"} {
 		if strings.Contains(string(data), `"`+key+`"`) {
 			t.Errorf("the file holds the holder's field %s", key)
 		}
@@ -63,6 +64,7 @@ func TestReadInputsRoundTrip(t *testing.T) {
 	}
 	// The file carries everything but the fields the holder fills.
 	want := in
+	want.AuthorityTag = ""
 	want.AgentArgv, want.AgentEnv, want.ExpectedDigest, want.HolderPaths = nil, nil, "", nil
 	want.NoLeadHasRun, want.PreviousInstanceStopped = false, false
 	if !reflect.DeepEqual(got, want) {
@@ -146,6 +148,7 @@ func TestReadInputsIsStrict(t *testing.T) {
 		{"unknown key", mutate(`"canary": true,`, `"canary": true, "extra": 1,`), "unknown key"},
 		{"unknown nested key", mutate(`"term": "xterm-256color"`, `"term": "xterm-256color", "rows": 24`), "unknown key"},
 		{"a field of the holder", mutate(`"canary": true,`, `"canary": true, "agent_argv": ["/x"],`), "unknown key"},
+		{"authority tag from file", mutate(`"canary": true,`, `"canary": true, "authority_tag": "0123456789abcdef",`), "unknown key"},
 		{"another case", mutate(`"project":`, `"Project":`), "unknown key"},
 		{"a key twice", mutate(`"canary": true,`, `"canary": true, "canary": false,`), "twice"},
 		{"trailing data", append(append([]byte(nil), data...), []byte(` {}`)...), "after the inputs"},

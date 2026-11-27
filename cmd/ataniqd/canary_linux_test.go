@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -15,9 +16,11 @@ import (
 	"time"
 
 	"ataniq/internal/clientapi"
+	"ataniq/internal/instanceid"
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leaddaemon"
 	"ataniq/internal/leadholder/canaryroot"
+	"ataniq/internal/leadholder/sandboxstart"
 	"ataniq/internal/leadholder/wire"
 	"ataniq/internal/leadregistry"
 	"ataniq/internal/leadrole"
@@ -338,6 +341,15 @@ func TestCanaryCommandsEndToEnd(t *testing.T) {
 	if m := line(out); code != 0 || m["epoch"] != float64(1) || m["state"] != "starting" || m["waiver"] != canaryroot.WaiverText ||
 		m["unit"] != "ataniq-lead-throwaway-one.service" {
 		t.Fatalf("start: %d %q %q", code, out, errOut)
+	}
+	id, err := instanceid.Load(f.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	specs := ta.fake.StartedSpecs()
+	wantEnv := append(leadcanary.HolderEnvironment(), sandboxstart.AuthorityTagEnv+"="+id.Authority[:16])
+	if len(specs) != 1 || !slices.Equal(specs[0].Env, wantEnv) {
+		t.Fatalf("holder launch environment must carry the short authority tag: %+v", specs)
 	}
 	// A second start of a running role: refused.
 	if code, out, errOut = canary(t, append([]string{"start"}, cfgArg...)...); code != leaddaemon.ExitRefused || out != "" ||

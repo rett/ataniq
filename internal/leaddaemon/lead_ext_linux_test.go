@@ -177,6 +177,7 @@ func TestUncertainOutcomeComesBeforeTheContext(t *testing.T) {
 func TestRouterHolderCommandIsOptionalAndReplaceable(t *testing.T) {
 	c := newCanaryEnv(t)
 	r := newLeadRouter("not here")
+	r.authorityTag = "0123456789abcdef"
 	in := &leadInstance{cfg: c.cfg, preflight: &seamPreflight{}}
 	if err := r.add(in); err != nil {
 		t.Fatal(err)

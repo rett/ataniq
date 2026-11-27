@@ -78,7 +78,6 @@ import (
 	"strings"
 	"time"
 
-	"ataniq/internal/instanceid"
 	"ataniq/internal/leadholder/canaryroot"
 	"ataniq/internal/leadsandbox/assert"
 	"ataniq/internal/leadsandbox/mountpoints"
@@ -328,11 +327,7 @@ func (a *attempt) validate() error {
 		return err
 	}
 	a.pin = pin
-	id, err := instanceid.Load(a.in.StateRoot)
-	if err != nil {
-		return err
-	}
-	a.pin.LeadIdentity, err = profile.QualifiedLeadIdentity(pin.Project, id.Authority)
+	a.pin.LeadIdentity, err = profile.QualifiedLeadIdentity(pin.Project, a.in.AuthorityTag)
 	if err != nil {
 		return err
 	}
@@ -344,9 +339,9 @@ func (a *attempt) validate() error {
 	return nil
 }
 
-// trial is every refusal of the validate step that needs no host access and
-// starts nothing: the inputs' fields, the profile, the pinned digest, the
-// agent's command line, the holder's paths, and a trial of the spec with the
+// trial checks the inputs available at provisioning, before the daemon supplies
+// the launch authority tag. These include the inputs' fields, the profile, the
+// pinned digest, the agent's command line, the holder's paths, and a trial of the spec with the
 // facts that hold before anything is made (the provider host, the
 // managed-settings marker and the names the spec checks). It returns the
 // checked profile inputs. uid and gid are the calling user's.
@@ -380,11 +375,9 @@ func (in Inputs) trial(uid, gid uint32) (profile.Inputs, error) {
 	return pin, nil
 }
 
-// TrialValidate runs the part of the start's validate step that needs no host
-// access and starts nothing (see trial), on the inputs as the holder sets them
-// before the start: the caller sets AgentArgv, AgentEnv, ExpectedDigest and
-// HolderPaths as the holder does, because it refuses an empty AgentArgv and
-// the others are checked. A refusal is the one the holder gives at that step.
+// TrialValidate checks the inputs available at provisioning (see trial). The
+// caller sets AgentArgv, AgentEnv, ExpectedDigest and HolderPaths as the holder
+// does. The launch itself also requires the authority tag from the daemon.
 // uid and gid are the calling user's.
 func TrialValidate(in Inputs, uid, gid uint32) error {
 	_, err := in.trial(uid, gid)

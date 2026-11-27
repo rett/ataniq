@@ -238,9 +238,8 @@ func Run(ctx context.Context, cfg Config) error {
 		return nil
 	}
 
-	// canary evidence, once both locks are held: a daemon that was refused
-	// above has written nothing.
-	if err := canary.openEvidence(); err != nil {
+	// Read the managed launch identity and open the evidence under both locks.
+	if err := canary.openState(); err != nil {
 		return &StartupError{Step: StepState, Err: err}
 	}
 	defer func() {

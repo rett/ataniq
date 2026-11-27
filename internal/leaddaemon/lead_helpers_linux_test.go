@@ -99,6 +99,7 @@ func newLeadEnv(t *testing.T) *leadEnv {
 	w := provisiontest.NewScratch(shortTB{TB: t, dir: dir})
 	e := newEnv(t)
 	e.state, e.runtime = w.State, w.Runtime
+	initTestIdentity(t, e.state)
 	e.fake = leadunit.NewFake(leadunit.SystemClock{})
 	l := &leadEnv{
 		env: e, w: w, gate: &gateManager{Manager: e.fake}, holders: map[string]*fakeHolder{},

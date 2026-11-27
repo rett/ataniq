@@ -19,7 +19,6 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"ataniq/internal/instanceid"
 	"ataniq/internal/leadholder/canaryroot"
 	"ataniq/internal/leadholder/fakeagent"
 	"ataniq/internal/leadholder/sandboxstart"
@@ -93,7 +92,7 @@ func newCanaryRig(t *testing.T) *canaryRig {
 			t.Fatal(err)
 		}
 	}
-	initInstanceIdentity(t, c.stateRoot)
+	t.Setenv(sandboxstart.AuthorityTagEnv, "0123456789abcdef")
 	if err := canaryroot.WriteMarker(c.stateRoot, canaryProject); err != nil {
 		t.Fatal(err)
 	}
@@ -102,19 +101,6 @@ func newCanaryRig(t *testing.T) *canaryRig {
 	c.writeInputs()
 	c.sys = newFakeSystem()
 	return c
-}
-
-// initInstanceIdentity supplies the state-root identity normally created by ataniqd init.
-func initInstanceIdentity(t *testing.T, stateRoot string) {
-	t.Helper()
-	root, err := instanceid.OpenRoot(stateRoot, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer root.Close()
-	if _, err := instanceid.InitAt(root, "sample"); err != nil {
-		t.Fatal(err)
-	}
 }
 
 // sampleInputs are valid inputs in canary mode for a host under base. The

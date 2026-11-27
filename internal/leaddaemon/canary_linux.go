@@ -10,11 +10,13 @@ import (
 	"time"
 
 	"ataniq/internal/clientapi"
+	"ataniq/internal/instanceid"
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadlifecycle"
 	"ataniq/internal/leadlock"
 	"ataniq/internal/leadregistry"
+	sbprofile "ataniq/internal/leadsandbox/profile"
 )
 
 // CanaryTag is the build tag of canary mode. A binary built with it says so in
@@ -165,7 +167,8 @@ func (d *daemon) canarySetup() (*canaryMode, error) {
 	return m, nil
 }
 
-// openEvidence opens the evidence file of every instance in the state root and
+// openState derives the holder launch tag under the daemon lock, then opens
+// the evidence file of every instance in the state root and
 // reads back the epochs whose one message it shows as sent. Both locks are
 // held, so nothing else appends to the files. A file that cannot be read back
 // line by line refuses the start: the daemon admits no message it cannot rule
@@ -173,9 +176,17 @@ func (d *daemon) canarySetup() (*canaryMode, error) {
 // epoch's message, so a lead that still runs in an epoch whose message was sent
 // would be given a second one. The operator stops the role's unit first. When
 // one instance fails, the files already opened are closed.
-func (m *canaryMode) openEvidence() error {
+func (m *canaryMode) openState() error {
 	if m == nil {
 		return nil
+	}
+	id, err := instanceid.Load(m.d.StateDir)
+	if err != nil {
+		return err
+	}
+	m.router.authorityTag, err = sbprofile.ShortAuthorityTag(id.Authority)
+	if err != nil {
+		return err
 	}
 	for _, role := range m.router.order {
 		in := m.router.byRole[role]

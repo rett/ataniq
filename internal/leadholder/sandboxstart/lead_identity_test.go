@@ -5,20 +5,13 @@ package sandboxstart
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 
-	"ataniq/internal/instanceid"
 	"ataniq/internal/leadsandbox/profile"
 )
 
 func checkLeadEnvironment(t *testing.T, w *world, env []profile.EnvVar) string {
 	t.Helper()
-	id, err := instanceid.Load(w.state)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var lead, actor string
 	for _, e := range env {
 		switch e.Name {
@@ -28,7 +21,7 @@ func checkLeadEnvironment(t *testing.T, w *world, env []profile.EnvVar) string {
 			actor = e.Value
 		}
 	}
-	if lead != w.in.Project+"-lead-"+id.Authority[:16] || actor != lead+"@e1:coord:demo:1" {
+	if lead != w.in.Project+"-lead-"+w.in.AuthorityTag || actor != lead+"@e1:coord:demo:1" {
 		t.Fatalf("unexpected plan environment: lead %q, actor %q", lead, actor)
 	}
 	return lead
@@ -36,8 +29,9 @@ func checkLeadEnvironment(t *testing.T, w *world, env []profile.EnvVar) string {
 
 func TestManagedLeadIdentityAcrossInstances(t *testing.T) {
 	var first string
-	for range 2 {
+	for _, tag := range []string{"0123456789abcdef", "ghijklmnopqrstuz"} {
 		w := newWorld(t)
+		w.in.AuthorityTag = tag
 		w.in.AgentEnv = []profile.EnvVar{{Name: profile.EnvQargiActor, Value: sampleRole + "@e1:coord:demo:1"}}
 		a := &attempt{ctx: context.Background(), in: w.in, sys: w.sys, launch: w.lch}
 		t.Cleanup(func() { a.closeAll() })
@@ -65,24 +59,18 @@ func TestManagedLeadIdentityInStartedSandboxPlan(t *testing.T) {
 }
 
 func TestManagedLeadIdentityRefusedBeforeLaunch(t *testing.T) {
-	for name, tc := range map[string]struct {
-		file   string
-		damage func(string) error
-		want   instanceid.Refusal
-	}{
-		"missing":             {instanceid.FileName, os.Remove, instanceid.ErrMissing},
-		"damaged":             {instanceid.FileName, func(p string) error { return os.WriteFile(p, []byte("damaged"), 0600) }, instanceid.ErrInvalid},
-		"unsafe":              {instanceid.FileName, func(p string) error { return os.Chmod(p, 0644) }, instanceid.ErrUnsafe},
-		"missing incarnation": {instanceid.IncarnationFile, os.Remove, instanceid.ErrInvalid},
+	for name, tag := range map[string]string{
+		"missing": "", "short": "123456789abcdef", "long": "0123456789abcdef0",
+		"uppercase": "0123456789abcdeF", "punctuation": "0123456789abcd-f",
+		"newline": "0123456789abcde\n", "non-ascii": "0123456789abcdé",
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := newWorld(t)
-			if err := tc.damage(filepath.Join(w.state, tc.file)); err != nil {
-				t.Fatal(err)
-			}
+			w.in.AuthorityTag = tag
 			_, err := w.run_()
 			var step *StepError
-			if !errors.Is(err, tc.want) || !errors.As(err, &step) || step.Step != StepValidate {
+			var ref *profile.Refusal
+			if !errors.As(err, &ref) || ref.Field != "authority tag" || !errors.As(err, &step) || step.Step != StepValidate {
 				t.Fatalf("start refusal: %v", err)
 			}
 			if calls := w.sys.callList(); len(calls) != 0 {

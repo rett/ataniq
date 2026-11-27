@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"ataniq/internal/inject/osc7501"
-	"ataniq/internal/instanceid"
 	"ataniq/internal/leadholder/canaryroot"
 	"ataniq/internal/leadholder/fakeagent"
 	"ataniq/internal/leadholder/injectbridge"
@@ -308,6 +307,9 @@ func TestCanaryStartServes(t *testing.T) {
 		t.Fatalf("%d starts", len(seen))
 	}
 	in := seen[0]
+	if in.AuthorityTag != "0123456789abcdef" {
+		t.Errorf("holder launch tag = %q", in.AuthorityTag)
+	}
 	if strings.Join(in.AgentArgv, " ") != "/ataniq/agent/bin/stand-in --sample" {
 		t.Errorf("AgentArgv %q", in.AgentArgv)
 	}
@@ -455,12 +457,10 @@ func TestCanaryCounters(t *testing.T) {
 	}
 }
 
-func TestCanaryStartRequiresInstanceIdentity(t *testing.T) {
+func TestCanaryStartRequiresAuthorityTag(t *testing.T) {
 	c := newCanaryRig(t)
-	if err := os.Remove(filepath.Join(c.stateRoot, instanceid.FileName)); err != nil {
-		t.Fatal(err)
-	}
-	if code := c.runNow(c.spec("").build()); code != exitSandbox || !strings.Contains(c.errbuf.String(), instanceid.ErrMissing.Error()) {
+	t.Setenv(sandboxstart.AuthorityTagEnv, "")
+	if code := c.runNow(c.spec("").build()); code != exitSandbox || !strings.Contains(c.errbuf.String(), "authority tag") {
 		t.Fatalf("missing identity: exit %d, stderr %q", code, c.errbuf.String())
 	}
 	if calls := c.sys.callList(); len(calls) != 0 || len(c.launches()) != 0 {

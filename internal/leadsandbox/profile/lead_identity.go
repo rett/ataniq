@@ -8,15 +8,23 @@ import (
 
 const authorityTagLen = 16
 
-// QualifiedLeadIdentity names a managed lead using the instance authority
-// (the domain-separated fingerprint from instanceid). Sixteen hex digits
-// give independent instances a one-in-2^64 chance of sharing a tag.
-func QualifiedLeadIdentity(project, authority string) (string, error) {
+var authorityTagChars = regexp.MustCompile(`^[a-z0-9]+$`)
+
+// ShortAuthorityTag takes the first sixteen hex digits of a public authority fingerprint.
+func ShortAuthorityTag(authority string) (string, error) {
+	if err := checkSHA256("instance authority", authority); err != nil {
+		return "", err
+	}
+	return authority[:authorityTagLen], nil
+}
+
+// QualifiedLeadIdentity names a managed lead from the public tag in its launch inputs.
+func QualifiedLeadIdentity(project, tag string) (string, error) {
 	if err := CheckName("project", project); err != nil {
 		return "", err
 	}
-	if err := checkSHA256("instance authority", authority); err != nil {
-		return "", err
+	if len(tag) != authorityTagLen || !authorityTagChars.MatchString(tag) {
+		return "", refuse("authority tag", "must be %d characters of [a-z0-9]", authorityTagLen)
 	}
 	const separator = "-lead-"
 	const projectLimit = maxLeadIdentityLen - len(separator) - authorityTagLen
@@ -27,7 +35,7 @@ func QualifiedLeadIdentity(project, authority string) (string, error) {
 		hash := hex.EncodeToString(sum[:projectHashBytes])
 		project = project[:projectLimit-1-len(hash)] + "-" + hash
 	}
-	return project + separator + authority[:authorityTagLen], nil
+	return project + separator + tag, nil
 }
 
 // Qargi reads the label from the right as <lead>:coord:<feature>:<n>.
