@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -25,7 +26,12 @@ func (m *managedStub) Capabilities(ctx context.Context) (TargetCapabilities, err
 	if !ok {
 		panic("missing principal")
 	}
-	return m.policies[p], nil
+	policy := m.policies[p]
+	snapshot := make(TargetCapabilities, len(policy))
+	for target, ops := range policy {
+		snapshot[target] = slices.Clone(ops)
+	}
+	return snapshot, nil
 }
 
 func (m *managedStub) HandleManaged(ctx context.Context, target, op string, params json.RawMessage) (any, *ErrorBody) {

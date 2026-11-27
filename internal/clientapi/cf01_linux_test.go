@@ -156,7 +156,7 @@ func TestManagedDeliveryRechecks(t *testing.T) {
 				case "target revoked":
 					delete(caps, "a")
 				case "operation removed":
-					caps["a"] = nil
+					caps["a"][0] = "different.op"
 				case "principal replaced":
 					current = q
 				}
@@ -172,21 +172,60 @@ func TestManagedDeliveryRechecks(t *testing.T) {
 			}
 		})
 	}
-	t.Run("hello projection revoked", func(t *testing.T) {
-		caps := TargetCapabilities{"a": {"conversation.read"}}
-		stub := &managedStub{policies: map[Principal]TargetCapabilities{p: caps}}
-		m := NewManagedServer(stub, ManagedOptions{ResolvePrincipal: func(context.Context, net.Conn) (Principal, error) {
-			if stub.projections == 1 {
-				caps["a"][0] = "different.op"
+	for _, tc := range []struct {
+		name   string
+		revoke func(TargetCapabilities)
+	}{
+		{"hello projection revoked", func(caps TargetCapabilities) { caps["a"][0] = "different.op" }},
+		{"hello inventory target revoked", func(caps TargetCapabilities) { delete(caps, "inventory") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			caps := TargetCapabilities{"a": {"conversation.read"}, "inventory": {}}
+			stub := &managedStub{policies: map[Principal]TargetCapabilities{p: caps}}
+			m := NewManagedServer(stub, ManagedOptions{ResolvePrincipal: func(context.Context, net.Conn) (Principal, error) {
+				if stub.projections == 1 {
+					tc.revoke(caps)
+				}
+				return p, nil
+			}})
+			r := askManaged(t, m.s, nil, managedHello, ProtocolV2)
+			wantError(t, r, CodeForbidden)
+			if r.Result != nil {
+				t.Fatalf("stale hello = %s", r.Result)
 			}
-			return p, nil
-		}})
-		r := askManaged(t, m.s, nil, managedHello, ProtocolV2)
-		wantError(t, r, CodeForbidden)
-		if r.Result != nil {
-			t.Fatalf("stale hello = %s", r.Result)
-		}
-	})
+		})
+	}
+}
+
+func TestManagedRefusalCounters(t *testing.T) {
+	for _, tc := range []struct {
+		name, request          string
+		code                   ErrorCode
+		forbidden, unsupported uint64
+	}{
+		{"parse", strings.TrimSuffix(managedHello, "}") + `,"principal":{}}`, CodeForbidden, 1, 0},
+		{"dispatch", strings.Replace(managedRead, `"a"`, `"absent"`, 1), CodeForbidden, 1, 0},
+		{"delivery", managedRead, CodeForbidden, 1, 0},
+		{"unsupported protocol", strings.Replace(managedHello, ProtocolV2, Protocol, 1), CodeUnsupportedProtocol, 0, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := Principal{Issuer: "home", ClientID: "reader"}
+			caps := TargetCapabilities{"a": {"conversation.read"}}
+			stub := &managedStub{policies: map[Principal]TargetCapabilities{p: caps}}
+			h := revokingRead{stub, func() { delete(caps, "a") }}
+			var counters Counters
+			m := NewManagedServer(h, ManagedOptions{
+				Counters:         &counters,
+				ResolvePrincipal: func(context.Context, net.Conn) (Principal, error) { return p, nil },
+			})
+			wantError(t, askManaged(t, m.s, nil, tc.request, ProtocolV2), tc.code)
+			snap := counters.Snapshot()
+			if snap.Forbidden != tc.forbidden || snap.Unsupported != tc.unsupported {
+				t.Fatalf("forbidden = %d, unsupported = %d, want %d and %d",
+					snap.Forbidden, snap.Unsupported, tc.forbidden, tc.unsupported)
+			}
+		})
+	}
 }
 
 func TestManagedStreamLimits(t *testing.T) {

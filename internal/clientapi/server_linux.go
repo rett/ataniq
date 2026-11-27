@@ -97,6 +97,7 @@ type Counters struct {
 	invalid      atomic.Uint64
 	tooLarge     atomic.Uint64
 	unsupported  atomic.Uint64
+	forbidden    atomic.Uint64
 	internal     atomic.Uint64
 	idleTimeouts atomic.Uint64
 	servedHello  atomic.Uint64
@@ -149,6 +150,8 @@ type CounterSnapshot struct {
 	// Unsupported is the requests answered "unsupported-protocol" or
 	// "unsupported-operation".
 	Unsupported uint64
+	// Forbidden is the requests answered "forbidden".
+	Forbidden uint64
 	// Internal is the requests answered "internal".
 	Internal uint64
 	// IdleTimeouts is the connections closed for idling.
@@ -168,6 +171,7 @@ func (c *Counters) Snapshot() CounterSnapshot {
 		Invalid:      c.invalid.Load(),
 		TooLarge:     c.tooLarge.Load(),
 		Unsupported:  c.unsupported.Load(),
+		Forbidden:    c.forbidden.Load(),
 		Internal:     c.internal.Load(),
 		IdleTimeouts: c.idleTimeouts.Load(),
 		Served: map[string]uint64{
@@ -486,27 +490,29 @@ func readLine(br *bufio.Reader, dst []byte, max int) (line []byte, tooLarge bool
 // respond answers one request line with one response line.
 func (s *server) respond(ctx context.Context, conn net.Conn, line []byte) (out []byte) {
 	req, fail := parseRequest(line, s.ext, s.protocol)
-	if fail != nil {
+	defer func() {
+		if recover() != nil {
+			out = encodeError(req.Protocol, req.RequestID, s.internal(msgInternal))
+		}
+	}()
+	switch {
+	case fail != nil:
 		switch fail.Code {
 		case CodeInvalidRequest:
 			s.counters.invalid.Add(1)
 		case CodeUnsupportedProtocol, CodeUnsupportedOperation:
 			s.counters.unsupported.Add(1)
 		}
-		return encodeError(req.Protocol, req.RequestID, fail)
-	}
-	defer func() {
-		if recover() != nil {
-			out = encodeError(req.Protocol, req.RequestID, s.internal(msgInternal))
-		}
-	}()
-	if s.protocol == ProtocolV2 {
+	case s.protocol == ProtocolV2:
 		out, fail = s.respondManaged(ctx, conn, req)
-	} else {
+	default:
 		result, errBody := s.dispatch(ctx, req)
 		out, fail = s.encodeResult(req, result, errBody)
 	}
 	if fail != nil {
+		if fail.Code == CodeForbidden {
+			s.counters.forbidden.Add(1)
+		}
 		return encodeError(req.Protocol, req.RequestID, fail)
 	}
 	switch req.Op {
