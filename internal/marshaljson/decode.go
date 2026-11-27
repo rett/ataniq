@@ -75,9 +75,9 @@ func copyField(v any) any {
 	}
 }
 
-// ActionsAllowed reports whether the snapshot supplies usable evidence for
+// UsableEvidence reports whether the snapshot supplies usable evidence for
 // this project and feature. Authorization remains the caller's responsibility.
-func (d Document) ActionsAllowed(project, feature string) bool {
+func (d Document) UsableEvidence(project, feature string) bool {
 	if d.fields["project"] != project || d.unknown || d.stale || d.incomplete {
 		return false
 	}
@@ -87,10 +87,10 @@ func (d Document) ActionsAllowed(project, feature string) bool {
 	return d.revisions[feature].observed
 }
 
-// AllowsRevision also requires a previously observed revision of that record.
+// MatchesRevision also requires a previously observed revision of that record.
 // J1 supplies no ordering or lease fence for rev.
-func (d Document) AllowsRevision(project, feature string, expected Revision) bool {
-	return expected.observed && d.ActionsAllowed(project, feature) && d.revisions[feature] == expected
+func (d Document) MatchesRevision(project, feature string, expected Revision) bool {
+	return expected.observed && d.UsableEvidence(project, feature) && d.revisions[feature] == expected
 }
 
 // RefusalReason classifies a decoded refusal by its catalogue code. The

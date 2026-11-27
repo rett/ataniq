@@ -16,10 +16,10 @@ func mustJSON(t *testing.T, v any) []byte {
 	return b
 }
 
-func TestEvidenceForActions(t *testing.T) {
+func TestDocumentEvidence(t *testing.T) {
 	files := casesArchive(t)
 	// Start each mutation with usable evidence. This isolates each signal
-	// even when the upstream example has several reasons to withhold action.
+	// even when the upstream example has several reasons to withhold evidence.
 	for _, tc := range []struct {
 		name                       string
 		kind                       Kind
@@ -66,8 +66,8 @@ func TestEvidenceForActions(t *testing.T) {
 			}
 			d, err := Decode(tc.kind, mustJSON(t, f))
 			if err != nil || d.Unknown() != tc.unknown || d.Stale() != tc.stale || d.Incomplete() != tc.incomplete ||
-				d.ActionsAllowed("app", "r1") != !(tc.unknown || tc.stale || tc.incomplete) {
-				t.Fatalf("unknown=%v stale=%v incomplete=%v allowed=%v err=%v", d.Unknown(), d.Stale(), d.Incomplete(), d.ActionsAllowed("app", "r1"), err)
+				d.UsableEvidence("app", "r1") != !(tc.unknown || tc.stale || tc.incomplete) {
+				t.Fatalf("unknown=%v stale=%v incomplete=%v usable=%v err=%v", d.Unknown(), d.Stale(), d.Incomplete(), d.UsableEvidence("app", "r1"), err)
 			}
 			if _, ok := d.Fields()["Answer"]; ok {
 				t.Fatal("unknown field retained")
@@ -120,8 +120,8 @@ func TestFailedInput(t *testing.T) {
 		{Check, bytes.Replace(body, []byte(`"r1"`), []byte(`"r1","extra":[1.5]`), 1)},
 	} {
 		d, err := Decode(tc.kind, tc.body)
-		if err == nil || d.ActionsAllowed("app", "r1") {
-			t.Fatal("invalid input enabled actions or decoded successfully")
+		if err == nil || d.UsableEvidence("app", "r1") {
+			t.Fatal("invalid input gave usable evidence or decoded successfully")
 		}
 	}
 }
@@ -135,7 +135,7 @@ func TestLargeStatusInventory(t *testing.T) {
 	row := firstRow(fields)
 	row["note"] = strings.Repeat("x", 64<<10) + "🌓"
 	d, err := Decode(Status, mustJSON(t, fields))
-	if err != nil || !d.ActionsAllowed("app", "r1") || firstRow(d.Fields())["note"] != row["note"] {
+	if err != nil || !d.UsableEvidence("app", "r1") || firstRow(d.Fields())["note"] != row["note"] {
 		t.Fatal("large valid status lost", err)
 	}
 }
@@ -155,7 +155,7 @@ func TestUnicodeEscapes(t *testing.T) {
 	}
 }
 
-func TestActionRequiresSameRecordRevision(t *testing.T) {
+func TestEvidenceRequiresSameRecordRevision(t *testing.T) {
 	files := casesArchive(t)
 	for _, kind := range []Kind{Status, Check, Handoff} {
 		var f map[string]any
@@ -169,9 +169,9 @@ func TestActionRequiresSameRecordRevision(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !d.AllowsRevision("app", "r1", Revision{value: 1, observed: true}) || d.AllowsRevision("app", "r1", Revision{value: 0, observed: true}) ||
-			d.AllowsRevision("app", "r1", Revision{value: 2, observed: true}) || d.AllowsRevision("app", "missing", Revision{value: 1, observed: true}) ||
-			d.AllowsRevision("other", "r1", Revision{value: 1, observed: true}) {
+		if !d.MatchesRevision("app", "r1", Revision{value: 1, observed: true}) || d.MatchesRevision("app", "r1", Revision{value: 0, observed: true}) ||
+			d.MatchesRevision("app", "r1", Revision{value: 2, observed: true}) || d.MatchesRevision("app", "missing", Revision{value: 1, observed: true}) ||
+			d.MatchesRevision("other", "r1", Revision{value: 1, observed: true}) {
 			t.Fatalf("revision check failed for %s", kind)
 		}
 		row := firstRow(f)
@@ -179,7 +179,7 @@ func TestActionRequiresSameRecordRevision(t *testing.T) {
 			record := row["record"].(map[string]any)
 			record["has_record"] = false
 			d, err = Decode(kind, mustJSON(t, f))
-			if err != nil || d.AllowsRevision("app", "r1", Revision{value: 1, observed: true}) {
+			if err != nil || d.MatchesRevision("app", "r1", Revision{value: 1, observed: true}) {
 				t.Fatalf("absent record: err %v", err)
 			}
 			record["has_record"] = true
@@ -187,19 +187,19 @@ func TestActionRequiresSameRecordRevision(t *testing.T) {
 			status := row["status"]
 			row["status"] = "unled"
 			d, err = Decode(kind, mustJSON(t, f))
-			if err != nil || d.AllowsRevision("app", "r1", Revision{value: 1, observed: true}) {
+			if err != nil || d.MatchesRevision("app", "r1", Revision{value: 1, observed: true}) {
 				t.Fatalf("unled feature: err %v", err)
 			}
 			row["status"] = status
 		}
 		f["features"] = []any{row, row}
 		d, err = Decode(kind, mustJSON(t, f))
-		if err != nil || d.AllowsRevision("app", "r1", Revision{value: 1, observed: true}) {
+		if err != nil || d.MatchesRevision("app", "r1", Revision{value: 1, observed: true}) {
 			t.Fatalf("ambiguous %s row: err %v", kind, err)
 		}
 		f["features"], f["extra"] = []any{row}, true
 		d, err = Decode(kind, mustJSON(t, f))
-		if err != nil || d.AllowsRevision("app", "r1", Revision{value: 1, observed: true}) {
+		if err != nil || d.MatchesRevision("app", "r1", Revision{value: 1, observed: true}) {
 			t.Fatalf("unknown %s with matching revision: err %v", kind, err)
 		}
 	}
@@ -233,8 +233,8 @@ func TestVerbResult(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d, err := DecodeResult(Check, tc.exit, tc.stdout, []byte(tc.stderr))
-			if (err != nil) != tc.wantError || d.RefusalReason() != tc.reason || d.ActionsAllowed("app", "r1") != (tc.exit == 0 && !tc.wantError) {
-				t.Errorf("reason=%q allowed=%v err=%v", d.RefusalReason(), d.ActionsAllowed("app", "r1"), err)
+			if (err != nil) != tc.wantError || d.RefusalReason() != tc.reason || d.UsableEvidence("app", "r1") != (tc.exit == 0 && !tc.wantError) {
+				t.Errorf("reason=%q usable=%v err=%v", d.RefusalReason(), d.UsableEvidence("app", "r1"), err)
 			}
 		})
 	}
@@ -248,7 +248,7 @@ func TestReservedRefusalFields(t *testing.T) {
 	line := fixture(t, files, Refusal, "valid")
 	line = bytes.Replace(line, []byte(`"epoch":null`), []byte(`"epoch":{"future":42}`), 1)
 	d, err := Decode(Refusal, line)
-	if err != nil || d.Unknown() || d.ActionsAllowed("app", "r1") || d.RefusalReason() != "conflict" {
+	if err != nil || d.Unknown() || d.UsableEvidence("app", "r1") || d.RefusalReason() != "conflict" {
 		t.Fatalf("reserved field changed refusal: %v", err)
 	}
 	for _, key := range []string{"epoch", "state", "tx"} {
@@ -264,7 +264,7 @@ func TestHandBuiltDocument(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, d := range []Document{{}, rebuilt} {
-		if d.ActionsAllowed("app", "r1") || d.AllowsRevision("app", "r1", Revision{}) {
+		if d.UsableEvidence("app", "r1") || d.MatchesRevision("app", "r1", Revision{}) {
 			t.Fatal("undecoded evidence passed a usability check")
 		}
 	}
@@ -280,7 +280,7 @@ func TestHandBuiltDocument(t *testing.T) {
 	row["feature"] = "other"
 	view["features"].([]any)[0] = nil
 	view["project"] = "elsewhere"
-	if !d.AllowsRevision("app", "r1", rev) || d.AllowsRevision("elsewhere", "other", rev) {
+	if !d.MatchesRevision("app", "r1", rev) || d.MatchesRevision("elsewhere", "other", rev) {
 		t.Fatal("editing displayed fields changed the decoded evidence")
 	}
 }
@@ -303,7 +303,7 @@ func TestSuccessfulResultWithStderr(t *testing.T) {
 		for _, stderr := range []string{"", "\n", "qargi: warning: damaged record\n", "diagnostic"} {
 			d, err := DecodeResult(kind, 0, body, []byte(stderr))
 			warned := len(strings.Trim(stderr, "\n")) != 0
-			if err != nil || d.Incomplete() != warned || d.ActionsAllowed("app", "r1") == warned || d.RefusalReason() != "" {
+			if err != nil || d.Incomplete() != warned || d.UsableEvidence("app", "r1") == warned || d.RefusalReason() != "" {
 				t.Fatalf("%s stderr %q: incomplete=%v err=%v", kind, stderr, d.Incomplete(), err)
 			}
 		}
@@ -319,7 +319,7 @@ func TestZeroRevisionMatchesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	observed := firstRow(d.Fields())["rev"].(Revision)
-	if observed == (Revision{}) || !d.AllowsRevision("app", "r1", observed) || d.AllowsRevision("app", "r1", Revision{}) {
+	if observed == (Revision{}) || !d.MatchesRevision("app", "r1", observed) || d.MatchesRevision("app", "r1", Revision{}) {
 		t.Fatal("an observed revision of zero must be distinct from an unobserved revision")
 	}
 }
@@ -370,7 +370,7 @@ func TestInventoryEvidenceByFeature(t *testing.T) {
 					if name == "r2" {
 						rev.value = 0
 					}
-					if d.ActionsAllowed("app", name) != want || d.AllowsRevision("app", name, rev) != want {
+					if d.UsableEvidence("app", name) != want || d.MatchesRevision("app", name, rev) != want {
 						t.Errorf("feature %s, stderr %q: want usable and matching = %v", name, warn, want)
 					}
 				}
@@ -383,13 +383,13 @@ func TestDocumentSizeLimit(t *testing.T) {
 	files := casesArchive(t)
 	body := fixture(t, files, Check, "valid-refs-name")
 	atLimit := append(body, bytes.Repeat([]byte{' '}, MaxDocumentBytes-len(body))...)
-	if d, err := DecodeResult(Check, 0, atLimit, nil); err != nil || !d.ActionsAllowed("app", "r1") {
+	if d, err := DecodeResult(Check, 0, atLimit, nil); err != nil || !d.UsableEvidence("app", "r1") {
 		t.Fatalf("exactly MaxDocumentBytes: %v", err)
 	}
 	over := append(atLimit, '{') // A collector may retain just the first excess byte.
 	check := func(d Document, err error) {
 		t.Helper()
-		if err != nil || !d.Incomplete() || d.Fields() != nil || d.RefusalReason() != "" || d.ActionsAllowed("app", "r1") {
+		if err != nil || !d.Incomplete() || d.Fields() != nil || d.RefusalReason() != "" || d.UsableEvidence("app", "r1") {
 			t.Fatalf("oversize capture: kind=%q, incomplete=%v, err=%v", d.Kind(), d.Incomplete(), err)
 		}
 	}
