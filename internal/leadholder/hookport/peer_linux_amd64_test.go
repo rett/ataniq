@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +61,91 @@ func (p childPeer) Credentials(net.Conn) (*unix.Ucred, error) {
 }
 
 func (p childPeer) PIDFD(net.Conn) (int, error) { return unix.Dup(p.fd) }
+
+func TestChurningPeerChild(t *testing.T) {
+	if os.Args[len(os.Args)-1] != "--hookport-churn" {
+		return
+	}
+	ready := make(chan struct{})
+	for range 4 {
+		go func() {
+			for first := true; ; first = false {
+				done := make(chan struct{})
+				go func() {
+					// Returning while locked retires this OS thread.
+					runtime.LockOSThread()
+					close(done)
+				}()
+				<-done
+				if first {
+					ready <- struct{}{}
+				}
+			}
+		}()
+	}
+	for range 4 {
+		<-ready
+	}
+	os.Stdout.Write([]byte{'R'})
+	io.Copy(io.Discard, os.Stdin)
+}
+
+func TestChurningPeerAdmission(t *testing.T) {
+	ref, err := selfGroup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestChurningPeerChild$", "--", "--hookport-churn")
+	input, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		input.Close()
+		if err := cmd.Wait(); err != nil {
+			t.Error(err)
+		}
+	}()
+	var ready [1]byte
+	if _, err := io.ReadFull(output, ready[:]); err != nil || ready[0] != 'R' {
+		t.Fatalf("peer with churning threads did not start: %q, %v", ready, err)
+	}
+	fd, err := unix.PidfdOpen(cmd.Process.Pid, 0)
+	if kernelRefusal(err) {
+		unavailable(t, "pidfd_open: "+err.Error())
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	p := childPeer{pid: cmd.Process.Pid, fd: fd}
+	const attempts = 200
+	accepted := 0
+	for range attempts {
+		if err := admit(nil, p, ref); err == nil {
+			accepted++
+		} else if !errors.Is(err, errPeer) {
+			t.Fatal(err)
+		}
+		if err := admit(nil, p, ref+"/other"); !errors.Is(err, errPeer) {
+			t.Fatalf("expected out-of-group refusal: %v", err)
+		}
+	}
+	t.Logf("admitted %d/%d in group, 0/%d outside", accepted, attempts, attempts)
+	// Exiting threads can still report a readable, mismatched cgroup.
+	if accepted < attempts*3/4 {
+		t.Fatal("fewer than 75% of in-group attempts admitted")
+	}
+}
 
 func TestZombieLeaderAdmission(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

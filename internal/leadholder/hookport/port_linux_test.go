@@ -29,6 +29,7 @@ import (
 type fakePeers struct {
 	group, info, workerGroup, status string
 	threads                          []string
+	cgroupErr                        map[string]error
 	uid                              uint32
 	alive, open                      bool
 	t                                *testing.T
@@ -87,6 +88,9 @@ func (p *fakePeers) Cgroup(pid int, tid string) ([]byte, error) {
 		p.t.Fatal(pid)
 	}
 	p.trace = append(p.trace, "group/"+tid)
+	if err := p.cgroupErr[tid]; err != nil {
+		return nil, err
+	}
 	if tid == "124" {
 		return []byte(p.workerGroup), nil
 	}
@@ -255,6 +259,31 @@ func TestHP4AdmissionBeforeRead(t *testing.T) {
 				t.Fatal(peer.trace)
 			}
 		})
+	}
+}
+
+func TestVanishedTaskAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		tid   string
+		err   error
+		admit bool
+	}{
+		{"124", unix.ENOENT, true}, {"124", unix.ESRCH, true},
+		{"123", unix.ENOENT, false}, {"123", unix.ESRCH, false},
+		{"124", unix.EACCES, false},
+	} {
+		p := peers(t)
+		p.cgroupErr = map[string]error{tc.tid: &os.PathError{Op: "read", Err: tc.err}}
+		if err := admit(nil, p, "/unit"); (err == nil) != tc.admit {
+			t.Errorf("tid %s, %v: got %v, want admission %t", tc.tid, tc.err, err, tc.admit)
+		}
+	}
+	p := peers(t)
+	p.threads = []string{"123", "125", "124"}
+	p.cgroupErr = map[string]error{"125": unix.ENOENT}
+	p.workerGroup = "0::/other\n"
+	if err := admit(nil, p, "/unit"); !errors.Is(err, errPeer) {
+		t.Fatalf("outside worker after vanished worker: %v", err)
 	}
 }
 

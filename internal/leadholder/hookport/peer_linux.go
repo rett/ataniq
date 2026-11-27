@@ -199,6 +199,11 @@ func admit(c net.Conn, p PeerReader, ref string) error {
 	for _, tid := range threads {
 		record, err := p.Cgroup(pid, tid)
 		if err != nil {
+			// The task directory is scoped to this process. A worker
+			// can exit between enumeration and opening or reading cgroup.
+			if tid != leader && (errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ESRCH)) {
+				continue
+			}
 			return err
 		}
 		group, err := ControlGroup(record)
