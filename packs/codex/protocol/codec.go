@@ -38,8 +38,7 @@ type Codec interface {
 // A turnReservation records the request ID of a successful Encode(Message),
 // which requires an observed idle thread, no live turns and no reservation.
 // An error answer releases the reservation and preserves the observed turn
-// and thread status. A success answer (result.turn.id) and turn/completed
-// for that turn on this thread also release the reservation, in either order.
+// and thread status. A success answer releases it and identifies our turn.
 // Until the answer names the turn, the reservation remembers the IDs
 // that complete on this thread. A completion retires only its named turn.
 // Thread status applies to admission independently of those lifetimes.
@@ -51,7 +50,6 @@ type Codec interface {
 // outcome, every further Message returns ErrTurn until the session restarts.
 type turnReservation struct {
 	requestID string
-	turnID    string
 	completed map[string]bool
 }
 
@@ -59,6 +57,7 @@ type codec struct {
 	startID     string // the one thread/start whose result may establish the binding
 	reservation turnReservation
 	thread      string
+	ownTurn     string   // the live turn identified by our turn/start answer
 	liveTurns   []string // interrupt preference increases from first to last
 	closed      bool
 	threadState agentsession.State // latest status reported for the bound thread
@@ -140,13 +139,10 @@ func (c *codec) Forget(id string) {
 }
 
 func (c *codec) controlTurn() string {
-	if c.reservation.turnID != "" {
-		return c.reservation.turnID
-	}
 	if c.reservation.requestID != "" && len(c.liveTurns) > 0 {
 		return c.liveTurns[len(c.liveTurns)-1]
 	}
-	return ""
+	return c.ownTurn
 }
 
 func (c *codec) current(thread, turn string) bool {

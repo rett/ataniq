@@ -286,7 +286,16 @@ func TestSystemErrorDiscardsPendingStart(t *testing.T) {
 	if _, err := c.Decode([]byte(`{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"systemError"}}}`)); err != nil {
 		t.Fatal(err)
 	}
-	if c.reservation.requestID != "" || c.reservation.turnID != "" || c.reservation.completed != nil {
+	if c.reservation.requestID != "" || c.ownTurn != "" || c.reservation.completed != nil {
 		t.Fatal("systemError retained the start reservation")
+	}
+}
+
+func TestTurnStartAnswerReleasesReservation(t *testing.T) {
+	for _, answer := range []observation{successA, errorFirst} {
+		c := replayReservation(t, []observation{startedB, answer})
+		if c.reservation.requestID != "" || c.reservation.completed != nil {
+			t.Fatalf("%v retained reservation %+v", answer, c.reservation)
+		}
 	}
 }

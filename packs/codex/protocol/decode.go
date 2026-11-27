@@ -117,8 +117,8 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 		if c.reservation.completed != nil {
 			c.reservation.completed[p.Turn.ID] = true
 		}
-		if p.Turn.ID == c.reservation.turnID {
-			c.reservation = turnReservation{}
+		if p.Turn.ID == c.ownTurn {
+			c.ownTurn = ""
 		}
 		if c.removeLiveTurn(p.Turn.ID) && len(c.liveTurns) == 0 {
 			return state(c.threadState), nil
@@ -138,6 +138,7 @@ func (c *codec) removeLiveTurn(turn string) bool {
 
 func (c *codec) closeThread() {
 	c.reservation = turnReservation{}
+	c.ownTurn = ""
 	c.liveTurns = nil
 	c.closed = true
 	c.threadState = "unknown"
@@ -200,7 +201,7 @@ func (c *codec) answer(e envelope) (core.Decoded, error) {
 	} else if e.Result.Kind() != '{' {
 		return core.Decoded{}, core.ErrInvalidFrame
 	}
-	if id == c.reservation.requestID && c.reservation.turnID == "" {
+	if id == c.reservation.requestID {
 		if e.Error == nil {
 			var result struct {
 				Turn struct {
@@ -211,14 +212,12 @@ func (c *codec) answer(e envelope) (core.Decoded, error) {
 				return core.Decoded{}, core.ErrInvalidFrame
 			}
 			if !c.reservation.completed[result.Turn.ID] {
-				c.reservation.turnID = result.Turn.ID
-				c.reservation.completed = nil
+				c.ownTurn = result.Turn.ID
 				// An answer may arrive after a newer turn/started. Keep that
 				// interrupt target ahead of a turn known only from its answer.
 				if !slices.Contains(c.liveTurns, result.Turn.ID) {
 					c.liveTurns = slices.Insert(c.liveTurns, 0, result.Turn.ID)
 				}
-				return d, nil
 			}
 		}
 		c.reservation = turnReservation{}
