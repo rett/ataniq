@@ -7,7 +7,9 @@ import (
 	"crypto/rand"
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"ataniq/internal/agentsession"
@@ -49,7 +51,8 @@ type Request struct {
 }
 
 // Event is an untrusted transport observation. The holder supplies the
-// sequence and time. Only a state event has a State.
+// sequence and time. Only a state event has a State. Session.Decode escapes
+// non-printable runes in Text except for newline and tab.
 type Event struct {
 	Kind  string
 	State agentsession.State
@@ -201,16 +204,29 @@ func (s *Session) Decode(frame []byte) (Decoded, error) {
 		if !utf8.ValidString(e.Text) {
 			return Decoded{}, ErrInvalidFrame
 		}
-		if len(e.Text) > MaxEventBytes {
-			end := MaxEventBytes
-			for !utf8.RuneStart(e.Text[end]) {
-				end--
-			}
-			e.Text = strings.Clone(e.Text[:end])
-		}
+		e.Text = boundedEventText(e.Text)
 	}
 	if d.AnswerTo != nil {
 		delete(s.pending, *d.AnswerTo)
 	}
 	return d, nil
+}
+
+// The input is valid UTF-8. Count bytes after escaping so neither a rune
+// nor a visible escape is split at the event limit.
+func boundedEventText(text string) string {
+	var b strings.Builder
+	b.Grow(min(len(text), MaxEventBytes))
+	for i, r := range text {
+		unit := text[i : i+utf8.RuneLen(r)]
+		if r != '\n' && r != '\t' && !unicode.IsPrint(r) {
+			quoted := strconv.QuoteRune(r)
+			unit = quoted[1 : len(quoted)-1]
+		}
+		if b.Len()+len(unit) > MaxEventBytes {
+			break
+		}
+		b.WriteString(unit)
+	}
+	return b.String()
 }

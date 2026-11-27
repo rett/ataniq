@@ -9,3 +9,5 @@
   and answers the original, unaltered request once. The codec returns an
   ID-matched decline for stale, invalid or excess permission requests, command
   and file approvals, user input, MCP elicitation and unsupported requests.
+  Protocol sessions escape non-printable characters in event text, including
+  message deltas and error details, while preserving newlines and tabs.

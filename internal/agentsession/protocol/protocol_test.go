@@ -249,6 +249,23 @@ func TestEventFloorsAreAtomic(t *testing.T) {
 	}
 }
 
+func TestEventControlEscapes(t *testing.T) {
+	c := &probeCodec{}
+	s := session(t, c)
+	prefix := strings.Repeat("a", protocol.MaxEventBytes-1)
+	for _, tc := range []struct{ text, want string }{
+		{"α\n\tβ", "α\n\tβ"},
+		{"\x00\x1f\x7f\u009b\u202e", `\x00\x1f\x7f\u009b\u202e`},
+		{prefix + "\x1b", prefix},
+	} {
+		c.decoded.Events = []protocol.Event{{Kind: "progress", Text: tc.text}}
+		d, err := s.Decode([]byte("event\n"))
+		if err != nil || len(d.Events) != 1 || d.Events[0].Text != tc.want {
+			t.Errorf("event %q: got %+q, %v", tc.text, d.Events, err)
+		}
+	}
+}
+
 func TestNotificationsAndUnknownFrames(t *testing.T) {
 	s := session(t, protocoltest.Codec{})
 	for _, tc := range []struct {

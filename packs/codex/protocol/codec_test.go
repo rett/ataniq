@@ -446,6 +446,35 @@ func TestStaleDelta(t *testing.T) {
 	observe(t, c, bytes.ReplaceAll(frames(t, "events")[2], []byte("turn-a"), []byte("old")))
 }
 
+func TestSessionEscapesEventControls(t *testing.T) {
+	c, _ := active(t)
+	s, err := core.From(sessionPack{packtest.Beta, c}, "1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _, err := s.Encode(core.Request{Operation: core.StopTurn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const controls = `\u001b]52;c;QQ==\u0007\r`
+	const escaped = `\x1b]52;c;QQ==\a\r`
+	for _, tc := range []struct {
+		name, frame, want string
+		answer            *string
+	}{
+		{"message delta", strings.Replace(string(frames(t, "events")[2]), "two words", controls, 1), escaped, nil},
+		{"request error", fmt.Sprintf(`{"id":%q,"error":{"code":-1,"message":"%s"}}`, id, controls), "Request failed: " + escaped, &id},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, err := s.Decode([]byte(tc.frame + "\n"))
+			want := core.Decoded{AnswerTo: tc.answer, Events: []core.Event{{Kind: "progress", Text: tc.want}}}
+			if err != nil || !reflect.DeepEqual(d, want) {
+				t.Fatalf("answer %v, events %q, error %v", d.AnswerTo, d.Events, err)
+			}
+		})
+	}
+}
+
 func TestStartedTurnRequiresInProgress(t *testing.T) {
 	c, _ := active(t)
 	frame := bytes.ReplaceAll(frames(t, "events")[1], []byte("inProgress"), []byte("completed"))
