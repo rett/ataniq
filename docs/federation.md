@@ -24,7 +24,8 @@ For an existing scratch root, stop the daemon and run the same init command
 with the configuration's `state_root`. It validates the old journal and
 atomically replaces it with a version 2 journal bound to the authority and
 incarnation, preserving its records. Repeating init keeps the original key
-and label. On startup the daemon refuses a missing, damaged or unsafe key,
+and label. Supply `--label` only on the first init. Any later `--label`,
+including an empty or identical value, is refused. On startup the daemon refuses a missing, damaged or unsafe key,
 an unbound journal, or a journal from another instance or incarnation.
 A backup of `instance.key` holds the private Ed25519 seed. Protect it as a
 credential. A copied root (including a copy made with `cp -a`) is the same

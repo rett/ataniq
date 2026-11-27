@@ -239,7 +239,7 @@ func TestScratchInstanceInitialization(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := []string{"run", "--scratch", w.ConfigPath}
-	if code := ta.run(args); code != leaddaemon.ExitState || !strings.Contains(ta.err.String(), "ataniqd init --state-dir DIR") {
+	if code := ta.run(args); code != leaddaemon.ExitState || !strings.Contains(ta.err.String(), "ataniqd init --state-dir '"+w.State+"'") {
 		t.Fatalf("pre-identity root: exit %d: %s", code, ta.err.String())
 	}
 	if _, err := instanceid.Load(w.State); !errors.Is(err, instanceid.ErrMissing) {

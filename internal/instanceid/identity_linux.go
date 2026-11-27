@@ -56,7 +56,7 @@ type Identity struct {
 // missing components and confirms each new directory entry on disk.
 func OpenRoot(path string, create bool) (*os.File, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" {
-		return nil, fmt.Errorf("%w: expected a clean absolute state directory", ErrUnsafe)
+		return nil, fmt.Errorf("%w: expected a clean absolute state directory, got %q", ErrUnsafe, path)
 	}
 	const flags = unix.O_DIRECTORY | unix.O_CLOEXEC
 	fd, err := unix.Open("/", unix.O_PATH|flags, 0)
@@ -93,7 +93,7 @@ func OpenRoot(path string, create bool) (*os.File, error) {
 		}
 		unix.Close(fd)
 		if err == unix.ENOENT {
-			return nil, ErrMissing
+			return nil, fmt.Errorf("%s: %w", path, ErrMissing)
 		}
 		if err != nil {
 			partPath := "/" + strings.Join(parts[:i+1], "/")
@@ -107,7 +107,7 @@ func OpenRoot(path string, create bool) (*os.File, error) {
 	f := os.NewFile(uintptr(fd), path)
 	if err := checkRoot(fd); err != nil {
 		f.Close()
-		return nil, err
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return f, nil
 }
@@ -143,6 +143,14 @@ func validLabel(s string) bool {
 	return len(s) <= maxLabel && utf8.ValidString(s) && strings.IndexFunc(s, unicode.IsControl) < 0
 }
 
+// ValidateLabel checks a proposed display label before init touches the root.
+func ValidateLabel(label string) error {
+	if !validLabel(label) {
+		return errors.New("display label must be valid UTF-8, at most 128 bytes, without control characters")
+	}
+	return nil
+}
+
 // Load reads the existing identity without creating a root or a key.
 func Load(path string) (Identity, error) {
 	root, err := OpenRoot(path, false)
@@ -150,25 +158,28 @@ func Load(path string) (Identity, error) {
 		return Identity{}, err
 	}
 	defer root.Close()
-	id, err := LoadAt(int(root.Fd()))
-	if err != nil {
-		return Identity{}, fmt.Errorf("%s: %w", path, err)
-	}
-	return id, nil
+	return loadAt(int(root.Fd()), path)
 }
 
 // LoadAt reads both identity files relative to a pinned state root.
 func LoadAt(root int) (Identity, error) {
+	return loadAt(root, "")
+}
+
+func loadAt(root int, dir string) (Identity, error) {
 	id, err := loadKey(root)
 	if err != nil {
-		return Identity{}, err
+		return Identity{}, &os.PathError{Op: "load", Path: filepath.Join(dir, FileName), Err: err}
 	}
 	id.Incarnation, err = loadIncarnation(root)
 	if errors.Is(err, ErrMissing) {
 		// A key without a store is not an uninitialized (legacy) root.
-		return Identity{}, fmt.Errorf("%w: missing %s; after restoring a key use init --restored", ErrInvalid, IncarnationFile)
+		err = fmt.Errorf("%w: missing store incarnation; after restoring a key use init --restored", ErrInvalid)
 	}
-	return id, err
+	if err != nil {
+		return Identity{}, &os.PathError{Op: "load", Path: filepath.Join(dir, IncarnationFile), Err: err}
+	}
+	return id, nil
 }
 
 func loadKey(root int) (Identity, error) {
@@ -179,7 +190,7 @@ func loadKey(root int) (Identity, error) {
 	defer clear(b)
 	label := string(b[ed25519.SeedSize:])
 	if !validLabel(label) {
-		return Identity{}, fmt.Errorf("%w: %s: invalid label", ErrInvalid, FileName)
+		return Identity{}, fmt.Errorf("%w: invalid label", ErrInvalid)
 	}
 	key := ed25519.NewKeyFromSeed(b[:ed25519.SeedSize])
 	defer clear(key)
@@ -198,13 +209,13 @@ func loadIncarnation(root int) (string, error) {
 func readPayload(root int, name, prefix string, size, extra int) ([]byte, error) {
 	fd, err := unix.Openat(root, name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err == unix.ENOENT {
-		return nil, fmt.Errorf("%w: %s", ErrMissing, name)
+		return nil, ErrMissing
 	}
 	if err == unix.ELOOP {
-		return nil, fmt.Errorf("%w: %s is a symlink", ErrUnsafe, name)
+		return nil, fmt.Errorf("%w: symlink", ErrUnsafe)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("%w: open %s: %w", ErrUnsafe, name, err)
+		return nil, fmt.Errorf("%w: %w", ErrUnsafe, err)
 	}
 	f := os.NewFile(uintptr(fd), name)
 	defer f.Close()
@@ -216,19 +227,19 @@ func readPayload(root int, name, prefix string, size, extra int) ([]byte, error)
 		return nil, err
 	}
 	if err := checkFile(st, os.Geteuid()); err != nil {
-		return nil, fmt.Errorf("%s: %w", name, err)
+		return nil, err
 	}
 	minSize := len(prefix) + size + sha256.Size
 	b, err := io.ReadAll(io.LimitReader(f, int64(minSize+extra+1)))
 	if err != nil || len(b) < minSize || len(b) > minSize+extra || !bytes.HasPrefix(b, []byte(prefix)) {
 		clear(b)
-		return nil, fmt.Errorf("%w: %s", ErrInvalid, name)
+		return nil, ErrInvalid
 	}
 	body := b[:len(b)-sha256.Size]
 	sum := sha256.Sum256(body)
 	if !bytes.Equal(sum[:], b[len(body):]) {
 		clear(b)
-		return nil, fmt.Errorf("%w: %s: checksum mismatch", ErrInvalid, name)
+		return nil, fmt.Errorf("%w: checksum mismatch", ErrInvalid)
 	}
 	return body[len(prefix):], nil
 }
@@ -236,14 +247,14 @@ func readPayload(root int, name, prefix string, size, extra int) ([]byte, error)
 // InitAt publishes the store incarnation first. An interruption before the
 // key is published leaves an incarnation that a retry can safely reuse.
 func InitAt(root *os.File, label string) (Identity, error) {
-	if !validLabel(label) {
-		return Identity{}, errors.New("display label must be valid UTF-8, at most 128 bytes, without control characters")
+	if err := ValidateLabel(label); err != nil {
+		return Identity{}, err
 	}
 	fd := int(root.Fd())
 	if err := checkRoot(fd); err != nil {
 		return Identity{}, err
 	}
-	id, err := LoadAt(fd)
+	id, err := loadAt(fd, root.Name())
 	if err == nil {
 		return id, root.Sync()
 	}
@@ -255,7 +266,7 @@ func InitAt(root *os.File, label string) (Identity, error) {
 			return Identity{}, err
 		}
 	} else if err != nil {
-		return Identity{}, err
+		return Identity{}, &os.PathError{Op: "load", Path: filepath.Join(root.Name(), IncarnationFile), Err: err}
 	}
 	payload := make([]byte, ed25519.SeedSize+len(label))
 	defer clear(payload)
@@ -264,7 +275,7 @@ func InitAt(root *os.File, label string) (Identity, error) {
 	if err := publish(root, FileName, magic, payload, unix.RENAME_NOREPLACE); err != nil {
 		return Identity{}, err
 	}
-	return LoadAt(fd)
+	return loadAt(fd, root.Name())
 }
 
 // RestoreAt gives a restored key a fresh store incarnation. The caller
@@ -272,15 +283,15 @@ func InitAt(root *os.File, label string) (Identity, error) {
 func RestoreAt(root *os.File) (Identity, error) {
 	fd := int(root.Fd())
 	if _, err := loadKey(fd); err != nil {
-		return Identity{}, err
+		return Identity{}, &os.PathError{Op: "restore", Path: filepath.Join(root.Name(), FileName), Err: err}
 	}
 	if _, err := loadIncarnation(fd); err != nil && !errors.Is(err, ErrMissing) {
-		return Identity{}, err
+		return Identity{}, &os.PathError{Op: "restore", Path: filepath.Join(root.Name(), IncarnationFile), Err: err}
 	}
 	if err := writeIncarnation(root, 0); err != nil {
 		return Identity{}, err
 	}
-	return LoadAt(fd)
+	return loadAt(fd, root.Name())
 }
 
 func writeIncarnation(root *os.File, flags uint) error {

@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"ataniq/internal/leaddaemon"
+	"ataniq/internal/leadregistry"
 	"ataniq/internal/leadunit"
 	"ataniq/internal/leadunit/systemdmgr"
 )
@@ -230,7 +231,15 @@ func (a *app) runCmd(args []string) int {
 		err = leaddaemon.Run(context.Background(), cfg)
 	}
 	if err != nil {
-		fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(err.Error()))
+		message := err.Error()
+		var start *leaddaemon.StartupError
+		if errors.As(err, &start) && start.Step == leaddaemon.StepRegistry {
+			message = fmt.Sprintf("registry: %s: %v", journalPath(cfg.StateDir), start.Err)
+			if errors.Is(err, leadregistry.ErrUnbound) {
+				message = fmt.Sprintf("registry: %s has no instance binding; run %s", journalPath(cfg.StateDir), initHint(cfg.StateDir))
+			}
+		}
+		fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(message))
 	}
 	return leaddaemon.ExitCode(err)
 }

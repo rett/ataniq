@@ -535,3 +535,68 @@ func TestRestoredInstanceRefusesOldJournal(t *testing.T) {
 		t.Fatalf("old journal after restore: %v", err)
 	}
 }
+
+func TestInitLabelOnlyOnFirstInitialization(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "a state")
+	cmd := func(flags ...string) (int, string) {
+		ta := newTestApp(t, nil)
+		code := ta.run(append([]string{"init", "--state-dir", state}, flags...))
+		return code, ta.err.String()
+	}
+	if code, msg := cmd("--label", "first"); code != 0 {
+		t.Fatalf("init: %d %s", code, msg)
+	}
+	before, err := instanceid.Load(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, label := range []string{"first", "second", ""} {
+		code, msg := cmd("--label", label)
+		if code != leaddaemon.ExitState || !strings.Contains(msg, filepath.Join(state, instanceid.FileName)) || !strings.Contains(msg, "--label is accepted only on first init") {
+			t.Errorf("second --label %q: %d %s", label, code, msg)
+		}
+	}
+	if code, msg := cmd(); code != 0 {
+		t.Fatalf("ordinary retry: %d %s", code, msg)
+	}
+	if got, err := instanceid.Load(state); err != nil || got != before {
+		t.Fatalf("label retry: %+v, %v", got, err)
+	}
+}
+
+func TestInstanceRefusalsNameTheirFiles(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "state")
+	key := filepath.Join(state, instanceid.FileName)
+	run := func() (int, string) {
+		ta := newTestApp(t, nil)
+		code := ta.run([]string{"run", "--state-dir", state, "--runtime-dir", filepath.Join(dir, "runtime")})
+		return code, ta.err.String()
+	}
+	if code, msg := run(); code != leaddaemon.ExitState || !strings.Contains(msg, key) || !strings.Contains(msg, initHint(state)) {
+		t.Fatalf("missing key: %d %s", code, msg)
+	}
+	initTestState(t, state)
+	journal := journalPath(state)
+	v1, err := os.ReadFile("../../internal/leadregistry/testdata/v1-base/registry.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(journal, v1, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if code, msg := run(); code != leaddaemon.ExitRegistry || !strings.Contains(msg, journal) || !strings.Contains(msg, initHint(state)) {
+		t.Fatalf("unbound journal: %d %s", code, msg)
+	}
+	for _, change := range []func() error{
+		func() error { return os.Truncate(key, 1) },
+		func() error { return os.Chmod(key, 0640) },
+	} {
+		if err := change(); err != nil {
+			t.Fatal(err)
+		}
+		if code, msg := run(); code != leaddaemon.ExitState || !strings.Contains(msg, key) {
+			t.Fatalf("refused key: %d %s", code, msg)
+		}
+	}
+}

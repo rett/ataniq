@@ -5,6 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"ataniq/internal/instanceid"
 	"ataniq/internal/leaddaemon"
@@ -14,12 +16,16 @@ import (
 )
 
 func (a *app) initCmd(args []string) int {
-	var stateDir, label string
+	var stateDir string
+	var label *string
 	var restored bool
 	if code := a.flags("init", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&stateDir, "state-dir", "", "state folder")
 		fs.BoolVar(&restored, "restored", false, "start a fresh store incarnation for a restored authority key")
-		fs.StringVar(&label, "label", "", "display label")
+		fs.Func("label", "display label", func(value string) error {
+			label = &value
+			return instanceid.ValidateLabel(value)
+		})
 	}); code >= 0 {
 		return code
 	}
@@ -34,7 +40,7 @@ func (a *app) initCmd(args []string) int {
 			return leaddaemon.ExitConfig
 		}
 	}
-	if restored && label != "" {
+	if restored && label != nil {
 		fmt.Fprintln(a.stderr, "ataniqd init: --restored and --label exclude each other")
 		return leaddaemon.ExitUsage
 	}
@@ -50,7 +56,7 @@ func (a *app) initCmd(args []string) int {
 	return leaddaemon.ExitOK
 }
 
-func initializeInstance(stateDir, label string, restored bool) (instanceid.Identity, error) {
+func initializeInstance(stateDir string, label *string, restored bool) (instanceid.Identity, error) {
 	root, err := instanceid.OpenRoot(stateDir, !restored)
 	if err != nil {
 		return instanceid.Identity{}, err
@@ -68,7 +74,38 @@ func initializeInstance(stateDir, label string, restored bool) (instanceid.Ident
 		defer lock.Release()
 		return instanceid.RestoreAt(root)
 	}
-	return leadregistry.InitInstance(stateDir, leaddaemon.RegistryDirName, label)
+	var display string
+	if label != nil {
+		var st unix.Stat_t
+		err := unix.Fstatat(int(root.Fd()), instanceid.FileName, &st, unix.AT_SYMLINK_NOFOLLOW)
+		if err == nil {
+			return instanceid.Identity{}, fmt.Errorf("%s already exists; --label is accepted only on first init", filepath.Join(stateDir, instanceid.FileName))
+		}
+		if err != unix.ENOENT {
+			return instanceid.Identity{}, err
+		}
+		display = *label
+	}
+	id, err := leadregistry.InitInstance(stateDir, leaddaemon.RegistryDirName, display)
+	if err != nil {
+		var pe *os.PathError
+		if errors.As(err, &pe) {
+			if !filepath.IsAbs(pe.Path) {
+				return id, &os.PathError{Op: pe.Op, Path: filepath.Join(stateDir, pe.Path), Err: pe.Err}
+			}
+			return id, err
+		}
+		return id, fmt.Errorf("%s: %w", journalPath(stateDir), err)
+	}
+	return id, nil
+}
+
+func initHint(stateDir string) string {
+	return "ataniqd init --state-dir '" + strings.ReplaceAll(stateDir, "'", `'"'"'`) + "'"
+}
+
+func journalPath(stateDir string) string {
+	return filepath.Join(stateDir, leaddaemon.RegistryDirName, leadregistry.FileName)
 }
 
 func (a *app) requireInstance(cfg leaddaemon.Config) error {
@@ -85,7 +122,7 @@ func (a *app) requireInstance(cfg leaddaemon.Config) error {
 		return &leaddaemon.StartupError{Step: leaddaemon.StepConfig, Err: placeErr}
 	}
 	if errors.Is(err, instanceid.ErrMissing) {
-		err = fmt.Errorf("%w in %q; for a new or pre-identity root use ataniqd init --state-dir DIR; for a restored key use ataniqd init --restored", err, cfg.StateDir)
+		err = fmt.Errorf("%s: %w; for a new or pre-identity root use %s; for key recovery follow the restore procedure", filepath.Join(cfg.StateDir, instanceid.FileName), instanceid.ErrMissing, initHint(cfg.StateDir))
 	}
 	return &leaddaemon.StartupError{Step: leaddaemon.StepState, Err: err}
 }
