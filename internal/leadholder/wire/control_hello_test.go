@@ -267,3 +267,39 @@ func TestControlHelloRejectsAmbiguousPacks(t *testing.T) {
 		t.Fatalf("encoded repeated pack name: %s, %v", b, err)
 	}
 }
+
+func TestDecodeControlOpening(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload []byte
+		err     error
+	}{
+		{"legacy", []byte(`{"op":"status","epoch":7}`), nil},
+		{"offer", preStartFixture(t, "offer-v2", wire.ControlRequests), nil},
+		{"spec first", preStartFixture(t, "launch-spec-v1", wire.ControlRequests), wire.RefuseHelloRequired},
+		{"invalid range", []byte(`{"version":2,"range":{"min":2,"max":1}}`), wire.RefuseRange},
+		{"ambiguous request", []byte(`{"version":2,"range":{"min":1,"max":2},"op":"stop","epoch":7}`), wire.ErrInvalid},
+		{"oversized", bytes.Repeat([]byte(" "), wire.MaxControlPayload+1), wire.ErrTooLarge},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, offer, err := wire.DecodeControlOpening(tc.payload)
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("opening: %v, want %v", err, tc.err)
+			}
+			switch tc.name {
+			case "legacy":
+				if req.Op != wire.OpStatus || req.Epoch != 7 || offer != nil {
+					t.Fatalf("legacy request %+v, offer %+v", req, offer)
+				}
+			case "offer":
+				if req != (wire.Request{}) || offer == nil || offer.Range != (wire.VersionRange{Min: 1, Max: 2}) {
+					t.Fatalf("request %+v, offer %+v", req, offer)
+				}
+			default:
+				if req != (wire.Request{}) || offer != nil {
+					t.Fatalf("refusal returned request %+v, offer %+v", req, offer)
+				}
+			}
+		})
+	}
+}

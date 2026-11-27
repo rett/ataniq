@@ -102,7 +102,10 @@
 // and select the highest common version. For a known v1 peer, display uses
 // the legacy Status request and response. [NegotiateLaunch] requires a v2
 // agreement and compares the build, pack, required capabilities and exact
-// [LaunchSpec] digest. These codecs have no live callers yet.
+// [LaunchSpec] digest. The holder accepts an optional spec as the second
+// request on the same connection as the hello. It answers with a [Response],
+// carrying the [NegotiationRefusal] code on a negotiation failure. An OK
+// acknowledges agreement on the spec bytes. Starting the agent is separate.
 //
 // # Epochs
 //
