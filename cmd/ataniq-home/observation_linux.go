@@ -126,7 +126,7 @@ func compareObservation(ctx context.Context, archive string, root enrollment.Fil
 	if err := saveObservation(root.Path, o); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(out, "home %s\nwitness %s (challenged %s)\narchive %s\nobservation: %s\n", o.Home, o.Witness, o.Fresh, archiveText, o.Result); err != nil {
+	if _, err := fmt.Fprintf(out, "home %s\nwitness %s (challenged %s)\narchive %s\nobservation: %s\nmanaged_starts=0 launches=0\n", o.Home, o.Witness, o.Fresh, archiveText, o.Result); err != nil {
 		return err
 	}
 	if o.Result != "agree" {

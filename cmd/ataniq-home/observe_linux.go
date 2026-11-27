@@ -29,14 +29,10 @@ func observeCommand(cmd command, c config, p pairing, ep *link.Endpoint, out io.
 }
 
 func observe(ctx context.Context, cmd command, c config, p pairing, ep *link.Endpoint, l net.Listener, out io.Writer, fault enrollment.Fault) (err error) {
-	defer func() {
-		_, e := fmt.Fprintln(out, "managed_starts=0 launches=0")
-		err = errors.Join(ownerAction(err), e)
-	}()
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	go func() { done <- serve(ctx, ep, l, io.Discard); cancel() }()
-	defer func() { cancel(); err = errors.Join(err, <-done) }()
+	defer func() { cancel(); err = ownerAction(errors.Join(err, <-done)) }()
 	_, b, err := bindingStatus(c, p.home.key.Public().(ed25519.PublicKey))
 	if err != nil {
 		return err

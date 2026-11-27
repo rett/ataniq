@@ -226,8 +226,8 @@ through the witness owner channel.
 A completed comparison prints the replayed head, retained advance receipt
 head, freshly challenged witness head and optional owner archive. It records
 the result in the private state file `observation.json`. Differences give
-`observation: DISAGREE` and exit 1. The last output line counts managed starts
-and launches. This producer has no execution or process-management capability.
+`observation: DISAGREE` and exit 1. Observe prints the managed-start and launch counts only after
+printing a comparison verdict. This producer has no execution or process-management capability.
 
 Supply a protected regular archive file with exactly one ASCII line,
 `sequence=N head=HEX`, terminated by LF. Use the slot's unsigned decimal

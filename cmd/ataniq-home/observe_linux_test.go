@@ -82,7 +82,8 @@ func (f *pilot) run(t *testing.T, cmd command, fault enrollment.Fault) (string, 
 	if pollErr := <-done; !errors.Is(pollErr, context.Canceled) {
 		t.Fatal(pollErr)
 	}
-	if !strings.HasSuffix(out.String(), "managed_starts=0 launches=0\n") {
+	verdict := strings.Contains(out.String(), "observation: ")
+	if strings.HasSuffix(out.String(), "managed_starts=0 launches=0\n") != verdict {
 		t.Fatal(out.String())
 	}
 	return out.String(), err
@@ -277,7 +278,7 @@ func TestObservePartition(t *testing.T) {
 	var out bytes.Buffer
 	err = observe(ctx, command{events: 1}, f.c, f.p, ep, l, &out, nil)
 	var e *enrollment.Error
-	if !errors.As(err, &e) || e.Reason != enrollment.Unreachable || !strings.Contains(err.Error(), "owner action: restore witness polling") || f.state(t).Head.Sequence != 0 {
+	if !errors.As(err, &e) || e.Reason != enrollment.Unreachable || !strings.Contains(err.Error(), "owner action: restore witness polling") || f.state(t).Head.Sequence != 0 || out.Len() != 0 {
 		t.Fatal(err, out.String())
 	}
 	result, err := f.run(t, command{events: 1}, nil)
