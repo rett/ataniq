@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"crypto/sha256"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"slices"
@@ -22,6 +23,14 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 		if _, err := c.permissionRequest(e); err != nil {
 			return core.Decoded{}, err
 		}
+		id := serverID(e.ID)
+		if _, exists := c.pending[id]; exists {
+			return core.Decoded{}, core.ErrInvalidFrame
+		}
+		if len(c.pending) >= core.MaxPending {
+			return core.Decoded{}, core.ErrPendingLimit
+		}
+		c.pending[id] = sha256.Sum256(payload)
 		return event(core.Event{Kind: "question", Text: "Permission requested"}), nil
 	}
 	switch method {
@@ -67,7 +76,8 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 	}
 	switch method {
 	case "thread/closed":
-		c.turn, c.closed, c.idle = "", true, false
+		c.setTurn("")
+		c.closed, c.idle = true, false
 		return event(core.Event{Kind: "ended"}), nil
 	case "thread/status/changed":
 		return c.status(p.Status)
@@ -86,7 +96,8 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 			if p.Turn.Status != "inProgress" {
 				return core.Decoded{}, core.ErrInvalidFrame
 			}
-			c.turn, c.idle = p.Turn.ID, false
+			c.setTurn(p.Turn.ID)
+			c.idle = false
 			return state("busy"), nil
 		}
 		switch p.Turn.Status {
@@ -95,11 +106,19 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 			return core.Decoded{}, core.ErrInvalidFrame
 		}
 		if c.current(p.ThreadID, p.Turn.ID) {
-			c.turn, c.idle = "", true
+			c.setTurn("")
+			c.idle = true
 			return state("idle"), nil
 		}
 	}
 	return core.Decoded{}, nil
+}
+
+func (c *codec) setTurn(turn string) {
+	if turn != c.turn {
+		clear(c.pending)
+		c.turn = turn
+	}
 }
 
 type threadStatus struct {
@@ -129,7 +148,7 @@ func (c *codec) status(s threadStatus) (core.Decoded, error) {
 		return core.Decoded{}, core.ErrInvalidFrame
 	}
 	if s.Type != "active" {
-		c.turn = ""
+		c.setTurn("")
 	}
 	c.idle = s.Type == "idle"
 	return state(observed), nil

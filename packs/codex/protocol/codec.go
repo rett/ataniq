@@ -5,6 +5,7 @@ package protocol
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
@@ -36,6 +37,9 @@ type codec struct {
 	turn    string
 	closed  bool
 	idle    bool
+	// Outstanding permission requests on this turn, keyed by string or
+	// integer wire ID. The digest binds the decision to the observed bytes.
+	pending map[any][sha256.Size]byte
 }
 
 // New requires the independently measured digest of the selected build.
@@ -46,7 +50,7 @@ func New(version, digest string) (Codec, error) {
 	if digest != SchemaDigest {
 		return nil, ErrSchema
 	}
-	return &codec{}, nil
+	return &codec{pending: make(map[any][sha256.Size]byte)}, nil
 }
 
 func (*codec) Framing() core.Framing { return core.Lines }

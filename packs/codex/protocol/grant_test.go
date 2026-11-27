@@ -2,6 +2,8 @@ package protocol_test
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -21,6 +23,7 @@ func active(t *testing.T) (protocol.Codec, []byte) {
 
 func TestGrantReplay(t *testing.T) {
 	c, req := active(t)
+	observePermission(t, c, req)
 	replies := frames(t, "grants")
 	g, err := c.DecodeGrant(req, replies[0])
 	review := true
@@ -33,27 +36,84 @@ func TestGrantReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	equalJSON(t, b, string(replies[0]))
+	c, req = active(t)
+	observePermission(t, c, req)
 	g, err = c.DecodeGrant(req, replies[1])
 	if err != nil || g.Scope != "turn" || !reflect.DeepEqual(g.Permissions, &protocol.Permissions{}) {
 		t.Fatal(g, err)
+	}
+	broader := protocol.Grant{Scope: "turn", Permissions: &protocol.Permissions{FileSystem: &protocol.FileSystem{Write: []string{"/work/b"}}}}
+	if b, err := c.EncodeGrant(req, broader); b != nil || err == nil {
+		t.Fatal("encoded widened decision")
 	}
 	b, err = c.EncodeGrant(req, g)
 	if err != nil {
 		t.Fatal(err)
 	}
 	equalJSON(t, b, `{"id":7,"result":{"permissions":{},"scope":"turn"}}`)
-	g.Permissions.FileSystem = &protocol.FileSystem{Write: []string{"/work/b"}}
-	if b, err := c.EncodeGrant(req, g); b != nil || err == nil {
-		t.Fatal("encoded widened decision")
-	}
+	c, req = active(t)
+	observePermission(t, c, req)
 	observe(t, c, frames(t, "events")[4], core.Event{Kind: "state", State: "idle"})
 	if b, err := c.EncodeGrant(req, want); b != nil || err == nil {
 		t.Fatal("answered completed turn")
 	}
 }
 
+func observePermission(t *testing.T, c protocol.Codec, req []byte) {
+	t.Helper()
+	observe(t, c, req, core.Event{Kind: "question", Text: "Permission requested"})
+}
+
+func TestGrantRequiresObservedRequest(t *testing.T) {
+	c, req := active(t)
+	reply := frames(t, "grants")[0]
+	g := protocol.Grant{Scope: "turn", Permissions: &protocol.Permissions{}}
+	refuse := func(frame []byte) {
+		t.Helper()
+		if _, err := c.DecodeGrant(frame, reply); err == nil {
+			t.Error("decoded grant for unobserved or answered request")
+		}
+		if b, err := c.EncodeGrant(frame, g); b != nil || err == nil {
+			t.Error("encoded grant for unobserved or answered request")
+		}
+	}
+	refuse(req)
+	observePermission(t, c, req)
+	refuse(bytes.ReplaceAll(req, []byte("/work/a"), []byte("/other")))
+	if _, err := c.EncodeGrant(req, g); err != nil {
+		t.Fatal(err)
+	}
+	refuse(req)
+}
+
+func TestPendingServerIDs(t *testing.T) {
+	c, req := active(t)
+	withID := func(id string) []byte {
+		return bytes.Replace(req, []byte(`"id":7`), []byte(`"id":`+id), 1)
+	}
+	observePermission(t, c, req)
+	observePermission(t, c, withID(`"7"`))
+	if _, err := c.Decode(withID(`"\u0037"`)); err == nil {
+		t.Fatal("duplicate string id")
+	}
+	for i := 2; i < core.MaxPending; i++ {
+		observePermission(t, c, withID(fmt.Sprint(100+i)))
+	}
+	if _, err := c.Decode(withID("0")); !errors.Is(err, core.ErrPendingLimit) {
+		t.Fatal("pending limit", err)
+	}
+	f := frames(t, "events")
+	observe(t, c, f[4], core.Event{Kind: "state", State: "idle"})
+	observe(t, c, f[1], core.Event{Kind: "state", State: "busy"})
+	if b, err := c.EncodeGrant(req, protocol.Grant{Scope: "turn", Permissions: &protocol.Permissions{}}); b != nil || err == nil {
+		t.Fatal("old request survived turn boundary")
+	}
+	observePermission(t, c, req)
+}
+
 func TestRefuseGrant(t *testing.T) {
 	c, req := active(t)
+	observePermission(t, c, req)
 	reply := frames(t, "grants")[0]
 	refuse := func(req, reply []byte) {
 		t.Helper()
@@ -73,7 +133,10 @@ func TestRefuseGrant(t *testing.T) {
 	}
 	refuse(req, []byte(`{"id":7,"error":{"code":1,"message":"no"}}`))
 	refuse(req, []byte(`{"id":7,"result":{}}`))
-	refuse(bytes.Replace(req, []byte(`"enabled":true`), []byte(`"enabled":false`), 1), []byte(`{"id":7,"result":{"permissions":{"network":{"enabled":true}}}}`))
+	c, req = active(t)
+	req = bytes.Replace(req, []byte(`"enabled":true`), []byte(`"enabled":false`), 1)
+	observePermission(t, c, req)
+	refuse(req, []byte(`{"id":7,"result":{"permissions":{"network":{"enabled":true}}}}`))
 	refuse([]byte("{"), reply)
 	refuse(req, []byte("{"))
 }
@@ -137,6 +200,7 @@ func TestEntrySubset(t *testing.T) {
 		return `{"fileSystem":{"globScanMaxDepth":1,"entries":[` + strings.Join(entries, ",") + `]}}`
 	}
 	req := []byte(strings.Replace(request, "PROFILE", profile(selected, glob, deny), 1))
+	observePermission(t, c, req)
 	accepted := strings.Replace(reply, "PROFILE", profile(glob, deny), 1)
 	g, err := c.DecodeGrant(req, []byte(accepted))
 	if err != nil {
@@ -149,9 +213,12 @@ func TestEntrySubset(t *testing.T) {
 	equalJSON(t, b, accepted)
 	write := strings.Replace(selected, `"read"`, `"write"`, 1)
 	mixed := []byte(strings.Replace(request, "PROFILE", profile(write, glob, deny), 1))
+	observePermission(t, c, mixed)
 	if _, err := c.DecodeGrant(mixed, []byte(strings.Replace(reply, "PROFILE", profile(write, deny), 1))); err == nil {
 		t.Fatal("dropped a read restriction while retaining write")
 	}
+	c, _ = active(t)
+	observePermission(t, c, req)
 	for _, bad := range []string{profile(glob), profile(deny, glob), profile(selected, selected, deny),
 		strings.Replace(accepted, "glob_pattern", "other", 1), strings.Replace(accepted, `"globScanMaxDepth":1,`, "", 1),
 		strings.Replace(accepted, "project_roots", "root", 1), strings.Replace(accepted, `"entries":`, `"read":["/work/a"],"entries":`, 1),
@@ -171,6 +238,7 @@ func FuzzDecode(f *testing.F) {
 	f.Add([]byte(`{"id":7,"result":{"permissions":{}}}`))
 	f.Fuzz(func(t *testing.T, b []byte) {
 		c, req := active(t)
+		observePermission(t, c, req)
 		if d, err := c.Decode(b); err != nil && !reflect.DeepEqual(d, core.Decoded{}) {
 			t.Fatal(d)
 		}
@@ -182,7 +250,9 @@ func FuzzDecode(f *testing.F) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		again, err := c.DecodeGrant(req, wire)
+		replay, _ := active(t)
+		observePermission(t, replay, req)
+		again, err := replay.DecodeGrant(req, wire)
 		if err != nil || !reflect.DeepEqual(g, again) {
 			t.Fatal(again, err)
 		}

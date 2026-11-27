@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"crypto/sha256"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
@@ -66,14 +67,25 @@ func (c *codec) permissionRequest(e envelope) (*Permissions, error) {
 	return p.Permissions, nil
 }
 
-// DecodeGrant binds a recorded answer to its server request (including the ID
-// type) and to the currently observed turn. Never infer rights from the request.
-func (c *codec) DecodeGrant(request, reply []byte) (Grant, error) {
+func (c *codec) outstanding(request []byte) (envelope, *Permissions, error) {
 	req, err := parse(request)
 	if err != nil {
-		return Grant{}, err
+		return envelope{}, nil, err
 	}
 	want, err := c.permissionRequest(req)
+	if err != nil {
+		return envelope{}, nil, err
+	}
+	if digest, ok := c.pending[serverID(req.ID)]; !ok || digest != sha256.Sum256(request) {
+		return envelope{}, nil, ErrGrant
+	}
+	return req, want, nil
+}
+
+// DecodeGrant checks a recorded answer against an outstanding request previously
+// observed by Decode. The holder supplies the exact request payload in both calls.
+func (c *codec) DecodeGrant(request, reply []byte) (Grant, error) {
+	req, want, err := c.outstanding(request)
 	if err != nil {
 		return Grant{}, err
 	}
@@ -81,7 +93,7 @@ func (c *codec) DecodeGrant(request, reply []byte) (Grant, error) {
 	if err != nil {
 		return Grant{}, err
 	}
-	if res.Result.Kind() != '{' || !sameID(req.ID, res.ID) {
+	if res.Result.Kind() != '{' || serverID(req.ID) != serverID(res.ID) {
 		return Grant{}, ErrGrant
 	}
 	g := Grant{Scope: "turn"}
@@ -91,23 +103,22 @@ func (c *codec) DecodeGrant(request, reply []byte) (Grant, error) {
 	return g, nil
 }
 
-func sameID(a, b jsontext.Value) bool {
-	if a.Kind() == '"' && b.Kind() == '"' {
-		left, _ := jsontext.AppendUnquote(nil, a)
-		right, _ := jsontext.AppendUnquote(nil, b)
-		return string(left) == string(right)
+// parse has validated the ID. Keep integer 7 distinct from string "7"
+// while treating different JSON spellings of the same ID as equal.
+func serverID(id jsontext.Value) any {
+	if id.Kind() == '"' {
+		text, _ := jsontext.AppendUnquote(nil, id)
+		return string(text)
 	}
-	return string(a) == string(b)
+	var n int64
+	_ = json.Unmarshal(id, &n)
+	return n
 }
 
 // EncodeGrant emits only the selected profile. It applies the same checks
 // again so a changed decision or a completed turn cannot issue a wider reply.
 func (c *codec) EncodeGrant(request []byte, g Grant) ([]byte, error) {
-	req, err := parse(request)
-	if err != nil {
-		return nil, err
-	}
-	want, err := c.permissionRequest(req)
+	req, want, err := c.outstanding(request)
 	if err != nil {
 		return nil, err
 	}
@@ -121,6 +132,7 @@ func (c *codec) EncodeGrant(request []byte, g Grant) ([]byte, error) {
 	if len(b) >= core.MaxFrameBytes {
 		return nil, core.ErrFrameTooLarge
 	}
+	delete(c.pending, serverID(req.ID))
 	return b, nil
 }
 
