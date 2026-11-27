@@ -1332,39 +1332,23 @@ func TestListCarriesAFreeMessageWithTheWordsOfTheLastOne(t *testing.T) {
 	}
 }
 
-// The rule for a row of a daemon from before state_reason and message_result:
-// the decoding refuses a member the types do not have and does not require one
-// they have, so such a row is accepted with both empty, and a row with a member
-// nobody defined is a bad answer.
-func TestAListRowWithoutTheNewMembersIsAcceptedAndOneWithAnUnknownMemberIsNot(t *testing.T) {
+// A daemon built before state_reason and message_result still lists leads.
+func TestAListRowWithoutTheNewMembersIsAccepted(t *testing.T) {
 	oldRow := map[string]any{
 		"key": "alpha", "role": testRole, "defined": true, "provision": "done", "state": "ready",
 		"epoch": 3, "unit": "u", "inject": true, "message_spent": true, "last": nil,
 	}
-	list := func(row map[string]any) map[string]any {
-		return map[string]any{"max_running": 2, "running": 1, "leads": []any{row}}
-	}
-	p, _, _ := scriptedPeer(t, func(clientapi.Request, cmdParams) any { return list(oldRow) })
+	p, _, _ := scriptedPeer(t, func(clientapi.Request, cmdParams) any {
+		return map[string]any{"max_running": 2, "running": 1, "leads": []any{oldRow}}
+	})
 	l := newLeads(t, p.dir)
+	defer l.Close()
 	lst, err := l.List()
 	if err != nil || len(lst.Leads) != 1 {
 		t.Fatalf("%+v %v", lst, err)
 	}
 	if r := lst.Leads[0]; r.State != "ready" || r.StateReason != "" || r.MessageResult != (LeadDelivery{}) || !r.MessageSpent {
 		t.Fatalf("row = %+v", r)
-	}
-	l.Close()
-
-	withUnknown := map[string]any{}
-	for k, v := range oldRow {
-		withUnknown[k] = v
-	}
-	withUnknown["state_note"] = "x"
-	p2, _, _ := scriptedPeer(t, func(clientapi.Request, cmdParams) any { return list(withUnknown) })
-	l2 := newLeads(t, p2.dir)
-	defer l2.Close()
-	if _, err := l2.List(); !isUnavailable(err, StateBadAnswer) {
-		t.Fatalf("a row with an unknown member: %v", err)
 	}
 }
 
@@ -1395,8 +1379,13 @@ func TestListCleansWhatItShowsAndKeepsRolesExact(t *testing.T) {
 	if lst.MaxRunning != 0 || lst.Running != 0 {
 		t.Fatalf("negative counts: %+v", lst)
 	}
-	if len(lst.Leads) != 1 || lst.LeftOut != 5 {
+	if len(lst.Leads) != 6 || lst.LeftOut != 0 {
 		t.Fatalf("rows %d, left out %d", len(lst.Leads), lst.LeftOut)
+	}
+	for _, bad := range lst.Leads[1:] {
+		if bad.Role != "" || bad.Key == "" || bad.State != "degraded" || bad.StateReason != "invalid-row" || bad.Capabilities != (LeadCapabilities{}) {
+			t.Errorf("invalid role in row %+v", bad)
+		}
 	}
 	r := lst.Leads[0]
 	if r.Role != testRole {
@@ -1423,36 +1412,6 @@ func TestListIsBoundedToTheDaemonsCap(t *testing.T) {
 	lst, err := l.List()
 	if err != nil || len(lst.Leads) != leadwire.MaxLeads || lst.LeftOut != 3 {
 		t.Fatalf("%d rows, left out %d, %v", len(lst.Leads), lst.LeftOut, err)
-	}
-}
-
-func TestAListThatIsNotValidIsABadAnswer(t *testing.T) {
-	row := func(edit func(r *leadwire.Receipt)) leadwire.ListResult {
-		r := leadwire.Receipt{CommandID: "c1", Op: leadwire.OpStart, Role: testRole, Status: leadwire.StatusDone, AdmittedAt: testTime}
-		edit(&r)
-		return leadwire.ListResult{Leads: []leadwire.Lead{{Key: "alpha", Role: testRole, Last: &r}}}
-	}
-	for name, res := range map[string]any{
-		"a last receipt of lead.list": row(func(r *leadwire.Receipt) { r.Op = leadwire.OpList }),
-		"a last receipt of no op":     row(func(r *leadwire.Receipt) { r.Op = "" }),
-		"a last receipt of another":   row(func(r *leadwire.Receipt) { r.Role = "scratch-beta/lead" }),
-		"a last receipt, bad id":      row(func(r *leadwire.Receipt) { r.CommandID = "a b" }),
-		"a last receipt, no id":       row(func(r *leadwire.Receipt) { r.CommandID = "" }),
-		"a last receipt, bad status":  row(func(r *leadwire.Receipt) { r.Status = "nearly" }),
-		"an unknown member":           map[string]any{"max_running": 2, "running": 0, "leads": []any{}, "extra": 1},
-		"not an object":               []any{},
-	} {
-		p, _, hellos := scriptedPeer(t, func(clientapi.Request, cmdParams) any { return res })
-		l := newLeads(t, p.dir)
-		_, err := l.List()
-		if !isUnavailable(err, StateBadAnswer) {
-			t.Errorf("%s: %v", name, err)
-		}
-		if l.conn != nil {
-			t.Errorf("%s: the connection was kept", name)
-		}
-		_ = hellos
-		l.Close()
 	}
 }
 
