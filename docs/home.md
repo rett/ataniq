@@ -1,9 +1,14 @@
 # Checkpoint home identity
 
-The Linux command reads a JSON configuration from the clean absolute path
+On Linux, run `make home-build` to build `build/home/ataniq-home`. The
+examples below use that executable as `ataniq-home`.
+
+The command reads a JSON configuration from the clean absolute path
 given by `--config FILE`. Field names are case sensitive and each occurs
 once. Pre-create the home account's 0700 state directory. Use absolute paths
-through real directories owned by root or the home account.
+through real directories owned by root or the home account. The config and
+witness certificate must each be a regular file with one hard link, owned by
+root or the home account, with write access restricted to the owner.
 
 ```json
 {
@@ -61,5 +66,9 @@ link configuration, then prints `home check ok` on success.
 ataniq-home check --config /etc/ataniq-home/config.json
 ```
 
-See the [authority-host witness guide](authority-host-witness.md) for the
-witness side of the pin exchange.
+Exit 0 indicates success, 1 indicates refusal, and 2 indicates incorrect
+usage or a reserved command. The reserved commands `serve`, `enroll`,
+`observe`, `status` and `retire` print `not built in this release`.
+
+The witness operator records the home's public values in the witness
+configuration. [Authority-host witness guide](authority-host-witness.md)

@@ -1,4 +1,4 @@
-- Added the Linux `ataniq-home` command and strict checkpoint home
-  configuration. Use `identity-init` to create the home ledger and TLS keys
+- Added `make home-build` and the Linux `ataniq-home` command for the
+  checkpoint home identity ceremony. Use `identity-init` to create the home ledger and TLS keys
   and `pins` to print the two public values for the witness operator.
   The read-only `check` verifies the home identity and the witness credentials.
