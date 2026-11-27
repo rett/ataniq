@@ -255,7 +255,7 @@ func (s *envScan) parse(rel string, syn envSyntax) (string, *envParse) {
 	}
 	r := &envParse{}
 	text := string(data)
-	if syn == syntaxSystemd && !UnitTextSafe(text) {
+	if syn == syntaxSystemd && !HostUnitTextSafe(text) {
 		c.hit(KindUnit, show(p), UnitSyntax)
 	} else {
 		*r = parseEnv(syn, text, strings.HasSuffix(p, ".fish"))
