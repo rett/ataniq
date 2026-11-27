@@ -8,10 +8,12 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 )
 
-const usage = `usage: ataniq-home identity-init|pins|check|status|observe|retire --config FILE
+const usage = `usage: ataniq-home identity-init|pins|check|status|retire --config FILE
+       ataniq-home observe --config FILE [--events N] [--archive FILE]
        ataniq-home serve --config FILE [--check]
        ataniq-home enroll prepare|resume --config FILE --out FILE
        ataniq-home enroll finalize --config FILE --prepared FILE --receipt FILE`
@@ -23,10 +25,13 @@ func main() {
 type command struct {
 	op, configPath, output, prepared, receipt string
 	check                                     bool
+	events                                    int
+	archive                                   string
 }
 
 func parseCommand(args []string) (command, bool) {
-	var c command
+	c := command{events: 3}
+	var count string
 	if len(args) == 0 {
 		return c, false
 	}
@@ -34,6 +39,8 @@ func parseCommand(args []string) (command, bool) {
 	files := map[string]*string{"--config": &c.configPath}
 	switch c.op {
 	case "identity-init", "pins", "check", "serve", "status":
+	case "observe":
+		files["--events"], files["--archive"] = &count, &c.archive
 	case "enroll":
 		if len(args) == 0 {
 			return c, false
@@ -64,6 +71,15 @@ func parseCommand(args []string) (command, bool) {
 		*dest, args = args[0], args[1:]
 		delete(files, name)
 	}
+	delete(files, "--events")
+	delete(files, "--archive")
+	if count != "" {
+		n, err := strconv.Atoi(count)
+		if err != nil || strconv.Itoa(n) != count || n < 0 || n > 16 {
+			return c, false
+		}
+		c.events = n
+	}
 	return c, len(files) == 0
 }
 
@@ -72,7 +88,7 @@ func run(args []string, out, diag io.Writer, uid int) int {
 		fmt.Fprintln(out, usage)
 		return 0
 	}
-	if len(args) > 0 && (args[0] == "observe" || args[0] == "retire") {
+	if len(args) > 0 && args[0] == "retire" {
 		fmt.Fprintln(diag, "not built in this release")
 		return 2
 	}
@@ -125,6 +141,9 @@ func execute(cmd command, out io.Writer, uid int) error {
 	if cmd.op == "check" || cmd.check {
 		_, err = fmt.Fprintln(out, "home check ok")
 		return err
+	}
+	if cmd.op == "observe" {
+		return observeCommand(cmd, c, pair, ep, out)
 	}
 	return listenAndServe(c.Listen, ep, out, net.Listen)
 }

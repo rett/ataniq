@@ -136,4 +136,29 @@ Keep managed admission closed throughout the pilot.
 presence of the signing key and TLS files, prepared record, binding validation
 and ledger head sequence from local replay. A fresh header has sequence 0.
 Exit 0 indicates success, 1 indicates refusal, and 2 indicates incorrect usage
-or a reserved command (`observe` or `retire`).
+or the reserved command `retire`.
+
+## Observe the mirror
+
+Stop the foreground listener before running
+`ataniq-home observe --config FILE [--events N] [--archive FILE]`. Observe
+serves witness polls on the configured address, claims a fresh session and
+appends synthetic signed assignment events for project `mirror-1`. The default
+is three events and the maximum is sixteen. Use `--events 0` after a previous
+advance to compare an already archived head. Each invocation claims a session.
+Before the next invocation, fence the previous writer and release the claim
+through the witness owner channel.
+
+A completed comparison prints the replayed head, retained advance receipt
+head, freshly challenged witness head and optional owner archive. It records
+the result in the private state file `observation.json`. Differences give
+`observation: DISAGREE` and exit 1. The last output line counts managed starts
+and launches. This producer has no execution or process-management capability.
+
+Supply a protected regular archive file with exactly one ASCII line,
+`sequence=N head=HEX`, terminated by LF. Use the slot's unsigned decimal
+assignment sequence (no leading zeroes) and its 64 lowercase digest digits.
+Keep the original signed evidence off-host. The witness CLI in this checkout
+prints directory journal position and digest in its status summary. Obtain
+the slot head from the owner client's authenticated slot read. Copying the
+directory position or an enrollment receipt digest will give a disagreement.
