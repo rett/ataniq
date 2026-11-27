@@ -1,0 +1,137 @@
+package main
+
+import (
+	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/pem"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"ataniq/internal/seatgate"
+)
+
+func fullConfig(t *testing.T) (string, map[string]any) {
+	t.Helper()
+	path, m := fixture(t)
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	must(t, err)
+	cert, key, err := seatgate.GenerateIdentity(rand.Reader, time.Now(), "witness")
+	must(t, err)
+	id, err := seatgate.ParseIdentity(cert, key)
+	must(t, err)
+	block, _ := pem.Decode(cert)
+	certPath := filepath.Join(filepath.Dir(path), "witness.der")
+	must(t, os.WriteFile(certPath, block.Bytes, 0644))
+	m["witness_public_key"] = hex.EncodeToString(pub)
+	m["witness_tls_pin"] = id.Fingerprint()
+	m["witness_cert"] = certPath
+	writeConfig(t, path, m)
+	return path, m
+}
+
+func TestCheckReadOnly(t *testing.T) {
+	path, m := fullConfig(t)
+	dir := filepath.Dir(path)
+	m["binding"] = dir + "/binding"
+	m["pending_journal"] = dir + "/journal"
+	writeConfig(t, path, m)
+	before := names(t, dir)
+	refused(t, path, "check", "home_key")
+	if !slices.Equal(before, names(t, dir)) {
+		t.Fatal("check created a missing identity")
+	}
+	call(t, path, "identity-init")
+	before = names(t, dir)
+	files := []string{"config.json", "seed", "tls/cert.pem", "tls/key.pem", "witness.der"}
+	type snapshot struct {
+		sum      [32]byte
+		mode     os.FileMode
+		modified time.Time
+	}
+	snap := func(name string) snapshot {
+		p := filepath.Join(dir, name)
+		fi, err := os.Stat(p)
+		must(t, err)
+		return snapshot{sha256.Sum256(read(t, p)), fi.Mode(), fi.ModTime()}
+	}
+	saved := map[string]snapshot{}
+	for _, name := range files {
+		saved[name] = snap(name)
+	}
+	if got := call(t, path, "check"); got != "home check ok\n" {
+		t.Fatal(got)
+	}
+	if !slices.Equal(before, names(t, dir)) || !slices.Equal(names(t, dir+"/tls"), []string{"cert.pem", "key.pem"}) {
+		t.Fatal("check changed directory entries")
+	}
+	for name, want := range saved {
+		if snap(name) != want {
+			t.Errorf("check changed %s", name)
+		}
+	}
+}
+
+func TestCheckKeyRolesAndCertificate(t *testing.T) {
+	path, m := fullConfig(t)
+	call(t, path, "identity-init")
+	pins := strings.Split(strings.TrimSpace(call(t, path, "pins")), "\n")
+	for _, tc := range []struct{ field, value string }{
+		{"witness_public_key", strings.TrimPrefix(pins[1], "home_public_key=")},
+		{"witness_public_key", strings.Repeat("ff", 32)},
+		{"witness_tls_pin", strings.TrimPrefix(pins[0], "home_tls_pin=")},
+		{"witness_tls_pin", strings.Repeat("ab", 32)},
+	} {
+		save := m[tc.field]
+		m[tc.field] = tc.value
+		writeConfig(t, path, m)
+		refused(t, path, "check", tc.field)
+		m[tc.field] = save
+	}
+	writeConfig(t, path, m)
+	certPath := m["witness_cert"].(string)
+	der := read(t, certPath)
+	for _, data := range [][]byte{nil, []byte("not DER"), bytes.Repeat(der, 2), append(bytes.Clone(der), 0)} {
+		must(t, os.WriteFile(certPath, data, 0600))
+		refused(t, path, "check", "witness_cert")
+	}
+	must(t, os.Remove(certPath))
+	refused(t, path, "check", "witness_cert")
+	if _, err := os.Lstat(certPath); !os.IsNotExist(err) {
+		t.Fatal("missing certificate created")
+	}
+}
+
+func TestCheckRequiresWitness(t *testing.T) {
+	path, m := fullConfig(t)
+	call(t, path, "identity-init")
+	for _, field := range []string{"witness_cert", "witness_public_key", "witness_tls_pin"} {
+		save := m[field]
+		delete(m, field)
+		writeConfig(t, path, m)
+		refused(t, path, "check", field)
+		call(t, path, "pins")
+		m[field] = save
+	}
+}
+
+func TestHomeUsage(t *testing.T) {
+	for _, op := range []string{"serve", "enroll", "observe", "status", "retire"} {
+		code, out, diag := invoke("/missing", op, 1000)
+		if code != 2 || out != "" || diag != "not built in this release\n" {
+			t.Error(op, code, out, diag)
+		}
+	}
+	for _, args := range [][]string{nil, {"bad"}, {"pins"}, {"check", "-config", "/missing"}, {"pins", "--config", "/missing", "extra"}} {
+		var diag, out bytes.Buffer
+		if code := run(args, &out, &diag, 1000); code != 2 || diag.String() != usage+"\n" || out.Len() != 0 {
+			t.Error(args, code, out.String(), diag.String())
+		}
+	}
+}

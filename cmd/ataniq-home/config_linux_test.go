@@ -106,7 +106,7 @@ func TestConfigPhases(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for k, v := range map[string]string{"witness_cert": "/cert.der", "witness_tls_pin": strings.Repeat("1", 64), "witness_public_key": strings.Repeat("2", 64)} {
+	for k, v := range map[string]string{"witness_cert": "/cert.der", "witness_tls_pin": strings.Repeat("1", 64), "witness_public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"} {
 		m[k] = v
 	}
 	if _, err := decodeConfig(encode(t, m), fullPhase); err != nil {

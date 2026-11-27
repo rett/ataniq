@@ -39,3 +39,27 @@ directory (0700) with `cert.pem` and `key.pem` (0600). Keep both private
 keys under the home account's control. Send the two public values printed by
 `pins`, `home_tls_pin` and `home_public_key`, to the witness operator over
 an independently authenticated channel.
+
+## Verify the witness
+
+Obtain the witness certificate in DER format and its two public values over
+the operator's authenticated exchange. Add all three fields to the same JSON
+object and replace the placeholders with the recorded values.
+
+```json
+"witness_cert": "/etc/ataniq-home/witness.der",
+"witness_tls_pin": "WITNESS_SPKI_SHA256",
+"witness_public_key": "WITNESS_ED25519_PUBLIC_HEX"
+```
+
+Both public values use 64 lowercase hex digits. The home and witness need
+distinct TLS and ledger signing keys. Run the read-only preflight as the home
+account. It verifies the local identity, witness certificate fingerprint and
+link configuration, then prints `home check ok` on success.
+
+```sh
+ataniq-home check --config /etc/ataniq-home/config.json
+```
+
+See the [authority-host witness guide](authority-host-witness.md) for the
+witness side of the pin exchange.

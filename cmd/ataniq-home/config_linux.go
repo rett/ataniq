@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -134,6 +135,12 @@ func decodeConfig(data []byte, level phase) (config, error) {
 	for name, pin := range map[string]string{"witness_public_key": c.WitnessPublicKey, "witness_tls_pin": c.WitnessTLSPin} {
 		if pin != "" && (!seatgate.ValidFingerprint(pin) || pin == strings.Repeat("0", 64)) {
 			return c, fmt.Errorf("%s: expected 64 lowercase hex digits for a nonzero pin", name)
+		}
+	}
+	if c.WitnessPublicKey != "" {
+		key, _ := hex.DecodeString(c.WitnessPublicKey) // checked above
+		if _, err := cp.KeyID(key); err != nil {
+			return c, errors.New("witness_public_key: invalid Ed25519 public key")
 		}
 	}
 	// NewEndpoint validates TrustSources at full preflight. Apply its prefix

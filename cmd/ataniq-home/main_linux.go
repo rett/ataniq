@@ -2,6 +2,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,35 +15,52 @@ func main() {
 }
 
 func run(args []string, out, diag io.Writer, uid int) int {
-	if len(args) == 1 && (args[0] == "--help" || args[0] == "help") {
-		fmt.Fprintln(out, usage)
-		return 0
-	}
-	if len(args) == 3 && args[1] == "--config" {
+	if len(args) > 0 {
 		switch args[0] {
-		case "identity-init", "pins":
-			if args[0] == "identity-init" && uid == 0 {
-				fmt.Fprintln(diag, "home_key: identity-init must run as the home account, not root")
-				return 1
+		case "help", "--help":
+			if len(args) == 1 {
+				fmt.Fprintln(out, usage)
+				return 0
 			}
-			c, err := loadConfig(args[2], identityPhase)
-			if err == nil {
-				if args[0] == "identity-init" {
-					err = identityInit(c)
-				} else {
-					err = printPins(c, out)
-				}
-			}
-			if err != nil {
-				fmt.Fprintln(diag, err)
-				return 1
-			}
-			return 0
-		case "check", "serve", "enroll", "observe", "status", "retire":
+		case "serve", "enroll", "observe", "status", "retire":
 			fmt.Fprintln(diag, "not built in this release")
 			return 2
+		case "identity-init", "pins", "check":
+			if len(args) == 3 && args[1] == "--config" {
+				if err := execute(args[0], args[2], out, uid); err != nil {
+					fmt.Fprintln(diag, err)
+					return 1
+				}
+				return 0
+			}
 		}
 	}
 	fmt.Fprintln(diag, usage)
 	return 2
+}
+
+func execute(op, path string, out io.Writer, uid int) error {
+	if op == "identity-init" && uid == 0 {
+		return errors.New("home_key: identity-init requires the unprivileged home account (refusing root)")
+	}
+	level := identityPhase
+	if op == "check" {
+		level = fullPhase
+	}
+	c, err := loadConfig(path, level)
+	if err != nil {
+		return err
+	}
+	switch op {
+	case "identity-init":
+		return identityInit(c)
+	case "pins":
+		return printPins(c, out)
+	default:
+		if err := check(c); err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(out, "home check ok")
+		return err
+	}
 }
