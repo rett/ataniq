@@ -6,7 +6,7 @@ package main
 var guardListFlags = []string{"-tags", canaryTag}
 
 // canaryRepoDeps are the packages of this repository that canary mode adds to
-// the seven, each named: the start sequence, the bridge, the screen recorder,
+// the scratch dependencies: the start sequence, the bridge, the screen recorder,
 // the root check, the role names, the packages of the lead sandbox the start
 // sequence drives, and the packages of the injection library the bridge needs.
 var canaryRepoDeps = []string{
@@ -31,8 +31,7 @@ var canaryRepoDeps = []string{
 	"ataniq/internal/inject/versions",
 }
 
-// guardRepoDeps is the list of this build: the seven and the written-out list of
-// canary mode.
+// guardRepoDeps combines the scratch dependencies with the additions for canary mode.
 func guardRepoDeps() []string {
 	return append(append([]string(nil), scratchRepoDeps...), canaryRepoDeps...)
 }

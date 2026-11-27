@@ -2,6 +2,7 @@ package wire
 
 import (
 	"crypto/sha256"
+	"errors"
 	"strings"
 )
 
@@ -26,6 +27,7 @@ const (
 	RefuseRange         NegotiationRefusal = "invalid-version-range"
 	RefuseNoVersion     NegotiationRefusal = "no-common-version"
 	RefuseSelection     NegotiationRefusal = "wrong-selected-version"
+	RefuseHelloRequired NegotiationRefusal = "hello-required"
 	RefuseLaunchVersion NegotiationRefusal = "launch-version-unsupported"
 	RefuseBuild         NegotiationRefusal = "holder-build-mismatch"
 	RefusePack          NegotiationRefusal = "pack-identity-mismatch"
@@ -53,8 +55,11 @@ type ControlOffer struct {
 }
 
 func (o *ControlOffer) validate() error {
-	if o.Version != PreStartVersion || !o.Range.valid() {
-		return invalidf("unsupported offer version or invalid range")
+	if o.Version != PreStartVersion {
+		return invalidf("unsupported offer version")
+	}
+	if !o.Range.valid() {
+		return errors.Join(ErrInvalid, RefuseRange)
 	}
 	return nil
 }
@@ -65,6 +70,30 @@ func DecodeControlOffer(payload []byte) (ControlOffer, error) {
 	var o ControlOffer
 	err := decodePreStart(&o, payload)
 	return pick(o, err)
+}
+
+// DecodeControlOpening recognizes the first request on a control connection.
+// Legacy commands and offers share a frame type but have disjoint, strict
+// schemas. A valid launch spec here can only be refused.
+func DecodeControlOpening(payload []byte) (Request, *ControlOffer, error) {
+	if len(payload) > MaxControlPayload {
+		return Request{}, nil, ErrTooLarge
+	}
+	req, err := DecodeRequest(payload)
+	if err == nil {
+		return req, nil, nil
+	}
+	offer, offerErr := DecodeControlOffer(payload)
+	if offerErr == nil {
+		return Request{}, &offer, nil
+	}
+	if errors.Is(offerErr, RefuseRange) {
+		return Request{}, nil, offerErr
+	}
+	if decodePreStart(&LaunchSpec{}, payload) == nil {
+		return Request{}, nil, RefuseHelloRequired
+	}
+	return Request{}, nil, err
 }
 
 // A direct payload decoder also bounds its input before scanning the JSON.
