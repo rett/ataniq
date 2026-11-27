@@ -26,15 +26,16 @@ import (
 )
 
 type fakePeers struct {
-	group, info string
-	uid         uint32
-	alive, open bool
-	t           *testing.T
-	trace       []string
+	group, info, workerGroup, status string
+	threads                          []string
+	uid                              uint32
+	alive, open                      bool
+	t                                *testing.T
+	trace                            []string
 }
 
 func peers(t *testing.T) *fakePeers {
-	return &fakePeers{group: "0::/unit/agent\n", info: "Pid:\t123\n", uid: uint32(os.Geteuid()), alive: true, t: t}
+	return &fakePeers{threads: []string{"123", "124"}, status: "State:\tS (sleeping)\n", workerGroup: "0::/unit\n", group: "0::/unit/agent\n", info: "Pid:\t123\n", uid: uint32(os.Geteuid()), alive: true, t: t}
 }
 
 func (p *fakePeers) Credentials(net.Conn) (*unix.Ucred, error) {
@@ -61,12 +62,33 @@ func (p *fakePeers) FDInfo(fd int) ([]byte, error) {
 	return []byte(p.info), nil
 }
 
-func (p *fakePeers) Cgroup(pid int) ([]byte, error) {
+func (p *fakePeers) Status(pid int) ([]byte, error) {
 	p.held(7)
 	if pid != 123 {
 		p.t.Fatal(pid)
 	}
-	p.trace = append(p.trace, "group")
+	p.trace = append(p.trace, "status")
+	return []byte(p.status), nil
+}
+
+func (p *fakePeers) Threads(pid int) ([]string, error) {
+	p.held(7)
+	if pid != 123 {
+		p.t.Fatal(pid)
+	}
+	p.trace = append(p.trace, "threads")
+	return p.threads, nil
+}
+
+func (p *fakePeers) Cgroup(pid int, tid string) ([]byte, error) {
+	p.held(7)
+	if pid != 123 {
+		p.t.Fatal(pid)
+	}
+	p.trace = append(p.trace, "group/"+tid)
+	if tid == "124" {
+		return []byte(p.workerGroup), nil
+	}
 	return []byte(p.group), nil
 }
 
@@ -165,7 +187,7 @@ func TestHP4AdmissionBeforeRead(t *testing.T) {
 				t.Fatal("leaked connection or pidfd")
 			}
 			if tc.ok {
-				if !slices.Equal(peer.trace, []string{"cred", "open", "info", "group", "alive", "close"}) || c.writes != 1 {
+				if !slices.Equal(peer.trace, []string{"cred", "open", "info", "status", "threads", "group/123", "group/124", "alive", "close"}) || c.writes != 1 {
 					t.Fatal(peer.trace, c.writes)
 				}
 			} else if c.reads != 0 || c.writes != 0 || p.Snapshot().Counters.Peer != 1 {
@@ -173,11 +195,17 @@ func TestHP4AdmissionBeforeRead(t *testing.T) {
 			}
 		})
 	}
-	for _, why := range []string{"uid", "dead", "pid mismatch", "duplicate pid", "oversize fdinfo"} {
+	for _, why := range []string{"uid", "dead", "worker outside unit", "missing leader", "zombie", "pid mismatch", "duplicate pid", "oversize fdinfo"} {
 		t.Run(why, func(t *testing.T) {
 			p := fixture(t)
 			peer := p.cfg.Peers.(*fakePeers)
 			switch why {
+			case "worker outside unit":
+				peer.workerGroup = "0::/other"
+			case "missing leader":
+				peer.threads = []string{"124"}
+			case "zombie":
+				peer.status = "State: Z (zombie)"
 			case "uid":
 				peer.uid++
 			case "dead":
@@ -281,8 +309,8 @@ type queuedPeers struct {
 	checkedHost bool
 }
 
-func (p *queuedPeers) Cgroup(pid int) ([]byte, error) {
-	record, err := p.fakePeers.Cgroup(pid)
+func (p *queuedPeers) Cgroup(pid int, tid string) ([]byte, error) {
+	record, err := p.fakePeers.Cgroup(pid, tid)
 	if !p.checkedHost {
 		p.checkedHost = true
 		time.Sleep(15 * time.Millisecond)
