@@ -15,6 +15,26 @@ type viewerTicketFunc func(context.Context) (string, error)
 
 func (f viewerTicketFunc) ViewerTicket(ctx context.Context) (string, error) { return f(ctx) }
 
+func TestViewerRoleMismatchBackoff(t *testing.T) {
+	source := viewerTicketFunc(func(context.Context) (string, error) { return wire.NewTicket() })
+	e := newEnv(t, setup{pipe: true, viewerTickets: source})
+	for range 2 {
+		hc := e.h.accept()
+		hc.welcome(wire.RoleWriter)
+		if frames := hc.closed(); string(frames) != string(wire.TypeDetach) {
+			t.Fatalf("frames after mismatched welcome: %q", frames)
+		}
+	}
+	hc := e.h.accept()
+	hc.welcome(wire.RoleViewer)
+	hc.snapshot()
+	e.untilConn(terminalconsole.LiveAttached)
+	waits := e.clock.asked()
+	if len(waits) != 2 || waits[0] != 2*leadattach.TicketPoll || waits[1] != 4*leadattach.TicketPoll {
+		t.Errorf("retry delays after two role mismatches: %v", waits)
+	}
+}
+
 func TestViewerRenewsAfterDroppedHelloAndResync(t *testing.T) {
 	leakCheck(t)
 	issued := make(chan string, 3)

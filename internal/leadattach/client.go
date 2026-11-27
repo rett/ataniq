@@ -357,7 +357,7 @@ func (c *Client) run() {
 	defer c.wg.Done()
 	var (
 		resync bool
-		// fails counts consecutive protocol errors and resyncs counts
+		// fails counts protocol errors and role mismatches, and resyncs counts
 		// consecutive client-side resyncs; both go back to zero only when a
 		// Check past the snapshot's position matched on a connection, not
 		// when a snapshot was applied, and not on the Check the holder sends
@@ -455,7 +455,7 @@ func (c *Client) run() {
 				wait = TicketPoll * time.Duration(min(1<<min(resyncs-1, 6), maxBackoffPolls))
 				c.setResyncWait(wait)
 			}
-		case outProtocol:
+		case outProtocol, outRoleMismatch:
 			fails++
 			c.setDisconnected(out.reason)
 			wait = TicketPoll * time.Duration(min(1<<min(fails, 6), maxBackoffPolls))

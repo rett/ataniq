@@ -809,7 +809,8 @@ it detaches or the holder's operator removes it with
 If the holder grants the writer place to a console started with `--viewer`,
 or the viewer place to one started without it, the console immediately detaches
 and frees the place. It sends no input and shows the requested and granted
-roles. To attach, write a fresh ticket for the requested role to the ticket
+roles. The retry delay doubles after each role mismatch, up to 30 seconds.
+To attach, write a fresh ticket for the requested role to the ticket
 file. For a scratch viewer, use `ataniq-scratch ticket NAME --viewer`.
 
 An attached viewer shows the screen at the holder's size, cut or padded at the
