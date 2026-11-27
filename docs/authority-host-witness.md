@@ -12,6 +12,10 @@ separate files under protected directories.
 | `run` | Witness service | Opens and re-proves the store, grants the configured home access to one slot, polls outbound and serves the owner socket. |
 | `status` | Local root | Verifies a fresh signed status and prints the epoch, directory sequence, predecessor digest, counts and inhibition reason. |
 | `acknowledge` | Local root | Sends a pinned, epoch-bound acknowledgement over the owner socket. |
+| `enroll-submit --config FILE --prepared FILE --receipt-out FILE [--expect-digest HEX]` | Local root | Checks the signed home request and its pairing, submits it over the owner socket, writes the signed receipt and prints both digests and verified witness status. |
+| `slot-read --config FILE [--archive-out FILE]` | Local root | Verifies a freshly challenged read of the configured slot and prints `sequence=N head=HEX`. The optional archive is a new 0600 file containing that line. |
+| `slot-release --config FILE --asked WORDS` | Local root | After fencing the writer, releases its claimed session against the challenged state. Prints the verified release receipt digest and the owner's quoted words. |
+| `slot-retire --config FILE --asked WORDS` | Local root | Permanently retires the challenged slot. The disposition digest is SHA-256 of the exact words. Prints the verified retirement receipt digest and quoted words. |
 | `recover` | Witness service, under owner control | Re-proves storage and serves only the owner socket with decisions inhibited. |
 | `complete-publication` | Witness service, offline | Finishes publication of one unambiguous staged signed genesis pair and prints `witness publication completed`. |
 
@@ -123,8 +127,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 sh scripts/go-tool.sh build -trimpath -o b
    from the seat, gate, notifier and deploy tools.
 5. Exchange pins over an independent authenticated channel. At the witness
    record the home's TLS SPKI SHA-256 fingerprint and Ed25519 public key.
-   At the home provision the witness TLS certificate (DER for
-   `link.NewEndpoint`), verify its SPKI fingerprint, and pin the witness
+   At the home provision the witness TLS certificate as one raw DER certificate
+   or the single CERTIFICATE block in `cert.pem` from `gate-init --identity`.
+   Set `witness_cert` to the protected copy, verify its SPKI fingerprint, and pin the witness
    Ed25519 public key, exact slot and activation epoch. The witness pins the
    local owner's TLS fingerprint. The local owner pins the witness's TLS
    fingerprint, Ed25519 key and epoch. Verify the values at both devices
@@ -165,7 +170,7 @@ store, incarnation and authority identifiers. Encode the nonzero activation epoc
   "service_tls_pin": "WITNESS_SPKI_SHA256",
   "owner_tls_pin": "OWNER_SPKI_SHA256",
   "home_tls_pin": "HOME_SPKI_SHA256",
-  "home_endpoint": "192.0.2.20:7443",
+  "home_endpoint": "192.0.2.20:7444",
   "signing_public_key": "WITNESS_ED25519_PUBLIC_HEX",
   "home_public_key": "HOME_ED25519_PUBLIC_HEX"
 }
@@ -223,18 +228,44 @@ Verify the effective account and restrictions, the output filter and the
 absence of a witness IP listener. Run `WITNESS status --config CONFIG` as
 local root. Fresh genesis reports sequence 1, zero slots, receipts and fences.
 
-Store initialization and home enrollment are separate steps. For the attended
-enrollment use the trusted local owner client of
-`link.Remote.Administration` on the configured Unix socket. This command
-exposes status and storage acknowledgement as CLI operations. The link's
-typed owner API also accepts enrollment, release, retirement and settlement.
-Submit `Enroll` with the exact slot, fresh mutation ID, the immutable home
-header bytes, the pinned home public key and the home's detached proof over
-the canonical enrollment body. Keep the exact request before sending.
-Check the returned receipt against the request, witness key and epoch.
-Archive it independently. A fresh signed read must agree with home replay
-before any managed admission. Provisioning this service alone starts no
-managed work. [Owner link protocol](../internal/checkpoint/link/README.md)
+### Enroll the home
+
+Use protected transfer directories on both devices, outside witness state
+and separate from the private keys. Keep the home ledger and signing key on
+the home throughout the ceremony. Keep managed admission closed. A new
+enrollment and a fresh home observation require the decision inhibit to be
+clear. Check `ah-switch status` for `decisions: not inhibited`. If the inhibit
+is held, follow the switch recovery procedure below. An exact retry of the
+latest committed enrollment can still return its original receipt during
+inhibition.
+
+1. As the home account, run
+   `ataniq-home enroll prepare --config HOME_CONFIG --out prepared.json`.
+   Read the printed `prepared_sha256` on the home device. Keep the original
+   and transfer the exact file to the authority host over an authenticated channel.
+2. As local root on the authority host, substitute the hex value read on the
+   home device for `HOME_DIGEST` and run
+
+   ```sh
+   WITNESS enroll-submit --config CONFIG --prepared prepared.json --receipt-out receipt.bin --expect-digest HOME_DIGEST
+   ```
+
+   The command prints `prepared_digest` and checks the comparison before it
+   contacts the witness. A mismatch stops enrollment. Check the transfer and
+   the digest on the home device. On success the command publishes the raw
+   signed receipt in a new 0600 file, prints `receipt_digest`, then prints
+   the signed directory status summary. For the first enrollment, expect one
+   slot. Archive the receipt, digests and status line with the off-host record.
+   After an interrupted submission, replay the identical Prepared with the
+   same home digest and a fresh receipt filename to recover the same receipt.
+   If the slot has advanced since enrollment, the receipt records the original
+   enrollment and the status line reports the current directory position.
+3. Return the exact receipt to the home. As the home account, run
+   `ataniq-home enroll finalize --config HOME_CONFIG --prepared prepared.json --receipt receipt.bin`.
+   Finalize verifies the receipt and ledger identity and publishes the binding.
+   Compare its `receipt_digest` with the owner's archived value. Verify that
+   a fresh signed read agrees with home replay before opening managed admission.
+   [Home enrollment and recovery](home.md)
 
 ## Outage or uncertain delivery
 
@@ -382,13 +413,13 @@ check continues to check the witness account after its unit link is removed.
 ## Retire and enroll a replacement
 
 Drain the old home, fence every former writer and route, and record the
-disposition of outstanding work. On the authenticated local owner link,
-`Read` the exact slot with a fresh challenge. If a session needs explicit
-release, submit `Release` against the verified state and read again.
-Submit `Retire` with a fresh mutation ID, the exact current state and the
-digest of the owner's disposition record. Keep the saved intent, verified
-retirement receipt and a new challenged view showing the permanent
-tombstone. The owner can retire after losing the home's key.
+disposition of outstanding work. As local root, run
+`WITNESS slot-read --config CONFIG --archive-out ARCHIVE` to capture the final
+assignment head. If the writer still holds a session, run
+`WITNESS slot-release --config CONFIG --asked "WORDS"`, describing the fence.
+Then run `WITNESS slot-retire --config CONFIG --asked "WORDS"` with the owner's
+disposition. Keep the printed receipt digest and exact words in the off-host
+record. Each mutation uses a fresh ID and the exact challenged state. The owner can retire after losing the home's key.
 
 Stop the old instance cleanly and preserve its store and verification keys.
 For the replacement prepare a fresh home key, store, incarnation and ledger

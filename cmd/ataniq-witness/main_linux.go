@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -21,8 +23,54 @@ import (
 	"ataniq/internal/checkpoint/link"
 )
 
-const usage = "usage: ataniq-witness run|check|status|acknowledge|init|recover|complete-publication --config FILE"
+const usage = `usage: ataniq-witness run|check|status|acknowledge|init|recover|complete-publication --config FILE
+       ataniq-witness enroll-submit --config FILE --prepared FILE --receipt-out FILE [--expect-digest HEX]
+       ataniq-witness slot-read --config FILE [--archive-out FILE]
+       ataniq-witness slot-release --config FILE --asked WORDS
+       ataniq-witness slot-retire --config FILE --asked WORDS`
 const ownerUID = 0 // The owner administers this private socket locally as root.
+const ownerTimeout = 5 * time.Second
+
+type command struct {
+	op, configPath, prepared, receiptOut, expectDigest string
+	archiveOut, asked                                  string
+}
+
+func parseCommand(args []string) (command, bool) {
+	var cmd command
+	if len(args) == 0 {
+		return cmd, false
+	}
+	cmd.op = args[0]
+	options := map[string]*string{"--config": &cmd.configPath}
+	switch cmd.op {
+	case "run", "check", "init", "status", "acknowledge", "recover", "complete-publication":
+		if len(args) != 3 || args[1] != "--config" {
+			return cmd, false
+		}
+		cmd.configPath = args[2]
+		return cmd, true
+	case "enroll-submit":
+		options["--prepared"], options["--receipt-out"], options["--expect-digest"] = &cmd.prepared, &cmd.receiptOut, &cmd.expectDigest
+	case "slot-read":
+		options["--archive-out"] = &cmd.archiveOut
+	case "slot-release", "slot-retire":
+		options["--asked"] = &cmd.asked
+	default:
+		return cmd, false
+	}
+	for args = args[1:]; len(args) > 0; args = args[2:] {
+		dst := options[args[0]]
+		if dst == nil || len(args) < 2 || args[1] == "" || strings.HasPrefix(args[1], "--") {
+			return cmd, false
+		}
+		*dst = args[1]
+		delete(options, args[0])
+	}
+	delete(options, "--expect-digest")
+	delete(options, "--archive-out")
+	return cmd, len(options) == 0 && (cmd.asked == "" || strings.TrimSpace(cmd.asked) != "")
+}
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -36,21 +84,19 @@ func run(ctx context.Context, hostRoot string, args []string, out, diag io.Write
 		fmt.Fprintln(out, usage)
 		return 0
 	}
-	if len(args) != 3 || args[1] != "--config" {
+	cmd, ok := parseCommand(args)
+	if !ok {
 		fmt.Fprintln(diag, usage)
 		return 2
 	}
-	switch args[0] {
-	case "run", "check", "init", "status", "acknowledge", "recover", "complete-publication":
-	default:
-		fmt.Fprintln(diag, usage)
-		return 2
-	}
-	if err := execute(ctx, hostRoot, args[0], args[2], out); err != nil {
+	if err := execute(ctx, hostRoot, cmd, out); err != nil {
 		// OS and codec errors can contain paths or input. Only fixed diagnoses
 		// cross this boundary.
 		var storage durable.StorageError
+		var refusal enrollmentRefusal
 		switch {
+		case errors.As(err, &refusal):
+			fmt.Fprintln(diag, refusal)
 		case errors.As(err, &storage):
 			fmt.Fprintln(diag, storage)
 		case errors.Is(err, errSocket):
@@ -69,13 +115,17 @@ func run(ctx context.Context, hostRoot string, args []string, out, diag io.Write
 	return 0
 }
 
-func execute(ctx context.Context, hostRoot, op, path string, out io.Writer) (retErr error) {
-	c, store, err := loadConfig(path)
+func execute(ctx context.Context, hostRoot string, cmd command, out io.Writer) (retErr error) {
+	op := cmd.op
+	c, store, err := loadConfig(cmd.configPath)
 	if err != nil {
 		return err
 	}
-	if op == "status" || op == "acknowledge" {
-		return ownerCall(ctx, c, store, op, out)
+	if op == "enroll-submit" {
+		return enrollSubmit(ctx, c, store, cmd, out, ownerAdministration)
+	}
+	if op == "status" || op == "acknowledge" || strings.HasPrefix(op, "slot-") {
+		return ownerCall(ctx, c, store, cmd, out)
 	}
 	server, err := serviceConfig(c, store)
 	if err != nil {
@@ -140,7 +190,7 @@ func execute(ctx context.Context, hostRoot, op, path string, out io.Writer) (ret
 	if err != nil {
 		return errSocket
 	}
-	g := &guardedWitness{Witness: w, dir: guardDir, recoveryOnly: recoveryOnly, turn: make(chan struct{}, 1)}
+	g := &guardedWitness{Witness: w, slot: c.Slot, dir: guardDir, recoveryOnly: recoveryOnly, turn: make(chan struct{}, 1)}
 	return serve(ctx, server, g, ln, c.OwnerPin, ownerUID)
 }
 
@@ -171,32 +221,47 @@ func serve(ctx context.Context, s *link.Server, g *guardedWitness, ln *net.UnixL
 	return err
 }
 
-func ownerCall(ctx context.Context, c config, store durable.Config, op string, out io.Writer) error {
+func ownerAdministration(c config, store durable.Config) (cp.RecoveryAdministration, error) {
 	id, err := loadTLS(c.OwnerTLS, c.OwnerPin)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	remote := link.Remote{Network: "unix", Address: c.Socket, ServerPin: c.ServicePin, WitnessPin: store.Pin, Epoch: c.Identity.Epoch}
-	admin, err := remote.Administration(id)
+	return remote.Administration(id)
+}
+
+func ownerCall(ctx context.Context, c config, store durable.Config, cmd command, out io.Writer) error {
+	admin, err := ownerAdministration(c, store)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, ownerTimeout)
 	defer cancel()
-	if op == "acknowledge" {
+	if strings.HasPrefix(cmd.op, "slot-") {
+		return slotCommand(ctx, admin, c, store, cmd, out)
+	}
+	if cmd.op == "acknowledge" {
 		if err := admin.AcknowledgeStorageError(ctx); err != nil {
 			return err
 		}
 		_, err = fmt.Fprintln(out, "witness storage acknowledged")
 		return err
 	}
+	return printStatus(ctx, admin, store.Pin, c.Identity.Epoch, out)
+}
+
+func signedStatus(ctx context.Context, admin cp.RecoveryAdministration, pin ed25519.PublicKey, epoch uint64) (cp.DirectoryStatus, error) {
 	var challenge cp.ID
 	rand.Read(challenge[:])
 	r, err := admin.Status(ctx, challenge)
 	if err != nil {
-		return err
+		return cp.DirectoryStatus{}, err
 	}
-	st, err := cp.VerifyDirectoryStatus(store.Pin, c.Identity.Epoch, challenge, r)
+	return cp.VerifyDirectoryStatus(pin, epoch, challenge, r)
+}
+
+func printStatus(ctx context.Context, admin cp.RecoveryAdministration, pin ed25519.PublicKey, epoch uint64, out io.Writer) error {
+	st, err := signedStatus(ctx, admin, pin, epoch)
 	if err != nil {
 		return err
 	}

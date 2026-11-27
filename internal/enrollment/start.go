@@ -250,19 +250,20 @@ func ledgerError(err error) error {
 
 // Use the assignment frame bound and retain the LF. An unfinished tail is
 // evidence; the managed opener must never trim or complete it.
+func readFrame(reader *bufio.Reader) ([]byte, error) {
+	raw, err := reader.ReadSlice('\n')
+	if errors.Is(err, io.EOF) && len(raw) > 0 {
+		return nil, refuse(Truncated, err)
+	}
+	if err != nil && err != io.EOF {
+		return nil, ledgerError(err)
+	}
+	return raw, err
+}
+
 func replay(r io.Reader, hdr []byte, verifier assignment.Verifier) (assignment.Ledger, []byte, error) {
 	reader := bufio.NewReaderSize(r, 64<<10)
-	frame := func() ([]byte, error) {
-		raw, err := reader.ReadSlice('\n')
-		if errors.Is(err, io.EOF) && len(raw) > 0 {
-			return nil, refuse(Truncated, err)
-		}
-		if err != nil && err != io.EOF {
-			return nil, ledgerError(err)
-		}
-		return raw, err
-	}
-	raw, err := frame()
+	raw, err := readFrame(reader)
 	if err == io.EOF {
 		return assignment.Ledger{}, nil, refuse(MissingHeader, nil)
 	}
@@ -272,10 +273,14 @@ func replay(r io.Reader, hdr []byte, verifier assignment.Verifier) (assignment.L
 	if err := equalHeader(raw, hdr); err != nil {
 		return assignment.Ledger{}, nil, err
 	}
+	return replayEvents(reader, hdr, verifier)
+}
+
+func replayEvents(reader *bufio.Reader, hdr []byte, verifier assignment.Verifier) (assignment.Ledger, []byte, error) {
 	var events []assignment.Event
 	var last []byte
 	for {
-		raw, err = frame()
+		raw, err := readFrame(reader)
 		if err == io.EOF {
 			break
 		}

@@ -31,36 +31,74 @@ func (p staged) advance() (checkpoint.Advance, error) {
 	return q, err
 }
 
-func (s *Store) inspectStage(ctx context.Context, raw, last []byte, head assignment.Checkpoint, v checkpoint.View) (*AdvanceReceipt, error) {
-	equal := checkpoint.Compare(head, v.Current) == checkpoint.Equal
-	var p staged
-	if err := json.Unmarshal(raw, &p); err != nil {
-		if equal && !json.Valid(raw) {
-			return nil, nil
-		}
-		return nil, refuse(Interrupted, err)
+// Submission follows the durable append. Only the exact signed predecessor
+// proves that the stage is unappended. Any other unexpected tail is evidence.
+func (p staged) appended(q checkpoint.Advance, last []byte, head assignment.Checkpoint) (bool, error) {
+	if head == q.Expected.Head && head != q.Next && !bytes.Equal(last, p.Record) {
+		return false, nil
 	}
-	canonical, err := json.Marshal(p)
-	if err != nil || !bytes.Equal(raw, canonical) {
+	if q.Next != head || !bytes.Equal(last, p.Record) {
+		return false, refuse(Interrupted, nil)
+	}
+	e, err := assignment.DecodeRecord(last)
+	if err != nil || e.PreviousHash != q.Expected.Head.Digest || e.Sequence == 0 || e.Sequence-1 != q.Expected.Head.Sequence {
+		return false, refuse(Interrupted, err)
+	}
+	return true, nil
+}
+
+// classifyStage returns a pending request only after its exact signed record
+// was appended. A torn write has no signed predecessor of its own. The only
+// safe local baseline for it is the unchanged, confirmed enrollment head.
+func (p *staged) classifyStage(f lockedLedger, raw, last []byte, head assignment.Checkpoint, confirmed checkpoint.State, enrollmentReceipt checkpoint.Receipt, identity Identity) (*checkpoint.Advance, error) {
+	if !json.Valid(raw) {
+		if head != confirmed.Head || head.Sequence != 0 {
+			return nil, refuse(Interrupted, nil)
+		}
+		retained, err := f.receipt()
+		if err != nil || retained == nil {
+			return nil, err
+		}
+		// Finalize retains the enrollment record in the same file later
+		// occupied by advance receipts. Only that exact record is benign.
+		var genesis completedRecord
+		if exactJSON(retained, &genesis) != nil || genesis.Identity != identity {
+			return nil, refuse(Interrupted, nil)
+		}
+		r, err := unpackReceipt(genesis.Receipt)
+		if err != nil || checkpoint.ReceiptDigest(r) != checkpoint.ReceiptDigest(enrollmentReceipt) {
+			return nil, refuse(Interrupted, err)
+		}
+		return nil, nil
+	}
+	if err := exactJSON(raw, p); err != nil {
 		return nil, refuse(Interrupted, err)
 	}
 	q, err := p.advance()
-	if err == nil && equal && q.Next != head && !bytes.Equal(last, p.Record) &&
-		q.Expected.Head == v.Current.Head && q.Expected.Header == v.Current.Header &&
-		q.Expected.Slot == v.Current.Slot && q.Expected.Epoch == v.Current.Epoch {
+	if err != nil || q.Expected.Header != confirmed.Header || q.Expected.Slot != confirmed.Slot ||
+		q.Expected.Epoch != confirmed.Epoch || q.Expected.HomeKeyID != confirmed.HomeKeyID {
+		return nil, refuse(Interrupted, err)
+	}
+	appended, err := p.appended(q, last, head)
+	if err != nil || !appended {
+		return nil, err
+	}
+	return &q, nil
+}
+
+func (s *Store) inspectStage(ctx context.Context, raw, last []byte, head assignment.Checkpoint, v checkpoint.View) (*AdvanceReceipt, error) {
+	var p staged
+	q, err := p.classifyStage(s.files, raw, last, head, v.Current, s.b.Receipt, s.b.Identity)
+	if err != nil {
+		return nil, err
+	}
+	if q == nil {
 		// Release can change the session and fence at the same predecessor.
-		// Start clears this unappended intent only after confirming its claim.
+		// Start clears this intent only after confirming its claim.
+		if checkpoint.Compare(head, v.Current) != checkpoint.Equal {
+			return nil, refuse(Interrupted, nil)
+		}
 		return nil, nil
-	}
-	if err != nil || q.Next != head || !bytes.Equal(last, p.Record) {
-		return nil, refuse(Interrupted, err)
-	}
-	// Replay authenticated last. Check its actual predecessor, even when the
-	// home is only one record ahead of the witness but on a different branch.
-	e, err := assignment.DecodeRecord(last)
-	if err != nil || e.PreviousHash != q.Expected.Head.Digest || e.Sequence == 0 || e.Sequence-1 != q.Expected.Head.Sequence ||
-		q.Expected.Header != s.b.Header || q.Expected.Slot != s.b.Slot || q.Expected.Epoch != s.b.Epoch {
-		return nil, refuse(Interrupted, err)
 	}
 	switch checkpoint.Compare(head, v.Current) {
 	case checkpoint.HomeAhead:

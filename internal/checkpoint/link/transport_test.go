@@ -290,13 +290,13 @@ func TestReadFailureWithReadyEvidence(t *testing.T) {
 	must(t, err)
 	q := cp.ReadRequest{Slot: f.slot, Challenge: cp.ID{1}, ReceiptID: cp.ID{1}}
 	v, err := a.Read(t.Context(), q)
-	if !errors.Is(err, cp.ErrUnavailable) || len(v.Fresh.Body) != 0 {
+	if !errors.Is(err, cp.ErrUnavailable) || errors.Is(err, ErrInhibited) || len(v.Fresh.Body) != 0 {
 		t.Fatalf("backend failure returned an admissible view: %v", err)
 	}
 	f.w.Inhibit(true)
 	q.Challenge = cp.ID{2}
 	v, err = a.Read(t.Context(), q)
-	if !errors.Is(err, cp.ErrUnavailable) || !errors.Is(cp.VerifyView(f.pin, q, v), cp.ErrUnavailable) || v.Prior == nil {
+	if !errors.Is(err, ErrInhibited) || !errors.Is(err, cp.ErrUnavailable) || !errors.Is(cp.VerifyView(f.pin, q, v), cp.ErrUnavailable) || v.Prior == nil {
 		t.Fatalf("missing signed inhibited evidence: %v", err)
 	}
 }
