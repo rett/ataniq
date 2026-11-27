@@ -2,10 +2,13 @@ package terminalconsole
 
 import (
 	"context"
+	"slices"
 	"strconv"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"ataniq/internal/terminalconsole/leadctl"
 )
 
 // The refresh. A cockpit whose source can change asks it again on a tick.
@@ -21,7 +24,7 @@ import (
 //     key from being handled.
 //   - Bubble Tea hands Update one message at a time, so a tick, an answer and
 //     a key are each handled whole, in the order they arrived. An answer
-//     replaces the data and then puts the selection back by name (see
+//     replaces the data and then puts the selection back by identity (see
 //     applyKeeping), so a key means the same row whether it arrived before
 //     the answer or after it.
 //   - An answer with an error, or none within two periods, keeps the view as
@@ -70,7 +73,7 @@ type refreshState struct {
 	// failed is whether the latest request failed or is late. The header
 	// then shows the view's age.
 	failed bool
-	// kept is the selection by name, as it was the last time there were
+	// kept is the selection by identity, as it was the last time there were
 	// projects to select from: see applyKeeping.
 	kept keptSelection
 }
@@ -126,6 +129,9 @@ func (m *Model) onRefreshTick(v refreshTickMsg) tea.Cmd {
 	next := m.refreshTickCmd(r.period)
 	if r.pending {
 		if r.now.Sub(r.sentAt) >= 2*r.period {
+			if !r.failed {
+				m.markOffline()
+			}
 			r.failed = true
 		}
 		return next
@@ -159,10 +165,14 @@ func (m *Model) onRefresh(v refreshMsg) {
 	}
 	r.pending = false
 	if v.err != nil {
+		m.markOffline()
 		r.failed = true
 		return
 	}
-	r.failed, r.asOf = false, r.sentAt
+	r.failed = v.p.Offline && slices.ContainsFunc(m.projects, func(p Project) bool { return p.ID != "" })
+	if !r.failed {
+		r.asOf = r.sentAt
+	}
 	m.applyKeeping(v.p)
 }
 
@@ -187,124 +197,288 @@ func (m *Model) ageText() string {
 	return "as of " + strconv.Itoa(int(d/time.Hour)) + " h ago"
 }
 
-// keptSelection is the selection as names, with the indexes the names had.
-// The names are compared only to find the same row again after a refresh;
-// nothing else is decided by them.
-type keptSelection struct {
-	// set is whether there is a selection to put back.
-	set bool
-	// project and lead are the selected project and lead.
-	project, lead keptRow
-	// projectCursor and leadCursor are the cursors of the single-column
-	// pages; leadCursor is a lead of the selected project.
-	projectCursor, leadCursor keptRow
-	// tree is the project of the row under the tree cursor, and treeIndex
-	// the row's place in the tree. When treeIsLead is true the row is the
-	// lead treeLead of that project, else the project's own row.
-	tree, treeLead keptRow
-	treeIsLead     bool
-	treeIndex      int
-	// leads is the lead each project remembers, by the project's name.
-	leads map[string]keptRow
+// Legacy fixture sources supply only display names. Keep their historical
+// navigation behavior separate from directory keys, even for equal strings.
+type rowKey struct {
+	id          leadctl.Identity
+	fixtureName string
 }
 
-// keptRow is one name with the index it had.
+func (p Project) key() rowKey {
+	if p.ID == "" {
+		return rowKey{fixtureName: p.Name}
+	}
+	return rowKey{id: leadctl.Identity{Home: p.HomeID, Project: p.ID}}
+}
+
+func (p Project) leadKey(i int) rowKey {
+	l := p.Leads[i]
+	if p.ID == "" && l.ID == "" {
+		return rowKey{fixtureName: l.Name}
+	}
+	return rowKey{id: leadctl.Identity{Home: p.HomeID, Project: p.ID, Lead: l.ID, Conversation: l.ConversationID, Epoch: l.Epoch}}
+}
+
+func (p Project) label() string {
+	name := p.Name
+	if p.HomeID != "" {
+		name = clean(p.HomeID) + " / " + name
+	}
+	if p.Offline {
+		name = "[stale] " + name
+	}
+	return name
+}
+
+func (m *Model) moveProject(delta int) {
+	start := m.projectCursor + delta
+	if m.projectCursor < 0 && delta < 0 {
+		start = len(m.projects) - 1
+	}
+	for i := start; i >= 0 && i < len(m.projects); i += delta {
+		if !m.projects[i].Offline {
+			m.projectCursor = i
+			return
+		}
+	}
+}
+
+type resumePosition struct {
+	conversation, evidence, timeline int
+}
+
+func (m *Model) selectedID() leadctl.Identity {
+	if m.project < 0 || m.project >= len(m.projects) {
+		return leadctl.Identity{}
+	}
+	p := m.projects[m.project]
+	if p.Offline || m.lead < 0 || m.lead >= len(p.Leads) {
+		return leadctl.Identity{}
+	}
+	return p.leadKey(m.lead).id
+}
+
+func (m *Model) rememberScroll() {
+	id := m.selectedID()
+	if id == (leadctl.Identity{}) {
+		return
+	}
+	if m.resume == nil {
+		m.resume = make(map[leadctl.Identity]resumePosition)
+	}
+	pos := m.resume[id]
+	pos.evidence, pos.timeline = m.scrolls[paneEvidence], m.scrolls[paneTimeline]
+	if m.page == "conversation" {
+		pos.conversation = m.scroll
+	}
+	m.resume[id] = pos
+}
+
+func (m *Model) restoreScroll() {
+	pos := m.resume[m.selectedID()]
+	m.scrolls[paneEvidence], m.scrolls[paneTimeline] = pos.evidence, pos.timeline
+	if m.page == "conversation" {
+		m.scroll = pos.conversation
+	}
+}
+
+type keptSelection struct {
+	set                                      bool
+	project, lead, projectCursor, leadCursor keptRow
+	tree, treeLead                           keptRow
+	treeIsLead                               bool
+	treeIndex                                int
+	leads                                    map[rowKey]keptRow
+}
+
 type keptRow struct {
-	name  string
+	key   rowKey
 	index int
 }
 
-// keepSelection returns the current selection as names.
 func (m *Model) keepSelection() keptSelection {
-	k := keptSelection{set: true, leads: map[string]keptRow{}}
+	k := keptSelection{set: true, leads: map[rowKey]keptRow{}, treeIndex: m.treeCursor}
 	projectAt := func(i int) keptRow {
-		if i < len(m.projects) {
-			return keptRow{m.projects[i].Name, i}
+		if i >= 0 && i < len(m.projects) {
+			return keptRow{m.projects[i].key(), i}
 		}
-		return keptRow{index: i}
+		return keptRow{index: -1}
 	}
 	leadAt := func(pi, li int) keptRow {
-		if pi < len(m.projects) && li < len(m.projects[pi].Leads) {
-			return keptRow{m.projects[pi].Leads[li].Name, li}
+		if pi >= 0 && pi < len(m.projects) && li >= 0 && li < len(m.projects[pi].Leads) {
+			return keptRow{m.projects[pi].leadKey(li), li}
 		}
-		return keptRow{index: li}
+		return keptRow{index: -1}
 	}
 	k.project, k.lead = projectAt(m.project), leadAt(m.project, m.lead)
 	k.projectCursor, k.leadCursor = projectAt(m.projectCursor), leadAt(m.project, m.leadCursor)
-	if rows := m.treeRows(); m.treeCursor < len(rows) {
+	k.tree = keptRow{index: -1}
+	if rows := m.treeRows(); m.treeCursor >= 0 && m.treeCursor < len(rows) {
 		r := rows[m.treeCursor]
-		k.tree, k.treeIndex = projectAt(r.project), m.treeCursor
+		k.tree = projectAt(r.project)
 		if r.indent > 0 {
 			k.treeIsLead, k.treeLead = true, leadAt(r.project, r.lead)
 		}
 	}
 	for i, p := range m.projects {
-		if _, seen := k.leads[p.Name]; !seen {
-			k.leads[p.Name] = leadAt(i, m.leadSelections[i])
-		}
+		k.leads[p.key()] = leadAt(i, m.leadSelections[i])
 	}
 	return k
 }
 
-// find returns the index in names of the row k names: the index it had when
-// the name is still there, else the first with the name. When the name is
-// gone it returns the nearest index that exists and false.
-func (k keptRow) find(n int, name func(int) string) (int, bool) {
-	if k.index < n && name(k.index) == k.name {
+// find never substitutes another directory row if a target disappeared.
+// Only the legacy fixture navigation falls back to the nearest row.
+func (k keptRow) find(n int, key func(int) rowKey) (int, bool) {
+	if k.index < 0 {
+		return -1, false
+	}
+	if k.index < n && key(k.index) == k.key {
 		return k.index, true
 	}
 	for i := 0; i < n; i++ {
-		if name(i) == k.name {
+		if key(i) == k.key {
 			return i, true
 		}
+	}
+	if k.key.id != (leadctl.Identity{}) {
+		return -1, false
 	}
 	return max(0, min(k.index, n-1)), false
 }
 
-// applyKeeping replaces the data with in and puts the selection back: the
-// selected project and lead, the cursors and the lead each project
-// remembers. A thing that still exists is found by its name, wherever it
-// moved; for one that is gone the selection moves to the nearest that
-// exists, which is the one at the same place or the last. The selection is
-// remembered across a time with no projects, so that it comes back with them.
+// markOffline handles a failed or overdue refresh. Fixture rows retain
+// their historical age-only behavior.
+func (m *Model) markOffline() {
+	for i := range m.projects {
+		p := &m.projects[i]
+		if p.ID != "" {
+			p.Offline = true
+		}
+	}
+	m.clearOffline()
+}
+
+func (m *Model) clearOffline() {
+	offline := 0
+	for i, p := range m.projects {
+		if !p.Offline {
+			continue
+		}
+		offline++
+		m.leadSelections[i] = -1
+		if i == m.project {
+			m.project, m.lead, m.leadCursor = -1, -1, -1
+			m.leaveMissingRow()
+			m.restoreScroll()
+		}
+		if i == m.projectCursor {
+			m.projectCursor = -1
+		}
+	}
+	if offline > 0 && offline == len(m.projects) {
+		m.directoryOffline = true
+		m.controls, m.controlUnavailable = nil, "The directory is offline."
+		if m.lc.view != nil {
+			m.lc.view.MarkOffline()
+			m.closeLeads()
+		}
+	}
+	if rows := m.treeRows(); m.treeCursor >= 0 && m.treeCursor < len(rows) && !rows[m.treeCursor].selectable {
+		m.treeCursor = -1
+	}
+}
+
+func (m *Model) leaveMissingRow() {
+	switch m.page {
+	case "conversation", "leads", "tasks":
+		m.page, m.scroll = "projects", 0
+	}
+}
+
+// applyKeeping takes a full directory read. Only explicitly offline homes
+// retain old rows. Missing rows in a successful home read are gone.
 func (m *Model) applyKeeping(in Projection) {
-	if len(m.projects) > 0 {
+	old := m.projects
+	if len(old) > 0 {
 		m.refresh.kept = m.keepSelection()
 	}
 	k := m.refresh.kept
-	m.apply(in)
+	stale := old[:0]
+	for _, p := range old {
+		if p.ID != "" && (in.Offline || slices.Contains(in.OfflineHomes, p.HomeID)) {
+			p.Offline = true
+			stale = append(stale, p)
+		}
+	}
+	m.apply(in, maxProjects-len(stale))
+	m.projects = append(m.projects, stale...)
+	for range stale {
+		m.leadSelections = append(m.leadSelections, -1)
+	}
+	if in.Offline && len(m.projects) > 0 {
+		if m.problem != "" {
+			m.facts = append(m.facts, Check{Name: "Directory", State: m.problem})
+		}
+		m.problem = ""
+	}
+	if len(m.resume) != 0 {
+		resume := make(map[leadctl.Identity]resumePosition)
+		for _, p := range m.projects {
+			for i := range p.Leads {
+				id := p.leadKey(i).id
+				if pos, ok := m.resume[id]; ok {
+					resume[id] = pos
+				}
+			}
+		}
+		m.resume = resume
+	}
 	m.project, m.lead, m.projectCursor, m.leadCursor, m.treeCursor = 0, 0, 0, 0, 0
 	m.scrolls[paneTimeline] = min(m.scrolls[paneTimeline], max(0, len(m.timeline)-1))
-	if len(m.projects) == 0 || !k.set {
+	if !k.set {
+		m.clearOffline()
 		return
 	}
-	projectName := func(i int) string { return m.projects[i].Name }
+	if len(m.projects) == 0 {
+		if k.project.key.id != (leadctl.Identity{}) {
+			m.refresh.kept = keptSelection{set: true, project: keptRow{index: -1}, projectCursor: keptRow{index: -1}, tree: keptRow{index: -1}, treeIndex: -1}
+			m.leaveMissingRow()
+		}
+		return
+	}
+	projectKey := func(i int) rowKey { return m.projects[i].key() }
 	leadIn := func(pi int, r keptRow) (int, bool) {
-		leads := m.projects[pi].Leads
-		return r.find(len(leads), func(i int) string { return leads[i].Name })
+		p := m.projects[pi]
+		return r.find(len(p.Leads), p.leadKey)
 	}
 	for i, p := range m.projects {
-		if r, ok := k.leads[p.Name]; ok {
+		if r, ok := k.leads[p.key()]; ok {
 			m.leadSelections[i], _ = leadIn(i, r)
 		}
 	}
 	var found bool
-	if m.project, found = k.project.find(len(m.projects), projectName); found {
+	m.project, found = k.project.find(len(m.projects), projectKey)
+	switch {
+	case found:
 		m.lead, _ = leadIn(m.project, k.lead)
 		m.leadCursor, _ = leadIn(m.project, k.leadCursor)
-	} else {
-		// Another project stands where the selected one was: its own
-		// remembered lead is the selection.
+		if m.lead < 0 && m.page == "conversation" {
+			m.page, m.scroll = "leads", 0
+		}
+	case m.project >= 0:
 		m.lead = m.leadSelections[m.project]
 		m.leadCursor = m.lead
+	default:
+		m.lead, m.leadCursor = -1, -1
+		m.leaveMissingRow()
 	}
-	m.projectCursor, _ = k.projectCursor.find(len(m.projects), projectName)
-
-	// The tree cursor: the same row when its project is still there (the
-	// lead, the nearest lead, or the project's own row when it has no lead
-	// left), else the nearest row that can be selected.
+	if k.lead.key.id != (leadctl.Identity{}) && k.lead.key.id != m.selectedID() {
+		m.restoreScroll()
+	}
+	m.projectCursor, _ = k.projectCursor.find(len(m.projects), projectKey)
+	m.treeCursor = -1
 	rows := m.treeRows()
-	if pi, ok := k.tree.find(len(m.projects), projectName); ok {
+	if pi, ok := k.tree.find(len(m.projects), projectKey); ok {
 		wantLead := k.treeIsLead && len(m.projects[pi].Leads) > 0
 		li := 0
 		if wantLead {
@@ -316,12 +490,13 @@ func (m *Model) applyKeeping(in Projection) {
 				break
 			}
 		}
-		return
-	}
-	for i := min(k.treeIndex, len(rows)-1); i >= 0; i-- {
-		if rows[i].selectable {
-			m.treeCursor = i
-			break
+	} else if k.tree.key.id == (leadctl.Identity{}) {
+		for i := min(k.treeIndex, len(rows)-1); i >= 0; i-- {
+			if rows[i].selectable {
+				m.treeCursor = i
+				break
+			}
 		}
 	}
+	m.clearOffline()
 }

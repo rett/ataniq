@@ -533,18 +533,30 @@ func (m *Model) apprGraphemes() tea.Cmd {
 
 // selectProject selects the project of a card in the tree, when it is there.
 func (m *Model) selectProject(name string) {
+	// This shortcut carries only a local project name. A managed home
+	// requires a qualified target, and ambiguous local names resolve nowhere.
+	at := -1
 	for i, p := range m.projects {
-		if p.Name != name {
+		if p.HomeID != "" || p.Offline || p.Name != name {
 			continue
 		}
-		m.project, m.projectCursor = i, i
-		m.lead, m.leadCursor = m.leadSelections[i], m.leadSelections[i]
+		if at >= 0 {
+			return
+		}
+		at = i
+	}
+	if at >= 0 {
+		m.project, m.projectCursor = at, at
+		m.lead, m.leadCursor = m.leadSelections[at], m.leadSelections[at]
+		if m.projects[at].ID != "" {
+			m.restoreScroll()
+		}
 		for ri, r := range m.treeRows() {
-			if r.selectable && r.project == i && r.indent == 0 {
+			if r.selectable && r.project == at && r.indent == 0 {
 				m.treeCursor = ri
+				return
 			}
 		}
-		return
 	}
 }
 
