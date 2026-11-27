@@ -100,6 +100,29 @@ func TestAdvanceCuts(t *testing.T) {
 				t.Fatal("stage at cut", err)
 			}
 
+			pending, err := ReadPendingAdvance(f.root, "", pub(f.witness))
+			switch {
+			case tc.point == "stage.created":
+				want(t, err, Interrupted) // Empty stage. Never admit a different mutation.
+			case tc.removed:
+				check(t, err)
+				if pending != nil {
+					t.Fatal("restored a cleared mutation")
+				}
+			default:
+				check(t, err)
+				var disk staged
+				check(t, json.Unmarshal(contents(t, p), &disk))
+				if pending == nil {
+					t.Fatal("lost staged advance")
+				}
+				intent, err := cp.AdvanceBody(*pending)
+				check(t, err)
+				if !bytes.Equal(intent, disk.Intent) {
+					t.Fatal("restored a different intent")
+				}
+			}
+
 			if !tc.appended {
 				before := contents(t, p)
 				f.refused(t, Occupied)

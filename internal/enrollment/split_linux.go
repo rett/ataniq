@@ -1,6 +1,8 @@
 package enrollment
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -186,4 +188,18 @@ func (f *fileLedger) clearPrepared() error {
 		return err
 	}
 	return after(f.fault, "enroll.stage-cleared")
+}
+
+// WritePrepared exclusively publishes the canonical request and returns the
+// SHA-256 of the exact bytes the owner should verify after transfer.
+func WritePrepared(path string, p Prepared) (string, error) {
+	raw, err := EncodePrepared(p)
+	if err != nil {
+		return "", err
+	}
+	if err := publishDocument(path, raw); err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
 }

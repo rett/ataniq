@@ -86,11 +86,11 @@ func DecodeBinding(raw []byte) (Binding, error) {
 	return doc.Binding, nil
 }
 
-// bindingParent opens the destination through real directories. Root-owned
+// documentParent opens the destination through real directories. Root-owned
 // sticky temporary directories can contain an owner's private directory.
-func bindingParent(path string) (*fileLedger, error) {
+func documentParent(path string) (*fileLedger, error) {
 	if !filepath.IsAbs(path) || path != filepath.Clean(path) || path == "/" {
-		return nil, refuse(Insecure, errors.New("invalid binding path"))
+		return nil, refuse(Insecure, errors.New("invalid document path"))
 	}
 	dir, err := openDirectory(filepath.Dir(path))
 	if err != nil {
@@ -101,7 +101,7 @@ func bindingParent(path string) (*fileLedger, error) {
 	for _, f := range components[1:] {
 		var st syscall.Stat_t
 		if err = syscall.Fstat(int(f.Fd()), &st); err != nil || (st.Uid != 0 && int(st.Uid) != os.Geteuid()) || (st.Mode&0022 != 0 && st.Mode&syscall.S_ISVTX == 0) {
-			return nil, errors.Join(refuse(Insecure, errors.New("unprotected binding directory")), err, dir.close())
+			return nil, errors.Join(refuse(Insecure, errors.New("unprotected document directory")), err, dir.close())
 		}
 	}
 	return dir, nil
@@ -124,12 +124,24 @@ func WriteBinding(path string, b Binding) error {
 	if err = outsideRoot(path, b.RootPath); err != nil {
 		return err
 	}
-	dir, err := bindingParent(path)
+	return publishDocument(path, raw)
+}
+
+func publishDocument(path string, raw []byte) error {
+	dir, err := documentParent(path)
 	if err != nil {
 		return err
 	}
 	defer dir.close()
 	if err = dir.publish(filepath.Base(path), func(syscall.Stat_t) ([]byte, error) { return raw, nil }); err != nil {
+		// A retry can find the name just after a previous link succeeded
+		// but before its directory sync. Confirm durability before reporting
+		// an existing document that the caller may accept as its own.
+		if errors.Is(err, os.ErrExist) {
+			if syncErr := dir.dir.Sync(); syncErr != nil {
+				return syncErr
+			}
+		}
 		return err
 	}
 	return dir.checkPath()
@@ -137,7 +149,7 @@ func WriteBinding(path string, b Binding) error {
 
 // ReadBinding checks file ownership and mode before parsing the installation record.
 func ReadBinding(path string) (Binding, error) {
-	dir, err := bindingParent(path)
+	dir, err := documentParent(path)
 	if err != nil {
 		return Binding{}, err
 	}

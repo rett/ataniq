@@ -19,8 +19,14 @@ import (
 
 func fullConfig(t *testing.T) (string, map[string]any) {
 	t.Helper()
+	path, m, _, _ := witnessConfig(t)
+	return path, m
+}
+
+func witnessConfig(t *testing.T) (string, map[string]any, ed25519.PrivateKey, seatgate.Identity) {
+	t.Helper()
 	path, m := fixture(t)
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	pub, signingKey, err := ed25519.GenerateKey(rand.Reader)
 	must(t, err)
 	cert, key, err := seatgate.GenerateIdentity(rand.Reader, time.Now(), "witness")
 	must(t, err)
@@ -33,7 +39,7 @@ func fullConfig(t *testing.T) (string, map[string]any) {
 	m["witness_tls_pin"] = id.Fingerprint()
 	m["witness_cert"] = certPath
 	writeConfig(t, path, m)
-	return path, m
+	return path, m, signingKey, id
 }
 
 func TestCheckReadOnly(t *testing.T) {
@@ -66,6 +72,9 @@ func TestCheckReadOnly(t *testing.T) {
 		saved[name] = snap(name)
 	}
 	if got := call(t, path, "check"); got != "home check ok\n" {
+		t.Fatal(got)
+	}
+	if got, _ := cli(t, 0, "serve", "--check", "--config", path); got != "home check ok\n" {
 		t.Fatal(got)
 	}
 	if !slices.Equal(before, names(t, dir)) || !slices.Equal(names(t, dir+"/tls"), []string{"cert.pem", "key.pem"}) {
@@ -122,13 +131,17 @@ func TestCheckRequiresWitness(t *testing.T) {
 }
 
 func TestHomeUsage(t *testing.T) {
-	for _, op := range []string{"serve", "enroll", "observe", "status", "retire"} {
+	for _, op := range []string{"observe", "retire"} {
 		code, out, diag := invoke("/missing", op, 1000)
 		if code != 2 || out != "" || diag != "not built in this release\n" {
 			t.Error(op, code, out, diag)
 		}
 	}
-	for _, args := range [][]string{nil, {"bad"}, {"pins"}, {"check", "-config", "/missing"}, {"pins", "--config", "/missing", "extra"}} {
+	for _, args := range [][]string{nil, {"bad"}, {"pins"}, {"check", "-config", "/missing"}, {"pins", "--config", "/missing", "extra"},
+		{"enroll"}, {"enroll", "unknown"}, {"enroll", "prepare", "--config", "/missing"},
+		{"enroll", "finalize", "--config", "/missing", "--out", "/out"},
+		{"enroll", "resume", "--out", "/one", "--out", "/two"},
+		{"serve", "--check", "--check", "--config", "/missing"}, {"status", "--check"}} {
 		var diag, out bytes.Buffer
 		if code := run(args, &out, &diag, 1000); code != 2 || diag.String() != usage+"\n" || out.Len() != 0 {
 			t.Error(args, code, out.String(), diag.String())
