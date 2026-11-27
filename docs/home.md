@@ -22,3 +22,20 @@ activation epoch. The listen address takes a canonical IP literal and a
 decimal port. Bracket IPv6 addresses. Slot identifiers use printable ASCII
 from space through tilde. The optional `pending_journal` and `binding` fields
 reserve absolute file paths.
+
+## Create the home keys
+
+Run these commands as the dedicated, unprivileged home account. Give the
+seed a real, home-owned 0700 parent directory. The TLS directory's parent
+must deny group and other writes. Both destination names must be free.
+
+```sh
+ataniq-home identity-init --config /etc/ataniq-home/config.json
+ataniq-home pins --config /etc/ataniq-home/config.json
+```
+
+Initialization creates the raw 32-byte Ed25519 seed (0600) and the new TLS
+directory (0700) with `cert.pem` and `key.pem` (0600). Keep both private
+keys under the home account's control. Send the two public values printed by
+`pins`, `home_tls_pin` and `home_public_key`, to the witness operator over
+an independently authenticated channel.
