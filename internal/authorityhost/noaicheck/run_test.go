@@ -174,7 +174,8 @@ func TestWriteJSONClean(t *testing.T) {
 }
 
 // TestImportGuard keeps the check small and inert: its non-test files import
-// only the standard library, no process package, no network package except
+// only the standard library, with os/exec confined to the fixed live systemctl
+// query. They import no network package except
 // net/netip (address values, no I/O), no cgo and no unsafe, and calls none
 // of the syscall package's ways to start a process or open a socket.
 func TestImportGuard(t *testing.T) {
@@ -205,7 +206,7 @@ func TestImportGuard(t *testing.T) {
 			p, _ := strconv.Unquote(imp.Path.Value)
 			first, _, _ := strings.Cut(p, "/")
 			switch {
-			case p == "net/netip":
+			case p == "net/netip", p == "os/exec" && name == "witness_systemd.go":
 			case p == "C" || p == "unsafe" || p == "os/exec" || p == "plugin" || p == "os/signal":
 				t.Errorf("%s imports %s", name, p)
 			case p == "net" || strings.HasPrefix(p, "net/") || strings.HasPrefix(p, "crypto/tls"):

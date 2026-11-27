@@ -436,6 +436,12 @@ read-only, root-owned files, runs its checks, no-AI check, validators and reload
 as [the README](README.md#steps) describes, and exits 0 only when the release is
 healthy.
 
+If a departing unit is `failed`, use the [reset and retry procedure](#6-roll-back).
+When activating over an existing seat or notifier deployment, a missing service
+inventory keeps decisions inhibited. Stop the decision services by hand, make
+the original imported release available, run `ah-switch recover --services-stopped`
+and retry the switch. [Inventory recovery](README.md#the-journal-and-recover)
+
 ### 5. Verify
 
 On the host:
@@ -506,6 +512,13 @@ sudo /usr/local/sbin/ah-switch --rollback-to previous
 It accepts that release's id too and refuses any other. A rollback does not need
 the incoming folder. A rollback skips the rule that a counter must be higher,
 but the release it goes back to is checked and qualified again like any other.
+
+The departure check keeps decisions inhibited until systemd confirms the old
+services are inactive or absent. If it reports `failed`, run the command for
+the named unit (`systemctl reset-failed ataniq-seat.service`,
+`systemctl reset-failed ataniq-seat-notify.service` or
+`systemctl reset-failed ataniq-witness.service`) and retry the same request.
+This applies to forward switches as well.
 
 ## Deploying the seat app
 
@@ -598,14 +611,13 @@ repository: the placeholders below are `seat.example` for the seat's name and
 6. **The host's stop list.** Once that switch ended `ok`, replace the line
    `/usr/bin/true` of `/etc/authority-host/stop.list` with
    `systemctl stop ataniq-seat.service`, so that the host's own list stops
-   the seat whatever release is live. Not before: `systemctl stop` of a unit
-   systemd does not know fails.
+   the seat whatever release is live.
 
 To roll back, take step 6 of the first deploy (`ack`, then `--rollback-to
 previous`): the seat release's own stop list stops the seat first. Going
 back to the first, static, release leaves the seat stopped and its unit's
-link dangling: put `/usr/bin/true` back in the host's stop list until a seat
-release is live again (see [the README](README.md#rollback)).
+link dangling. Keep the host's seat stop command in place. The switch accepts
+exit 5 when the seat is unloaded. [Rollback](README.md#rollback)
 
 ## Deploying the notifier
 
@@ -658,6 +670,8 @@ Apple's push service for this unit, and nothing else.
    resolver and the push range (`IPAddressAllow=203.0.113.53` and
    `IPAddressAllow=198.51.100.0/24` in place of the real values); the unit's
    link, `ln -s /opt/authority-host/current/etc/systemd/system/ataniq-seat-notify.service /etc/systemd/system/ataniq-seat-notify.service`;
+   add `systemctl stop ataniq-seat-notify.service` to the host
+   `/etc/authority-host/stop.list`, retaining the seat stop. Set
    the line `SEAT_NOTIFY_ARGS=--notify-socket /run/seat-notify/notify.sock` in
    `/etc/authority-host/seat/seat.env`; and your firewall's rule that keeps
    the user `seat-notify` to the resolver and to TCP port 443 of the push
@@ -687,12 +701,11 @@ Apple's push service for this unit, and nothing else.
    means the notifier is exiting at its start and being restarted every 5
    seconds, whatever the switch said (see the table below, and
    [the README](README.md#a-notifier-that-cannot-start)). Then acknowledge the outcome as in
-   step 5. The host's own stop list is not changed: the notifier decides
-   nothing.
+   step 5.
 
 To roll back, take step 6 of the first deploy (`ack`, then `--rollback-to
-previous`). A release without the notifier leaves it running from the earlier
-release's binary until `systemctl stop ataniq-seat-notify.service`; see
+previous`). A target without the notifier can resume decisions only after
+the switch confirms its departure with systemd. See
 [the README](README.md#rollback-1). If the notifier is down, nothing breaks but
 the notices.
 
@@ -794,7 +807,7 @@ state; read the message, fix the cause, run the step again.
 | Switch (seat release) | `step 4/9 noaicheck: FAILED` and, run by hand, `HIT incomplete env-file /etc/authority-host/seat/seat.env` | Nothing was changed. The seat's environment file is missing: write it (see "Deploying the seat app", step 3) and switch to the imported release again from your root session, without `--from` |
 | Switch (seat release) | `step 4/9 noaicheck: FAILED` and, run by hand, `HIT incomplete caddy-import /etc/authority-host/seat/site.caddy`, or `HIT env` or `HIT proxy ... outbound-target` naming that file | Nothing was changed. The owner's site file is missing (write it, see "Deploying the seat app", step 3), names a variable like a provider key, or proxies to something that is not this host: the file is to hold the site address and `import seat` only. Fix it and switch to the imported release again from your root session, without `--from` |
 | Switch (seat release) | `step 5/9 validate: FAILED: validator-failed: validator 1 of 3, ...` (`caddy validate`) | Nothing was changed. Usually `/etc/authority-host/seat/site.caddy` is wrong (the no-AI check reads it first and says when it is missing); fix it and switch to the imported release again without `--from` |
-| Switch (seat release) | `step 5/9 validate: FAILED: validator-failed: validator 3 of 3, ...` (`test -L /etc/systemd/system/ataniq-seat.service`) | Nothing was changed. The unit's link (step 3 of "Deploying the seat app") is missing or is not a link: make it with `ln -s /opt/authority-host/current/etc/systemd/system/ataniq-seat.service /etc/systemd/system/ataniq-seat.service` and switch to the imported release again without `--from`. Without the check, the reload's `systemctl restart ataniq-seat.service` would fail with `Unit not found` after `current` moved, and the stop list's `systemctl stop` would fail with exit 5 and leave the transaction in `stopping` |
+| Switch (seat release) | `step 5/9 validate: FAILED: validator-failed: validator 3 of 3, ...` (`test -L /etc/systemd/system/ataniq-seat.service`) | Nothing was changed. The unit's link (step 3 of "Deploying the seat app") is missing or is not a link: make it with `ln -s /opt/authority-host/current/etc/systemd/system/ataniq-seat.service /etc/systemd/system/ataniq-seat.service` and switch to the imported release again without `--from`. Without the check, the reload's `systemctl restart ataniq-seat.service` would fail with `Unit not found` after `current` moved |
 | Switch (seat release) | the health check fails on the seat's socket (`curl ... --unix-socket /run/seat/http.sock ...`) | The release was activated: the result is `rolled-back` or `failed`, as in the rows above. Read `journalctl -u ataniq-seat.service`: a missing key (`--identity`), origin or pin file, or a gate address the drop-in does not allow, stops the seat at its start. Fix it, acknowledge, and deploy a release with a higher counter |
 | Switch (release with the notifier) | `step 4/9 noaicheck: FAILED` and, run by hand, `HIT incomplete env-file /etc/authority-host/seat-notify/seat-notify.env` | Nothing was changed. The notifier's environment file is missing: write it (see "Deploying the notifier", step 3) and switch to the imported release again from your root session, without `--from` |
 | Switch (release with the notifier) | `step 5/9 validate: FAILED: validator-failed: validator 5 of 5, ...` (`test -L /etc/systemd/system/ataniq-seat-notify.service`) | Nothing was changed. The notifier's unit link is missing or is not a link: make it with `ln -s /opt/authority-host/current/etc/systemd/system/ataniq-seat-notify.service /etc/systemd/system/ataniq-seat-notify.service` and switch to the imported release again without `--from`. The seat's own link is validator 4 of 5 |

@@ -48,6 +48,9 @@ const (
 
 // journal is the content of txn.json.
 type journal struct {
+	CandidateUnits []string `json:"candidate_units,omitzero"`
+	OldUnits       []string `json:"old_units,omitzero"`
+
 	Txn         string `json:"txn"`       // the transaction's id, 32 hex digits
 	Direction   string `json:"direction"` // forward or rollback
 	Requested   string `json:"requested"` // what was asked: a release id, or previous

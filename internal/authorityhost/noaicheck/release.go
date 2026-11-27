@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // The phases of a run (see RunPhase).
@@ -73,7 +74,7 @@ func (c *Checker) RunPhase(phase, release string, listing []byte) (Report, error
 	c.CheckCredentials()
 	c.CheckEnv()
 	c.CheckProcesses()
-	c.CheckUnits()
+	c.checkUnits(phase == PhasePost && c.witnessRelease)
 	if phase == PhasePre {
 		if len(c.lists.PortsAllow) == 0 && c.RequirePolicy {
 			c.notEnforced(FilePortsAllow, DetailEmpty, "")
@@ -97,10 +98,10 @@ func (c *Checker) RunPhase(phase, release string, listing []byte) (Report, error
 // CheckRelease reads the release folder dir's own files, as the release
 // would install them, before the host loads any: every file beneath its
 // etc/systemd is a unit or drop-in, read with the rules of installed units
-// (Environment=, PassEnvironment= and EnvironmentFile= by name; a link to
-// /dev/null is a mask and is not read; a file in a folder named "user" is
-// a user unit, its EnvironmentFile= resolved in every user's context, any
-// other a system unit), and every file a unit's EnvironmentFile= names is
+// (Environment=, PassEnvironment= and EnvironmentFile= by name). A user
+// service under etc/systemd/user or a symlink anywhere is refused. Other
+// units in a folder named "user" have EnvironmentFile= resolved in every
+// user's context. Every file a unit's EnvironmentFile= names is
 // read on the host like any other. Every file beneath its etc/caddy is
 // read, by its format, for the variables it refers to through Caddy's own
 // placeholders (see releaseRefs): each one named like a provider key (see
@@ -150,23 +151,9 @@ func (c *Checker) CheckRelease(dir string) error {
 	read := func(e *wentry) (string, []byte, bool) {
 		p := e.rel
 		if e.isLink() {
-			target, err := rt.readlink(e.rel)
-			if err == nil && path.Clean(target) == "/dev/null" {
-				return "", nil, false // a mask
-			}
-			p, err = rt.resolveStrict(e.rel)
-			switch {
-			case errors.Is(err, errLoop):
-				c.hit(KindUnitLink, at(e.rel), DetailLoop)
-				return "", nil, false
-			case errors.Is(err, errEscape):
-				c.hit(KindUnitLink, at(e.rel), DetailEscape)
-				return "", nil, false
-			case err != nil:
-				fail(e.rel, err)
-				return "", nil, false
-			}
-		} else if !e.isRegular() {
+			return "", nil, false // The whole-tree walk reports every release link.
+		}
+		if !e.isRegular() {
 			fail(e.rel, errNotRegular)
 			return "", nil, false
 		}
@@ -180,19 +167,64 @@ func (c *Checker) CheckRelease(dir string) error {
 	s := c.newEnvScan()
 	units := map[string]*candUnit{}
 	var order []*candUnit
-	walk(releaseUnits, func(e *wentry) {
+	_, _, binErr := rt.lstat("bin/ataniq-witness")
+	hasWitness := binErr == nil
+	c.witnessRelease = hasWitness
+	if binErr != nil && !errors.Is(binErr, fs.ErrNotExist) {
+		fail("bin/ataniq-witness", binErr)
+	}
+	seenWitness := false
+	relDir := "/opt/authority-host/releases/" + filepath.Base(filepath.Clean(dir))
+	shipped := func(name string) bool {
+		rel := "bin/" + name
+		resolved, info, err := rt.lstat(rel)
+		if err != nil || resolved != rel || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+			return false
+		}
+		st, ok := info.Sys().(*syscall.Stat_t)
+		return ok && st.Nlink == 1
+	}
+	walk(".", func(e *wentry) {
+		if e.isLink() {
+			c.hit(KindIncomplete, at(e.rel), "release-symlink")
+			return
+		}
+		if !strings.HasPrefix(e.rel, releaseUnits+"/") {
+			return
+		}
+		if ReleaseUserService(e.rel) {
+			c.hit(KindUnit, at(e.rel), UserService)
+			return
+		}
 		p, data, ok := read(e)
 		if !ok {
 			return
 		}
-		u := parseEnv(syntaxSystemd, string(data), false)
+		if e.rel == WitnessUnit {
+			seenWitness = true
+			if !hasWitness {
+				c.hit(KindUnit, at(e.rel), "witness-binary")
+			}
+		}
+		text := string(data)
+		if !UnitTextSafe(text) {
+			c.hit(KindUnit, at(p), UnitSyntax)
+			return
+		}
+		if !ReleaseExecsSafe(text, relDir, shipped) {
+			c.hit(KindUnit, at(e.rel), "decision-exec")
+		}
+		if (hasWitness || e.rel == WitnessUnit) && !WitnessUnitSafe(e.rel, text, relDir) {
+			c.hit(KindUnit, at(e.rel), "witness-isolation")
+		}
+		u := parseEnv(syntaxSystemd, text, false)
 		for _, n := range u.names {
 			c.hit(KindEnv, at(p), n)
 		}
 		if u.bad {
 			c.hit(KindIncomplete, PathEnvSyntax, at(p))
 		}
-		dir, name, dropin := releaseUnitName(e.rel)
+		dir, name, dropin := releaseUnitLocation(e.rel)
 		key := strconv.FormatBool(userUnitPath(p)) + "\x00" + dir + "\x00" + name
 		ru := units[key]
 		if ru == nil {
@@ -218,6 +250,9 @@ func (c *Checker) CheckRelease(dir string) error {
 			ru.main = &f
 		}
 	})
+	if hasWitness && !seenWitness {
+		c.hit(KindUnit, at(WitnessUnit), "witness-unit-missing")
+	}
 	// Each unit's lines are evaluated as systemd merges them, the unit
 	// file and then its drop-ins by file name, before any file they name
 	// is opened: an empty EnvironmentFile= drops those before it. The
@@ -235,6 +270,9 @@ func (c *Checker) CheckRelease(dir string) error {
 	}
 	imports := &importScan{c: c, done: map[string]bool{}}
 	for _, d := range strings.Fields(releaseNameDirs) {
+		if resolved, err := rt.resolve(d); err == nil && resolved != d {
+			continue // The link to this folder was already refused.
+		}
 		walk(d, func(e *wentry) {
 			p, data, ok := read(e)
 			if !ok {
@@ -317,13 +355,36 @@ type releaseFile struct {
 	r     *envParse
 }
 
-// releaseUnitName returns the unit the release file rel (where it sits,
+// UserService is the rule for release services outside the system manager's scope.
+const UserService = "user-service"
+
+// ReleaseUserService reports whether a file under etc/systemd/user supplies
+// a service or a service drop-in, including a type-wide service.d override.
+func ReleaseUserService(rel string) bool {
+	if !strings.HasPrefix(rel, releaseUnits+"/user/") {
+		return false
+	}
+	name := ReleaseUnitName(rel)
+	return strings.HasSuffix(name, ".service") || name == "service" && strings.HasSuffix(rel, ".conf")
+}
+
+// ReleaseUnitName maps a shipped systemd file to its unit name. A .conf
+// drop-in names the unit alongside its directory. A unit file names itself.
+func ReleaseUnitName(rel string) string {
+	if strings.HasSuffix(rel, ".conf") {
+		_, name, _ := releaseUnitLocation(rel)
+		return name
+	}
+	return path.Base(rel)
+}
+
+// releaseUnitLocation returns the unit the release file rel (where it sits,
 // not where a link leads) belongs to, and the folder holding that unit:
 // the unit of its folder and the folder above, and true, when its folder
 // is a drop-in folder ("app.service.d"); its own name and folder
 // otherwise. A type's or a prefix's drop-in folder ("service.d") is a
 // unit of its own, as for installed units.
-func releaseUnitName(rel string) (dir, name string, dropin bool) {
+func releaseUnitLocation(rel string) (dir, name string, dropin bool) {
 	folder := path.Dir(rel)
 	if base := path.Base(folder); isDropinDir(base) && folder != "." {
 		return path.Dir(folder), strings.TrimSuffix(base, ".d"), true

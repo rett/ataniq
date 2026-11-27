@@ -468,7 +468,7 @@ func TestBootLeavesAFoundInhibit(t *testing.T) {
 				if code != ExitOK || inhibited || g.decide() != "accepted" {
 					t.Errorf("exit %d, inhibited %v, a decision %s", code, inhibited, g.decide())
 				}
-				if !strings.HasPrefix(e.names(), "reload-units health-probe nft") {
+				if !strings.HasPrefix(e.names(), "stop-all stop-old systemctl reload-units health-probe nft") {
 					t.Errorf("ran %q", e.names())
 				}
 				return

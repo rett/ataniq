@@ -557,8 +557,21 @@ are stopped and decisions stay inhibited, see step 4).
    target of `current`, and a new link `current.new` is made and renamed
    over `current`, so there is never a moment without `current`; each
    rename is followed by a sync of the folder. Then the journal says
-   `activating`, and each command of `share/reload.list` runs, within 30
-   seconds each.
+   `activating`. When replacing a release in either direction, the host stop
+   list runs first, then the departing release's stop list if it verifies.
+   The inventory includes shipped service files and the owner of each shipped
+   `NAME.service.d/*.conf`, even when the host supplies `NAME.service`.
+   The switch asks systemd about each of these services, including units
+   shared with the target and instances of shipped templates. A unit must be
+   inactive or absent before the target's `share/reload.list` runs.
+   Each reload has a 30-second deadline.
+   Before decisions resume, services unique to the departed release are
+   checked again. A failure names the unit and leaves the journal retryable.
+   Correct the host stop list or manager failure and repeat the request.
+   A missing service inventory in legacy `deploy.json` also holds the
+   inhibit, even if unit links survive. Stop the decision services by hand,
+   make the original imported release available and run
+   `ah-switch recover --services-stopped` before retrying.
 7. **health**: the commands of `share/health.cmd` run in order until one
    round in which every one of them exits 0, a new round every 2 seconds.
    The 60 seconds are one deadline for the whole check: each command gets at
@@ -613,8 +626,10 @@ verifies is not used, and the switch says so (`fallback: none: ...`).
 If the reload, the health check or the post-activation check fails, the
 journal says `restoring` before anything is put back. First the failed
 release's services are stopped, so that nothing only it runs survives
-going back: its own `stop.list` when it still verifies, the host's own
-stop list when it does not. Then `current` is renamed back to the
+going back. The host stop list runs first, followed by the failed release's
+list if it verifies. The manager must report each shipped service inactive
+or absent before the fallback can reload. A failure leaves the journal
+retryable and decisions inhibited. Then `current` is renamed back to the
 fallback, `previous` is put back as it was, both synced, and the
 fallback's own `reload.list` and `health.cmd` run (never the failed
 release's), then the no-AI check of its phase post (the fallback's own
@@ -643,8 +658,8 @@ command runs the stops again first (see below).
 
 The host's stop list is the owner's, never part of a release: one command
 per line, in the format of the release lists, at least one command, and
-owned and checked like the switch policy. It must stop every decision
-service of any release (for example `systemctl stop ataniq-seat.service`).
+owned and checked like the switch policy. Include every service shipped by
+releases on this host (for example `systemctl stop ataniq-seat.service`).
 A switch or rollback is refused while it is missing, empty, not
 trusted or refused (see below), and `status` says so.
 
@@ -664,10 +679,8 @@ A refused list would otherwise block the recovery it exists for, so it is
 reported loudly and does not stop the rest: the command prints
 `reconcile: FAILED: the host's stop list cannot be used`, a journal in any
 phase (not only `stopping`) is resumed, and the steps that need the host's
-list (the stopping phase, going back when the new release's own stop list
-does not verify) fail with `stop-list-refused` in their detail, so that
-a transaction that needed it stays in `stopping` with the failure, while
-the stop lists of the releases that verify run. Only new work is refused,
+list (departure or the stopping phase) remain retryable with decisions
+inhibited while the stop lists of the releases that verify run. Only new work is refused,
 with exit 1, once that resume has run.
 
 While a journal says `stopping`, every switch, rollback and `recover`
@@ -1214,6 +1227,14 @@ the time in `detail`, with `services_stopped: true`. Use it only once every
 decision service is really stopped. It leaves the decision inhibit (see
 "The decision inhibit"); `inhibit-clear` removes that.
 
+When a departure is waiting for a missing inventory, the same owner command
+checks the original tree against its hashes and import record and writes
+the service names into the open journal. The import record binds the file
+paths, contents and inodes. If that tree cannot be verified, recovery
+fails with the inhibit held. After recording the names, repeat the switch
+or rollback. It must observe the recorded services inactive or absent
+before reloading the target.
+
 ### deploy.json
 
 `deploy.json` (mode 0644) holds `id` (the release asked for), `previous_id`
@@ -1300,13 +1321,13 @@ see its messages. The text of a broken state file is not repeated either.
 | No-AI check fails after the reload and health (phase post), or `nft` fails | Back to the old release, as for a failed health check; `failed_step: postcheck` |
 | A validator fails | Refused at validate; nothing reloaded |
 | Crash during the package step | The next command makes sure the step has ended, stops the decision services and records `package-step-interrupted` with the package state unknown; decisions stay inhibited |
-| Reload or health fails after the switch | The new release's stop list (the host's, when it no longer verifies), then back to the old release, with its own reload and health lists and its no-AI check; `rolled-back`, and decisions are no longer inhibited |
+| Reload or health fails after the switch | The host stop list, the verified new release's stops and a manager check of its shipped services, then back to the old release, with its own reload and health lists and its no-AI check; `rolled-back`, and decisions are no longer inhibited |
 | Going back fails (putting `previous` back included), or the old release is not healthy or fails its no-AI check | The host's `stop.list` and the stop lists of both releases run; `failed-recovery` with `restored_health: failed`; decisions stay inhibited; the console is needed |
 | First switch, or the old release missing or no longer verifying, and the new one fails | `current` stays; the host's and the release's stop lists run; `failed` or `failed-recovery`; decisions stay inhibited, across a reboot |
 | `decisions.inhibit` there after a failure | Decision-capable services may run but refuse every decision; a later healthy switch or `inhibit-clear --asked WORDS` removes it |
 | Crash or power loss between the two steps of a healthy end (the journal renamed over `decisions.inhibit`, the inhibit not removed yet) | Decisions are still refused; `inhibit-clear` and `ack` refuse it; the next command writes `txn.json` back from it and settles it as a journal in `done` (next row) |
 | Reboot or crash after a healthy release was decided (`done`) and before it was settled | The next command runs the reload list, health check and post-activation no-AI check of `current` again before removing the inhibit; when any fails, the host's stop list runs, decisions stay inhibited, the outcome stays owed with `requalify_failed`, and that command and every retry of the same request exit 1 until `ack --txn ID --asked WORDS` |
-| A stop command fails | `result: unresolved`, exit 1; the journal stays in `stopping`; every later command runs the stops again and does nothing else until they pass, or `recover --services-stopped` |
+| A stop command fails during the terminal stopping phase | `result: unresolved`, exit 1; the journal stays in `stopping`; every later command runs the stops again and does nothing else until they pass, or `recover --services-stopped` |
 | A link folder cannot be synced | `result: unresolved`, exit 1; the journal stays; nothing is recorded as done until the next command syncs it |
 | `--rollback-to` when `previous` points at a missing release | Refused at counter (`no-previous`) |
 | Crash or power loss during the switch | `current` points at a whole release, the old or the new one, and the journal is there; the next command resumes its phase (see "The journal and recover") |
@@ -1403,9 +1424,9 @@ What the switch does not do, so that nobody relies on it:
 library only, shipped in every release. The switch runs the new release's
 copy (see "The switch"). This tree ships no timer and no service unit for
 it: a recurring run is a separate planned item, so today the check runs
-when the switch runs it or when someone runs it by hand. It reads only:
-it writes nothing, opens no network connection and runs no program; the
-processes and listening sockets are read from `/proc`. It is meant to run
+when the switch runs it or when someone runs it by hand. It reads processes and listening sockets from `/proc`. On a live systemd
+witness host, it also queries the system manager for effective witness address
+grants with `systemctl show`. Checks under a fixture root read files only. It is meant to run
 as root, which can read every folder it looks into.
 
 ```
@@ -1463,10 +1484,11 @@ their place is a read error, not a wait.
   with `--require-policy` an empty `packages.allow` is a hit in every
   phase. The release's own files are those of the folder `--release`
   names:
+  - a symlink anywhere in the candidate tree is `HIT incomplete PATH release-symlink`.
   - every file beneath its `etc/systemd` is read as a unit or drop-in,
-    with the rules of an installed unit (below): its `Environment=`,
-    `PassEnvironment=` and `EnvironmentFile=` names, a link to
-    `/dev/null` is a mask and is not read, and every file an
+    for its `Environment=`, `PassEnvironment=` and `EnvironmentFile=` names.
+    Each service or socket execution directive must invoke a shipped binary
+    by a canonical absolute executable path. Every file an
     `EnvironmentFile=` names is read on the host (a required one that is
     missing is `HIT incomplete env-file`). A unit file and the drop-ins
     of its drop-in folder beside it (`app.service` and
@@ -1478,9 +1500,11 @@ their place is a read error, not a wait.
     unit file keeps for the merge is charged to the run's memory budget
     before it is kept and released once that unit is checked, so a
     release with very many unit files ends `HIT incomplete budget
-    memory` rather than holding them all. A file in a folder named `user` is a user
-    unit, its `EnvironmentFile=` resolved for every user; any other is a
-    system unit;
+    memory` rather than holding them all. The release checks and switch import
+    report `user-service` for a service, service template or service drop-in
+    under `etc/systemd/user/`, including a type-wide `service.d/*.conf`.
+    Departure checks use the system manager. For other units in a folder
+    named `user`, the check resolves `EnvironmentFile=` for every user.
   - every file beneath its `etc/caddy` is read, by its format, for the
     variables it refers to through a placeholder Caddy itself replaces,
     and only those. A file whose name ends in `.json` is Caddy's native
@@ -2040,6 +2064,20 @@ It checks, in this order, all of them (a pass is no finding):
    - No file under `etc/systemd` still holds `{release}` (`unit-placeholder`):
      the builder replaces it, so one left is a folder made or changed by
      hand, whose unit systemd would run with the words as they are.
+   - Save units and drop-ins as UTF-8 without an initial byte-order mark.
+     Write each systemd directive on one line. The release and host checks
+     report `unit-syntax` for a trailing backslash, invalid UTF-8, a lone
+     carriage return, or any control character except tab and line endings
+     (LF or CRLF). They also refuse non-ASCII whitespace and the format
+     characters U+200B–U+200F, U+2060 and U+FEFF anywhere, including in
+     comments. Non-ASCII letters are allowed.
+   - In every service and socket command, including pre-start, post-start,
+     reload and stop commands, the executable word must literally name an
+     executable file of this release’s `bin/` under the release path or
+     `/opt/authority-host/current`. Use an unprefixed executable path, as in the seat, notifier and
+     witness units. Both release checks report `decision-exec` for a systemd
+     execution prefix (including `+`, `!`, `:`, `@` and `-`), a relative path,
+     a path alias, or `$` or `%` expansion in the executable word.
    - A static release has no unit that starts a program: no file under
      `etc/systemd`, a drop-in included, with a `[Service]` section and an
      `ExecStart=` line. Any other release has at least one (a *decision
@@ -2353,8 +2391,8 @@ folder's alone.
   switch before anything changes when the owner's link of the unit (setup
   step 5, below) is missing; a link that dangles passes, as it must before
   the first switch. (`systemd-analyze verify` reads the release's own path,
-  so it passes without the link, and the reload's restart and the stop list's
-  stop would fail with exit 5 after `current` moved.)
+  so it passes without the link and the reload would fail to restart the seat
+  after `current` moved.)
 - `share/reload.list`: `systemctl daemon-reload`,
   `systemctl restart ataniq-seat.service`, `systemctl restart caddy`.
 - `share/health.cmd`: the front end's `/healthz`, and the seat's own over
@@ -2550,10 +2588,8 @@ ataniq-seat.service`): for the release a switch goes back from, and when
 no healthy release is left. The host's own `/etc/authority-host/stop.list`
 must stop every decision service of any release, so once the first switch
 to the seat's release ended `ok`, replace its line `/usr/bin/true` with
-`systemctl stop ataniq-seat.service` (not before: `systemctl stop` of a
-unit systemd does not know fails, exit 5, and a stop list that fails
-leaves a transaction in `stopping`). Until then the seat release's own
-list covers it. While the seat is stopped, decisions are not made at all;
+`systemctl stop ataniq-seat.service`. Use a separate stop command for each unit. After a stop reports exit 5,
+the switch still checks the canonical service names with systemd. While the seat is stopped, decisions are not made at all;
 the static status page stays.
 
 ### Rollback
@@ -2562,11 +2598,8 @@ the static status page stays.
 release's `stop.list` stops the seat, `current` goes back, and the earlier
 release's reload list runs. Back to another seat release, that restarts
 the seat from that release's binary. Back to the first (static) release,
-the seat stays stopped and the unit's link dangles: `systemctl stop
-ataniq-seat.service` then fails for a unit systemd does not know, so put
-`/usr/bin/true` back in the host's stop list (or remove the link) until
-a seat release is `current` again, or the next stop the host's list must
-make fails and the transaction stays in `stopping`. The seat's state is
+the seat stays stopped and the unit's link dangles. Its stop command can stay
+in the host list across rollbacks and retries. The seat's state is
 its key, in `/var/lib/seat`, which no switch touches; sessions are in
 memory and end with the process.
 
@@ -2583,8 +2616,8 @@ no way out to the network but the gate: a notice never decides, and what
 the notifier reaches does not widen what the seat reaches.
 
 The owner approved outbound access to Apple's push service for this unit,
-and for nothing else. It is the host's one outbound path besides the
-gate's: the unit's `IPAddressDeny=any` stays, and the owner's drop-in
+and for nothing else. In the seat-and-notifier release this adds one
+outbound path alongside the gate's. The unit's `IPAddressDeny=any` stays, and the owner's drop-in
 (setup step 4) allows the resolver and the push service's range and no
 other address. The host's firewall keeps it to TCP port 443 there (the
 owner's rule, below).
@@ -2598,10 +2631,10 @@ key for the push service; it is no key of any model's provider.
 
 The notifier's part of the release source is `notify/`, laid over this
 folder and then over the seat's part (`seat/`): it holds only `etc/` and
-`share/`, and adds the unit and replaces two of the seat's lists. It is
+`share/`, and adds the unit and replaces three of the seat's lists. It is
 not usable without the seat's part, since its lists are the seat's with
 the notifier's lines added (a test holds them to that). The Caddyfile, the
-stop list, the health commands and the no-AI check's lists are the seat's
+health commands and the no-AI check's lists are the seat's
 and this folder's.
 
 - `etc/systemd/system/ataniq-seat-notify.service`: the service. It runs
@@ -2640,15 +2673,10 @@ and this folder's.
   `systemctl restart ataniq-seat-notify.service` added before the seat's own
   restart, so the notifier's socket is there when the seat starts.
 
-`stop.list` is not changed: the stop lists stop the decision services, and
-the notifier decides nothing. `ah-release check` asks every unit that starts
-a program to be stopped in `stop.list`, and excuses this one unit, by its
-name, from that (and from counting as the decision service a release that is
-not static must have), but only while every `ExecStart` of the unit and of
-its drop-ins runs the release's `bin/ataniq-seat-notify` and no other binary
-of the release: a unit of that name that runs another binary (the seat's, say)
-is stopped like any other, so the name cannot hide a decision service. It
-asks it a validator and a restart like any other.
+- `share/stop.list` stops both the seat and the notifier. The release
+  checker requires a stop for each shipped service. The notifier alone
+  still cannot satisfy a release's requirement for a decision service.
+
 `units.allow` and `ports.allow` are not changed either: the unit is never
 enabled, and it listens on no TCP port. The seat's unit gets one optional
 word, `$SEAT_NOTIFY_ARGS`, which is nothing unless the owner's `seat.env`
@@ -2781,7 +2809,10 @@ repository.
    It dangles until `current` is a release that has the notifier, and
    systemd passes over it meanwhile. Without it the validator
    `test -L /etc/systemd/system/ataniq-seat-notify.service` stops the
-   switch before anything changes.
+   switch before anything changes. Add `systemctl stop ataniq-seat-notify.service`
+   to `/etc/authority-host/stop.list` before activation. On an existing
+   deployment add it before the next switch or rollback, so the notifier can
+   be stopped even if the departing release omitted it.
 6. Tell the seat where the socket is: add
    `SEAT_NOTIFY_ARGS=--notify-socket /run/seat-notify/notify.sock` to
    `/etc/authority-host/seat/seat.env`. The seat reads it when it starts, at
@@ -2876,10 +2907,8 @@ them.
 ### Rollback
 
 `ah-switch --rollback-to previous` goes back as for any release. Back to a
-seat release without the notifier, the notifier keeps running from the
-earlier release's binary, which stays in `releases/`, until it is stopped by
-hand (`systemctl stop ataniq-seat-notify.service`); the earlier seat unit
-has no `$SEAT_NOTIFY_ARGS`, so that seat tells it nothing. To stop notices
+seat release without the notifier, the switch confirms the notifier is inactive
+or absent before releasing the decision inhibit. To stop notices
 without a rollback, stop the notifier, or remove the `SEAT_NOTIFY_ARGS` line
 from `seat.env` and restart the seat. The notifier's state, the key and the
 subscriptions in `/var/lib/seat-notify`, is not touched by any switch. A new
@@ -2888,3 +2917,21 @@ to a subscription only from the key it was made for: to replace the key,
 stop the notifier, move `vapid.pem` and `subscriptions.json` aside, run
 `vapid-init` again on the same path, start the notifier and subscribe
 again.
+
+## The witness
+
+The optional `ataniq-witness.service` records the enrolled home's checkpoint
+and current writer fence. It polls one home over pinned TLS. The only listener
+is a private Unix socket for local root with the owner's separate TLS key.
+The seat, notifier and deploy accounts need no access to it.
+
+On the development host, add `witness/.` to the composed seat-and-notifier
+source **before** filling the baseline, and include the Linux witness binary
+in the signed release. The overlay adds validation, restart, signed status
+and stop commands. The owner links the unit through `current`. Only the
+switch starts it at activation and boot. The persistent directory belongs to
+the witness account and survives a software rollback.
+
+Installation is the owner's step. The procedure covers provisioning both
+peers, the firewall, first activation, loss of service, storage recovery,
+backup limitations and retiring a home. [Witness operator procedure](../../docs/authority-host-witness.md)

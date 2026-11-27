@@ -41,14 +41,14 @@ func activeOwn(t *testing.T) *env {
 // TestGoingBackUsesTheOldReleasesLists: after rel3 fails its health check,
 // the switch stops rel3's services with rel3's own stop list, goes back to
 // rel2 and runs rel2's reload and health commands, not rel3's, and its
-// no-AI check; it runs neither the host's stop list nor rel2's.
+// no-AI check. The host stop list runs first.
 func TestGoingBackUsesTheOldReleasesLists(t *testing.T) {
 	e := activeOwn(t)
 	e.runner.fail["health-probe"] = -1
 	if code := e.switchTo(rel3); code != ExitFailed {
 		t.Fatalf("exit %d", code)
 	}
-	e.ran(map[string]int{"reload-units": 1, "reload-old": 1, "health-old": 1, "stop-all": 0, "stop-app": 1, "stop-old": 0})
+	e.ran(map[string]int{"reload-units": 1, "reload-old": 1, "health-old": 1, "stop-all": 2, "stop-app": 1, "stop-old": 1})
 	var order []string
 	for _, c := range e.runner.calls {
 		if f := strings.Fields(c); f[0] == "stop-app" || f[0] == "reload-old" || strings.Contains(c, "--phase post --root "+e.root+" --release "+e.relDir(rel2)+" ") {
@@ -83,7 +83,7 @@ func TestFailedRecovery(t *testing.T) {
 			if rec.Result != ResultFailedRecovery || rec.RestoredHealth != "failed" || rec.FailedStep != "health" || !rec.ServicesStopped {
 				t.Errorf("record: %+v", rec)
 			}
-			e.ran(map[string]int{"stop-all": 1, "stop-app": 2, "stop-old": 1})
+			e.ran(map[string]int{"stop-all": 3, "stop-app": 2, "stop-old": 2})
 			if !strings.Contains(e.last, "the decision services are stopped") {
 				t.Errorf("output:\n%s", e.last)
 			}
@@ -169,7 +169,7 @@ func TestUnusableFallback(t *testing.T) {
 			if got := e.link("current"); got != "releases/"+rel3 {
 				t.Errorf("current -> %q", got)
 			}
-			e.ran(map[string]int{"stop-all": 1, "stop-app": 1, "stop-old": 0, "reload-old": 0})
+			e.ran(map[string]int{"stop-all": 2, "stop-app": 1, "stop-old": 0, "reload-old": 0})
 		})
 	}
 }
@@ -297,7 +297,7 @@ func TestReconcileFailedRecovery(t *testing.T) {
 	if code := e.switchTo("0004-ddddddd"); code != ExitFailed {
 		t.Fatalf("exit %d", code)
 	}
-	e.ran(map[string]int{"stop-all": 1, "stop-app": 2, "stop-old": 1, "ah-noaicheck": 0})
+	e.ran(map[string]int{"stop-all": 3, "stop-app": 2, "stop-old": 2, "ah-noaicheck": 0})
 	if !strings.Contains(e.last, "result: failed-recovery") || !strings.Contains(e.last, "nothing else is done") {
 		t.Errorf("output:\n%s", e.last)
 	}
@@ -586,7 +586,7 @@ func TestRestoringNotSavedStillStops(t *testing.T) {
 	if !strings.Contains(e.last, "result: unresolved") || !strings.Contains(e.last, "txn.json stays in phase activating") {
 		t.Errorf("output:\n%s", e.last)
 	}
-	e.ran(map[string]int{"stop-app": 1, "stop-all": 1, "reload-old": 0})
+	e.ran(map[string]int{"stop-app": 1, "stop-all": 2, "reload-old": 0})
 	if j, ok := e.journal(); !ok || j.Phase != PhaseActivating {
 		t.Errorf("journal: %+v, %v", j, ok)
 	}
@@ -732,27 +732,34 @@ func TestRefusedHostStopListDoesNotBlockRecovery(t *testing.T) {
 			t.Errorf("output:\n%s", e.last)
 		}
 	})
-	t.Run("activating", func(t *testing.T) {
-		// rel2 has lists of its own, so going back to it passes while
-		// rel3's health check fails.
-		e := activeOwn(t)
-		e.crashAt(CrashActivating, false, rel3)
-		refuse(e)
-		e.runner.fail["health-probe"] = -1
-		e.runner.reset()
-		if code := e.switchTo(rel3); code != ExitFailed {
-			t.Fatalf("exit %d\n%s", code, e.last)
-		}
-		// The transaction was resumed and went back; the refusal is
-		// reported, and the request itself is not carried on with.
-		if rec := e.record(); rec.Result != ResultRolledBack || rec.RestoredHealth != "ok" {
-			t.Errorf("record: %+v", rec)
-		}
-		e.links(rel2, rel1)
-		e.noJournal()
-		e.ran(map[string]int{"stop-app": 1, "stopper": 0, "stop-all": 0})
-		if !strings.Contains(e.last, "stop-list-refused") || !strings.Contains(e.last, "nothing else done") {
-			t.Errorf("output:\n%s", e.last)
-		}
-	})
+	for _, tc := range []struct{ point, phase, stop string }{
+		{CrashActivating, PhaseActivating, "stop-old"},
+		{CrashRestoring, PhaseRestoring, "stop-app"},
+	} {
+		t.Run(tc.phase, func(t *testing.T) {
+			// rel2 has lists of its own, so going back to it passes while
+			// rel3's health check fails.
+			e := activeOwn(t)
+			e.runner.fail["health-probe"] = -1
+			e.crashAt(tc.point, false, rel3)
+			refuse(e)
+			e.runner.reset()
+			if code := e.switchTo(rel3); code != ExitFailed {
+				t.Fatalf("exit %d\n%s", code, e.last)
+			}
+			// The verified departing stops still run, but reloading waits for the
+			// owner to repair the host stop list.
+			if j, ok := e.journal(); !ok || j.Phase != tc.phase {
+				t.Fatalf("journal: %+v", j)
+			}
+			if _, held := e.inhibited(); !held {
+				t.Fatal("cleared inhibit")
+			}
+			e.links(rel3, rel2)
+			e.ran(map[string]int{tc.stop: 1, "stopper": 0, "stop-all": 0})
+			if !strings.Contains(e.last, "stop-list-refused") || !strings.Contains(e.last, "nothing else done") {
+				t.Errorf("output:\n%s", e.last)
+			}
+		})
+	}
 }

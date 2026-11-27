@@ -3,6 +3,8 @@ package release
 import (
 	"errors"
 	"syscall"
+
+	"ataniq/internal/authorityhost/noaicheck"
 )
 
 // The codes of a refusal or a finding, each with its fixed reason. A line is
@@ -69,6 +71,7 @@ const (
 	CodeStaticService  = "static-has-service"
 	CodeNoService      = "no-decision-service"
 	CodeInhibitCond    = "inhibit-start-condition"
+	CodeWitness        = "witness-service"
 	CodeDecisionExec   = "decision-exec"
 	CodeValidatorNone  = "validator-missing"
 	CodeValidatorTwice = "validator-twice"
@@ -129,22 +132,26 @@ var reasons = map[string]string{
 	CodeManifest:     "MANIFEST is missing or invalid",
 	CodeManifestID:   "MANIFEST does not describe the folder",
 
-	CodeListMissing:    "a command list is missing",
-	CodeListInvalid:    "a command list does not parse as the switch reads it",
-	CodeListEmpty:      "a command list holds no command",
-	CodeProgram:        "a program named in a list is not in the release",
-	CodeProgramExec:    "a program named in a list has no execute bit",
-	CodeUnitUnreadable: "a unit file could not be read",
-	CodeUnitPlacehold:  "a unit file still holds {release}, which ah-release build replaces with the release's folder",
-	CodeStaticService:  "a static release carries a service unit",
-	CodeNoService:      "no decision service, but the release is not static",
-	CodeInhibitCond:    "a unit gates its start on the decision inhibit",
-	CodeDecisionExec:   "a decision service does not run a binary of the release",
-	CodeValidatorNone:  "no validator for a shipped file",
-	CodeValidatorTwice: "more than one validator for a file",
-	CodeValidatorOther: "a validator names a file the release does not ship there",
-	CodeReloadNone:     "reload.list does not restart or reload what the release ships",
-	CodeStopNone:       "stop.list does not stop a decision service",
+	CodeListMissing:      "a command list is missing",
+	CodeListInvalid:      "a command list does not parse as the switch reads it",
+	CodeListEmpty:        "a command list holds no command",
+	CodeProgram:          "a program named in a list is not in the release",
+	CodeProgramExec:      "a program named in a list has no execute bit",
+	CodeUnitUnreadable:   "a unit file could not be read",
+	CodeUnitPlacehold:    "a unit file still holds {release}, which ah-release build replaces with the release's folder",
+	CodeStaticService:    "a static release carries a service unit",
+	CodeNoService:        "no decision service, but the release is not static",
+	CodeInhibitCond:      "a unit gates its start on the decision inhibit",
+	CodeWitness:          "witness isolation, component or health check is invalid",
+	noaicheck.UnitSyntax: "unit contains a continuation, invalid UTF-8, or a forbidden control, whitespace or format character",
+	CodeDecisionExec:     "a decision service does not run a binary of the release",
+	CodeValidatorNone:    "no validator for a shipped file",
+	CodeValidatorTwice:   "more than one validator for a file",
+	CodeValidatorOther:   "a validator names a file the release does not ship there",
+	CodeReloadNone:       "reload.list does not restart or reload what the release ships",
+	CodeStopNone:         "stop.list does not stop a decision service",
+
+	noaicheck.UserService: "release services must use the system manager",
 
 	CodeNoAIStart:   "the shipped no-AI check did not start",
 	CodeNoAITimeout: "the shipped no-AI check did not finish in 60 seconds",

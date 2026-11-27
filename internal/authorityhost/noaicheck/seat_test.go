@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -29,7 +30,8 @@ func TestShippedSeatFilesPassTheReleaseScan(t *testing.T) {
 		t.Fatal(err)
 	}
 	plant := func(f *fixture) {
-		f.file(releaseDir+"/etc/systemd/system/ataniq-seat.service", string(unit))
+		f.exe(releaseDir + "/bin/ataniq-seat")
+		f.file(releaseDir+"/etc/systemd/system/ataniq-seat.service", strings.ReplaceAll(string(unit), "{release}", "/"+releaseDir))
 		f.file(releaseDir+"/etc/caddy/Caddyfile", string(caddyfile))
 	}
 	for _, tc := range []struct {

@@ -49,6 +49,7 @@ func (c *Checker) CheckPorts() {
 	if len(c.lists.PortsAllow) == 0 && c.RequirePolicy {
 		c.notEnforced(FilePortsAllow, DetailEmpty, "")
 	}
+	witnessUID := c.witnessUID()
 	for _, f := range []struct {
 		rel, proto string
 		required   bool
@@ -76,11 +77,50 @@ func (c *Checker) CheckPorts() {
 			c.hit(KindUnreadable, show(f.rel), describe(err))
 		}
 		for _, s := range socks {
-			if !slices.Contains(c.lists.PortsAllow, int(s.Port())) {
+			if s.uid == witnessUID || !slices.Contains(c.lists.PortsAllow, int(s.Port())) {
 				c.hit(KindPort, f.proto+":"+s.String(), "")
 			}
 		}
 	}
+}
+
+// Check the owner of each live listener even on a baseline-approved port.
+func (c *Checker) witnessUID() string {
+	_, data, err := c.t.readFile("etc/passwd", 16<<20)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			c.hit(KindUnreadable, "/etc/passwd", "missing")
+		} else {
+			c.unreadable("etc/passwd", err)
+		}
+		return ""
+	}
+	var uid string
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Split(line, ":")
+		if f[0] != "ataniq-witness" {
+			continue
+		}
+		if len(f) != 7 || uid != "" {
+			c.hit(KindUnit, show(WitnessUnit), "witness-account")
+			return ""
+		}
+		n, err := strconv.ParseUint(f[2], 10, 32)
+		if err != nil || n == 0 {
+			c.hit(KindUnit, show(WitnessUnit), "witness-account")
+			return ""
+		}
+		uid = strconv.FormatUint(n, 10)
+	}
+	if uid == "" && c.witnessExpected() {
+		c.hit(KindUnit, show(WitnessUnit), "witness-account")
+	}
+	return uid
+}
+
+type listenerSocket struct {
+	netip.AddrPort
+	uid string
 }
 
 // listening returns the local address of every listening socket in the
@@ -89,13 +129,13 @@ func (c *Checker) CheckPorts() {
 // line is errNoHeader. The lines it can read are returned with an error
 // naming the first one it cannot; a local address of the other family
 // (four bytes in tcp6, sixteen in tcp) is a line it cannot read.
-func listening(data, proto string) ([]netip.AddrPort, error) {
+func listening(data, proto string) ([]listenerSocket, error) {
 	lines := strings.Split(data, "\n")
 	remote, ok := remoteColumn[proto]
 	if h := strings.Fields(lines[0]); !ok || len(h) < 4 || h[0] != "sl" || h[1] != "local_address" || h[2] != remote || h[3] != "st" {
 		return nil, errNoHeader
 	}
-	var out []netip.AddrPort
+	var out []listenerSocket
 	var bad error
 	for i, line := range lines {
 		f := strings.Fields(line)
@@ -114,7 +154,16 @@ func listening(data, proto string) ([]netip.AddrPort, error) {
 			bad = firstBad(bad, i)
 			continue
 		}
-		out = append(out, ap)
+		if len(f) < 8 {
+			bad = firstBad(bad, i)
+			continue
+		}
+		uid, err := strconv.ParseUint(f[7], 10, 32)
+		if err != nil {
+			bad = firstBad(bad, i)
+			continue
+		}
+		out = append(out, listenerSocket{ap, strconv.FormatUint(uid, 10)})
 	}
 	return out, bad
 }
