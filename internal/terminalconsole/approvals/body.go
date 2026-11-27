@@ -66,6 +66,13 @@ func sizeText(n int64) string {
 
 func itoa(n int) string { return strconv.Itoa(n) }
 
+func bindingTagLine(digest string) string {
+	if tag := card.BindingTag(digest); tag != "" {
+		return "Binding tag: " + tag
+	}
+	return "Binding tag unavailable"
+}
+
 // leadFlow lays out the escaped text of t after prefix. The row says when
 // the text was cut.
 func (b *builder) leadFlow(prefix []seg, indent int, t card.LeadText, tail []seg) (first, last int) {
@@ -170,6 +177,7 @@ func (m *Model) buildBody() {
 		b.head(wordDiffers, card.DiffersLabel)
 		b.flow([]seg{{"  ", sText}}, 2, c.DiffersRefused, sWarn, nil)
 	}
+	b.flow(nil, 0, bindingTagLine(c.BindingSHA256), sDim, nil)
 	if cs.whenInBody(b.w) {
 		_, right := cs.titleParts("")
 		b.add(seg{"When  ", sHead}, seg{right, sText})
