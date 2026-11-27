@@ -32,7 +32,16 @@ next init removes and reports any stale `.registry-check-*` replay directories
 left in the root by an interrupted earlier build. A corrupt record leaves the original journal and identity
 untouched. After validation, init atomically replaces the old journal with
 a version 2 journal bound to the authority and incarnation, preserving its
-records. Older builds cannot open this journal. Repeating init keeps the original key
+records. Init prints `journal=created` for a new journal,
+`journal=existing` for an already bound journal, or `journal=migrated` with
+the number of complete records after the header and the backup path.
+Before binding a v1 journal, init saves its exact bytes, including an
+unfinished tail, as `registry/registry.jsonl.v1` (0600). Allow space for
+the backup and the replacement journal. A retry can reuse an identical
+backup. If an earlier backup differs, move that backup offline first.
+
+Older builds cannot open the migrated journal. The daemon reads only
+`registry/registry.jsonl` and refuses the v1 backup if copied into its place. Repeating init keeps the original key
 and label. Supply `--label` only on the first init. Any later `--label`,
 including an empty or identical value, is refused. On startup the daemon
 refuses a missing, damaged or unsafe identity, an unbound journal, or a

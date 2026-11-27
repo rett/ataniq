@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -810,4 +811,47 @@ func TestRepairDamagedStoreIncarnation(t *testing.T) {
 		t.Fatal(err)
 	}
 	reg.Close()
+}
+
+func TestInitReportsJournalMigrationAndRefusesBackupAtRun(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state")
+	init := func(want string) {
+		t.Helper()
+		ta := newTestApp(t, nil)
+		if code := ta.run([]string{"init", "--state-dir", state}); code != 0 || !strings.Contains(ta.out.String(), "\n"+want+"\n") {
+			t.Fatalf("init: %d %s%s", code, ta.out.String(), ta.err.String())
+		}
+	}
+	init("journal=created")
+	init("journal=existing")
+	v1, err := os.ReadFile("../../internal/leadregistry/testdata/v1-base/registry.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := journalPath(state)
+	data := append(v1, "torn"...)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	init(fmt.Sprintf("journal=migrated records=%d backup=registry/registry.jsonl.v1", bytes.Count(data, []byte("\n"))-1))
+	init("journal=existing")
+	backup := path + ".v1"
+	got, err := os.ReadFile(backup)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("original v1 backup: %v", err)
+	}
+	st, err := os.Stat(backup)
+	if err != nil || st.Mode() != 0600 {
+		t.Fatalf("backup metadata: %v %v", st, err)
+	}
+	if err := os.WriteFile(path, got, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ta := newTestApp(t, nil)
+	if code := ta.run([]string{"run", "--state-dir", state, "--runtime-dir", shortDir(t)}); code != leaddaemon.ExitRegistry || !strings.Contains(ta.err.String(), "no instance binding") {
+		t.Fatalf("run with v1 backup: %d %s", code, ta.err.String())
+	}
+	if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, data) {
+		t.Fatal("run altered the backup used as a journal")
+	}
 }

@@ -49,79 +49,87 @@ func (a *app) initCmd(args []string) int {
 		fmt.Fprintln(a.stderr, "ataniqd init: --leave-old-journal requires --restored")
 		return leaddaemon.ExitUsage
 	}
-	id, err := a.initializeInstance(stateDir, label, restored, leaveJournal)
+	result, err := a.initializeInstance(stateDir, label, restored, leaveJournal)
 	if err != nil {
 		fmt.Fprintln(a.stderr, "ataniqd init:", leaddaemon.SafeText(err.Error()))
 		return leaddaemon.ExitState
 	}
+	id := result.Identity
 	fmt.Fprintf(a.stdout, "authority=%s\nincarnation=%s\n", id.Authority, id.Incarnation)
 	if id.Label != "" {
 		fmt.Fprintf(a.stdout, "label=%s\n", leaddaemon.SafeText(id.Label))
 	}
+	switch result.Journal {
+	case "migrated":
+		fmt.Fprintf(a.stdout, "journal=migrated records=%d backup=%s/%s\n", result.Records, leaddaemon.RegistryDirName, leadregistry.LegacyFileName)
+	case "created", "existing":
+		fmt.Fprintf(a.stdout, "journal=%s\n", result.Journal)
+	}
 	return leaddaemon.ExitOK
 }
 
-func (a *app) initializeInstance(stateDir string, label *string, restored, leaveJournal bool) (instanceid.Identity, error) {
+func (a *app) initializeInstance(stateDir string, label *string, restored, leaveJournal bool) (leadregistry.InitResult, error) {
 	root, err := instanceid.OpenRoot(stateDir, !restored)
 	if err != nil {
-		return instanceid.Identity{}, err
+		return leadregistry.InitResult{}, err
 	}
 	defer root.Close()
 	// Serialize initializers, including restore on a root with no journal.
 	if err := unix.Flock(int(root.Fd()), unix.LOCK_EX); err != nil {
-		return instanceid.Identity{}, err
+		return leadregistry.InitResult{}, err
 	}
 	if err := a.cleanRegistryChecks(root); err != nil {
-		return instanceid.Identity{}, err
+		return leadregistry.InitResult{}, err
 	}
 	current, err := instanceid.CheckInit(root, restored)
 	if errors.Is(err, instanceid.ErrMissing) {
-		return instanceid.Identity{}, missingKeyError(stateDir, root)
+		return leadregistry.InitResult{}, missingKeyError(stateDir, root)
 	}
 	if err != nil {
-		return instanceid.Identity{}, err
+		return leadregistry.InitResult{}, err
 	}
 	if restored {
 		lock, err := leadlock.Acquire(leadlock.DaemonPath(stateDir))
 		if err != nil {
-			return instanceid.Identity{}, err
+			return leadregistry.InitResult{}, err
 		}
 		defer lock.Release()
 		header, err := leadregistry.ReadHeaderAt(root)
 		if err != nil {
-			return instanceid.Identity{}, fmt.Errorf("%s: %w", journalPath(stateDir), err)
+			return leadregistry.InitResult{}, fmt.Errorf("%s: %w", journalPath(stateDir), err)
 		}
 		if header != nil {
 			warning := fmt.Sprintf("the journal at %s will be unusable in the new incarnation", journalPath(stateDir))
 			if !leaveJournal {
-				return instanceid.Identity{}, fmt.Errorf("%s; move it offline or acknowledge with --leave-old-journal; see %s", warning, restoreGuide)
+				return leadregistry.InitResult{}, fmt.Errorf("%s; move it offline or acknowledge with --leave-old-journal; see %s", warning, restoreGuide)
 			}
 			fmt.Fprintf(a.stderr, "ataniqd init: warning: %s; see %s\n", leaddaemon.SafeText(warning), restoreGuide)
 		}
-		return instanceid.RestoreAt(root)
+		id, err := instanceid.RestoreAt(root)
+		return leadregistry.InitResult{Identity: id}, err
 	}
 	if current.Authority != "" && label != nil {
-		return instanceid.Identity{}, fmt.Errorf("%s already exists; --label is accepted only on first init", filepath.Join(stateDir, instanceid.FileName))
+		return leadregistry.InitResult{}, fmt.Errorf("%s already exists; --label is accepted only on first init", filepath.Join(stateDir, instanceid.FileName))
 	}
 	var display string
 	if label != nil {
 		display = *label
 	}
-	id, err := leadregistry.InitInstanceAt(root, leaddaemon.RegistryDirName, display)
+	result, err := leadregistry.InitInstanceAt(root, leaddaemon.RegistryDirName, display)
 	if err != nil {
 		if errors.Is(err, instanceid.ErrMissing) {
-			return id, missingKeyError(stateDir, root)
+			return result, missingKeyError(stateDir, root)
 		}
 		var pe *os.PathError
 		if errors.As(err, &pe) {
 			if !filepath.IsAbs(pe.Path) {
-				return id, &os.PathError{Op: pe.Op, Path: filepath.Join(stateDir, pe.Path), Err: pe.Err}
+				return result, &os.PathError{Op: pe.Op, Path: filepath.Join(stateDir, pe.Path), Err: pe.Err}
 			}
-			return id, err
+			return result, err
 		}
-		return id, fmt.Errorf("%s: %w", journalPath(stateDir), err)
+		return result, fmt.Errorf("%s: %w", journalPath(stateDir), err)
 	}
-	return id, nil
+	return result, nil
 }
 
 func initHint(stateDir string) string {

@@ -341,7 +341,7 @@ func checkJournalFile(dirFD, fd int, path string) error {
 		return fmt.Errorf("leadregistry: stat journal: %w", err)
 	}
 	var named unix.Stat_t
-	if err := unix.Fstatat(dirFD, FileName, &named, unix.AT_SYMLINK_NOFOLLOW); err != nil || st.Dev != named.Dev || st.Ino != named.Ino || st.Nlink != 1 {
+	if err := unix.Fstatat(dirFD, filepath.Base(path), &named, unix.AT_SYMLINK_NOFOLLOW); err != nil || st.Dev != named.Dev || st.Ino != named.Ino || st.Nlink != 1 {
 		return fmt.Errorf("%w: journal replaced or linked", ErrInsecure)
 	}
 	if st.Mode&unix.S_IFMT != unix.S_IFREG {

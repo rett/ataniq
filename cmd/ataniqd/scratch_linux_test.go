@@ -291,7 +291,7 @@ func TestScratchInstanceInitialization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "authority=" + id.Authority + "\nincarnation=" + id.Incarnation + "\nlabel=sample desk\n"; ta.out.String() != want {
+	if want := "authority=" + id.Authority + "\nincarnation=" + id.Incarnation + "\nlabel=sample desk\njournal=migrated records=0 backup=registry/registry.jsonl.v1\n"; ta.out.String() != want {
 		t.Fatalf("init output: %q", ta.out.String())
 	}
 	// Stop at the manager factory to exercise actual scratch startup through

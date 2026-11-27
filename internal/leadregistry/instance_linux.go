@@ -108,12 +108,20 @@ func InitInstance(stateDir, registryName, label string) (instanceid.Identity, er
 		return zero, err
 	}
 	defer root.Close()
-	return InitInstanceAt(root, registryName, label)
+	result, err := InitInstanceAt(root, registryName, label)
+	return result.Identity, err
+}
+
+// InitResult describes the journal that ordinary init left in place.
+type InitResult struct {
+	instanceid.Identity
+	Journal string // "created", "migrated" or "existing"
+	Records uint64 // complete records migrated after the v1 header
 }
 
 // InitInstanceAt uses the state directory already pinned by the initializer.
-func InitInstanceAt(root *os.File, registryName, label string) (instanceid.Identity, error) {
-	var zero instanceid.Identity
+func InitInstanceAt(root *os.File, registryName, label string) (InitResult, error) {
+	var zero InitResult
 	if !filepath.IsLocal(registryName) || filepath.Base(registryName) != registryName || registryName == "." {
 		return zero, errors.New("expected a registry directory name")
 	}
@@ -136,6 +144,7 @@ func InitInstanceAt(root *os.File, registryName, label string) (instanceid.Ident
 	if err != nil {
 		return zero, err
 	}
+	result := InitResult{Journal: "created"}
 	empty := offset == 0
 	if !empty {
 		h := header.payload.(*headerPayload)
@@ -147,7 +156,7 @@ func InitInstanceAt(root *os.File, registryName, label string) (instanceid.Ident
 			if err := h.match(id.Binding); err != nil {
 				return zero, err
 			}
-			return id, syncFD(fd)
+			return InitResult{Identity: id, Journal: "existing"}, syncFD(fd)
 		}
 		// Validate before publishing either identity file. Keep this same
 		// descriptor locked through replacement, including the second read.
@@ -163,6 +172,10 @@ func InitInstanceAt(root *os.File, registryName, label string) (instanceid.Ident
 			if err := r.replayLine(n, recordLine[:len(recordLine)-1]); err != nil {
 				return zero, err
 			}
+		}
+		result.Journal, result.Records = "migrated", r.seq
+		if err := saveLegacyJournal(fd, f); err != nil {
+			return zero, fmt.Errorf("retain %s: %w", LegacyFileName, err)
 		}
 		if _, err := f.Seek(offset, io.SeekStart); err != nil {
 			return zero, err
@@ -184,7 +197,8 @@ func InitInstanceAt(root *os.File, registryName, label string) (instanceid.Ident
 	if err := replaceJournal(fd, rd, newHeader, sum); err != nil {
 		return zero, err
 	}
-	return id, nil
+	result.Identity = id
+	return result, nil
 }
 
 // Rechain the original record bytes, including fields unknown to this build.
