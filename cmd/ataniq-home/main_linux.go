@@ -80,6 +80,9 @@ func parseCommand(args []string) (command, bool) {
 		}
 		c.events = n
 	}
+	if c.op == "check" {
+		c.op, c.check = "serve", true
+	}
 	return c, len(files) == 0
 }
 
@@ -125,24 +128,22 @@ func execute(cmd command, out io.Writer, uid int) error {
 	}
 	// Only an external binding directory can carry an installation marker.
 	// Existing pre-enrollment preflights can run without a usable binding.
-	if cmd.op != "check" && bindingOutsideState(c) {
+	if bindingOutsideState(c) {
 		dir, err := lockInstallation(c.Binding, false)
 		if err != nil {
 			return err
 		}
 		defer dir.Close()
 	}
-	if cmd.op != "check" {
-		retired, err := isRetired(c)
-		if err != nil {
-			return err
+	retired, err := isRetired(c)
+	if err != nil {
+		return err
+	}
+	if retired {
+		if cmd.op == "observe" {
+			return recordObserveError(c.State, errRetired)
 		}
-		if retired {
-			if cmd.op == "observe" {
-				return recordObserveError(c.State, errRetired)
-			}
-			return errRetired
-		}
+		return errRetired
 	}
 	pair, err := loadPairing(c)
 	if err != nil {
@@ -157,7 +158,7 @@ func execute(cmd command, out io.Writer, uid int) error {
 	if err != nil {
 		return err
 	}
-	if cmd.op == "check" || cmd.check {
+	if cmd.check {
 		_, err = fmt.Fprintln(out, "home check ok")
 		return err
 	}

@@ -127,8 +127,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 sh scripts/go-tool.sh build -trimpath -o b
    from the seat, gate, notifier and deploy tools.
 5. Exchange pins over an independent authenticated channel. At the witness
    record the home's TLS SPKI SHA-256 fingerprint and Ed25519 public key.
-   At the home provision the witness TLS certificate (DER for
-   `link.NewEndpoint`), verify its SPKI fingerprint, and pin the witness
+   At the home provision the witness TLS certificate as one raw DER certificate
+   or the single CERTIFICATE block in `cert.pem` from `gate-init --identity`.
+   Set `witness_cert` to the protected copy, verify its SPKI fingerprint, and pin the witness
    Ed25519 public key, exact slot and activation epoch. The witness pins the
    local owner's TLS fingerprint. The local owner pins the witness's TLS
    fingerprint, Ed25519 key and epoch. Verify the values at both devices

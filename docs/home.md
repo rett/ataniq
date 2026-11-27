@@ -62,11 +62,11 @@ Keep managed admission closed throughout the pilot.
 
 4. **Exchange pins in both directions.** Over an independently authenticated
    channel, provision the witness with `home_tls_pin`, `home_public_key`,
-   `home_endpoint` and the owner TLS pin. Add the witness certificate in DER
-   format and its two 64-digit lowercase hex public values to the home config.
+   `home_endpoint` and the owner TLS pin. Add the witness certificate (one raw DER certificate or
+   the single `cert.pem` CERTIFICATE block from identity creation) and its two 64-digit lowercase hex public values to the home config.
 
    ```json
-   "witness_cert": "/etc/ataniq-home/witness.der",
+   "witness_cert": "/etc/ataniq-home/witness.pem",
    "witness_tls_pin": "WITNESS_SPKI_SHA256",
    "witness_public_key": "WITNESS_ED25519_PUBLIC_HEX"
    ```
@@ -74,8 +74,8 @@ Keep managed admission closed throughout the pilot.
    Compare each value on both devices, including the slot, epoch and expected
    source prefix. Run `ataniq-home check --config /etc/ataniq-home/config.json`
    or `ataniq-home serve --check --config /etc/ataniq-home/config.json`.
-   Both construct the endpoint and print `home check ok` without binding a
-   port. The witness's local check also requires its initialized store in step 6.
+   Both check retirement and the protected installation directory, construct
+   the endpoint and print `home check ok` without binding a port. The witness's local check also requires its initialized store in step 6.
 
 5. **Sign the activation record.** Record the witness identity, signing key,
    activation epoch and directory commitment. Keep the owner's signed copy
