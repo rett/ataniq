@@ -481,6 +481,11 @@ for that lead do nothing and say so. `m` says why it does nothing when the lead
 has no epoch, when messages are off, when the epoch's message was sent, and when
 an earlier message of the epoch has no final answer.
 
+If the lead list goes offline while a message is in flight, its receipt still
+counts for the original lead and epoch. When the list returns, select the lead
+again. If the receipt confirms nothing was sent and the epoch's message is
+free, `m` opens a new editor.
+
 ### Receipts
 
 Every command is shown with the daemon's receipt for it. The words are the

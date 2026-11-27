@@ -93,6 +93,46 @@ func TestEpochChangeInvalidatesPendingTicket(t *testing.T) {
 	}
 }
 
+func TestOfflineMessageReceiptSettlesTheOriginalEpoch(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		receipt Receipt
+		retry   bool
+	}{
+		{"refused", Receipt{Status: Refused}, true},
+		{"not delivered", Receipt{Status: Done, Outcome: OutcomeNotNow, Reason: ReasonNotReady, Written: WrittenNothing}, true},
+		{"unknown", Receipt{Status: Uncertain}, false},
+		{"earlier refusal", Receipt{Status: Refused, Earlier: true}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBackend(t)
+			f.listing.Leads = []Lead{aRunning("alpha")}
+			f.answer = func(call) (Receipt, error) { return tc.receipt, nil }
+			r := newRig(t, f, 120, 30)
+			r.key("m")
+			r.typ("hello")
+			send, _ := r.m.Update(keyMsg("enter"))
+			f.inCmd = true
+			reply := send()
+			f.inCmd = false
+
+			f.listErr = errLost
+			r.run(r.m.Refresh())
+			r.feed(reply)
+			f.listErr = nil
+			r.run(r.m.Refresh())
+			r.key("j")
+			r.key("m")
+			if r.m.FieldOpen() != tc.retry {
+				t.Errorf("editor open = %v, want %v after receipt", r.m.FieldOpen(), tc.retry)
+			}
+			if tc.receipt.Outcome == OutcomeNotNow {
+				r.seen("free (not delivered)")
+			}
+		})
+	}
+}
+
 func TestSelectionIdentityRefusesDuplicateRoutingRoleBeyondDisplayLimit(t *testing.T) {
 	f := twoLeads(t)
 	r := newRig(t, f, 120, 30)
