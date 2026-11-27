@@ -12,8 +12,8 @@ Federation does not require a central instance or a shared provider.
 Before the first run, use `ataniqd init --state-dir DIR [--label TEXT]` as the
 daemon user. Omitting `--state-dir` selects the same default as `run`. The
 command creates `DIR/instance.key`, a singly linked, user-owned 0600 file in
-the private state root. The authority ID is 64 lowercase hexadecimal digits encoding SHA-256 over the
-ASCII bytes of `ataniq-instance-authority/1` immediately followed by the
+the private state root. The authority ID is 64 lowercase hexadecimal digits
+encoding SHA-256 over the ASCII bytes of `ataniq-instance-authority/1` immediately followed by the
 32 raw bytes of the Ed25519 public key (no separator or trailing newline). The
 store incarnation is an independent random 16-byte value kept in the
 private file `DIR/store.incarnation` and displayed as 32 lowercase
@@ -21,12 +21,17 @@ hexadecimal digits. Recreating and initializing the root generates
 both values afresh. The optional label is for display only.
 
 For an existing scratch root, stop the daemon and run the same init command
-with the configuration's `state_root`. It validates the old journal and
-atomically replaces it with a version 2 journal bound to the authority and
-incarnation, preserving its records. Repeating init keeps the original key
+with the configuration's `state_root`. Before creating a key, init checks a
+private temporary copy of the existing journal in the state root. Allow space
+for one copy. A corrupt record leaves the original journal and identity
+untouched. After validation, init atomically replaces the old journal with
+a version 2 journal bound to the authority and incarnation, preserving its
+records. Older builds cannot open this journal. Repeating init keeps the original key
 and label. Supply `--label` only on the first init. Any later `--label`,
-including an empty or identical value, is refused. On startup the daemon refuses a missing, damaged or unsafe key,
-an unbound journal, or a journal from another instance or incarnation.
+including an empty or identical value, is refused. On startup the daemon
+refuses a missing, damaged or unsafe identity, an unbound journal, or a
+journal from another instance or incarnation.
+
 A backup of `instance.key` holds the private Ed25519 seed. Protect it as a
 credential. A copied root (including a copy made with `cp -a`) is the same
 instance and must never run beside the original.

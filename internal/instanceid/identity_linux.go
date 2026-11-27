@@ -158,22 +158,43 @@ func Load(path string) (Identity, error) {
 		return Identity{}, err
 	}
 	defer root.Close()
-	return loadAt(int(root.Fd()), path)
+	return readIdentity(int(root.Fd()), path, existing)
 }
 
 // LoadAt reads both identity files relative to a pinned state root.
 func LoadAt(root int) (Identity, error) {
-	return loadAt(root, "")
+	return readIdentity(root, "", existing)
 }
 
-func loadAt(root int, dir string) (Identity, error) {
+type readMode int
+
+const (
+	existing readMode = iota
+	firstInit
+	restore
+)
+
+// CheckInit validates both existing files before the command creates a
+// journal or takes the daemon lock. An empty authority means init needs a new
+// key. A restored root must already have its key and may lack an incarnation.
+func CheckInit(root *os.File, restored bool) (Identity, error) {
+	mode := firstInit
+	if restored {
+		mode = restore
+	}
+	return readIdentity(int(root.Fd()), root.Name(), mode)
+}
+
+func readIdentity(root int, dir string, mode readMode) (Identity, error) {
 	id, err := loadKey(root)
-	if err != nil {
+	if err != nil && !(mode == firstInit && errors.Is(err, ErrMissing)) {
 		return Identity{}, &os.PathError{Op: "load", Path: filepath.Join(dir, FileName), Err: err}
 	}
 	id.Incarnation, err = loadIncarnation(root)
 	if errors.Is(err, ErrMissing) {
-		// A key without a store is not an uninitialized (legacy) root.
+		if id.Authority == "" || mode == restore {
+			return id, nil
+		}
 		err = fmt.Errorf("%w: missing store incarnation; after restoring a key use init --restored", ErrInvalid)
 	}
 	if err != nil {
@@ -254,19 +275,17 @@ func InitAt(root *os.File, label string) (Identity, error) {
 	if err := checkRoot(fd); err != nil {
 		return Identity{}, err
 	}
-	id, err := loadAt(fd, root.Name())
-	if err == nil {
-		return id, root.Sync()
-	}
-	if !errors.Is(err, ErrMissing) {
+	id, err := CheckInit(root, false)
+	if err != nil {
 		return Identity{}, err
 	}
-	if _, err := loadIncarnation(fd); errors.Is(err, ErrMissing) {
+	if id.Authority != "" {
+		return id, root.Sync()
+	}
+	if id.Incarnation == "" {
 		if err := writeIncarnation(root, unix.RENAME_NOREPLACE); err != nil {
 			return Identity{}, err
 		}
-	} else if err != nil {
-		return Identity{}, &os.PathError{Op: "load", Path: filepath.Join(root.Name(), IncarnationFile), Err: err}
 	}
 	payload := make([]byte, ed25519.SeedSize+len(label))
 	defer clear(payload)
@@ -275,23 +294,19 @@ func InitAt(root *os.File, label string) (Identity, error) {
 	if err := publish(root, FileName, magic, payload, unix.RENAME_NOREPLACE); err != nil {
 		return Identity{}, err
 	}
-	return loadAt(fd, root.Name())
+	return readIdentity(int(root.Fd()), root.Name(), existing)
 }
 
 // RestoreAt gives a restored key a fresh store incarnation. The caller
 // excludes daemon starts and other initializers during the restore.
 func RestoreAt(root *os.File) (Identity, error) {
-	fd := int(root.Fd())
-	if _, err := loadKey(fd); err != nil {
-		return Identity{}, &os.PathError{Op: "restore", Path: filepath.Join(root.Name(), FileName), Err: err}
-	}
-	if _, err := loadIncarnation(fd); err != nil && !errors.Is(err, ErrMissing) {
-		return Identity{}, &os.PathError{Op: "restore", Path: filepath.Join(root.Name(), IncarnationFile), Err: err}
+	if _, err := CheckInit(root, true); err != nil {
+		return Identity{}, err
 	}
 	if err := writeIncarnation(root, 0); err != nil {
 		return Identity{}, err
 	}
-	return loadAt(fd, root.Name())
+	return readIdentity(int(root.Fd()), root.Name(), existing)
 }
 
 func writeIncarnation(root *os.File, flags uint) error {

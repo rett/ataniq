@@ -66,6 +66,10 @@ func initializeInstance(stateDir string, label *string, restored bool) (instance
 	if err := unix.Flock(int(root.Fd()), unix.LOCK_EX); err != nil {
 		return instanceid.Identity{}, err
 	}
+	current, err := instanceid.CheckInit(root, restored)
+	if err != nil {
+		return instanceid.Identity{}, err
+	}
 	if restored {
 		lock, err := leadlock.Acquire(leadlock.DaemonPath(stateDir))
 		if err != nil {
@@ -74,16 +78,19 @@ func initializeInstance(stateDir string, label *string, restored bool) (instance
 		defer lock.Release()
 		return instanceid.RestoreAt(root)
 	}
+	switch {
+	case current.Authority == "":
+		if err := validateBeforeKey(root); err != nil {
+			if errors.Is(err, instanceid.ErrMissing) {
+				return instanceid.Identity{}, fmt.Errorf("%s: bound journal requires its original key %s", journalPath(stateDir), filepath.Join(stateDir, instanceid.FileName))
+			}
+			return instanceid.Identity{}, fmt.Errorf("%s: %w", journalPath(stateDir), err)
+		}
+	case label != nil:
+		return instanceid.Identity{}, fmt.Errorf("%s already exists; --label is accepted only on first init", filepath.Join(stateDir, instanceid.FileName))
+	}
 	var display string
 	if label != nil {
-		var st unix.Stat_t
-		err := unix.Fstatat(int(root.Fd()), instanceid.FileName, &st, unix.AT_SYMLINK_NOFOLLOW)
-		if err == nil {
-			return instanceid.Identity{}, fmt.Errorf("%s already exists; --label is accepted only on first init", filepath.Join(stateDir, instanceid.FileName))
-		}
-		if err != unix.ENOENT {
-			return instanceid.Identity{}, err
-		}
 		display = *label
 	}
 	id, err := leadregistry.InitInstance(stateDir, leaddaemon.RegistryDirName, display)
