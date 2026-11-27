@@ -347,7 +347,10 @@ func (x *canaryExt) recorded(en leadcanary.Entry) bool {
 // changed.
 func (x *canaryExt) failure(op string, err error) *clientapi.ErrorBody {
 	x.logf("canary %s: %s", op, SafeText(err.Error()))
+	var home leadregistry.HomeRefusal
 	switch {
+	case errors.As(err, &home):
+		return &clientapi.ErrorBody{Code: clientapi.ErrorCode(home), Message: home.Error()}
 	// An error that says the outcome is not known comes first: the daemon that
 	// is told to stop while the manager has the start request returns an error
 	// that wraps the lifecycle's and the context's, and the answer must not say
@@ -442,6 +445,10 @@ func (x *canaryExt) define() (any, *clientapi.ErrorBody) {
 
 // start starts the role through the lifecycle.
 func (x *canaryExt) start(ctx context.Context) (any, *clientapi.ErrorBody) {
+	version, err := x.reg.CheckProjectHome(x.role, nil)
+	if err != nil {
+		return nil, x.failure("start", err)
+	}
 	// Provisioning makes the folders the holder's unit needs before it has
 	// written anything: the runtime folder, the holder's state folder (the
 	// unit's working directory) and the folder of the role lock, where the
@@ -465,7 +472,7 @@ func (x *canaryExt) start(ctx context.Context) (any, *clientapi.ErrorBody) {
 	if f := x.launchSkew("canary start"); f != nil {
 		return nil, f.body()
 	}
-	e, err := x.ctl.Start(ctx, x.role)
+	e, err := x.ctl.StartAt(ctx, x.role, version)
 	if err != nil {
 		return nil, x.failure("start", err)
 	}

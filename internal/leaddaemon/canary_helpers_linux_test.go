@@ -51,6 +51,13 @@ func noEnv(string) string { return "" }
 // fake manager reads the system clock, so that a stop needs no clock driver.
 func newCanaryEnv(t *testing.T) *canaryEnv {
 	t.Helper()
+	c := newCanaryEnvWithoutHome(t)
+	enrollTestProjects(t, c.state, c.cfg.Role.Project())
+	return c
+}
+
+func newCanaryEnvWithoutHome(t *testing.T) *canaryEnv {
+	t.Helper()
 	e := newEnv(t)
 	e.fake = leadunit.NewFake(leadunit.SystemClock{})
 	role, err := leadrole.Parse(canaryRoleText)

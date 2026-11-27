@@ -25,7 +25,7 @@ func TestKillHelper(t *testing.T) {
 	if dir == "" {
 		t.Skip("helper process only")
 	}
-	r, err := Open(dir, Options{})
+	r, err := Open(dir, Options{standaloneV1: true})
 	if err != nil {
 		fmt.Println("open-error", err)
 		os.Exit(3)

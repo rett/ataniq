@@ -24,6 +24,9 @@ import (
 // Options tunes a Registry. The zero value is what production uses; the fields
 // exist so tests can fix the clock and the randomness.
 type Options struct {
+	// standaloneV1 preserves standalone v1 writes for format compatibility.
+	// Only in-package fixtures use it. Bound registries always check the home.
+	standaloneV1 bool
 	// Now returns the time stamped on a record. Default: time.Now.
 	Now func() time.Time
 	// Rand supplies the random bits of intent ids. Default: crypto/rand.
@@ -84,17 +87,19 @@ func (e *CorruptError) Is(target error) bool { return target == ErrCorrupt }
 // Registry is the open, locked registry. Its methods are safe for concurrent
 // use. It is not safe to use after Close.
 type Registry struct {
-	binding  instanceid.Binding
-	mu       sync.Mutex
-	f        *os.File
-	roles    map[leadrole.Role]Entry
-	seq      uint64
-	prev     [sha256.Size]byte
-	recovery Recovery
-	now      func() time.Time
-	rand     io.Reader
-	closed   bool
-	broken   error
+	standaloneV1 bool
+	binding      instanceid.Binding
+	mu           sync.Mutex
+	f            *os.File
+	homes        map[string]ProjectAssignment
+	roles        map[leadrole.Role]Entry
+	seq          uint64
+	prev         [sha256.Size]byte
+	recovery     Recovery
+	now          func() time.Time
+	rand         io.Reader
+	closed       bool
+	broken       error
 }
 
 // Open opens the registry in dir, creating dir (mode 0700) and the journal
@@ -109,7 +114,7 @@ func Open(dir string, opts Options) (*Registry, error) {
 }
 
 func open(dir string, opts Options, syncFile func(int) error) (*Registry, error) {
-	r := &Registry{roles: map[leadrole.Role]Entry{}, now: opts.Now, rand: opts.Rand}
+	r := &Registry{homes: make(map[string]ProjectAssignment), roles: map[leadrole.Role]Entry{}, now: opts.Now, rand: opts.Rand}
 	if r.now == nil {
 		r.now = time.Now
 	}
@@ -140,6 +145,7 @@ func open(dir string, opts Options, syncFile func(int) error) (*Registry, error)
 		return nil, err
 	}
 	r.binding = id.Binding
+	r.standaloneV1 = opts.standaloneV1 && id.Authority == ""
 	if err := r.start(dirFD, syncFile); err != nil {
 		f.Close()
 		return nil, err
@@ -454,6 +460,12 @@ func (r *Registry) replayLine(n int, line []byte) error {
 		if err := rec.payload.(*headerPayload).match(r.binding); err != nil {
 			return err
 		}
+	case rec.kind == kindProjectHome:
+		next := rec.payload.(*ProjectAssignment)
+		if err := r.validateAssignment(rec.role, next); err != nil {
+			return &CorruptError{Line: n, Reason: err.Error()}
+		}
+		r.homes[rec.role.Project()] = *next
 	case rec.kind == kindRecovered || rec.kind == kindRecoveryAck:
 		next, err := applyRecovery(r.recovery, rec)
 		if err != nil {
@@ -461,6 +473,9 @@ func (r *Registry) replayLine(n int, line []byte) error {
 		}
 		r.recovery = next
 	default:
+		if err := r.checkRecordedAdmission(rec); err != nil {
+			return &CorruptError{Line: n, Reason: err.Error()}
+		}
 		cur, ok := r.roles[rec.role]
 		next, err := reduce(cur, ok, r.roles, rec)
 		if err != nil {
@@ -638,15 +653,29 @@ func (r *Registry) existing(role leadrole.Role) (Entry, error) {
 // provider packs are not wired in this build. (A define record that a later
 // build wrote with a pack replays; see BeginLaunch.)
 func (r *Registry) Define(role leadrole.Role, manager Manager, requested Requested) (Entry, error) {
+	return r.define(role, manager, requested, nil)
+}
+
+// DefineAt compares the project version observed before provisioning with
+// the current row under the same lock that commits the definition.
+func (r *Registry) DefineAt(role leadrole.Role, manager Manager, requested Requested, expected ProjectVersion) (Entry, error) {
+	return r.define(role, manager, requested, &expected)
+}
+
+func (r *Registry) define(role leadrole.Role, manager Manager, requested Requested, expected *ProjectVersion) (Entry, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	version, err := r.checkProjectHome(role, expected)
+	if err != nil {
+		return Entry{}, err
+	}
 	if !requested.Pack.IsZero() {
 		return Entry{}, invalid("a pack reference in the requested profile: provider packs are not wired in this build")
 	}
 	if role.Kind() == leadrole.KindCoordinator {
 		requested = requested.withCoordinatorDefaults()
 	}
-	return r.mutate(kindDefine, role, &definePayload{Manager: manager, Requested: requested})
+	return r.mutate(kindDefine, role, &definePayload{Manager: manager, Requested: requested, Assignment: version.recorded()})
 }
 
 // SetDesired sets the desired state of a role. It does not change the shown
@@ -689,6 +718,8 @@ func (r *Registry) BeginLaunch(role leadrole.Role) (Intent, error) {
 // LaunchOptions are the optional inputs of BeginLaunchWith. The zero value
 // is what BeginLaunch uses.
 type LaunchOptions struct {
+	// Project is the assignment version observed at admission, when supplied.
+	Project *ProjectVersion
 	// BootIdentity is the identity of the boot the launch is made in, as the
 	// caller knows it: at most MaxBootIdentityBytes bytes of valid UTF-8
 	// without a control character. It is journaled in the launch intent and
@@ -704,7 +735,8 @@ type LaunchOptions struct {
 func (r *Registry) BeginLaunchWith(role leadrole.Role, opts LaunchOptions) (Intent, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := r.usable(); err != nil {
+	version, err := r.checkProjectHome(role, opts.Project)
+	if err != nil {
 		return Intent{}, err
 	}
 	if err := validText("boot identity", opts.BootIdentity, MaxBootIdentityBytes, false); err != nil {
@@ -736,6 +768,7 @@ func (r *Registry) BeginLaunchWith(role leadrole.Role, opts LaunchOptions) (Inte
 		return Intent{}, fmt.Errorf("leadregistry: random intent id: %w", err)
 	}
 	next, err := r.mutate(kindLaunchBegin, role, &beginPayload{
+		Assignment:    version.recorded(),
 		IntentID:      hex.EncodeToString(id[:]),
 		Epoch:         e.Epoch + 1,
 		UnitName:      role.UnitName(),

@@ -32,6 +32,10 @@ func appendPackDefine(t *testing.T, stateDir string, role leadrole.Role) {
 		t.Fatal(err)
 	}
 	e, err := reg.Get(role)
+	home, herr := reg.ProjectHome(role.Project())
+	if herr != nil {
+		t.Fatal(herr)
+	}
 	reg.Close()
 	if err != nil {
 		t.Fatal(err)
@@ -67,9 +71,10 @@ func appendPackDefine(t *testing.T, stateDir string, role leadrole.Role) {
 		return bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 	}
 	payload := compact(struct {
-		Manager   leadregistry.Manager   `json:"manager"`
-		Requested leadregistry.Requested `json:"requested"`
-	}{leadregistry.ManagerAtaniq, req})
+		Assignment leadregistry.ProjectVersion `json:"assignment"`
+		Manager    leadregistry.Manager        `json:"manager"`
+		Requested  leadregistry.Requested      `json:"requested"`
+	}{home.ProjectVersion, leadregistry.ManagerAtaniq, req})
 	content := compact(struct {
 		Seq     uint64          `json:"seq"`
 		Time    string          `json:"time"`

@@ -35,7 +35,7 @@ const (
 )
 
 // RegistryDirName is the name of the registry folder in the state folder.
-const RegistryDirName = "registry"
+const RegistryDirName = leadregistry.DirName
 
 // Config is what [Run] needs. Every dependency that touches the host is
 // injectable, so that a test runs the whole daemon in process.

@@ -450,6 +450,19 @@ func (m *leadMode) registryDown(err error) bool {
 	return false
 }
 
+func (m *leadMode) admissionFailure(err error) outcome {
+	var home leadregistry.HomeRefusal
+	switch {
+	case errors.As(err, &home):
+		return refusedOut(string(home), home.Error())
+	case m.registryDown(err):
+		return uncertainOut(codeRegistryBroken, msgRegistryBroken)
+	case errors.Is(err, leadregistry.ErrInvalid), errors.Is(err, leadregistry.ErrTooManyRoles):
+		return refusedOut(codeRegistryRefused, msgRegistryNo)
+	}
+	return uncertainOut(codeFailed, msgRegistryUnsure)
+}
+
 // define provisions the lead when that is not done, defines it in the registry
 // and gives it its holder command. It is repeatable after a restart: a lead
 // whose provisioning is done skips provisioning, reads its record and goes on.
@@ -457,6 +470,10 @@ func (m *leadMode) registryDown(err error) bool {
 // the holder command with the digest of the record, the receipt.
 func (m *leadMode) define(ctx context.Context, lr *leadRole) outcome {
 	return m.withRoleLock(lr, "define", func() outcome {
+		version, err := m.reg.CheckProjectHome(lr.role, nil)
+		if err != nil {
+			return m.admissionFailure(err)
+		}
 		lr.defining.Store(true)
 		defer lr.defining.Store(false)
 		// Provisioning runs on the server's context with a bound of its own,
@@ -503,16 +520,10 @@ func (m *leadMode) define(ctx context.Context, lr *leadRole) outcome {
 			m.d.logf("scratch: the holder command of the lead %q: %s", lr.key, SafeText(err.Error()))
 			return refusedOut(codeRecordInvalid, msgRecordInvalid)
 		}
-		e, err := m.reg.Define(lr.role, leadregistry.ManagerAtaniq, lr.in.ext.profile)
+		e, err := m.reg.DefineAt(lr.role, leadregistry.ManagerAtaniq, lr.in.ext.profile, version)
 		if err != nil {
 			m.d.logf("scratch: define %q: %s", lr.key, SafeText(err.Error()))
-			switch {
-			case m.registryDown(err):
-				return uncertainOut(codeRegistryBroken, msgRegistryBroken)
-			case errors.Is(err, leadregistry.ErrInvalid), errors.Is(err, leadregistry.ErrTooManyRoles):
-				return refusedOut(codeRegistryRefused, msgRegistryNo)
-			}
-			return uncertainOut(codeFailed, msgRegistryUnsure)
+			return m.admissionFailure(err)
 		}
 		// The holder command is set once the registry has the role, under the
 		// role's lock, so that a start never builds a command for a digest the
@@ -606,6 +617,10 @@ func ctxFree(err error) bool {
 // start starts the lead through the lifecycle, within max_running.
 func (m *leadMode) start(ctx context.Context, lr *leadRole) outcome {
 	return m.withRoleLock(lr, "start", func() outcome {
+		version, err := m.reg.CheckProjectHome(lr.role, nil)
+		if err != nil {
+			return m.admissionFailure(err)
+		}
 		if lr.in.holderCommand() == nil {
 			return refusedOut(codeNotProvisioned, msgNotProvisioned)
 		}
@@ -651,7 +666,7 @@ func (m *leadMode) start(ctx context.Context, lr *leadRole) outcome {
 		}
 		// Released once Start has returned: by then the registry shows the lead.
 		defer m.release(lr)
-		e, err := m.ctl.Start(ctx, lr.role)
+		e, err := m.ctl.StartAt(ctx, lr.role, version)
 		if err != nil {
 			// A start whose reply was lost leaves the role unknown with its
 			// intent pending: the daemon settles it when the window ends.
@@ -690,7 +705,10 @@ func (m *leadMode) start(ctx context.Context, lr *leadRole) outcome {
 // the lifecycle acted) are uncertain.
 func (m *leadMode) startFailure(lr *leadRole, err error) outcome {
 	m.d.logf("scratch start %q: %s", lr.key, SafeText(err.Error()))
+	var home leadregistry.HomeRefusal
 	switch {
+	case errors.As(err, &home):
+		return refusedOut(string(home), home.Error())
 	case m.registryDown(err):
 		return uncertainOut(codeRegistryBroken, msgRegistryBroken)
 	case errors.Is(err, leadlifecycle.ErrLaunchUncertain):

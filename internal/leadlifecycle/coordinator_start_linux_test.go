@@ -14,6 +14,7 @@ import (
 // ataniq, with the default profile.
 func (r *rig) defineCoord(project, feature string) leadrole.Role {
 	r.t.Helper()
+	r.enroll(project)
 	role, err := leadrole.Coordinator(project, feature)
 	noErr(r.t, err)
 	_, err = r.reg.Define(role, leadregistry.ManagerAtaniq, leadregistry.Requested{})
