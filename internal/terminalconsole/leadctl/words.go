@@ -413,6 +413,8 @@ var stateWords = map[[2]string]string{
 	// an earlier daemon showed ready. Its unit is left running, and its ticket
 	// and message are refused until it runs the daemon's build.
 	{"degraded", "holder-version-skew"}: "the running holder is not the daemon's build: stop the lead, then start it again",
+	{"degraded", "holder-unreachable"}:  "the holder did not return a usable status",
+	{"degraded", "lead-exited"}:         "the holder reports that the agent exited",
 }
 
 // stateLine is the line about the row under the cursor: its state in words,
