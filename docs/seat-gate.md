@@ -24,12 +24,12 @@ address or key belongs in a file of this repository.
 | The owner's network | A front proxy that owns port 443 and the TLS for the seat origin and forwards plain HTTP to port 80 of the authority host. | The owner's own; none is shipped. |
 | The owner's phone | A browser with a passkey. It talks to the seat origin only, never to the gate. | |
 
-The seat dials the gate; the gate never dials out. The link is TLS 1.3 with a
-key pinned at each end: the gate holds a list of seat key fingerprints, the seat
-holds one gate key fingerprint. The owner carries each fingerprint by hand from
+The seat dials each configured gate. Each TLS 1.3 link pins both keys.
+The gate holds a list of seat key fingerprints, and the seat holds one
+fingerprint per gate. The owner carries each fingerprint by hand from
 one host to the other. A seat whose key is not pinned is refused in the
-handshake and never reaches the service. The seat reaches no other network
-address than the gate's. With notices on it also dials the notifier's local
+handshake and never reaches the service. The seat's only network destinations
+are the gates. With notices on it also dials the notifier's local
 Unix socket, which is not a network address; the push to the phone, through
 Apple's push service, is the notifier's, a separate unit (see
 [Notices](#notices)).
@@ -292,8 +292,9 @@ ataniq-seat --origin-file PATH --socket PATH --client-addr-header NAME \
   --decision-guard DIR
 ```
 
-For a single gate, give `--gate`, `--gate-pin-file` and `--identity` together.
-For several gates, use the [gate directory](#gate-directory). With no gate
+For one or more named gates, use the [gate directory](#gate-directory).
+The single-gate form with notices takes `--gate`, `--gate-pin-file` and
+`--identity` together. With no gate
 configured the seat runs unlinked, pairing and login answer
 `daemon_unavailable` and no card offers a decision.
 
@@ -302,8 +303,9 @@ configured the seat runs unlinked, pairing and login answer
 it names the Unix socket of the notifier, and turns notices on (see
 [Notices](#notices)). Without it the seat tells no one anything, the card list
 shows nothing about notices and the notices' routes answer 404. On the authority
-host the flag is `SEAT_NOTIFY_ARGS=--notify-socket /run/seat-notify/notify.sock`
-in the owner's `seat.env`.
+host, single-gate notices require the `--gate` form in `SEAT_GATE_ARGS`
+and `SEAT_NOTIFY_ARGS=--notify-socket /run/seat-notify/notify.sock` in
+the owner's `seat.env`.
 
 `--decision-guard DIR` (default `/var/lib/authority-host`) is the folder the
 seat asks, with `decisionguard.Check`, before it relays any decision's challenge
@@ -337,6 +339,21 @@ To serve several gates at one seat, give one `--identity DIR` and repeat
 its own address and pin file. The pin file follows the same rules as
 `--gate-pin-file`. Give each gate a unique name of up to 32 lowercase
 letters, digits or hyphens, starting with a letter or digit.
+
+The authority-host unit reads `SEAT_GATE_ARGS` from the owner's
+`/etc/authority-host/seat/seat.env`. For a single directory entry:
+
+```ini
+SEAT_GATE_ARGS="--gate-entry first,203.0.113.20:GATEPORT,/etc/authority-host/seat/gate.pin"
+```
+
+Append a space and another complete `--gate-entry NAME,ADDR:PORT,PIN_FILE`
+inside the same quotes for each additional gate. Seat notices are off while
+more than one gate is served. Leave `SEAT_NOTIFY_ARGS` empty or absent
+with **any** entry, including a single entry, or the seat refuses to start.
+The owner sets each gate's address in the unit's `IPAddressAllow=` drop-in
+and allows its TCP port in the host firewall before switching the release.
+See [the deployment template](../deploy/authority-host/seat.env.example).
 
 Open `/` for the directory and log in to each instance separately. Cards,
 projects and leads link to their own gate under `/g/FINGERPRINT/`, where
@@ -922,8 +939,9 @@ taken-over seat. See [the scratch settings](lead-daemon.md#the-scratch-settings)
 
 ## Rotation
 
-The gate holds a list of seat pins (at most 4) and the seat holds one gate pin,
-so no code change is needed. Do the steps in this order.
+Each gate holds a list of seat pins (at most 4), and the seat holds one pin
+for each gate. When rotating the seat's key, perform each lead-host step on
+every configured gate before proceeding.
 
 **A seat key.**
 
@@ -1213,7 +1231,7 @@ trying again later`.
 
 | What you see | Cause | What to do |
 | --- | --- | --- |
-| The card list has no Notices section, and `/sw.js` answers 404 | No notifier is configured for the seat: it was started without `--notify-socket` (on the authority host, no `SEAT_NOTIFY_ARGS` line in `seat.env`, or the release has no notifier). | Set the notifier up ([the README](../deploy/authority-host/README.md#the-notifier)), add the line to `seat.env`, and switch or restart the seat. |
+| The card list has no Notices section, and `/sw.js` answers 404 | This is expected with any named gate entry or when the seat starts without `--notify-socket`. | For notices with one gate, configure the single `--gate` form and the notifier, then switch or restart the seat. See [the README](../deploy/authority-host/README.md#the-notifier). |
 | The section is there with no button, and says "Open this page from the Home Screen app to turn on notices." | The page is open in Safari, not from the Home Screen. | Add it to the Home Screen and open it from there. |
 | "Notices need your permission. Change it in the phone's settings." | The prompt was refused or dismissed, or notifications are off for the Seat app. The phone asks once. | Allow notifications for the Seat app in the phone's settings, then tap Enable notices again. |
 | "Could not turn on notices. Try again later." | The seat could not reach the notifier (`unavailable`, 503 in the browser's tools), the notifier refused the subscription (`endpoint_refused`, 422: the phone's push service is not on the notifier's host list; `bad_subscription`, 400), the notifier answered with a code the seat does not know (`notifier_error`, 502), or the phone refused to register the service worker or to subscribe. | Check `systemctl status ataniq-seat-notify.service`, that `/run/seat-notify/notify.sock` is there (`seat-notify:seat-notify`, 0660). Read the notifier's journal. |
