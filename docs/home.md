@@ -32,6 +32,10 @@ literal, brackets around IPv6, a nonzero decimal port and a nonzero decimal
 activation epoch. Slot identifiers use printable ASCII from space through
 tilde. The optional `pending_journal` path is reserved. The endpoint restores
 an outstanding advance from the existing signed intent in `state/advance.pending`.
+If a crash tears the first stage write at the confirmed enrollment head, the
+endpoint can restart. Observe clears the unsent stage after confirming its
+fresh session claim. Preserve a torn stage with a moved head or an advance
+receipt for owner reconciliation.
 
 ## Owner ceremony
 
