@@ -165,7 +165,7 @@ store, incarnation and authority identifiers. Encode the nonzero activation epoc
   "service_tls_pin": "WITNESS_SPKI_SHA256",
   "owner_tls_pin": "OWNER_SPKI_SHA256",
   "home_tls_pin": "HOME_SPKI_SHA256",
-  "home_endpoint": "192.0.2.20:7443",
+  "home_endpoint": "192.0.2.20:7444",
   "signing_public_key": "WITNESS_ED25519_PUBLIC_HEX",
   "home_public_key": "HOME_ED25519_PUBLIC_HEX"
 }
