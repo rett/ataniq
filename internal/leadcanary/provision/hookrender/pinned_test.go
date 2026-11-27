@@ -1,6 +1,6 @@
-// Package rendertest runs the shared refusal contract in each shipped pack's
-// sandbox tests. Its inputs are the real embedded sandbox and holder policy.
-package rendertest
+//go:build ataniq_canary
+
+package hookrender_test
 
 import (
 	"bytes"
@@ -20,6 +20,9 @@ import (
 	"ataniq/internal/leadcanary/provision/hookrender"
 	"ataniq/internal/leadsandbox/profile"
 	"ataniq/internal/pack"
+	claudesandbox "ataniq/packs/claude/sandbox"
+	codexsandbox "ataniq/packs/codex/sandbox"
+	"ataniq/packs/holder"
 )
 
 func read(t *testing.T, fsys fs.FS, p string) []byte {
@@ -31,7 +34,7 @@ func read(t *testing.T, fsys fs.FS, p string) []byte {
 	return b
 }
 
-func source(t *testing.T, rt profile.Runtime, files fs.FS) hookrender.Source {
+func source(t *testing.T, rt profile.Runtime, root, files fs.FS) hookrender.Source {
 	t.Helper()
 	layout := pack.BindLayout{Config: profile.ConfigInside(rt), Tree: profile.TreeInside("sample"),
 		CoreRows: []string{profile.HomeInside, profile.ConfigInside(rt), profile.SkillsInside(rt), profile.InstructionInside(rt), profile.TreeInside("sample")},
@@ -47,7 +50,6 @@ func source(t *testing.T, rt profile.Runtime, files fs.FS) hookrender.Source {
 			return nil
 		},
 	}
-	root := os.DirFS("..")
 	src, err := hookrender.Decode(read(t, root, pack.ManifestPath), read(t, root, pack.HooksPath), files, layout)
 	if err != nil {
 		t.Fatal(err)
@@ -68,10 +70,10 @@ func formatFiles(candidate hookrender.Files) string {
 	return artifacts.String()
 }
 
-func golden(t *testing.T, version, name, got string) {
+func golden(t *testing.T, fixtures fs.FS, version, name, got string) {
 	t.Helper()
-	file := path.Join("testdata", version, name+".golden")
-	if want := string(read(t, os.DirFS("."), file)); got != want {
+	file := path.Join(version, name+".golden")
+	if want := string(read(t, fixtures, file)); got != want {
 		t.Fatalf("%s differs:\n%s", file, got)
 	}
 }
@@ -81,7 +83,7 @@ type mode struct {
 	Class            pack.ModeClass
 }
 
-func checkGoldenInventory(t *testing.T, version string, policy []byte) []mode {
+func checkGoldenInventory(t *testing.T, fixtures fs.FS, version string, policy []byte) []mode {
 	t.Helper()
 	var doc struct {
 		Fixture struct {
@@ -107,7 +109,7 @@ func checkGoldenInventory(t *testing.T, version string, policy []byte) []mode {
 	if doc.Fixture.SHA == "" || !leadUsable {
 		// Inventory the entire golden directory, including nested files. A
 		// positive fixture cannot be added by just giving it another name.
-		err := fs.WalkDir(os.DirFS("testdata"), ".", func(p string, e fs.DirEntry, err error) error {
+		err := fs.WalkDir(fixtures, ".", func(p string, e fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
@@ -126,19 +128,47 @@ func checkGoldenInventory(t *testing.T, version string, policy []byte) []mode {
 	return modes
 }
 
-// Pinned checks an exact build. Inventory is the test's independent statement
+func TestClaudePinnedRender(t *testing.T) {
+	const version = "2.1.332"
+	inventory := lp.Inventory{
+		{PathRole: "provider-policy", Dest: "/etc/claude-code/managed-settings.json"},
+		{PathRole: "user-settings", Dest: "/home/lead/.claude/settings.json"},
+		{PathRole: "local-settings", Dest: "/home/lead/.claude/settings.local.json"},
+		{PathRole: "agent", Dest: "/home/lead/.claude/agents/reviewer.md", Definition: true, AgentName: "reviewer"},
+		{PathRole: "trust-entry", Dest: "/home/lead/.claude/.claude.json"},
+	}
+	checkPinned(t, claudesandbox.Files(), profile.Claude, version, "reviewer", inventory)
+}
+
+func TestCodexPinnedRender(t *testing.T) {
+	const version = "0.172.0"
+	inventory := lp.Inventory{
+		{PathRole: "provider-policy", Dest: "/etc/codex/requirements.toml"},
+		{PathRole: "managed-hooks", Dest: "/etc/codex/hooks.json"},
+		{PathRole: "config", Dest: "/home/lead/.codex/config.toml"},
+	}
+	checkPinned(t, codexsandbox.Files(), profile.Codex, version, "", inventory)
+}
+
+// checkPinned checks an exact build. Inventory is the test's independent statement
 // of the destinations expected from provisioning.
-func Pinned(t *testing.T, files fs.FS, policy, help []byte, rt profile.Runtime, version, agent string, inv lp.Inventory) {
+func checkPinned(t *testing.T, files fs.FS, rt profile.Runtime, version, agent string, inv lp.Inventory) {
 	t.Helper()
-	src := source(t, rt, files)
+	packDir := path.Join("../../../../packs", string(rt))
+	fixtures := os.DirFS(path.Join(packDir, "sandbox/testdata"))
+	policy, help, ok := holder.LaunchPolicy(pack.Name(rt), version)
+	if !ok {
+		t.Fatal("missing pinned policy")
+	}
+	src := source(t, rt, os.DirFS(packDir), files)
 	d := src.Declaration
 	s := lp.Snapshot{Pack: d.Manifest.Name, Version: version, Role: "sample/lead", Transport: pack.Terminal, Agent: agent}
 	candidate, err := src.Preview(s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	golden(t, version, "files", formatFiles(candidate))
-	modes := checkGoldenInventory(t, version, policy)
+	golden(t, fixtures, version, "files", formatFiles(candidate))
+	modes := checkGoldenInventory(t, fixtures, version, policy)
 	decode := func(raw []byte) *lp.Policy {
 		p, err := lp.Decode(raw, help)
 		if err != nil {
@@ -219,5 +249,5 @@ func Pinned(t *testing.T, files fs.FS, policy, help []byte, rt profile.Runtime, 
 			refused("isolated file "+first.Dest, only.Check(p, s, lp.Inventory{first}))
 		}
 	}
-	golden(t, version, "refusals", refusals.String())
+	golden(t, fixtures, version, "refusals", refusals.String())
 }

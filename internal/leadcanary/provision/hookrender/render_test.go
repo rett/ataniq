@@ -1,3 +1,5 @@
+//go:build ataniq_canary
+
 package hookrender_test
 
 import (

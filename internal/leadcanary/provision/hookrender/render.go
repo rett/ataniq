@@ -1,3 +1,5 @@
+//go:build ataniq_canary
+
 // Package hookrender renders a candidate sandbox from read-only pack data on
 // the daemon side. It performs no provisioning or launch.
 package hookrender
