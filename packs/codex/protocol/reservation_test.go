@@ -1,8 +1,9 @@
 package protocol
 
 import (
+	"encoding/json/v2"
 	"errors"
-	"maps"
+	"slices"
 	"testing"
 
 	core "ataniq/internal/agentsession/protocol"
@@ -103,110 +104,116 @@ func TestTurnReservationOracle(t *testing.T) {
 	}
 }
 
-func messageAllowed(history []observation) bool {
-	current := ""
-	idle, usable := true, true
-	// Encode("first") reserved the thread. The answer identifies the turn
-	// whose completion settles the request, in either arrival order.
-	awaitingAnswer, awaitingCompletion := "first", ""
-	completed := map[string]bool{}
-	for _, obs := range history {
-		if !usable {
-			continue
-		}
-		switch obs.kind {
-		case "started":
-			current, idle = obs.turn, false
-		case "completed":
-			completed[obs.turn] = true
-			if obs.turn == current || obs.turn == awaitingCompletion {
-				current, idle = "", true
-			}
-			if obs.turn == awaitingCompletion {
-				awaitingCompletion = ""
-			}
-		case "success", "error":
-			if obs.requestID != awaitingAnswer {
-				continue
-			}
-			awaitingAnswer = ""
-			if obs.kind == "success" && !completed[obs.turn] {
-				awaitingCompletion = obs.turn
-				current, idle = obs.turn, false
-			}
-		case "idle", "notLoaded":
-			if awaitingCompletion == "" || current != awaitingCompletion {
-				current, idle = "", obs.kind == "idle"
-			}
-		case "active":
-			idle = false
-		case "closed", "systemError":
-			usable = false
-			awaitingAnswer, awaitingCompletion = "", ""
-			current, idle = "", false
-		case "completed on another thread", "forget":
-			// Neither is an observation of this thread's turn or its outcome.
-		}
-	}
-	return awaitingAnswer == "" && awaitingCompletion == "" && idle && usable
+var reservationFrames = map[observation]string{
+	successA: `{"id":"first","result":{"turn":{"id":"a","items":[],"status":"inProgress"}}}`,
+	{kind: "success", requestID: "unrelated", turn: "b"}: `{"id":"unrelated","result":{"turn":{"id":"b","items":[],"status":"inProgress"}}}`,
+	errorFirst:                            `{"id":"first","error":{"code":-1,"message":"failed"}}`,
+	{kind: "started", turn: "a"}:          `{"method":"turn/started","params":{"threadId":"t","turn":{"id":"a","items":[],"status":"inProgress"}}}`,
+	startedB:                              `{"method":"turn/started","params":{"threadId":"t","turn":{"id":"b","items":[],"status":"inProgress"}}}`,
+	completedA:                            `{"method":"turn/completed","params":{"threadId":"t","turn":{"id":"a","items":[],"status":"completed"}}}`,
+	completedB:                            `{"method":"turn/completed","params":{"threadId":"t","turn":{"id":"b","items":[],"status":"completed"}}}`,
+	{kind: "completed on another thread"}: `{"method":"turn/completed","params":{"threadId":"other","turn":{"id":"a","items":[],"status":"completed"}}}`,
+	idle:                                  `{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"idle"}}}`,
+	{kind: "active"}:                      `{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"active","activeFlags":[]}}}`,
+	{kind: "notLoaded"}:                   `{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"notLoaded"}}}`,
+	{kind: "closed"}:                      `{"method":"thread/closed","params":{"threadId":"t"}}`,
+	{kind: "systemError"}:                 `{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"systemError"}}}`,
+	{kind: "forget"}:                      "",
 }
 
-func TestTurnReservationSequences(t *testing.T) {
-	events := []struct {
-		observation
-		frame string
-	}{
-		{observation{kind: "success", requestID: "first", turn: "a"}, `{"id":"first","result":{"turn":{"id":"a"}}}`},
-		{observation{kind: "success", requestID: "unrelated", turn: "b"}, `{"id":"unrelated","result":{"turn":{"id":"b"}}}`},
-		{observation{kind: "error", requestID: "first"}, `{"id":"first","error":{"code":-1,"message":"failed"}}`},
-		{observation{kind: "started", turn: "a"}, `{"method":"turn/started","params":{"threadId":"t","turn":{"id":"a","items":[],"status":"inProgress"}}}`},
-		{observation{kind: "started", turn: "b"}, `{"method":"turn/started","params":{"threadId":"t","turn":{"id":"b","items":[],"status":"inProgress"}}}`},
-		{observation{kind: "completed", turn: "a"}, `{"method":"turn/completed","params":{"threadId":"t","turn":{"id":"a","items":[],"status":"completed"}}}`},
-		{observation{kind: "completed", turn: "b"}, `{"method":"turn/completed","params":{"threadId":"t","turn":{"id":"b","items":[],"status":"completed"}}}`},
-		{observation{kind: "completed on another thread"}, `{"method":"turn/completed","params":{"threadId":"other","turn":{"id":"a","items":[],"status":"completed"}}}`},
-		{observation{kind: "idle"}, `{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"idle"}}}`},
-		{observation{kind: "active"}, `{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"active","activeFlags":[]}}}`},
-		{observation{kind: "notLoaded"}, `{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"notLoaded"}}}`},
-		{observation{kind: "closed"}, `{"method":"thread/closed","params":{"threadId":"t"}}`},
-		{observation{kind: "systemError"}, `{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"systemError"}}}`},
-		{observation{kind: "forget"}, ""},
+var deltaProbes = []struct {
+	thread, turn, text string
+	frame              []byte
+}{
+	{"t", "a", "from a", []byte(`{"method":"item/agentMessage/delta","params":{"threadId":"t","turnId":"a","itemId":"x","delta":"from a"}}`)},
+	{"t", "b", "from b", []byte(`{"method":"item/agentMessage/delta","params":{"threadId":"t","turnId":"b","itemId":"y","delta":"from b"}}`)},
+	{"other", "a", "foreign", []byte(`{"method":"item/agentMessage/delta","params":{"threadId":"other","turnId":"a","itemId":"x","delta":"foreign"}}`)},
+}
+
+func checkReservationHistory(t *testing.T, history []observation) {
+	t.Helper()
+	c, err := New(Version, SchemaDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.StartThread("bind"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Decode([]byte(`{"id":"bind","result":{"thread":{"id":"t","status":{"type":"idle"}}}}`)); err != nil {
+		t.Fatal(err)
 	}
 	msg := core.Request{Operation: core.Message, Text: "hello"}
-	c := codec{thread: "t", idle: true}
 	if _, err := c.Encode("first", msg); err != nil {
 		t.Fatal(err)
 	}
-	var path [5]observation
-	var visit func(codec, int)
-	visit = func(atPrefix codec, depth int) {
-		// The probe's Encode creates its own reservation on success.
-		probe := atPrefix
-		frame, err := probe.Encode("second", msg)
-		allowed := messageAllowed(path[:depth])
-		if allowed && (err != nil || frame == nil) || !allowed && (!errors.Is(err, ErrTurn) || frame != nil) {
-			t.Fatalf("%v: second message allowed=%t, frame=%s, err=%v", path[:depth], allowed, frame, err)
-		}
-		if depth == len(path) {
-			return
-		}
-		for _, event := range events {
-			next := atPrefix
-			// Each sibling must see only its own early completions.
-			next.reservation.completed = maps.Clone(atPrefix.reservation.completed)
-			path[depth] = event.observation
-			if event.kind == "forget" {
-				next.Forget("first")
-			} else if _, err := next.Decode([]byte(event.frame)); err != nil {
-				t.Fatalf("%v: %v", path[:depth+1], err)
-			}
-			visit(next, depth+1)
+	for _, obs := range history {
+		if obs.kind == "forget" {
+			c.Forget("first")
+		} else if _, err := c.Decode([]byte(reservationFrames[obs])); err != nil {
+			t.Fatalf("%v: decode %v: %v", history, obs, err)
 		}
 	}
-	visit(c, 0)
+
+	want := reservationOracle(history)
+	for _, delta := range deltaProbes {
+		got, err := c.Decode(delta.frame)
+		var events []core.Event
+		if want.routes(delta.thread, delta.turn) {
+			events = []core.Event{{Kind: "progress", Text: delta.text}}
+		}
+		if err != nil || got.AnswerTo != nil || !slices.Equal(got.Events, events) {
+			t.Fatalf("%v: delta for %s/%s: got %+v, %v; want %v", history, delta.thread, delta.turn, got, err, events)
+		}
+	}
+
+	frame, err := c.Encode("stop", core.Request{Operation: core.StopTurn})
+	if want.stop == "" {
+		if frame != nil || !errors.Is(err, ErrTurn) {
+			t.Fatalf("%v: StopTurn without a live turn: %s, %v", history, frame, err)
+		}
+	} else {
+		var interrupt struct {
+			Method string `json:"method"`
+			Params struct {
+				ThreadID string `json:"threadId"`
+				TurnID   string `json:"turnId"`
+			} `json:"params"`
+		}
+		if err != nil || json.Unmarshal(frame, &interrupt) != nil || interrupt.Method != "turn/interrupt" ||
+			interrupt.Params.ThreadID != "t" || interrupt.Params.TurnID != want.stop {
+			t.Fatalf("%v: StopTurn: got %s, %v; want turn %q", history, frame, err, want.stop)
+		}
+	}
+
+	frame, err = c.Encode("second", msg)
+	if want.admit && (err != nil || frame == nil) || !want.admit && (!errors.Is(err, ErrTurn) || frame != nil) {
+		t.Fatalf("%v: second message allowed=%t, frame=%s, err=%v", history, want.admit, frame, err)
+	}
+}
+
+func TestOverlappingTurnReservations(t *testing.T) {
+	for _, tc := range overlapHistories {
+		t.Run(tc.name, func(t *testing.T) { checkReservationHistory(t, tc.history) })
+	}
+}
+
+func TestTurnReservationSequences(t *testing.T) {
+	var path [5]observation
+	var visit func(int)
+	visit = func(depth int) {
+		checkReservationHistory(t, path[:depth])
+		if depth < len(path) {
+			for obs := range reservationFrames {
+				path[depth] = obs
+				visit(depth + 1)
+			}
+		}
+	}
+	visit(0)
 }
 
 func TestSystemErrorDiscardsPendingStart(t *testing.T) {
-	c := codec{thread: "t", idle: true}
+	c := codec{thread: "t", threadState: "idle"}
 	msg := core.Request{Operation: core.Message, Text: "hello"}
 	if _, err := c.Encode("first", msg); err != nil {
 		t.Fatal(err)
