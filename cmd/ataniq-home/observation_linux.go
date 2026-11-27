@@ -27,7 +27,7 @@ func headOf(h assignment.Checkpoint) observedHead {
 	return observedHead{Sequence: h.Sequence, Digest: h.Digest}
 }
 func (h observedHead) String() string {
-	return fmt.Sprintf("sequence=%d head=%s", h.Sequence, h.Digest)
+	return enrollment.FormatArchiveHead(assignment.Checkpoint{Sequence: h.Sequence, Digest: h.Digest})
 }
 func (h observedHead) valid() bool {
 	return len(h.Digest) == 64 && strings.Trim(h.Digest, "0123456789abcdef") == ""

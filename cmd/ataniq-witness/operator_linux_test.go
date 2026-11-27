@@ -127,7 +127,7 @@ func TestWitnessAttendedEnrollment(t *testing.T) {
 
 	server, err := link.NewServer(id, store.Pin, link.Remote{Network: "unix", Address: hl.Addr().String(), ServerPin: c.HomePin}, c.Slot)
 	must(t, err)
-	g := &guardedWitness{Witness: w, dir: filepath.Join(filepath.Dir(path), guardDirectory), turn: make(chan struct{}, 1)}
+	g := &guardedWitness{Witness: w, slot: c.Slot, dir: filepath.Join(filepath.Dir(path), guardDirectory), turn: make(chan struct{}, 1)}
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	done := make(chan error, 1)
 	go func() { done <- serve(ctx, server, g, ol, c.OwnerPin, uint32(os.Geteuid())) }()
@@ -160,8 +160,18 @@ func TestWitnessAttendedEnrollment(t *testing.T) {
 		t.Fatal(err)
 	}
 	must(t, os.Remove(filepath.Join(g.dir, "decisions.inhibit")))
-	_, err = admin.Retire(ctx, retire)
+	_, err = cl.Claim(ctx, cp.Claim{Mutation: cp.Mutation{ID: cp.ID{6}, Expected: v.Current}, NewSessionPublicKey: sessionKey.Public().(ed25519.PublicKey)})
 	must(t, err)
+	for _, args := range [][]string{
+		{"slot-read", "--config", path, "--archive-out", filepath.Join(filepath.Dir(path), "archive")},
+		{"slot-release", "--config", path, "--asked", "previous writer fenced"},
+		{"slot-retire", "--config", path, "--asked", "mirror retired"},
+	} {
+		output.Reset()
+		if code := run(ctx, filepath.Dir(path), args, &output, &output); code != 0 || strings.Count(output.String(), "\n") != 1 {
+			t.Fatalf("%s: exit %d, %q", args[0], code, &output)
+		}
+	}
 	q.Challenge = cp.ID{5}
 	v, err = admin.Read(ctx, q)
 	must(t, err)

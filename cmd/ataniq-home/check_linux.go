@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
 
@@ -45,9 +46,22 @@ func loadWitness(c config, home homeIdentity) (ed25519.PublicKey, []byte, error)
 	if err != nil {
 		return nil, nil, fmt.Errorf("witness_cert: %w", err)
 	}
+	const invalidCert = "witness_cert: expected one DER X.509 certificate or one PEM CERTIFICATE block"
+	if bytes.HasPrefix(der, []byte("-----BEGIN ")) {
+		// Decode can skip malformed text before a later valid block.
+		end := bytes.TrimSuffix(bytes.TrimSuffix(der, []byte("\r\n")), []byte("\n"))
+		if bytes.Count(der, []byte("-----BEGIN ")) != 1 || !bytes.HasSuffix(end, []byte("-----END CERTIFICATE-----")) {
+			return nil, nil, errors.New(invalidCert)
+		}
+		block, rest := pem.Decode(der)
+		if block == nil || block.Type != "CERTIFICATE" || len(block.Headers) != 0 || len(rest) != 0 {
+			return nil, nil, errors.New(invalidCert)
+		}
+		der = block.Bytes
+	}
 	cert, err := x509.ParseCertificate(der)
 	if err != nil {
-		return nil, nil, errors.New("witness_cert: expected one DER X.509 certificate")
+		return nil, nil, errors.New(invalidCert)
 	}
 	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
 	if hex.EncodeToString(sum[:]) != c.WitnessTLSPin {

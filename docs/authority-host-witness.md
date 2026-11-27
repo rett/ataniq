@@ -13,6 +13,9 @@ separate files under protected directories.
 | `status` | Local root | Verifies a fresh signed status and prints the epoch, directory sequence, predecessor digest, counts and inhibition reason. |
 | `acknowledge` | Local root | Sends a pinned, epoch-bound acknowledgement over the owner socket. |
 | `enroll-submit --config FILE --prepared FILE --receipt-out FILE [--expect-digest HEX]` | Local root | Checks the signed home request and its pairing, submits it over the owner socket, writes the signed receipt and prints both digests and verified witness status. |
+| `slot-read --config FILE [--archive-out FILE]` | Local root | Verifies a freshly challenged read of the configured slot and prints `sequence=N head=HEX`. The optional archive is a new 0600 file containing that line. |
+| `slot-release --config FILE --asked WORDS` | Local root | After fencing the writer, releases its claimed session against the challenged state. Prints the verified release receipt digest and the owner's quoted words. |
+| `slot-retire --config FILE --asked WORDS` | Local root | Permanently retires the challenged slot. The disposition digest is SHA-256 of the exact words. Prints the verified retirement receipt digest and quoted words. |
 | `recover` | Witness service, under owner control | Re-proves storage and serves only the owner socket with decisions inhibited. |
 | `complete-publication` | Witness service, offline | Finishes publication of one unambiguous staged signed genesis pair and prints `witness publication completed`. |
 
@@ -124,8 +127,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 sh scripts/go-tool.sh build -trimpath -o b
    from the seat, gate, notifier and deploy tools.
 5. Exchange pins over an independent authenticated channel. At the witness
    record the home's TLS SPKI SHA-256 fingerprint and Ed25519 public key.
-   At the home provision the witness TLS certificate (DER for
-   `link.NewEndpoint`), verify its SPKI fingerprint, and pin the witness
+   At the home provision the witness TLS certificate as one raw DER certificate
+   or the single CERTIFICATE block in `cert.pem` from `gate-init --identity`.
+   Set `witness_cert` to the protected copy, verify its SPKI fingerprint, and pin the witness
    Ed25519 public key, exact slot and activation epoch. The witness pins the
    local owner's TLS fingerprint. The local owner pins the witness's TLS
    fingerprint, Ed25519 key and epoch. Verify the values at both devices
@@ -228,7 +232,12 @@ local root. Fresh genesis reports sequence 1, zero slots, receipts and fences.
 
 Use protected transfer directories on both devices, outside witness state
 and separate from the private keys. Keep the home ledger and signing key on
-the home throughout the ceremony.
+the home throughout the ceremony. Keep managed admission closed. A new
+enrollment and a fresh home observation require the decision inhibit to be
+clear. Check `ah-switch status` for `decisions: not inhibited`. If the inhibit
+is held, follow the switch recovery procedure below. An exact retry of the
+latest committed enrollment can still return its original receipt during
+inhibition.
 
 1. As the home account, run
    `ataniq-home enroll prepare --config HOME_CONFIG --out prepared.json`.
@@ -404,13 +413,13 @@ check continues to check the witness account after its unit link is removed.
 ## Retire and enroll a replacement
 
 Drain the old home, fence every former writer and route, and record the
-disposition of outstanding work. On the authenticated local owner link,
-`Read` the exact slot with a fresh challenge. If a session needs explicit
-release, submit `Release` against the verified state and read again.
-Submit `Retire` with a fresh mutation ID, the exact current state and the
-digest of the owner's disposition record. Keep the saved intent, verified
-retirement receipt and a new challenged view showing the permanent
-tombstone. The owner can retire after losing the home's key.
+disposition of outstanding work. As local root, run
+`WITNESS slot-read --config CONFIG --archive-out ARCHIVE` to capture the final
+assignment head. If the writer still holds a session, run
+`WITNESS slot-release --config CONFIG --asked "WORDS"`, describing the fence.
+Then run `WITNESS slot-retire --config CONFIG --asked "WORDS"` with the owner's
+disposition. Keep the printed receipt digest and exact words in the off-host
+record. Each mutation uses a fresh ID and the exact challenged state. The owner can retire after losing the home's key.
 
 Stop the old instance cleanly and preserve its store and verification keys.
 For the replacement prepare a fresh home key, store, incarnation and ledger

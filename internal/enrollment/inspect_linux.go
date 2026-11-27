@@ -26,14 +26,6 @@ func PendingForRestart(root FileRoot, bindingPath string, slot checkpoint.Slot, 
 	if err != nil || raw == nil {
 		return nil, err
 	}
-	var p staged
-	if err := exactJSON(raw, &p); err != nil {
-		return nil, refuse(Interrupted, err)
-	}
-	q, err := p.advance()
-	if err != nil {
-		return nil, refuse(Interrupted, err)
-	}
 	r, identity, err := f.readLedger()
 	if err != nil {
 		return nil, err
@@ -64,18 +56,18 @@ func PendingForRestart(root FileRoot, bindingPath string, slot checkpoint.Slot, 
 		}
 	}
 	ack, err := checkpoint.VerifyReceipt(witness, receipt)
-	if err != nil || ack.State.Slot != q.Expected.Slot || ack.State.Epoch != q.Expected.Epoch || ack.State.Header != q.Expected.Header {
+	if err != nil || ack.State.Slot != slot || ack.State.Epoch != epoch {
 		return nil, refuse(IdentityMismatch, err)
 	}
 	homeID, err := checkpoint.KeyID(home)
-	if err != nil || q.Expected.Slot != slot || q.Expected.Epoch != epoch || q.Expected.HomeKeyID != homeID {
+	if err != nil || ack.State.HomeKeyID != homeID {
 		return nil, refuse(IdentityMismatch, err)
 	}
-	header, err := q.Expected.Header.Bytes()
+	header, err := ack.State.Header.Bytes()
 	if err != nil {
 		return nil, refuse(IdentityMismatch, err)
 	}
-	verifier, err := wire.NewVerifier(q.Expected.Header, home)
+	verifier, err := wire.NewVerifier(ack.State.Header, home)
 	if err != nil {
 		return nil, refuse(IdentityMismatch, err)
 	}
@@ -86,11 +78,8 @@ func PendingForRestart(root FileRoot, bindingPath string, slot checkpoint.Slot, 
 	if err := f.check(); err != nil {
 		return nil, err
 	}
-	appended, err := p.appended(q, last, ledger.Checkpoint())
-	if err != nil || !appended {
-		return nil, err
-	}
-	return &q, nil
+	var p staged
+	return p.classifyStage(f, raw, last, ledger.Checkpoint(), ack.State, receipt, identity)
 }
 
 // ReadLocalStatus takes a read-only snapshot. A reservation also counts as a

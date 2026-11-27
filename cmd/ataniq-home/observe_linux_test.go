@@ -102,7 +102,7 @@ func TestObserveArchive(t *testing.T) {
 	}
 	path := filepath.Join(filepath.Dir(f.path), "archive")
 	cmd.events, cmd.archive = 0, path
-	must(t, os.WriteFile(path, []byte(head.String()+"\n"), 0600))
+	must(t, enrollment.WriteHeadArchive(path, f.state(t).Head))
 	f.release(t)
 	out, err = f.run(t, cmd, nil)
 	must(t, err)
@@ -265,6 +265,20 @@ func TestObserveArchiveFormat(t *testing.T) {
 		if _, err := readArchive(path); err == nil {
 			t.Fatalf("accepted %q", bad)
 		}
+	}
+}
+
+func TestObserveDecisionInhibit(t *testing.T) {
+	f := newPilot(t)
+	f.w.Inhibit(true)
+	out, err := f.run(t, command{events: 1}, nil)
+	if out != "" || !errors.Is(err, link.ErrInhibited) ||
+		!strings.Contains(err.Error(), "held decision inhibit with ah-switch status. New enrollment and observation require a clear inhibit. Keep managed admission closed") {
+		t.Fatal(out, err)
+	}
+	f.w.Inhibit(false)
+	if st := f.state(t); st.Head.Sequence != 0 || st.SessionKeyID != "" {
+		t.Fatal("inhibited observation changed slot", st)
 	}
 }
 

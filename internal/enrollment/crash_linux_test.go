@@ -100,10 +100,12 @@ func TestAdvanceCuts(t *testing.T) {
 				t.Fatal("stage at cut", err)
 			}
 
+			if tc.point == "stage.written" {
+				// A crash before file sync may retain only a prefix.
+				put(t, p, contents(t, p)[:8])
+			}
 			pending, err := PendingForRestart(f.root, "", f.slot, f.b.Epoch, pub(f.home), pub(f.witness))
 			switch {
-			case tc.point == "stage.created":
-				want(t, err, Interrupted) // Empty stage. Never admit a different mutation.
 			case tc.removed || !tc.appended:
 				check(t, err)
 				if pending != nil {
@@ -172,6 +174,37 @@ func TestAdvanceCuts(t *testing.T) {
 			}
 			if _, err = os.Stat(p); !errors.Is(err, os.ErrNotExist) {
 				t.Fatal("stage after admission", err)
+			}
+		})
+	}
+}
+
+func TestTornStageWithConflictingEvidence(t *testing.T) {
+	for _, kind := range []string{"appended", "receipt", "valid JSON"} {
+		t.Run(kind, func(t *testing.T) {
+			f := enrolled(t)
+			binding := filepath.Join(t.TempDir(), "binding")
+			check(t, WriteBinding(binding, f.b))
+			s := f.open(t, cut("append.dir-synced"))
+			if kind == "appended" {
+				want(t, appendOnly(f.ctx, s, f.seed(t, s, "one")), Interrupted)
+			}
+			check(t, s.Close())
+			f.release(t)
+			raw := []byte("{")
+			switch kind {
+			case "receipt":
+				put(t, filepath.Join(f.root.Path, receiptName), []byte("{}"))
+			case "valid JSON":
+				raw = []byte("{}")
+			}
+			stage := filepath.Join(f.root.Path, stageName)
+			put(t, stage, raw)
+			_, err := PendingForRestart(f.root, binding, f.slot, f.b.Epoch, pub(f.home), pub(f.witness))
+			want(t, err, Interrupted)
+			f.refused(t, Interrupted)
+			if !bytes.Equal(contents(t, stage), raw) {
+				t.Fatal("changed refused stage")
 			}
 		})
 	}

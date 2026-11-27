@@ -106,6 +106,14 @@ func enrollSubmit(ctx context.Context, c config, store durable.Config, cmd comma
 	ctx, cancel := context.WithTimeout(ctx, ownerTimeout)
 	defer cancel()
 	raw, err := enrollment.Submit(ctx, admin, p)
+	if errors.Is(err, cp.ErrUnavailable) {
+		// Unavailability alone also covers a partition or exhausted allowance.
+		// Diagnose inhibition only when the witness confirms it.
+		st, statusErr := signedStatus(ctx, admin, store.Pin, c.Identity.Epoch)
+		if statusErr == nil && st.Inhibition == cp.ServiceInhibited {
+			return enrollmentRefusal("witness service inhibited. Check for a held decision inhibit with ah-switch status. New enrollment requires a clear inhibit. Keep managed admission closed")
+		}
+	}
 	if err != nil {
 		return err
 	}

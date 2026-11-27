@@ -130,7 +130,7 @@ func TestWitnessGuardChangesBetweenRequests(t *testing.T) {
 	w, err := durable.Create(store)
 	must(t, err)
 	defer w.Close()
-	g := &guardedWitness{Witness: w, dir: filepath.Join(filepath.Dir(path), guardDirectory), turn: make(chan struct{}, 1)}
+	g := &guardedWitness{Witness: w, slot: c.Slot, dir: filepath.Join(filepath.Dir(path), guardDirectory), turn: make(chan struct{}, 1)}
 	must(t, w.Grant(c.Slot, store.HomePin, true))
 	a := ownerAdmin{g}
 	ctx := t.Context()
@@ -180,7 +180,7 @@ func TestWitnessOwnerSocketRecovery(t *testing.T) {
 		t.Skipf("private Unix socket denied: %v", err)
 	}
 	must(t, err)
-	g := &guardedWitness{Witness: w, dir: filepath.Join(filepath.Dir(path), guardDirectory), recoveryOnly: true, turn: make(chan struct{}, 1)}
+	g := &guardedWitness{Witness: w, slot: c.Slot, dir: filepath.Join(filepath.Dir(path), guardDirectory), recoveryOnly: true, turn: make(chan struct{}, 1)}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- serve(ctx, server, g, ln, c.OwnerPin, uint32(os.Geteuid())) }()

@@ -13,6 +13,7 @@ import (
 // The durable store also enforces its own storage inhibition and write lock.
 type guardedWitness struct {
 	*durable.Witness
+	slot         cp.Slot
 	dir          string
 	recoveryOnly bool
 	turn         chan struct{}
@@ -43,15 +44,24 @@ func (g *guardedWitness) SettleHome(ctx context.Context, e uint64, s cp.Slot, id
 	return guarded(ctx, g, func() (cp.Receipt, error) { return g.Witness.SettleHome(ctx, e, s, id, k) })
 }
 func (a ownerAdmin) Read(ctx context.Context, q cp.ReadRequest) (cp.View, error) {
+	if q.Slot != a.g.slot {
+		return cp.View{}, &cp.Reason{Kind: cp.Unauthorized}
+	}
 	return guarded(ctx, a.g, func() (cp.View, error) { return a.g.Administration().Read(ctx, q) })
 }
 func (a ownerAdmin) Enroll(ctx context.Context, q cp.Enrollment) (cp.Receipt, error) {
 	return guarded(ctx, a.g, func() (cp.Receipt, error) { return a.g.Administration().Enroll(ctx, q) })
 }
 func (a ownerAdmin) Release(ctx context.Context, q cp.Mutation) (cp.Receipt, error) {
+	if q.Expected.Slot != a.g.slot {
+		return cp.Receipt{}, &cp.Reason{Kind: cp.Unauthorized}
+	}
 	return guarded(ctx, a.g, func() (cp.Receipt, error) { return a.g.Administration().Release(ctx, q) })
 }
 func (a ownerAdmin) Retire(ctx context.Context, q cp.Retirement) (cp.Receipt, error) {
+	if q.Expected.Slot != a.g.slot {
+		return cp.Receipt{}, &cp.Reason{Kind: cp.Unauthorized}
+	}
 	return guarded(ctx, a.g, func() (cp.Receipt, error) { return a.g.Administration().Retire(ctx, q) })
 }
 func (a ownerAdmin) Settle(ctx context.Context, e uint64, s cp.Slot, id cp.ID) (cp.Receipt, error) {

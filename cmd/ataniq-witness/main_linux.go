@@ -24,12 +24,16 @@ import (
 )
 
 const usage = `usage: ataniq-witness run|check|status|acknowledge|init|recover|complete-publication --config FILE
-       ataniq-witness enroll-submit --config FILE --prepared FILE --receipt-out FILE [--expect-digest HEX]`
+       ataniq-witness enroll-submit --config FILE --prepared FILE --receipt-out FILE [--expect-digest HEX]
+       ataniq-witness slot-read --config FILE [--archive-out FILE]
+       ataniq-witness slot-release --config FILE --asked WORDS
+       ataniq-witness slot-retire --config FILE --asked WORDS`
 const ownerUID = 0 // The owner administers this private socket locally as root.
 const ownerTimeout = 5 * time.Second
 
 type command struct {
 	op, configPath, prepared, receiptOut, expectDigest string
+	archiveOut, asked                                  string
 }
 
 func parseCommand(args []string) (command, bool) {
@@ -38,6 +42,7 @@ func parseCommand(args []string) (command, bool) {
 		return cmd, false
 	}
 	cmd.op = args[0]
+	options := map[string]*string{"--config": &cmd.configPath}
 	switch cmd.op {
 	case "run", "check", "init", "status", "acknowledge", "recover", "complete-publication":
 		if len(args) != 3 || args[1] != "--config" {
@@ -46,10 +51,14 @@ func parseCommand(args []string) (command, bool) {
 		cmd.configPath = args[2]
 		return cmd, true
 	case "enroll-submit":
+		options["--prepared"], options["--receipt-out"], options["--expect-digest"] = &cmd.prepared, &cmd.receiptOut, &cmd.expectDigest
+	case "slot-read":
+		options["--archive-out"] = &cmd.archiveOut
+	case "slot-release", "slot-retire":
+		options["--asked"] = &cmd.asked
 	default:
 		return cmd, false
 	}
-	options := map[string]*string{"--config": &cmd.configPath, "--prepared": &cmd.prepared, "--receipt-out": &cmd.receiptOut, "--expect-digest": &cmd.expectDigest}
 	for args = args[1:]; len(args) > 0; args = args[2:] {
 		dst := options[args[0]]
 		if dst == nil || len(args) < 2 || args[1] == "" || strings.HasPrefix(args[1], "--") {
@@ -58,7 +67,9 @@ func parseCommand(args []string) (command, bool) {
 		*dst = args[1]
 		delete(options, args[0])
 	}
-	return cmd, cmd.configPath != "" && cmd.prepared != "" && cmd.receiptOut != ""
+	delete(options, "--expect-digest")
+	delete(options, "--archive-out")
+	return cmd, len(options) == 0 && (cmd.asked == "" || strings.TrimSpace(cmd.asked) != "")
 }
 
 func main() {
@@ -113,8 +124,8 @@ func execute(ctx context.Context, hostRoot string, cmd command, out io.Writer) (
 	if op == "enroll-submit" {
 		return enrollSubmit(ctx, c, store, cmd, out, ownerAdministration)
 	}
-	if op == "status" || op == "acknowledge" {
-		return ownerCall(ctx, c, store, op, out)
+	if op == "status" || op == "acknowledge" || strings.HasPrefix(op, "slot-") {
+		return ownerCall(ctx, c, store, cmd, out)
 	}
 	server, err := serviceConfig(c, store)
 	if err != nil {
@@ -179,7 +190,7 @@ func execute(ctx context.Context, hostRoot string, cmd command, out io.Writer) (
 	if err != nil {
 		return errSocket
 	}
-	g := &guardedWitness{Witness: w, dir: guardDir, recoveryOnly: recoveryOnly, turn: make(chan struct{}, 1)}
+	g := &guardedWitness{Witness: w, slot: c.Slot, dir: guardDir, recoveryOnly: recoveryOnly, turn: make(chan struct{}, 1)}
 	return serve(ctx, server, g, ln, c.OwnerPin, ownerUID)
 }
 
@@ -219,14 +230,17 @@ func ownerAdministration(c config, store durable.Config) (cp.RecoveryAdministrat
 	return remote.Administration(id)
 }
 
-func ownerCall(ctx context.Context, c config, store durable.Config, op string, out io.Writer) error {
+func ownerCall(ctx context.Context, c config, store durable.Config, cmd command, out io.Writer) error {
 	admin, err := ownerAdministration(c, store)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, ownerTimeout)
 	defer cancel()
-	if op == "acknowledge" {
+	if strings.HasPrefix(cmd.op, "slot-") {
+		return slotCommand(ctx, admin, c, store, cmd, out)
+	}
+	if cmd.op == "acknowledge" {
 		if err := admin.AcknowledgeStorageError(ctx); err != nil {
 			return err
 		}
@@ -236,14 +250,18 @@ func ownerCall(ctx context.Context, c config, store durable.Config, op string, o
 	return printStatus(ctx, admin, store.Pin, c.Identity.Epoch, out)
 }
 
-func printStatus(ctx context.Context, admin cp.RecoveryAdministration, pin ed25519.PublicKey, epoch uint64, out io.Writer) error {
+func signedStatus(ctx context.Context, admin cp.RecoveryAdministration, pin ed25519.PublicKey, epoch uint64) (cp.DirectoryStatus, error) {
 	var challenge cp.ID
 	rand.Read(challenge[:])
 	r, err := admin.Status(ctx, challenge)
 	if err != nil {
-		return err
+		return cp.DirectoryStatus{}, err
 	}
-	st, err := cp.VerifyDirectoryStatus(pin, epoch, challenge, r)
+	return cp.VerifyDirectoryStatus(pin, epoch, challenge, r)
+}
+
+func printStatus(ctx context.Context, admin cp.RecoveryAdministration, pin ed25519.PublicKey, epoch uint64, out io.Writer) error {
+	st, err := signedStatus(ctx, admin, pin, epoch)
 	if err != nil {
 		return err
 	}

@@ -32,11 +32,18 @@ literal, brackets around IPv6, a nonzero decimal port and a nonzero decimal
 activation epoch. Slot identifiers use printable ASCII from space through
 tilde. The optional `pending_journal` path is reserved. The endpoint restores
 an outstanding advance from the existing signed intent in `state/advance.pending`.
+If a crash tears the first stage write at the confirmed enrollment head, the
+endpoint can restart. Observe clears the unsent stage after confirming its
+fresh session claim. Preserve a torn stage with a moved head or an advance
+receipt for owner reconciliation.
 
 ## Owner ceremony
 
 Follow these steps after establishing the authority-host installation baseline.
-Keep managed admission closed throughout the pilot.
+Keep managed admission closed throughout the pilot. On the authority host,
+verify that `ah-switch status` reports `decisions: not inhibited` before a
+new enrollment or observation. If the decision inhibit is held, follow the
+[authority-host recovery procedure](authority-host-witness.md#storage-error-and-interrupted-publication).
 
 2. **Create the home identity.** Give the seed a home-owned 0700 parent and the
    TLS directory a parent protected against group and other writes. Both
@@ -58,11 +65,11 @@ Keep managed admission closed throughout the pilot.
 
 4. **Exchange pins in both directions.** Over an independently authenticated
    channel, provision the witness with `home_tls_pin`, `home_public_key`,
-   `home_endpoint` and the owner TLS pin. Add the witness certificate in DER
-   format and its two 64-digit lowercase hex public values to the home config.
+   `home_endpoint` and the owner TLS pin. Add the witness certificate (one raw DER certificate or
+   the single `cert.pem` CERTIFICATE block from identity creation) and its two 64-digit lowercase hex public values to the home config.
 
    ```json
-   "witness_cert": "/etc/ataniq-home/witness.der",
+   "witness_cert": "/etc/ataniq-home/witness.pem",
    "witness_tls_pin": "WITNESS_SPKI_SHA256",
    "witness_public_key": "WITNESS_ED25519_PUBLIC_HEX"
    ```
@@ -70,8 +77,8 @@ Keep managed admission closed throughout the pilot.
    Compare each value on both devices, including the slot, epoch and expected
    source prefix. Run `ataniq-home check --config /etc/ataniq-home/config.json`
    or `ataniq-home serve --check --config /etc/ataniq-home/config.json`.
-   Both construct the endpoint and print `home check ok` without binding a
-   port. The witness's local check also requires its initialized store in step 6.
+   Both check retirement and the protected installation directory, construct
+   the endpoint and print `home check ok` without binding a port. The witness's local check also requires its initialized store in step 6.
 
 5. **Sign the activation record.** Record the witness identity, signing key,
    activation epoch and directory commitment. Keep the owner's signed copy
@@ -151,19 +158,25 @@ Keep managed admission closed throughout the pilot.
    receipt and the challenged read have the same sequence and digest,
    followed by `observation: agree` and `managed_starts=0 launches=0`.
 
-   On the authority host, record the signed witness status and obtain a
-   freshly challenged **slot** read through the authenticated owner channel.
-   Verify the slot, epoch and home header. Retain that evidence off-host
-   and write the slot sequence and digest to the one-line archive described
-   below. After the observer exits, fence its writer and release its claimed
-   session on the owner channel. Bring the archive to the home and run
+   After the observer exits, fence its writer. As local root on the authority
+   host, record witness status, archive the challenged slot head, and release
+   the claimed session. Substitute the witness configuration for CONFIG and
+   describe the fencing evidence in WORDS.
+
+   ```sh
+   ataniq-witness status --config CONFIG
+   ataniq-witness slot-read --config CONFIG --archive-out ARCHIVE
+   ataniq-witness slot-release --config CONFIG --asked "WORDS"
+   ```
+
+   Save the result lines off-host, transfer the archive to the home, and run
 
    ```sh
    ataniq-home observe --config FILE --events 0 --archive ARCHIVE
    ataniq-home status --config FILE
    ```
 
-   Save all three records, the verdict, the counted line and the exit status.
+   Save all three records, the verdict, the guarded constant and the exit status.
    A three-way comparison requires an archive from the same assignment head.
    A stale or conflicting archive gives `observation: DISAGREE` and exit 1.
 
@@ -191,12 +204,10 @@ Keep managed admission closed throughout the pilot.
 
    **Retire and enroll at epoch 2.** Stop and fence the disposable writer.
    Run `ataniq-home retire --config FILE` and check `retired=true` in local
-   status. On the authority host, have the owner issue the separate
-   `ataniq-witness` owner operation `Retire` through its authenticated Unix
-   socket. Supply the exact challenged slot state, a fresh mutation ID and
-   the digest of the owner's disposition. Archive the verified receipt
-   and a freshly challenged tombstone. The current witness executable
-   exposes retirement through its typed owner API.
+   status. As local root on the authority host, run
+   `ataniq-witness slot-retire --config CONFIG --asked "WORDS"`. Describe
+   the disposition of the fenced writer in WORDS. Retain the printed
+   retirement receipt digest and exact disposition off-host.
 
    Preserve the old state and installation records. Prepare an empty home
    root, new seed and TLS paths, and a fresh binding directory. Configure
@@ -204,7 +215,7 @@ Keep managed admission closed throughout the pilot.
    (previous epoch plus one). Repeat `identity-init`, pin exchange, the
    outside activation record and prepare/submit/finalize for the replacement.
    Check the new genesis and enrollment receipt, observe the fresh mirror
-   and retain its counted line as separate evidence.
+   and retain its guarded constant as separate evidence.
    [Witness retirement and replacement](authority-host-witness.md#retire-and-enroll-a-replacement)
 
 `status` works offline, including before identity creation. It reports the
@@ -226,15 +237,17 @@ through the witness owner channel.
 A completed comparison prints the replayed head, retained advance receipt
 head, freshly challenged witness head and optional owner archive. It records
 the result in the private state file `observation.json`. Differences give
-`observation: DISAGREE` and exit 1. Observe prints the managed-start and launch counts only after
-printing a comparison verdict. This producer has no execution or process-management capability.
+`observation: DISAGREE` and exit 1. After the comparison verdict, observe prints the guarded
+constant `managed_starts=0 launches=0`. Both values are zero by construction.
+Guard tests check the home command’s transitive imports and scan the home and
+enrollment source for direct process starts.
 
 Supply a protected regular archive file with exactly one ASCII line,
 `sequence=N head=HEX`, terminated by LF. Use the slot's unsigned decimal
 assignment sequence (no leading zeroes) and its 64 lowercase digest digits.
 Keep the original signed evidence off-host. The witness CLI in this checkout
 prints directory journal position and digest in its status summary. Obtain
-the slot head from the owner client's authenticated slot read. Copying the
+the slot head with `ataniq-witness slot-read --config CONFIG --archive-out ARCHIVE`. Copying the
 directory position or an enrollment receipt digest will give a disagreement.
 
 ## Retire the local home

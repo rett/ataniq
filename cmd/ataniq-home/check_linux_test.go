@@ -106,7 +106,18 @@ func TestCheckKeyRolesAndCertificate(t *testing.T) {
 	writeConfig(t, path, m)
 	certPath := m["witness_cert"].(string)
 	der := read(t, certPath)
-	for _, data := range [][]byte{nil, []byte("not DER"), bytes.Repeat(der, 2), append(bytes.Clone(der), 0)} {
+	armored := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	for _, data := range [][]byte{der, armored} {
+		must(t, os.WriteFile(certPath, data, 0600))
+		call(t, path, "check")
+	}
+	for _, data := range [][]byte{nil, []byte("not DER"), bytes.Repeat(der, 2), append(bytes.Clone(der), 0),
+		append([]byte("prefix\n"), armored...), append(bytes.Clone(armored), '\n'), bytes.Repeat(armored, 2),
+		append([]byte("-----BEGIN CERTIFICATE-----\ntorn\n"), armored...), append(bytes.Clone(armored), 'x'),
+		append(bytes.Clone(bytes.TrimSuffix(armored, []byte("\n"))), ' '),
+		pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}),
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Headers: map[string]string{"Comment": "extra"}, Bytes: der}),
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: bytes.Repeat(der, 2)})} {
 		must(t, os.WriteFile(certPath, data, 0600))
 		refused(t, path, "check", "witness_cert")
 	}
@@ -140,5 +151,37 @@ func TestHomeUsage(t *testing.T) {
 		if code := run(args, &out, &diag, 1000); code != 2 || diag.String() != usage+"\n" || out.Len() != 0 {
 			t.Error(args, code, out.String(), diag.String())
 		}
+	}
+}
+
+func TestCheckAndServePreflight(t *testing.T) {
+	for _, kind := range []string{"retired", "unsafe directory", "locked installation"} {
+		t.Run(kind, func(t *testing.T) {
+			path, fields, _, _ := ceremonyConfig(t)
+			call(t, path, "identity-init")
+			var want string
+			switch kind {
+			case "retired":
+				call(t, path, "retire")
+				want = "home retired"
+			case "unsafe directory":
+				dir := filepath.Join(filepath.Dir(path), "unsafe")
+				must(t, os.Mkdir(dir, 0700))
+				must(t, os.Chmod(dir, 0777))
+				fields["binding"] = filepath.Join(dir, "binding")
+				writeConfig(t, path, fields)
+				want = "binding directory"
+			case "locked installation":
+				dir, err := lockInstallation(fields["binding"].(string), true)
+				must(t, err)
+				defer dir.Close()
+				want = "home installation busy"
+			}
+			_, first := cli(t, 1, "check", "--config", path)
+			_, second := cli(t, 1, "serve", "--check", "--config", path)
+			if !strings.Contains(first, want) || first != second {
+				t.Fatalf("check %q, serve --check %q", first, second)
+			}
+		})
 	}
 }
