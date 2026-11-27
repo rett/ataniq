@@ -46,7 +46,7 @@ const (
 func (e HomeRefusal) Error() string {
 	switch e {
 	case ErrHomeMissing:
-		return "the project has no home; use project-home to enroll it"
+		return "the project has no home; use ataniqd project-home to enroll it"
 	case ErrOtherHome:
 		return "another instance is this project's home"
 	}

@@ -116,9 +116,13 @@ In order, by the owner's hand. The daemon never runs `ataniq-canary`.
    that carries the canary's marker, or a marker that is not the one this
    command writes, is refused. It makes no lead folder, no mirror and no runtime
    root. Exit status: 0 done, 1 failed, 2 usage.
-4. With the daemon stopped, run `ataniqd init --state-dir STATE_ROOT` once,
+4. With the daemon stopped, run `ataniqd init --state-dir STATE` once,
    using the config's `state_root`. Record the authority and incarnation.
-   Any daemon build has this command.
+   Then run
+   `ataniqd project-home --state-dir STATE --home self scratch-KEY` once for
+   each lead key in the config. For example, key `alpha` gives the registry
+   project `scratch-alpha`. Existing roots need the same enrollment. Both
+   commands are available in every daemon build.
 5. Start `ataniqd run --scratch CONFIG`. The daemon makes the runtime folder
    itself, like the skeleton does.
 6. Drive the leads from the console ([the console guide](terminal-console.md)),
@@ -474,6 +478,10 @@ operation; every code is a word of lower-case letters, digits and dashes.
 | `lead.stop` | `role-busy`, `stale-epoch`, `role-not-defined`, `not-managed` | `intent-pending`, `failed` | `stop-unproven`, `daemon-stopping`, `registry-broken`, `failed` |
 | `lead.ticket` | `stale-epoch`, `not-running`, `holder-version-skew`, `ticket-refused` | `holder-unreachable`, `ticket-failed`, `ticket-lost`, `ticket-file` | |
 | `lead.inject` | `stale-epoch`, `inject-off`, `not-running`, `holder-version-skew`, `second-message`, `message-in-flight`, and the admission codes of the canary slice (`bad-id`, `body-too-long`, `empty-body` and the like) | `holder-unreachable`, and `holder-` with the holder's refusal (`disabled`, `busy`, `bad-request`; the epoch's message stays free after `disabled` and `bad-request`, and stays spent after `busy`) | |
+
+Both `lead.define` and `lead.start` can also return a refused receipt for a
+missing, foreign or unassigned project home, or a stale assignment version.
+See [project home refusal codes](federation.md#enroll-a-project-home).
 
 `holder-version-skew` refuses a holder that is not the daemon's own build,
 before anything changes: `lead.start` reads the build of the holder executable
@@ -1269,9 +1277,9 @@ keeps its sample leads.
 **What the owner prepares**, on the daemon's host, before the first start:
 
 1. The scratch roots and the config, as in [the owner's steps](#the-owners-steps)
-   1 to 4: private roots that are not the account's defaults, the config of
-   mode 0600 outside both roots, the holder and sandbox inputs, and local
-   throwaway source repositories. `ataniq-canary scratch-init --config CONFIG`
+   1 to 4, including enrollment of each local project. Use private roots outside
+   the account's defaults, a mode 0600 config outside both roots, the holder
+   and sandbox inputs, and local throwaway source repositories. `ataniq-canary scratch-init --config CONFIG`
    writes only the root marker: it provisions no lead and does not set up the
    owner channel.
 2. The owner channel's **non-trial** scratch settings, `owner/scratch.json` in

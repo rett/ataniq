@@ -1,11 +1,46 @@
 package leadregistry
 
 import (
+	"errors"
 	"math"
+	"path/filepath"
 
 	"ataniq/internal/instanceid"
 	"ataniq/internal/leadrole"
 )
+
+// EnrollProjectHome records or confirms the initial assignment under the same
+// exclusive registry lock as the daemon.
+func EnrollProjectHome(state, home, project string) (authority string, retErr error) {
+	id, err := instanceid.Load(state)
+	if err != nil {
+		return "", err
+	}
+	authority = home
+	if authority == "self" {
+		authority = id.Authority
+	}
+	r, err := Open(filepath.Join(state, DirName), Options{})
+	if err != nil {
+		return "", err
+	}
+	defer func() { retErr = errors.Join(retErr, r.Close()) }()
+	if id.Binding != r.binding {
+		return "", ErrForeignInstance
+	}
+	row, err := r.ProjectHome(project)
+	switch {
+	case errors.Is(err, ErrHomeMissing):
+		if err := r.SetProjectAssignment(project, authority, ProjectVersion{}, true); err != nil {
+			return "", err
+		}
+	case err != nil:
+		return "", err
+	case row.HomeAuthority != authority || row.Holder == nil:
+		return "", errors.New("project already enrolled with a different assignment")
+	}
+	return authority, nil
+}
 
 // validateAssignment checks the same predecessor and local occupancy for
 // replay and for live writes. V1 enrolls at generation 1. A transfer of home

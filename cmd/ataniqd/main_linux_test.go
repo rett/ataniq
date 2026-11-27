@@ -223,15 +223,26 @@ func initTestState(t *testing.T, state string) {
 	}
 }
 
+func enrollTestProject(t *testing.T, state, home, project string) {
+	t.Helper()
+	ta := newTestApp(t, nil)
+	if code := ta.run([]string{"project-home", "--state-dir", state, "--home", home, project}); code != 0 {
+		t.Fatalf("enroll %s: exit %d: %s", project, code, ta.err.String())
+	}
+}
+
 // startApp runs `ataniqd run` with args in process and waits until status
 // answers.
-func startApp(t *testing.T, ta *testApp, args []string, socket string) <-chan int {
+func startApp(t *testing.T, ta *testApp, args []string, socket string, localProjects ...string) <-chan int {
 	t.Helper()
 	cfg, _, code := ta.runConfig(args)
 	if code >= 0 {
 		t.Fatalf("run config: exit %d: %s", code, ta.err.String())
 	}
 	initTestState(t, cfg.StateDir)
+	for _, project := range localProjects {
+		enrollTestProject(t, cfg.StateDir, "self", project)
+	}
 	done := make(chan int, 1)
 	go func() { done <- ta.run(append([]string{"run"}, args...)) }()
 	deadline := time.Now().Add(20 * time.Second)

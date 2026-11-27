@@ -671,7 +671,7 @@ func TestScratchSeatTakesThePhoneTrialsStateFolder(t *testing.T) {
 		sa.getenv = env
 		serrs := &gateBuf{}
 		sa.stderr = serrs
-		sdone := startApp(t, sa, append([]string{"--scratch", config, "--owner-channel", "--seat-gate", nominal}, withSettings...), socket)
+		sdone := startApp(t, sa, append([]string{"--scratch", config, "--owner-channel", "--seat-gate", nominal}, withSettings...), socket, "scratch-standin-1", "scratch-live-1")
 		return sa, serrs, sdone, last()
 	}
 	sa, serrs, sdone, addr := startScratch()

@@ -36,7 +36,7 @@ func TestChatCommand(t *testing.T) {
 	w := newScratchWorld(t)
 	ta := scratchApp(t, w)
 	socket := filepath.Join(w.Runtime, "daemon.sock")
-	done := startApp(t, ta, []string{"--scratch", w.ConfigPath}, socket)
+	done := startApp(t, ta, []string{"--scratch", w.ConfigPath}, socket, "scratch-alpha", "scratch-beta")
 
 	code, out, errs := chatRun(t, "list", "--config", w.ConfigPath)
 	if code != 0 {

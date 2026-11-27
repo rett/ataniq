@@ -11,7 +11,11 @@ Federation does not require a central instance or a shared provider.
 ## Instance identity
 
 Before the first run, use `ataniqd init --state-dir DIR [--label TEXT]` as the
-daemon user. Omitting `--state-dir` selects the same default as `run`. The
+daemon user. Then, while the daemon is stopped, enroll each project with
+`ataniqd project-home --state-dir DIR --home self PROJECT` on its chosen home.
+Use that instance's full authority ID in place of `self` on each executor.
+
+Omitting `--state-dir` from `init` selects the same default as `run`. The
 command creates `DIR/instance.key`, a singly linked, user-owned 0600 file in
 the private state root. The authority ID is 64 lowercase hexadecimal digits
 encoding SHA-256 over the ASCII bytes of `ataniq-instance-authority/1` immediately followed by the
@@ -45,8 +49,8 @@ incarnation. It preserves the authority and draws a new incarnation each
 time. An old lead registry journal now fails its binding check. Retain it
 offline for recovery and move it out of the registry directory before
 running ordinary `ataniqd init --state-dir DIR` to bind a **new, empty**
-registry. Reconcile the old lead history before resuming work. Only the
-lead registry carries this binding today.
+registry. Reconcile the old lead history and enroll each project in the new
+registry before resuming work. Only the lead registry carries this binding today.
 
 At managed sandbox start, the daemon reads the identity from that state root
 and passes the holder only the short tag, from which the holder sets
@@ -74,18 +78,18 @@ owns coordination and integration. The other instance runs offered work, such
 as member runs and suites, and returns results and patches to the home lead.
 The owner records the same designation on each participating instance.
 
-After `ataniqd init`, stop the daemon and run `project-home` as its user.
-These commands build the Linux helper from the checkout and enroll a project locally.
+For a new or existing root, run both commands as the daemon user while the
+daemon is stopped. Use the same state directory for both.
 
 ```sh
-sh scripts/go-tool.sh build -o build/project-home ./internal/leadregistry/cmd/project-home
-build/project-home --state-dir DIR --home self PROJECT
+ataniqd init --state-dir DIR
+ataniqd project-home --state-dir DIR --home self PROJECT
 ```
 
 Use the exact registry project name, for example `scratch-alpha` for the
 role `scratch-alpha/lead`. On the executor, use
-`build/project-home --state-dir DIR --home AUTHORITY PROJECT`, with the
-home's full authority ID from `ataniqd init`. The helper takes the registry's
+`ataniqd project-home --state-dir DIR --home AUTHORITY PROJECT`, with the
+home's full authority ID from `ataniqd init`. The subcommand takes the registry's
 exclusive lock. It prints the project and recorded home. Repeating the same
 enrollment confirms it. A conflicting enrollment fails.
 

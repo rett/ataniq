@@ -313,7 +313,7 @@ func canary(t *testing.T, args ...string) (code int, out, errOut string) {
 func TestCanaryCommandsEndToEnd(t *testing.T) {
 	f := newCanaryFixture(t)
 	ta := canaryApp(t)
-	done := startApp(t, ta, []string{"--canary", f.cfgPath}, f.socket())
+	done := startApp(t, ta, []string{"--canary", f.cfgPath}, f.socket(), f.cfg.Role.Project())
 	cfgArg := []string{"--config", f.cfgPath}
 	line := func(out string) map[string]any {
 		t.Helper()

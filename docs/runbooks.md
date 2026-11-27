@@ -123,6 +123,10 @@ stopped, initialize a new or pre-identity root once with
 `build/canary/ataniqd init --state-dir <state root>` using the config's
 `state_root`. Record the authority and incarnation. Back up an existing root
 before init if you may need to run the older build again.
+Then run
+`build/canary/ataniqd project-home --state-dir <state root> --home self scratch-<key>`
+for each local lead in the config. Use the same enrollment for new lead keys
+added later, while the daemon is stopped. A restart keeps the recorded homes.
 
 - Do: `build/canary/ataniqd run --scratch <config>` in the daemon's terminal.
   Leave it there. Do not run it in the background of a terminal you will close.
