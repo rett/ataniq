@@ -34,7 +34,8 @@ func operations() []operation {
 	}{
 		{"execve", unix.SYS_EXECVE, false}, {"execveat", unix.SYS_EXECVEAT, false},
 		{"socket", unix.SYS_SOCKET, false}, {"socketpair", unix.SYS_SOCKETPAIR, false}, {"connect", unix.SYS_CONNECT, false},
-		{"ptrace", unix.SYS_PTRACE, false}, {"pidfd_getfd", unix.SYS_PIDFD_GETFD, false}, {"process_vm_writev", unix.SYS_PROCESS_VM_WRITEV, false},
+		{"ptrace", unix.SYS_PTRACE, false}, {"pidfd_getfd", unix.SYS_PIDFD_GETFD, false},
+		{"process_vm_readv", unix.SYS_PROCESS_VM_READV, false}, {"process_vm_writev", unix.SYS_PROCESS_VM_WRITEV, false},
 		{"setns", unix.SYS_SETNS, true}, {"mount", unix.SYS_MOUNT, true}, {"umount2", unix.SYS_UMOUNT2, true}, {"pivot_root", unix.SYS_PIVOT_ROOT, true},
 		{"fsopen", unix.SYS_FSOPEN, true}, {"fsconfig", unix.SYS_FSCONFIG, true}, {"fsmount", unix.SYS_FSMOUNT, true}, {"fspick", unix.SYS_FSPICK, true},
 		{"open_tree", unix.SYS_OPEN_TREE, true}, {"open_tree_attr", unix.SYS_OPEN_TREE_ATTR, true}, {"move_mount", unix.SYS_MOVE_MOUNT, true}, {"mount_setattr", unix.SYS_MOUNT_SETATTR, true},
@@ -139,7 +140,7 @@ func prepare(op operation, dir, marker string) (call, error) {
 			runtime.KeepAlive(l)
 			return err
 		}, nil
-	case unix.SYS_PTRACE, unix.SYS_PIDFD_GETFD, unix.SYS_PROCESS_VM_WRITEV:
+	case unix.SYS_PTRACE, unix.SYS_PIDFD_GETFD, unix.SYS_PROCESS_VM_READV, unix.SYS_PROCESS_VM_WRITEV:
 		return childOperation(op.nr, marker)
 	case unix.SYS_CLONE:
 		return func() error { return forkResult(unix.SYS_CLONE, op.flag|uintptr(unix.SIGCHLD), 0, 0, 0) }, nil
@@ -191,13 +192,24 @@ func childOperation(nr uint32, marker string) (call, error) {
 			return nil, err
 		}
 		invoke = func() error { return onlyErr(unix.PidfdGetfd(fd, 0, 0)) }
-	case unix.SYS_PROCESS_VM_WRITEV:
+	case unix.SYS_PROCESS_VM_READV, unix.SYS_PROCESS_VM_WRITEV:
 		// Only the byte explicitly supplied by this fixture child.
 		sample := byte(1)
 		invoke = func() error {
-			n, err := unix.ProcessVMWritev(pid, []unix.Iovec{{Base: &sample, Len: 1}}, []unix.RemoteIovec{{Base: address, Len: 1}}, 0)
+			local := []unix.Iovec{{Base: &sample, Len: 1}}
+			remote := []unix.RemoteIovec{{Base: address, Len: 1}}
+			var n int
+			var err error
+			if nr == unix.SYS_PROCESS_VM_READV {
+				n, err = unix.ProcessVMReadv(pid, local, remote, 0)
+				if err == nil && sample != 0 {
+					return errors.New("wrong fixture byte")
+				}
+			} else {
+				n, err = unix.ProcessVMWritev(pid, local, remote, 0)
+			}
 			if err == nil && n != 1 {
-				return errors.New("sample byte not written")
+				return errors.New("sample byte not transferred")
 			}
 			return err
 		}

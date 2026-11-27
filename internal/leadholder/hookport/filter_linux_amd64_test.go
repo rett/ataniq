@@ -63,6 +63,13 @@ func TestFilterProgram(t *testing.T) {
 			t.Fatalf("no kernel control for syscall %d", nr)
 		}
 	}
+	// The operation table also pins the required deny list when the
+	// environment cannot run a control. Legacy clone has a flags rule.
+	for nr := range seen {
+		if nr != unix.SYS_CLONE && !slices.Contains(denied[:], nr) {
+			t.Fatalf("missing deny rule for syscall %d", nr)
+		}
+	}
 	for i, a := range attr {
 		b := prod[i]
 		if b.Code == unix.BPF_RET|unix.BPF_K && b.K&0xffff0000 == unix.SECCOMP_RET_ERRNO {

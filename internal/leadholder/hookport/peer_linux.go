@@ -1,6 +1,11 @@
 // Package hookport serves the holder's per-intent observation socket on Linux.
 // Admission checks the connecting process's uid, cgroup and liveness before
 // reading. Any admitted peer can forge events or pass on its connection.
+//
+// The holder's seccomp filter denies process_vm_readv and process_vm_writev.
+// It cannot filter the pathname /proc/<pid>/mem. The holder can still read
+// or write memory through that file where ptrace permissions, including the
+// host's Yama policy, allow it.
 package hookport
 
 import (
