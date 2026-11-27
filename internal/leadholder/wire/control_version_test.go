@@ -57,6 +57,7 @@ func TestControlFrameOfAnotherVersionIsRefused(t *testing.T) {
 	if _, err := wire.EncodeResponse(wire.Response{OK: true, Version: 2}); !errors.Is(err, wire.ErrInvalid) {
 		t.Errorf("encode a response of version 2: %v", err)
 	}
+	t.Run("pre-start", testPreStartVersions)
 }
 
 // TestControlFrameV1IsWrittenWithoutTheMember: a version 1 frame, the version
