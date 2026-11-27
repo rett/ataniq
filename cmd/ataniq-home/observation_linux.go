@@ -126,7 +126,7 @@ func compareObservation(ctx context.Context, archive string, root enrollment.Fil
 	if err := saveObservation(root.Path, o); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(out, "home %s\nwitness %s (challenged %s)\narchive %s\nobservation: %s\n", o.Home, o.Witness, o.Fresh, archiveText, o.Result); err != nil {
+	if _, err := fmt.Fprintf(out, "home %s\nwitness %s (challenged %s)\narchive %s\nobservation: %s\nmanaged_starts=0 launches=0\n", o.Home, o.Witness, o.Fresh, archiveText, o.Result); err != nil {
 		return err
 	}
 	if o.Result != "agree" {
@@ -137,8 +137,36 @@ func compareObservation(ctx context.Context, archive string, root enrollment.Fil
 
 const observationFile = "observation.json"
 
+// A refused startup has no three-way evidence to publish.
+type refusedObservation struct {
+	Reason enrollment.Reason `json:"refusal"`
+}
+
+func (r refusedObservation) valid() bool {
+	switch r.Reason {
+	case enrollment.HomeBehind, enrollment.HomeAhead, enrollment.Fork, enrollment.Retired:
+		return true
+	}
+	return false
+}
+
+func recordObserveError(state string, err error) error {
+	var refusal refusedObservation
+	var e *enrollment.Error
+	switch {
+	case errors.Is(err, errRetired), errors.Is(err, cp.ErrRetired):
+		refusal.Reason = enrollment.Retired
+	case errors.As(err, &e):
+		refusal.Reason = e.Reason
+	}
+	if refusal.valid() {
+		return errors.Join(err, saveObservation(state, refusal))
+	}
+	return err
+}
+
 // Pin the private state directory for creation, publication and directory sync.
-func saveObservation(state string, o observation) error {
+func saveObservation(state string, o any) error {
 	raw, err := json.Marshal(o)
 	if err != nil {
 		return err
@@ -168,13 +196,4 @@ func saveObservation(state string, o observation) error {
 		return err
 	}
 	return syncDirectory(fd)
-}
-
-func syncDirectory(fd int) error {
-	d, err := unix.Openat(fd, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return err
-	}
-	defer unix.Close(d)
-	return unix.Fsync(d)
 }

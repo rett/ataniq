@@ -57,16 +57,12 @@ func loadWitness(c config, home homeIdentity) (ed25519.PublicKey, []byte, error)
 }
 
 func homeEndpoint(c config, p pairing) (*link.Endpoint, error) {
-	advance, err := enrollment.ReadPendingAdvance(enrollment.FileRoot{Path: c.State}, c.Binding, p.witness)
+	advance, err := enrollment.PendingForRestart(enrollment.FileRoot{Path: c.State}, c.Binding, c.Slot, c.Epoch, p.home.key.Public().(ed25519.PublicKey), p.witness)
 	if err != nil {
 		return nil, fmt.Errorf("pending advance: %w", err)
 	}
 	if advance == nil {
 		return link.NewEndpoint(p.home.tls, p.cert, p.witness, c.Epoch, c.Slot, c.TrustSources)
-	}
-	homeID, err := cp.KeyID(p.home.key.Public().(ed25519.PublicKey))
-	if err != nil || advance.Expected.Slot != c.Slot || advance.Expected.Epoch != c.Epoch || advance.Expected.HomeKeyID != homeID {
-		return nil, errors.New("pending advance: slot, epoch or home key differs from config")
 	}
 	body, err := cp.AdvanceBody(*advance)
 	if err != nil {

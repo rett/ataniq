@@ -82,7 +82,8 @@ func (f *pilot) run(t *testing.T, cmd command, fault enrollment.Fault) (string, 
 	if pollErr := <-done; !errors.Is(pollErr, context.Canceled) {
 		t.Fatal(pollErr)
 	}
-	if !strings.HasSuffix(out.String(), "managed_starts=0 launches=0\n") {
+	verdict := strings.Contains(out.String(), "observation: ")
+	if strings.HasSuffix(out.String(), "managed_starts=0 launches=0\n") != verdict {
 		t.Fatal(out.String())
 	}
 	return out.String(), err
@@ -122,48 +123,71 @@ func TestObserveArchive(t *testing.T) {
 	}
 }
 
-type cutAtCommit func() error
+type observeFault func(string) error
 
-func (f cutAtCommit) After(point string) error {
-	if point == "advance.committed" {
-		return f()
+func (f observeFault) After(point string) error { return f(point) }
+
+func TestObserveReportsInterruptedAdvance(t *testing.T) {
+	f := newPilot(t)
+	cut := errors.New("lost before receipt save")
+	fault := observeFault(func(point string) error {
+		if point == "advance.committed" {
+			return cut
+		}
+		return nil
+	})
+	_, err := f.run(t, command{events: 2}, fault)
+	var refusal *enrollment.Error
+	if !errors.Is(err, cut) || !errors.As(err, &refusal) || refusal.Reason != enrollment.Interrupted ||
+		!strings.Contains(err.Error(), "owner action: preserve the staged intent") || f.state(t).Head.Sequence != 1 {
+		t.Fatal(err, f.state(t))
 	}
-	return nil
-}
-func TestObserveRestart(t *testing.T) {
-	for _, tc := range []struct {
-		name                  string
-		cuts, events, wantSeq int
-		failure               bool
-	}{
-		{"committed advance recovered", 1, 16, 16, false}, {"retry budget exhausted", 3, 4, 3, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newPilot(t)
-			cuts := 0
-			fault := cutAtCommit(func() error {
-				if cuts == tc.cuts {
-					return nil
-				}
-				cuts++
-				// Simulate the independent owner's fence/release of the interrupted
-				// writer. The home client cannot release a witness session.
-				f.release(t)
-				return errors.New("lost before receipt save")
-			})
-			out, err := f.run(t, command{events: tc.events}, fault)
-			if cuts != tc.cuts || (err != nil) != tc.failure || int(f.state(t).Head.Sequence) != tc.wantSeq {
-				t.Fatal(out, err, cuts, f.state(t))
-			}
-			if tc.failure && !strings.Contains(err.Error(), "lost before receipt save") {
-				t.Fatal(err)
-			}
-			if !tc.failure && !strings.Contains(out, "observation: agree\n") {
-				t.Fatal(out)
-			}
-		})
+	// Only the independent owner can release the interrupted writer.
+	f.release(t)
+	out, err := f.run(t, command{events: 0}, nil)
+	must(t, err)
+	if !strings.Contains(out, "observation: agree\n") || f.state(t).Head.Sequence != 1 {
+		t.Fatal(out, f.state(t))
 	}
 }
+func TestObserveRestartBeforeAppend(t *testing.T) {
+	f := newPilot(t)
+	cut := errors.New("stopped after staging")
+	fault := observeFault(func(point string) error {
+		if point == "stage.dir-synced" {
+			return cut
+		}
+		return nil
+	})
+	_, err := f.run(t, command{events: 2}, fault)
+	if !errors.Is(err, cut) || f.state(t).Head.Sequence != 0 {
+		t.Fatal(err, f.state(t).Head)
+	}
+	stage := filepath.Join(f.c.State, "advance.pending")
+	before := read(t, stage)
+	f.release(t)
+	ep, err := homeEndpoint(f.c, f.p)
+	must(t, err)
+	if pending, ok := ep.PendingMutation(); ok {
+		t.Fatal("unappended intent blocks claim", pending)
+	}
+	if !bytes.Equal(before, read(t, stage)) {
+		t.Fatal("endpoint changed stage before claim")
+	}
+	cmd, ok := parseCommand([]string{"observe", "--config", f.path})
+	if !ok {
+		t.Fatal("invalid observe command")
+	}
+	out, err := f.run(t, cmd, nil)
+	must(t, err)
+	if !strings.Contains(out, "observation: agree\n") || f.state(t).Head.Sequence != uint64(cmd.events) {
+		t.Fatal(out, f.state(t).Head)
+	}
+	if _, err := os.Stat(stage); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("stage after recovery", err)
+	}
+}
+
 func TestObserveRefusesRestores(t *testing.T) {
 	for _, reason := range []enrollment.Reason{enrollment.HomeBehind, enrollment.HomeAhead, enrollment.Fork, enrollment.Occupied, enrollment.Retired} {
 		t.Run(string(reason), func(t *testing.T) {
@@ -182,7 +206,10 @@ func TestObserveRefusesRestores(t *testing.T) {
 				must(t, err)
 				must(t, os.WriteFile(path, append(header, frame...), 0600))
 			case enrollment.Retired:
-				_, err := f.w.Administration().Retire(t.Context(), cp.Retirement{Mutation: f.mutation(t), DispositionDigest: strings.Repeat("b", 64)})
+				_, err := f.run(t, command{events: 1}, nil)
+				must(t, err)
+				f.release(t)
+				_, err = f.w.Administration().Retire(t.Context(), cp.Retirement{Mutation: f.mutation(t), DispositionDigest: strings.Repeat("b", 64)})
 				must(t, err)
 			default:
 				_, err := f.run(t, command{events: 1}, nil)
@@ -211,11 +238,21 @@ func TestObserveRefusesRestores(t *testing.T) {
 					must(t, os.WriteFile(path, append(header, raw...), 0600))
 				}
 			}
+			if reason == enrollment.HomeBehind || reason == enrollment.Fork {
+				if status := call(t, f.path, "status"); !strings.Contains(status, "last_observation=agree (stale: ledger head moved)\n") {
+					t.Fatal(status)
+				}
+			}
 			before := read(t, path)
 			out, err := f.run(t, command{events: 1}, nil)
 			var e *enrollment.Error
 			if !errors.As(err, &e) || e.Reason != reason || !strings.Contains(err.Error(), "\nowner action: ") || strings.Contains(out, "observation: agree") || !bytes.Equal(before, read(t, path)) {
 				t.Fatal(err, out)
+			}
+			if reason != enrollment.Occupied {
+				if status := call(t, f.path, "status"); !strings.Contains(status, "last_observation=refused: "+string(reason)+"\n") {
+					t.Fatal(status)
+				}
 			}
 		})
 	}
@@ -241,7 +278,7 @@ func TestObservePartition(t *testing.T) {
 	var out bytes.Buffer
 	err = observe(ctx, command{events: 1}, f.c, f.p, ep, l, &out, nil)
 	var e *enrollment.Error
-	if !errors.As(err, &e) || e.Reason != enrollment.Unreachable || !strings.Contains(err.Error(), "owner action: restore witness polling") || f.state(t).Head.Sequence != 0 {
+	if !errors.As(err, &e) || e.Reason != enrollment.Unreachable || !strings.Contains(err.Error(), "owner action: restore witness polling") || f.state(t).Head.Sequence != 0 || out.Len() != 0 {
 		t.Fatal(err, out.String())
 	}
 	result, err := f.run(t, command{events: 1}, nil)

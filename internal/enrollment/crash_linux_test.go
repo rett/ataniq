@@ -100,14 +100,14 @@ func TestAdvanceCuts(t *testing.T) {
 				t.Fatal("stage at cut", err)
 			}
 
-			pending, err := ReadPendingAdvance(f.root, "", pub(f.witness))
+			pending, err := PendingForRestart(f.root, "", f.slot, f.b.Epoch, pub(f.home), pub(f.witness))
 			switch {
 			case tc.point == "stage.created":
 				want(t, err, Interrupted) // Empty stage. Never admit a different mutation.
-			case tc.removed:
+			case tc.removed || !tc.appended:
 				check(t, err)
 				if pending != nil {
-					t.Fatal("restored a cleared mutation")
+					t.Fatal("restored an unsent or cleared mutation")
 				}
 			default:
 				check(t, err)

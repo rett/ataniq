@@ -169,8 +169,8 @@ Keep managed admission closed throughout the pilot.
 
    **Partition during observation.** Interrupt witness polling on the
    disposable pair. An unavailable witness gives a refusal and an owner
-   action. Restore polling. A stopped append closes the store and starts
-   again, with at most three starts in one invocation. A committed advance
+   action. Restore polling. A stopped append closes the store and exits
+   with the original failure and its owner action. A committed advance
    can recover its receipt once the old writer is fenced and the owner
    releases its session. An occupied session or a local suffix without a
    verified witness commit needs owner reconciliation. Preserve the pending
@@ -226,8 +226,8 @@ through the witness owner channel.
 A completed comparison prints the replayed head, retained advance receipt
 head, freshly challenged witness head and optional owner archive. It records
 the result in the private state file `observation.json`. Differences give
-`observation: DISAGREE` and exit 1. The last output line counts managed starts
-and launches. This producer has no execution or process-management capability.
+`observation: DISAGREE` and exit 1. Observe prints the managed-start and launch counts only after
+printing a comparison verdict. This producer has no execution or process-management capability.
 
 Supply a protected regular archive file with exactly one ASCII line,
 `sequence=N head=HEX`, terminated by LF. Use the slot's unsigned decimal
@@ -251,5 +251,10 @@ observe and all three enrollment steps for this installation. Keep the ledger,
 receipt, binding, keys and marker together as evidence of the old pairing.
 
 `ataniq-home status --config FILE` still replays the ledger offline. It prints
-`retired=true` or `retired=false` and, when a completed comparison exists,
-`last_observation=agree` or `last_observation=DISAGREE` with the differences.
+`retired=true` or `retired=false` and `last_observation=none` until there is
+a recorded result. A completed comparison shows `last_observation=agree` or
+`last_observation=DISAGREE` with the differences. The suffix
+`(stale: ledger head moved)` means the recorded home head differs from local
+replay. If observe refuses a home behind, home ahead, fork or retirement, it
+records the reason in `observation.json`. Status then shows
+`last_observation=refused:` followed by that reason.

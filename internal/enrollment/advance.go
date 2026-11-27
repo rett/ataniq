@@ -31,6 +31,22 @@ func (p staged) advance() (checkpoint.Advance, error) {
 	return q, err
 }
 
+// Submission follows the durable append. Only the exact signed predecessor
+// proves that the stage is unappended. Any other unexpected tail is evidence.
+func (p staged) appended(q checkpoint.Advance, last []byte, head assignment.Checkpoint) (bool, error) {
+	if head == q.Expected.Head && head != q.Next && !bytes.Equal(last, p.Record) {
+		return false, nil
+	}
+	if q.Next != head || !bytes.Equal(last, p.Record) {
+		return false, refuse(Interrupted, nil)
+	}
+	e, err := assignment.DecodeRecord(last)
+	if err != nil || e.PreviousHash != q.Expected.Head.Digest || e.Sequence == 0 || e.Sequence-1 != q.Expected.Head.Sequence {
+		return false, refuse(Interrupted, err)
+	}
+	return true, nil
+}
+
 func (s *Store) inspectStage(ctx context.Context, raw, last []byte, head assignment.Checkpoint, v checkpoint.View) (*AdvanceReceipt, error) {
 	equal := checkpoint.Compare(head, v.Current) == checkpoint.Equal
 	var p staged
@@ -45,22 +61,20 @@ func (s *Store) inspectStage(ctx context.Context, raw, last []byte, head assignm
 		return nil, refuse(Interrupted, err)
 	}
 	q, err := p.advance()
-	if err == nil && equal && q.Next != head && !bytes.Equal(last, p.Record) &&
-		q.Expected.Head == v.Current.Head && q.Expected.Header == v.Current.Header &&
-		q.Expected.Slot == v.Current.Slot && q.Expected.Epoch == v.Current.Epoch {
+	if err != nil || q.Expected.Header != s.b.Header || q.Expected.Slot != s.b.Slot || q.Expected.Epoch != s.b.Epoch {
+		return nil, refuse(Interrupted, err)
+	}
+	appended, err := p.appended(q, last, head)
+	if err != nil {
+		return nil, err
+	}
+	if !appended {
 		// Release can change the session and fence at the same predecessor.
-		// Start clears this unappended intent only after confirming its claim.
+		// Start clears this intent only after confirming its claim.
+		if !equal {
+			return nil, refuse(Interrupted, nil)
+		}
 		return nil, nil
-	}
-	if err != nil || q.Next != head || !bytes.Equal(last, p.Record) {
-		return nil, refuse(Interrupted, err)
-	}
-	// Replay authenticated last. Check its actual predecessor, even when the
-	// home is only one record ahead of the witness but on a different branch.
-	e, err := assignment.DecodeRecord(last)
-	if err != nil || e.PreviousHash != q.Expected.Head.Digest || e.Sequence == 0 || e.Sequence-1 != q.Expected.Head.Sequence ||
-		q.Expected.Header != s.b.Header || q.Expected.Slot != s.b.Slot || q.Expected.Epoch != s.b.Epoch {
-		return nil, refuse(Interrupted, err)
 	}
 	switch checkpoint.Compare(head, v.Current) {
 	case checkpoint.HomeAhead:

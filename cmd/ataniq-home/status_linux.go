@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"ataniq/internal/assignment"
 	"ataniq/internal/enrollment"
 	"ataniq/internal/seatgate"
 )
@@ -60,7 +61,7 @@ func status(c config, out io.Writer) error {
 			_, err = fmt.Fprintf(out, "ledger_head_sequence=%d\n", head.Sequence)
 		}
 	}
-	return errors.Join(err, bindingErr, replayErr, pilotStatus(c, out))
+	return errors.Join(err, bindingErr, replayErr, pilotStatus(c, head, out))
 }
 
 func bindingStatus(c config, home ed25519.PublicKey) (string, *enrollment.Binding, error) {
@@ -84,7 +85,7 @@ func bindingStatus(c config, home ed25519.PublicKey) (string, *enrollment.Bindin
 	return "valid", &b, nil
 }
 
-func pilotStatus(c config, out io.Writer) error {
+func pilotStatus(c config, head *assignment.Checkpoint, out io.Writer) error {
 	retired, err := isRetired(c)
 	if err != nil {
 		return err
@@ -94,12 +95,25 @@ func pilotStatus(c config, out io.Writer) error {
 	}
 	path := filepath.Join(c.State, observationFile)
 	present, err := exists(path)
-	if err != nil || !present {
+	if err != nil {
+		return err
+	}
+	if !present {
+		_, err := fmt.Fprintln(out, "last_observation=none")
 		return err
 	}
 	raw, err := readFile(path, 4096, true)
 	if err != nil {
 		return fmt.Errorf("observation.json: %w", err)
+	}
+	var refusal refusedObservation
+	if err := json.Unmarshal(raw, &refusal); err == nil && refusal.valid() {
+		canonical, err := json.Marshal(refusal)
+		if err != nil || !bytes.Equal(raw, canonical) {
+			return errors.New("invalid observation.json")
+		}
+		_, err = fmt.Fprintln(out, "last_observation=refused:", refusal.Reason)
+		return err
 	}
 	var o observation
 	if err := json.Unmarshal(raw, &o); err != nil {
@@ -110,6 +124,13 @@ func pilotStatus(c config, out io.Writer) error {
 		(o.Archive != nil && (!o.Archive.valid() || o.ArchiveInvalid)) || o.Result != o.verdict() {
 		return errors.New("invalid observation.json")
 	}
-	_, err = fmt.Fprintln(out, "last_observation="+o.Result)
+	result := o.Result
+	switch {
+	case head == nil:
+		result += " (current ledger head unavailable)"
+	case o.Home != headOf(*head):
+		result += " (stale: ledger head moved)"
+	}
+	_, err = fmt.Fprintln(out, "last_observation="+result)
 	return err
 }

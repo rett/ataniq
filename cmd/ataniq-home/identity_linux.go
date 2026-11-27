@@ -13,7 +13,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func identityInit(c config) (retErr error) {
+func identityInit(c config) error {
+	return identityInitWithSync(c, unix.Fsync)
+}
+
+func identityInitWithSync(c config, fsync func(int) error) (retErr error) {
 	parent, err := directory(filepath.Dir(c.HomeKey), true)
 	if err != nil {
 		return fmt.Errorf("home_key: %w", err)
@@ -73,10 +77,23 @@ func identityInit(c config) (retErr error) {
 	if _, err := readTLS(dir); err != nil {
 		return fmt.Errorf("tls_dir: %w", err)
 	}
-	return createSeed(keyFD, keyName)
+	// The shared seatgate writer has closed the files. Sync them through
+	// the pinned TLS directory before syncing its name and creating the seed.
+	for _, name := range []string{seatgate.KeyFile, seatgate.CertFile} {
+		if err := syncAt(fd, name, fsync); err != nil {
+			return fmt.Errorf("tls_dir: sync %s: %w", name, err)
+		}
+	}
+	if err := fsync(fd); err != nil {
+		return fmt.Errorf("tls_dir: sync directory: %w", err)
+	}
+	if err := syncAt(tlsFD, ".", fsync); err != nil {
+		return fmt.Errorf("tls_dir: sync parent: %w", err)
+	}
+	return createSeed(keyFD, keyName, fsync)
 }
 
-func createSeed(parent int, name string) error {
+func createSeed(parent int, name string, fsync func(int) error) error {
 	var seed [ed25519.SeedSize]byte
 	rand.Read(seed[:])
 	defer clear(seed[:])
@@ -89,11 +106,14 @@ func createSeed(parent int, name string) error {
 	if err == nil {
 		_, err = f.Write(seed[:])
 	}
-	if cerr := f.Close(); err != nil || cerr != nil {
-		if unix.Unlinkat(parent, name, 0) != nil {
-			return errors.New("home_key: could not remove incomplete seed")
-		}
-		return errors.New("home_key: could not write seed")
+	if err == nil {
+		err = fsync(fd)
+	}
+	if err = errors.Join(err, f.Close()); err == nil {
+		err = syncAt(parent, ".", fsync)
+	}
+	if err != nil {
+		return fmt.Errorf("home_key: persist seed: %w", errors.Join(err, unix.Unlinkat(parent, name, 0)))
 	}
 	return nil
 }
