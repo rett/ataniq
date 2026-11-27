@@ -436,6 +436,12 @@ read-only, root-owned files, runs its checks, no-AI check, validators and reload
 as [the README](README.md#steps) describes, and exits 0 only when the release is
 healthy.
 
+If a departing unit is `failed`, use the [reset and retry procedure](#6-roll-back).
+When activating over an existing seat or notifier deployment, a missing service
+inventory keeps decisions inhibited. Stop the decision services by hand, make
+the original imported release available, run `ah-switch recover --services-stopped`
+and retry the switch. [Inventory recovery](README.md#the-journal-and-recover)
+
 ### 5. Verify
 
 On the host:
@@ -506,6 +512,13 @@ sudo /usr/local/sbin/ah-switch --rollback-to previous
 It accepts that release's id too and refuses any other. A rollback does not need
 the incoming folder. A rollback skips the rule that a counter must be higher,
 but the release it goes back to is checked and qualified again like any other.
+
+The departure check keeps decisions inhibited until systemd confirms the old
+services are inactive or absent. If it reports `failed`, run the command for
+the named unit (`systemctl reset-failed ataniq-seat.service`,
+`systemctl reset-failed ataniq-seat-notify.service` or
+`systemctl reset-failed ataniq-witness.service`) and retry the same request.
+This applies to forward switches as well.
 
 ## Deploying the seat app
 

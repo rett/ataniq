@@ -287,12 +287,42 @@ func TestReleaseDepartureManagerEvidence(t *testing.T) {
 		err := e.switcher().checkInactive(t.Context(), []string{"app.service"}, nil)
 		if (err == nil) != tc.pass {
 			t.Errorf("%+v: %v", tc, err)
+		} else if err != nil && !strings.Contains(err.Error(), "state "+q(tc.state)+" for app.service") {
+			t.Errorf("missing manager observation for %+v: %v", tc, err)
 		}
 	}
 }
 
+func TestReleaseDepartureRetryAfterResetFailed(t *testing.T) {
+	e := active(t)
+	state := "failed"
+	e.runner.unitState = func(string) (Output, error) {
+		return Output{Stdout: []byte(state + "\n")}, &RunError{Status: 3}
+	}
+	if code := e.rollBack("previous"); code != ExitFailed {
+		t.Fatalf("rollback exited %d", code)
+	}
+	for _, want := range []string{CodeStopFailed, "state failed", "systemctl reset-failed app.service"} {
+		if !strings.Contains(e.last, want) {
+			t.Errorf("rollback output missing %q:\n%s", want, e.last)
+		}
+	}
+	if _, held := e.inhibited(); !held || e.runner.called("reload-units") != 0 {
+		t.Fatal("rollback advanced while app.service was failed")
+	}
+
+	state = "inactive" // The owner ran systemctl reset-failed.
+	if e.rollBack("previous") != ExitOK {
+		t.Fatal(e.last)
+	}
+	e.links(rel1, rel2)
+	if _, held := e.inhibited(); held {
+		t.Fatal("successful retry left decisions inhibited")
+	}
+}
+
 func TestReleaseDepartureTemplateInstances(t *testing.T) {
-	for _, states := range []string{"", "inactive\n\ninactive\n", "inactive\n\nactive\n"} {
+	for _, states := range []string{"", "inactive\n\ninactive\n", "inactive\n\nactive\n", "failed\n"} {
 		e := newEnv(t)
 		queried := false
 		e.runner.unitState = func(name string) (Output, error) {
@@ -303,8 +333,11 @@ func TestReleaseDepartureTemplateInstances(t *testing.T) {
 			return Output{Stdout: []byte("inactive\n")}, &RunError{Status: 4}
 		}
 		err := e.switcher().checkInactive(t.Context(), []string{"worker@.service"}, nil)
-		if !queried || (err != nil) != strings.Contains(states, "\nactive\n") {
+		if !queried || (err != nil) != (strings.Contains(states, "\nactive\n") || states == "failed\n") {
 			t.Errorf("states %q: queried %v, err %v", states, queried, err)
+		}
+		if states == "failed\n" && (err == nil || !strings.Contains(err.Error(), "systemctl reset-failed INSTANCE")) {
+			t.Errorf("missing instance repair: %v", err)
 		}
 	}
 }
