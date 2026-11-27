@@ -2766,7 +2766,7 @@ func (e canaryHelperEnv) run(t *testing.T, rel string, stdin string, args ...str
 	home := filepath.Join(e.dir, "home")
 	cmd := exec.Command("/bin/sh", append([]string{filepath.Join(root(t), rel)}, args...)...)
 	cmd.Dir = e.dir
-	cmd.Env = []string{"PATH=" + e.tools + ":/usr/bin:/bin", "HOME=" + home, "XDG_RUNTIME_DIR=" + filepath.Join(e.dir, "run")}
+	cmd.Env = []string{"PATH=" + e.tools + ":/usr/bin:/bin", "HOME=" + home, "TMPDIR=" + t.TempDir(), "XDG_RUNTIME_DIR=" + filepath.Join(e.dir, "run")}
 	cmd.Stdin = strings.NewReader(stdin)
 	out, err := cmd.CombinedOutput()
 	code := 0
