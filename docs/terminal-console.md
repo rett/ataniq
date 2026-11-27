@@ -389,17 +389,22 @@ lead must ask again.
 
 ## Lead control (scratch daemon only)
 
-With `--daemon DIR` the console asks the daemon for `hello` when it starts and
-offers the leads view only when the answer lists all
-six operations of the lead control plane (`lead.list`, `lead.define`,
-`lead.start`, `lead.stop`, `lead.ticket` and `lead.inject`). Only a daemon built
-with the canary tag and started with `ataniqd run --scratch CONFIG` lists them
-(see [the scratch leads guide](scratch-leads.md)); the console client is in every
-build and behind no tag. **When the daemon lists none, the console has no lead
-control.** `L` then opens a screen that says "no lead control in this daemon",
-and Esc closes it. A daemon that lists only some of the six is treated the same
-way. The console asks once, when it starts, so start it again after the daemon
-was started with `--scratch`.
+With `--daemon DIR`, the console offers the leads view when the daemon's
+`hello` lists `lead.list`. That operation alone is enough to browse. Without
+it at startup, `L` shows "no lead control in this daemon" and Esc returns to
+the cockpit. The scratch daemon offers lead control when built with the
+canary tag and started with `ataniqd run --scratch CONFIG`. The console
+client is in every build. See [the scratch leads guide](scratch-leads.md).
+
+The lead client reads the capabilities again on each reconnect. Each action
+needs its own offer. For `d`, `s`, `x` and `m` these are `lead.define`,
+`lead.start`, `lead.stop` and `lead.inject`, respectively. Both `w` and `v`
+need `lead.ticket` for the requested role. The client refuses a missing
+capability with "the daemon does not offer …" and the action's name, for
+example "the daemon does not offer a writer ticket for this lead". The view
+can show a generic no-answer message for this refusal. If an earlier command
+has an unresolved outcome, the client keeps its original command ID across
+reconnects, including when the new connection lacks the capability to retry it.
 
 ### Opening the view and what it shows
 
@@ -411,6 +416,11 @@ the single-column pages take it too, but not over a live session.
 A late or failed cockpit status read leaves an open leads view, its message
 draft and its stop confirmation in place. The view reads the lead list
 through its own connection.
+
+If the selected lead disappears or its epoch changes, the view clears the
+selection and any open editor or stop question. Use j or k to choose a lead
+again. When a lead list read fails, its last rows stay visible as stale.
+Stale rows cannot be selected.
 
 The view lists the daemon's leads, one row each, with the daemon's `max_running`
 and how many leads count against it:
