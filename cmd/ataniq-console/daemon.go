@@ -93,6 +93,9 @@ func daemonBase(owner bool) terminalconsole.Projection {
 func daemonProjection(r consoleclient.Result) terminalconsole.Projection {
 	p := daemonBase(r.State == consoleclient.StateOK && r.View.OwnerChannel)
 	if r.State != consoleclient.StateOK {
+		// A transport outage preserves directory rows. A refusal or invalid
+		// reply supplies no view of the previous inventory.
+		p.Offline = r.State == consoleclient.StateNoDaemon || r.State == consoleclient.StateSlow || r.State == consoleclient.StateUnavailable
 		p.Problem, p.NextStep = r.Text, r.NextStep
 		if p.Problem == "" {
 			p.Problem = "the daemon could not be asked"
@@ -100,6 +103,7 @@ func daemonProjection(r consoleclient.Result) terminalconsole.Projection {
 		return p
 	}
 	v := r.View
+	p.OfflineHomes = v.OfflineHomes
 	p.Facts = []terminalconsole.Check{
 		{Name: "Daemon version", State: orUnknown(v.Daemon.Version)},
 		{Name: "Daemon process", State: pidText(v.Daemon.PID)},
@@ -122,7 +126,7 @@ func daemonProjection(r consoleclient.Result) terminalconsole.Projection {
 		for _, c := range pr.Coordinators {
 			lead.Subagents = append(lead.Subagents, "coordinator "+orUnknown(c.Feature)+" · "+string(c.State))
 		}
-		p.Projects = append(p.Projects, terminalconsole.Project{Name: pr.Name, Leads: []terminalconsole.Lead{lead}})
+		p.Projects = append(p.Projects, terminalconsole.Project{HomeID: pr.HomeID, ID: pr.ID, Name: pr.Name, Leads: []terminalconsole.Lead{lead}})
 	}
 	return p
 }
@@ -138,6 +142,7 @@ func daemonLead(e consoleclient.Entry) terminalconsole.Lead {
 		requested += " / " + e.Effort
 	}
 	return terminalconsole.Lead{
+		ID: e.ID, ConversationID: e.ConversationID, Epoch: e.Epoch,
 		Name:  e.Name,
 		State: string(e.State),
 		Session: terminalconsole.Session{

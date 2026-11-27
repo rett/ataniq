@@ -302,11 +302,14 @@ func (m *Model) enter() tea.Cmd {
 		return nil
 	}
 	rows := m.treeRows()
-	if m.treeCursor < len(rows) && rows[m.treeCursor].selectable {
+	if m.treeCursor >= 0 && m.treeCursor < len(rows) && rows[m.treeCursor].selectable {
 		r := rows[m.treeCursor]
 		m.project, m.lead = r.project, r.lead
 		m.projectCursor, m.leadCursor = r.project, r.lead
 		m.leadSelections[r.project] = r.lead
+		if m.projects[r.project].ID != "" {
+			m.restoreScroll()
+		}
 	}
 	return nil
 }
@@ -321,7 +324,11 @@ func (m *Model) move(delta int) {
 	case paneTree:
 		// Delegates are shown but cannot be selected: the cursor skips them.
 		rows := m.treeRows()
-		for i := m.treeCursor + delta; i >= 0 && i < len(rows); i += delta {
+		start := m.treeCursor + delta
+		if m.treeCursor < 0 && delta < 0 {
+			start = len(rows) - 1
+		}
+		for i := start; i >= 0 && i < len(rows); i += delta {
 			if rows[i].selectable {
 				m.treeCursor = i
 				break
@@ -329,8 +336,10 @@ func (m *Model) move(delta int) {
 		}
 	case paneEvidence:
 		m.scrolls[paneEvidence] = min(max(0, m.scrolls[paneEvidence]+delta), max(0, len(m.evidenceLines(m.layout().evidence.Dx()-2))-1))
+		m.rememberScroll()
 	case paneTimeline:
 		m.scrolls[paneTimeline] = min(max(0, m.scrolls[paneTimeline]-delta), max(0, len(m.allTimeline())-1))
+		m.rememberScroll()
 	}
 }
 

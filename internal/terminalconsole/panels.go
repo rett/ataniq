@@ -164,9 +164,9 @@ type treeRow struct {
 func (m *Model) treeRows() []treeRow {
 	var rows []treeRow
 	for pi, pr := range m.projects {
-		rows = append(rows, treeRow{text: pr.Name, selectable: true, project: pi, lead: m.leadSelections[pi]})
+		rows = append(rows, treeRow{text: pr.label(), selectable: !pr.Offline, project: pi, lead: m.leadSelections[pi]})
 		for li, ld := range pr.Leads {
-			rows = append(rows, treeRow{text: leadText(ld), selectable: true, project: pi, lead: li, indent: 1})
+			rows = append(rows, treeRow{text: leadText(ld), selectable: !pr.Offline, project: pi, lead: li, indent: 1})
 			for _, s := range ld.Subagents {
 				rows = append(rows, treeRow{text: s, indent: 2, delegate: true})
 			}
@@ -236,12 +236,12 @@ func (m *Model) drawTree(p *painter, l layout) {
 // selected returns the selected project and lead names and the lead's
 // session, empty when there are none.
 func (m *Model) selected() (project, lead string, s Session) {
-	if len(m.projects) == 0 {
+	if m.project < 0 || m.project >= len(m.projects) {
 		return
 	}
 	pr := m.projects[m.project]
-	project = pr.Name
-	if m.lead < len(pr.Leads) {
+	project = pr.label()
+	if m.lead >= 0 && m.lead < len(pr.Leads) {
 		lead, s = pr.Leads[m.lead].Name, pr.Leads[m.lead].Session
 	}
 	return
@@ -447,7 +447,7 @@ func (m *Model) evidenceLines(width int) []line {
 	_, _, s := m.selected()
 	add(stateKind(s.Binding), "Binding: "+orNone(s.Binding))
 	add(stateKind(s.Execution), "Execution: "+orNone(s.Execution))
-	if len(m.projects) > 0 && m.lead < len(m.projects[m.project].Leads) {
+	if m.project >= 0 && m.project < len(m.projects) && m.lead >= 0 && m.lead < len(m.projects[m.project].Leads) {
 		subs := m.projects[m.project].Leads[m.lead].Subagents
 		if len(subs) == 0 {
 			add(lnDim, "Delegates: none")
