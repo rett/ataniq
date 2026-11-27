@@ -479,13 +479,13 @@ version, and e runs pasta, bubblewrap, ip, curl and a throwaway user unit.
    `check: no refusal`; any refusal ends `check: N refusal(s): the sitting
    failed preflight` and names the start that would fail (the daemon's, or,
    when a holder's socket path is the one refusal, the later start of that
-   lead's holder), and `--status` says the sitting failed preflight. The daemon makes these checks at its start too and
-   refuses (exit 11 for the instance identity, 14 for the registry header, 10 for config) with the same reasons, before any lock, with one
-   exception: the socket paths of the leads' holders are checked only here,
-   before the sitting, since the daemon's start does not look at them (a
-   holder meets that limit only when it starts, during the sitting). The
-   locks and the gate's port, which the check does not take, are left to the
-   start.
+   lead's holder), and `--status` says the sitting failed preflight.
+   Config refusals exit 10, identity refusals exit 11 and registry header
+   refusals exit 14. Preflight reads the header without locking or repairing
+   the journal. At startup the daemon checks the registry when it takes the
+   exclusive journal lock. A holder checks its socket path when it starts,
+   so preflight can report that refusal before the sitting. The daemon locks
+   and the gate's port are checked at startup.
    With `--record`, once the check found no refusal, `--status` takes the
    baseline that step 13 compares with: the SHA-256 digests of the trial's
    gate key, certificate, pins and settings, then the key list's from the
