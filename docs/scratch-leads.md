@@ -1396,20 +1396,24 @@ when it builds the service, and each read is checked again.
 `--check` with the same flags makes every check the daemon makes before it
 takes a lock and prints one line each, `pass` with what holds or `FAIL` with
 why: the folder and its four rules, the settings file and the settings, the
-folders the settings name, the scratch roots, the suite, the root marker, the
-gate's address, key and pins, and the socket paths of the daemon and of every
+folders the settings name, the scratch roots, the suite, the root marker,
+the instance identity, the registry header, the gate's address, key and pins, and the socket paths of the daemon and of every
 lead's holder. The last of these is one the daemon's start does not make: a
 holder meets the limit of a socket address only when it starts, so the check
 is the place to find a runtime root too long for a holder. Then it lists
 what the daemon would read and open, says that `owner/scratch.json` is not
 read, and ends `check: no refusal` (exit 0) or `check: N refusal(s): the
-sitting failed preflight` (exit 10), which then names the start that would
+sitting failed preflight` (exit 10 for config, 11 for identity, 14 for the
+registry header), which then names the start that would
 fail: the daemon's, or, when a holder's socket path is the one refusal, the
 later start of that lead's holder (the daemon would start). It binds, locks, makes and starts nothing; the locks and the gate's port,
 which it does not take, are the start's own refusals (exit 12, 17 and 18).
 
-`--check --keys-prefix` and `--check --keys-since LEN:SHA256` check the key
-list of the state root alone (`owner/keys.log` and its head
+Preflight reads the registry header without locking or repairing the journal.
+For a foreign journal, follow the [restore procedure](federation.md#restore-an-instance).
+
+After checking the instance identity and registry header, `--check --keys-prefix`
+and `--check --keys-since LEN:SHA256` check the key list of the state root (`owner/keys.log` and its head
 `owner/keys.head`), with the journal's own checks read only
 (`ownerjournal.VerifyKeys`), on the files themselves: the folder and both
 files opened without following a link and held to the ownership, mode and

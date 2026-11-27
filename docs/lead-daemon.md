@@ -104,7 +104,7 @@ The command is Linux only. On another platform it prints that and exits 1.
 ### Commands and flags
 
 ```text
-ataniqd init [--state-dir DIR] [--label TEXT | --restored]
+ataniqd init [--state-dir DIR] [--label TEXT | --restored [--leave-old-journal]]
 ataniqd project-home --state-dir DIR --home self|AUTHORITY PROJECT
 ataniqd run [--state-dir DIR] [--runtime-dir DIR] [--owner-channel [--seat-gate ADDR]]
 ataniqd status [--socket PATH] [--json]

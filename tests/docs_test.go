@@ -253,3 +253,15 @@ func TestProjectHomeOperatorSteps(t *testing.T) {
 		}
 	}
 }
+
+func TestFederationStateRootFileTable(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join(root(t), "docs", "federation.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"instance.key", "store.incarnation", "registry/registry.jsonl", "registry/registry.jsonl.v1", "daemon.lock"} {
+		if !strings.Contains(string(doc), "\n| `"+name+"` |") {
+			t.Errorf("state root file table is missing %s", name)
+		}
+	}
+}

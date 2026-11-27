@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -502,7 +503,7 @@ func TestRunRefusesForeignInstanceJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	ta := newTestApp(t, nil)
-	if code := ta.run([]string{"run", "--state-dir", state, "--runtime-dir", base + "/runtime"}); code != leaddaemon.ExitRegistry || !strings.Contains(ta.err.String(), leadregistry.ErrForeignInstance.Error()) {
+	if code := ta.run([]string{"run", "--state-dir", state, "--runtime-dir", base + "/runtime"}); code != leaddaemon.ExitRegistry || !strings.Contains(ta.err.String(), leadregistry.ErrForeignInstance.Error()) || !strings.Contains(ta.err.String(), restoreGuide) {
 		t.Fatalf("foreign journal: exit %d: %s", code, ta.err.String())
 	}
 }
@@ -528,8 +529,22 @@ func TestRestoredInstanceRefusesOldJournal(t *testing.T) {
 			t.Fatal(err)
 		}
 		ta := newTestApp(t, nil)
-		if code := ta.run([]string{"init", "--restored", "--state-dir", target}); code != 0 {
+		args := []string{"init", "--restored", "--state-dir", target}
+		if target == state {
+			if code := ta.run(args); code != leaddaemon.ExitState || !strings.Contains(ta.err.String(), "--leave-old-journal") {
+				t.Fatalf("unacknowledged restore: %d %s", code, ta.err.String())
+			}
+			if got, err := instanceid.Load(state); err != nil || got != before {
+				t.Fatalf("refusal changed identity: %+v %v", got, err)
+			}
+			args = append(args, "--leave-old-journal")
+			ta.err.Reset()
+		}
+		if code := ta.run(args); code != 0 {
 			t.Fatalf("restore: %d: %s", code, ta.err.String())
+		}
+		if target == state && !strings.Contains(ta.err.String(), "warning: the journal") {
+			t.Fatalf("acknowledged restore: %s", ta.err.String())
 		}
 		after, err := instanceid.Load(target)
 		if err != nil || after.Authority != before.Authority || after.Incarnation == before.Incarnation || len(after.Incarnation) != 32 {
@@ -698,7 +713,7 @@ func TestInitRefusedWhileDaemonServes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{{"init", "--state-dir", state}, {"init", "--restored", "--state-dir", state}} {
+	for _, args := range [][]string{{"init", "--state-dir", state}, {"init", "--restored", "--state-dir", state}, {"init", "--restored", "--leave-old-journal", "--state-dir", state}} {
 		ta := newTestApp(t, nil)
 		if code := ta.run(args); code != leaddaemon.ExitState || !strings.Contains(ta.err.String(), "lock") {
 			t.Fatalf("%v: %d %s", args, code, ta.err.String())
@@ -706,5 +721,137 @@ func TestInitRefusedWhileDaemonServes(t *testing.T) {
 	}
 	if after, err := instanceid.Load(state); err != nil || after != before {
 		t.Fatalf("binding after refused init: %+v, %v", after, err)
+	}
+}
+
+func TestInitRemovesStaleRegistryCheck(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state")
+	stale := filepath.Join(state, ".registry-check-123")
+	if err := os.MkdirAll(stale, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, leadregistry.FileName), []byte("old history"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ta := newTestApp(t, nil)
+	if code := ta.run([]string{"init", "--state-dir", state}); code != 0 || !strings.Contains(ta.err.String(), "removed stale registry check copy "+filepath.Base(stale)) {
+		t.Fatalf("cleanup: %d %s", code, ta.err.String())
+	}
+	if _, err := os.Lstat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale directory: %v", err)
+	}
+}
+
+func TestMissingKeyRecoveryPaths(t *testing.T) {
+	state, other := filepath.Join(t.TempDir(), "state"), filepath.Join(t.TempDir(), "other")
+	initTestState(t, state)
+	initTestState(t, other)
+	key := filepath.Join(state, instanceid.FileName)
+	id, err := instanceid.Load(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(key); err != nil {
+		t.Fatal(err)
+	}
+	refusal := func(want string) {
+		t.Helper()
+		ta := newTestApp(t, nil)
+		if code := ta.run([]string{"run", "--state-dir", state, "--runtime-dir", state + "-run"}); code != leaddaemon.ExitState || !strings.Contains(ta.err.String(), want) {
+			t.Fatalf("missing key: %d %s", code, ta.err.String())
+		}
+	}
+	refusal("put the original key for authority " + id.Authority + " back")
+	data, err := os.ReadFile(journalPath(other))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(journalPath(state), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	refusal("follow the restore procedure in " + restoreGuide)
+	if err := os.Remove(journalPath(state)); err != nil {
+		t.Fatal(err)
+	}
+	refusal("no journal confirms the missing key; follow the restore procedure in " + restoreGuide)
+}
+
+func TestRepairDamagedStoreIncarnation(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state")
+	initTestState(t, state)
+	original, err := instanceid.Load(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inc := filepath.Join(state, instanceid.IncarnationFile)
+	if err := os.WriteFile(inc, []byte("damaged"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"init", "--state-dir", state, "--restored"}
+	ta := newTestApp(t, nil)
+	if code := ta.run(args); code != leaddaemon.ExitState || !strings.Contains(ta.err.String(), "delete the damaged store.incarnation, then run init --restored") {
+		t.Fatalf("repair guidance: %d %s", code, ta.err.String())
+	}
+	if err := os.Rename(journalPath(state), filepath.Join(t.TempDir(), "old.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(inc); err != nil {
+		t.Fatal(err)
+	}
+	if code := ta.run(args); code != 0 {
+		t.Fatalf("restore: %d %s", code, ta.err.String())
+	}
+	initTestState(t, state)
+	got, err := instanceid.Load(state)
+	if err != nil || got.Authority != original.Authority || got.Incarnation == original.Incarnation {
+		t.Fatalf("repaired identity: %+v %v", got, err)
+	}
+	reg, err := leadregistry.Open(filepath.Dir(journalPath(state)), leadregistry.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.Close()
+}
+
+func TestInitReportsJournalMigrationAndRefusesBackupAtRun(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state")
+	init := func(want string) {
+		t.Helper()
+		ta := newTestApp(t, nil)
+		if code := ta.run([]string{"init", "--state-dir", state}); code != 0 || !strings.Contains(ta.out.String(), "\n"+want+"\n") {
+			t.Fatalf("init: %d %s%s", code, ta.out.String(), ta.err.String())
+		}
+	}
+	init("journal=created")
+	init("journal=existing")
+	v1, err := os.ReadFile("../../internal/leadregistry/testdata/v1-base/registry.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := journalPath(state)
+	data := append(v1, "torn"...)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	init(fmt.Sprintf("journal=migrated records=%d backup=registry/registry.jsonl.v1", bytes.Count(data, []byte("\n"))-1))
+	init("journal=existing")
+	backup := path + ".v1"
+	got, err := os.ReadFile(backup)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("original v1 backup: %v", err)
+	}
+	st, err := os.Stat(backup)
+	if err != nil || st.Mode() != 0600 {
+		t.Fatalf("backup metadata: %v %v", st, err)
+	}
+	if err := os.WriteFile(path, got, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ta := newTestApp(t, nil)
+	if code := ta.run([]string{"run", "--state-dir", state, "--runtime-dir", shortDir(t)}); code != leaddaemon.ExitRegistry || !strings.Contains(ta.err.String(), "no instance binding") {
+		t.Fatalf("run with v1 backup: %d %s", code, ta.err.String())
+	}
+	if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, data) {
+		t.Fatal("run altered the backup used as a journal")
 	}
 }

@@ -329,24 +329,31 @@ func openFile(dirFD int, path string) (*os.File, error) {
 			return fail(fmt.Errorf("leadregistry: chmod journal: %w", err))
 		}
 	}
-	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil {
-		return fail(fmt.Errorf("leadregistry: stat journal: %w", err))
-	}
-	var named unix.Stat_t
-	if err := unix.Fstatat(dirFD, name, &named, unix.AT_SYMLINK_NOFOLLOW); err != nil || st.Dev != named.Dev || st.Ino != named.Ino || st.Nlink != 1 {
-		return fail(fmt.Errorf("%w: journal replaced or linked", ErrInsecure))
-	}
-	if st.Mode&unix.S_IFMT != unix.S_IFREG {
-		return fail(fmt.Errorf("%w: %s is not a regular file", ErrInsecure, path))
-	}
-	if err := checkOwner(&st, path); err != nil {
+	if err := checkJournalFile(dirFD, fd, path); err != nil {
 		return fail(err)
 	}
-	if st.Mode&0o177 != 0 {
-		return fail(fmt.Errorf("%w: %s has permission bits wider than 0600", ErrInsecure, path))
-	}
 	return f, nil
+}
+
+func checkJournalFile(dirFD, fd int, path string) error {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return fmt.Errorf("leadregistry: stat journal: %w", err)
+	}
+	var named unix.Stat_t
+	if err := unix.Fstatat(dirFD, filepath.Base(path), &named, unix.AT_SYMLINK_NOFOLLOW); err != nil || st.Dev != named.Dev || st.Ino != named.Ino || st.Nlink != 1 {
+		return fmt.Errorf("%w: journal replaced or linked", ErrInsecure)
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFREG {
+		return fmt.Errorf("%w: %s is not a regular file", ErrInsecure, path)
+	}
+	if err := checkOwner(&st, path); err != nil {
+		return err
+	}
+	if st.Mode&0o177 != 0 {
+		return fmt.Errorf("%w: %s has permission bits wider than 0600", ErrInsecure, path)
+	}
+	return nil
 }
 
 // start replays the journal, cuts an unfinished tail and writes the header of

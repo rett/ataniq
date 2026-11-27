@@ -26,31 +26,80 @@ hexadecimal digits. Recreating and initializing the root generates
 both values afresh. The optional label is for display only.
 
 For an existing scratch root, stop the daemon and run the same init command
-with the configuration's `state_root`. Before creating a key, init checks a
-private temporary copy of the existing journal in the state root. Allow space
-for one copy. A corrupt record leaves the original journal and identity
-untouched. After validation, init atomically replaces the old journal with
+with the configuration's `state_root`. Before creating a key, init replays
+the existing journal under its exclusive lock and holds the lock through migration. The
+next init removes and reports any stale `.registry-check-*` replay directories
+left in the root by an interrupted earlier build. A corrupt record leaves the
+original journal and identity untouched. After validation, init atomically replaces the old journal with
 a version 2 journal bound to the authority and incarnation, preserving its
-records. Older builds cannot open this journal. Repeating init keeps the original key
-and label. Supply `--label` only on the first init. Any later `--label`,
+records. Init prints `journal=created` for a new journal,
+`journal=existing` for an already bound journal, or `journal=migrated` with
+the number of complete records after the header and the backup path.
+Before binding a v1 journal, init saves its exact bytes, including an
+unfinished tail, as `registry/registry.jsonl.v1` (0600). Allow space for
+the backup and the replacement journal. A retry can reuse an identical
+backup. If an earlier backup differs, move that backup offline first.
+
+Older builds cannot open the migrated journal. The daemon reads only
+`registry/registry.jsonl` and refuses the v1 backup if copied into its place.
+Repeating init keeps the original key and label. Supply `--label` only on the first init. Any later `--label`,
 including an empty or identical value, is refused. On startup the daemon
 refuses a missing, damaged or unsafe identity, an unbound journal, or a
-journal from another instance or incarnation.
+journal from another instance or incarnation. If the key was made by the
+pre-release build that embedded the incarnation in `instance.key`, keep
+that root offline and re-run init on a fresh root.
 
 A backup of `instance.key` holds the private Ed25519 seed. Protect it as a
 credential. A copied root (including a copy made with `cp -a`) is the same
 instance and must never run beside the original.
+
+### Files in the state root
+
+Paths are relative to the daemon user's 0700 state root. Init creates both
+identity files with mode 0600. Each magic string below ends with a newline.
+Each identity file ends with the 32 raw bytes of SHA-256 over all preceding
+bytes in that file.
+
+| File | Contents and use |
+| --- | --- |
+| `instance.key` | `ataniq-instance-key/2`, 32-byte Ed25519 seed, optional UTF-8 display label (up to 128 bytes), checksum. Its public key determines the authority. |
+| `store.incarnation` | `ataniq-store-incarnation/1`, 16 random bytes, checksum. Restore replaces this file. |
+| `registry/registry.jsonl` | Active journal in the private `registry/` directory. Its v2 header binds the authority and incarnation. The daemon locks this file and replays the hash-chained records that follow. |
+| `registry/registry.jsonl.v1` | Private, byte-for-byte v1 backup saved during migration. Keep it offline with the old root when restoring. |
+| `daemon.lock` | Daemon singleton lock, also held during restore. Its PID text is a hint about the holder. |
+
+Init stages writes under temporary names. These include `.instance-*` in
+the state root, and `.registry-*` and `.registry.jsonl.v1.tmp` inside
+`registry/`. Use the published names in the table for recovery.
+
+### Restore an instance
+
+If only the key was lost and the root is intact, put the original key back as
+`instance.key` and start normally. The missing-key diagnostic checks the
+surviving incarnation against the journal header and names the authority
+whose key is needed. A backup restore needs a fresh incarnation even when it
+includes all the files.
+
+If the daemon reports a damaged `store.incarnation`, stop the daemon, retain
+the old journal offline, delete the damaged `store.incarnation` and follow
+the restore steps below with the original key.
 
 To restore, stop the daemon and keep the old root and journal offline. In a
 private 0700 state directory, restore the original `instance.key` as a
 singly linked 0600 file owned by the daemon user. Run
 `ataniqd init --restored --state-dir DIR` once and record the printed
 incarnation. It preserves the authority and draws a new incarnation each
-time. An old lead registry journal now fails its binding check. Retain it
+time. If a journal is still in place, the command warns and refuses before
+changing the incarnation. Move the journal offline first, or explicitly use
+`--restored --leave-old-journal` to acknowledge that the old journal will
+remain in place and fail its binding check. Both run and scratch
+`run --check` report exit 14 for that journal. Retain it
 offline for recovery and move it out of the registry directory before
 running ordinary `ataniqd init --state-dir DIR` to bind a **new, empty**
 registry. Reconcile the old lead history and enroll each project in the new
 registry before resuming work. Only the lead registry carries this binding today.
+
+### Sandbox identity
 
 At managed sandbox start, the daemon reads the identity from that state root
 and passes the holder only the short tag, from which the holder sets

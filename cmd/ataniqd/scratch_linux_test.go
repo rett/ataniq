@@ -291,7 +291,7 @@ func TestScratchInstanceInitialization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "authority=" + id.Authority + "\nincarnation=" + id.Incarnation + "\nlabel=sample desk\n"; ta.out.String() != want {
+	if want := "authority=" + id.Authority + "\nincarnation=" + id.Incarnation + "\nlabel=sample desk\njournal=migrated records=0 backup=registry/registry.jsonl.v1\n"; ta.out.String() != want {
 		t.Fatalf("init output: %q", ta.out.String())
 	}
 	// Stop at the manager factory to exercise actual scratch startup through
@@ -304,7 +304,7 @@ func TestScratchInstanceInitialization(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg, _, _ := ta.runConfig(args[1:])
-	if err := ta.requireInstance(cfg); !errors.Is(err, instanceid.ErrInvalid) || leaddaemon.ExitCode(err) != leaddaemon.ExitState {
+	if err := ta.requireInstance(cfg, false); !errors.Is(err, instanceid.ErrInvalid) || leaddaemon.ExitCode(err) != leaddaemon.ExitState {
 		t.Fatalf("damaged key: %v", err)
 	}
 	if code := ta.run(args); code != leaddaemon.ExitState {

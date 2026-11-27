@@ -26,7 +26,7 @@ var usage = baseUsage + canaryUsage
 const projectHomeUsage = "ataniqd project-home --state-dir DIR --home self|AUTHORITY PROJECT"
 
 const baseUsage = `usage: ataniqd run [--state-dir DIR] [--runtime-dir DIR]
-       ataniqd init [--state-dir DIR] [--label TEXT | --restored]
+       ataniqd init [--state-dir DIR] [--label TEXT | --restored [--leave-old-journal]]
        ` + projectHomeUsage + `
        ataniqd status [--socket PATH] [--json]
        ataniqd version
@@ -37,6 +37,7 @@ stops and manages no unit and defines no lead, and no flag changes that.
   init     initialize the state root and bind its registry to this instance
            --label TEXT       optional display label on first initialization
            --restored         give a restored key a new store incarnation
+           --leave-old-journal  acknowledge the old journal will be unusable
   project-home   enroll a project once, with the daemon stopped
                  --home self uses this root's authority ID
   run      take the daemon lock and the runtime folder lock, open the
@@ -233,22 +234,29 @@ func (a *app) runCmd(args []string) int {
 	if code := a.ownerRun(&owner, &cfg); code >= 0 {
 		return code
 	}
-	err := a.requireInstance(cfg)
+	err := a.requireInstance(cfg, false)
 	if err == nil {
 		err = leaddaemon.Run(context.Background(), cfg)
 	}
 	if err != nil {
-		message := err.Error()
-		var start *leaddaemon.StartupError
-		if errors.As(err, &start) && start.Step == leaddaemon.StepRegistry {
-			message = fmt.Sprintf("registry: %s: %v", journalPath(cfg.StateDir), start.Err)
-			if errors.Is(err, leadregistry.ErrUnbound) {
-				message = fmt.Sprintf("registry: %s has no instance binding; run %s", journalPath(cfg.StateDir), initHint(cfg.StateDir))
-			}
-		}
-		fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(message))
+		fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(startupMessage(err, cfg.StateDir)))
 	}
 	return leaddaemon.ExitCode(err)
+}
+
+func startupMessage(err error, state string) string {
+	message := err.Error()
+	var start *leaddaemon.StartupError
+	if errors.As(err, &start) && start.Step == leaddaemon.StepRegistry {
+		message = fmt.Sprintf("registry: %s: %v", journalPath(state), start.Err)
+		if errors.Is(err, leadregistry.ErrForeignInstance) {
+			message += "; follow the restore procedure in " + restoreGuide
+		}
+		if errors.Is(err, leadregistry.ErrUnbound) {
+			message = fmt.Sprintf("registry: %s has no instance binding; run %s", journalPath(state), initHint(state))
+		}
+	}
+	return message
 }
 
 func (a *app) statusCmd(args []string) int {

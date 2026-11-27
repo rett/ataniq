@@ -748,3 +748,27 @@ func TestOwnerSettingsCheckIdentityMatchesRun(t *testing.T) {
 		})
 	}
 }
+
+func TestOwnerSettingsCheckRefusesForeignJournalWithoutRepair(t *testing.T) {
+	useSuite(t, cmdSuite{})
+	noListen(t)
+	w := newSettingsWorld(t)
+	peer := filepath.Join(t.TempDir(), "peer")
+	initTestState(t, peer)
+	header, err := os.ReadFile(journalPath(peer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := append(header, "torn"...)
+	if err := os.WriteFile(journalPath(w.state), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	before := treeOf(t, w.state)
+	code, out, msg := w.run(t, w.runArgs(w.settings, "--check")...)
+	if code != leaddaemon.ExitRegistry || !strings.Contains(out, "FAIL  registry header") || !strings.Contains(msg, restoreGuide) {
+		t.Fatalf("foreign header: %d %s%s", code, out, msg)
+	}
+	if got, err := os.ReadFile(journalPath(w.state)); err != nil || !bytes.Equal(data, got) || !sameTreeOf(before, treeOf(t, w.state)) {
+		t.Fatal("check changed the state root")
+	}
+}

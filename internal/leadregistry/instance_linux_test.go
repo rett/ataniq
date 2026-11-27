@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"ataniq/internal/instanceid"
@@ -120,6 +121,11 @@ func TestMigrationPreservesCorruptOriginal(t *testing.T) {
 	if _, err := InitInstance(filepath.Dir(dir), filepath.Base(dir), ""); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("init: %v", err)
 	}
+	for _, name := range []string{instanceid.FileName, instanceid.IncarnationFile} {
+		if _, err := os.Lstat(filepath.Join(filepath.Dir(dir), name)); !os.IsNotExist(err) {
+			t.Fatalf("corrupt legacy journal left %s: %v", name, err)
+		}
+	}
 	got, err := os.ReadFile(filepath.Join(dir, FileName))
 	if err != nil || !bytes.Equal(data, got) {
 		t.Fatal("original journal changed")
@@ -158,5 +164,40 @@ func TestMigrationWaitsForClosedJournalAndKeepsTornTail(t *testing.T) {
 	r = openReg(t, dir)
 	if cut := r.Recovery(); cut.Lines != 1 || cut.Bytes != 4 {
 		t.Fatalf("lost tail recovery: %+v", cut)
+	}
+}
+
+func TestMigrationRetriesWithAnExistingBackup(t *testing.T) {
+	data, _ := readV1Base(t)
+	dir := writeJournal(t, data)
+	root := filepath.Dir(dir)
+	if err := os.Chmod(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	backup := filepath.Join(dir, LegacyFileName)
+	old := []byte("a different backup")
+	if err := os.WriteFile(backup, old, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InitInstance(root, filepath.Base(dir), ""); err == nil || !strings.Contains(err.Error(), "existing backup differs") {
+		t.Fatalf("backup collision: %v", err)
+	}
+	for path, want := range map[string][]byte{backup: old, filepath.Join(dir, FileName): data} {
+		if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("collision changed %s: %v", path, err)
+		}
+	}
+	if _, err := instanceid.Load(root); !errors.Is(err, instanceid.ErrMissing) {
+		t.Fatalf("collision published identity: %v", err)
+	}
+	// The backup was published before a crash, but the live file is still v1.
+	if err := os.WriteFile(backup, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InitInstance(root, filepath.Base(dir), ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(backup); err != nil || !bytes.Equal(got, data) {
+		t.Fatal("retry changed the backup")
 	}
 }

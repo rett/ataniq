@@ -23,6 +23,7 @@ const FileName = "instance.key"
 
 const (
 	magic            = "ataniq-instance-key/2\n"
+	legacyKeyMagic   = "ataniq-instance-v1\n"
 	incarnationMagic = "ataniq-store-incarnation/1\n"
 	IncarnationFile  = "store.incarnation"
 	incarnationSize  = 16
@@ -158,7 +159,12 @@ func Load(path string) (Identity, error) {
 		return Identity{}, err
 	}
 	defer root.Close()
-	return readIdentity(int(root.Fd()), path, existing)
+	return LoadRoot(root)
+}
+
+// LoadRoot reads the identity from a pinned root and names its files in errors.
+func LoadRoot(root *os.File) (Identity, error) {
+	return readIdentity(int(root.Fd()), root.Name(), existing)
 }
 
 // LoadAt reads both identity files relative to a pinned state root.
@@ -191,6 +197,9 @@ func readIdentity(root int, dir string, mode readMode) (Identity, error) {
 		return Identity{}, &os.PathError{Op: "load", Path: filepath.Join(dir, FileName), Err: err}
 	}
 	id.Incarnation, err = loadIncarnation(root)
+	if errors.Is(err, ErrInvalid) {
+		err = fmt.Errorf("%w; delete the damaged %s, then run init --restored with the original key", err, IncarnationFile)
+	}
 	if errors.Is(err, ErrMissing) {
 		if id.Authority == "" || mode == restore {
 			return id, nil
@@ -251,7 +260,16 @@ func readPayload(root int, name, prefix string, size, extra int) ([]byte, error)
 		return nil, err
 	}
 	minSize := len(prefix) + size + sha256.Size
-	b, err := io.ReadAll(io.LimitReader(f, int64(minSize+extra+1)))
+	limit := minSize + extra
+	if name == FileName {
+		limit = max(limit, len(legacyKeyMagic)+ed25519.SeedSize+incarnationSize+maxLabel+sha256.Size)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, int64(limit+1)))
+	legacyKey := name == FileName && bytes.HasPrefix(b, []byte(legacyKeyMagic))
+	if legacyKey {
+		prefix = legacyKeyMagic
+		minSize = len(prefix) + ed25519.SeedSize + incarnationSize + sha256.Size
+	}
 	if err != nil || len(b) < minSize || len(b) > minSize+extra || !bytes.HasPrefix(b, []byte(prefix)) {
 		clear(b)
 		return nil, ErrInvalid
@@ -261,6 +279,13 @@ func readPayload(root int, name, prefix string, size, extra int) ([]byte, error)
 	if !bytes.Equal(sum[:], b[len(body):]) {
 		clear(b)
 		return nil, fmt.Errorf("%w: checksum mismatch", ErrInvalid)
+	}
+	if legacyKey {
+		defer clear(b)
+		if !validLabel(string(body[len(prefix)+ed25519.SeedSize+incarnationSize:])) {
+			return nil, ErrInvalid
+		}
+		return nil, fmt.Errorf("%w: key made by a pre-release build; re-run init on a fresh root", ErrInvalid)
 	}
 	return body[len(prefix):], nil
 }

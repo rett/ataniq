@@ -216,3 +216,32 @@ func TestIncarnationFileRefusals(t *testing.T) {
 		})
 	}
 }
+
+func TestPreReleaseKeyHint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state")
+	root, err := OpenRoot(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	body := append([]byte("ataniq-instance-v1\n"), make([]byte, ed25519.SeedSize+16)...)
+	body = append(body, strings.Repeat("x", maxLabel)...)
+	sum := sha256.Sum256(body)
+	key := append(body, sum[:]...)
+	file := filepath.Join(path, FileName)
+	if err := os.WriteFile(file, key, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, restored := range []bool{false, true} {
+		if _, err := CheckInit(root, restored); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "made by a pre-release build; re-run init on a fresh root") {
+			t.Fatalf("pre-release key: %v", err)
+		}
+	}
+	key[len(key)-1] ^= 1
+	if err := os.WriteFile(file, key, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); !errors.Is(err, ErrInvalid) || strings.Contains(err.Error(), "pre-release") {
+		t.Fatalf("damaged legacy key: %v", err)
+	}
+}
