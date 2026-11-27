@@ -75,7 +75,7 @@
 </section>
 {{else}}<p role="status">{{text .Missing maxLine}}</p>
 {{end}}<nav aria-label="Project">
-<p><a id="project-page" href="{{projectHref .Thread ""}}">{{.Back}}</a></p>
-<p><a id="project-list" href="/projects/">Back to the project list</a></p>
+<p><a id="project-page" href="{{mount}}{{projectHref .Thread ""}}">{{.Back}}</a></p>
+<p><a id="project-list" href="{{mount}}/projects/">Back to the project list</a></p>
 </nav>
 {{end}}

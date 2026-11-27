@@ -2,6 +2,6 @@
 <h1>Projects</h1>
 {{if .Note}}<p class="note-line" role="status">{{.Note}}</p>
 {{end}}{{template "projects" .Projects}}
-<p><a id="back" href="/cards/">Back to the cards</a></p>
+<p><a id="back" href="{{mount}}/cards/">Back to the cards</a></p>
 {{template "leave"}}
 {{end}}

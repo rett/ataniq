@@ -19,8 +19,8 @@
 //
 // # States
 //
-// Start never blocks. A goroutine asks Config.TicketReady whether there is a
-// ticket, at once and then every [TicketPoll] (500 ms), and makes no
+// Start never blocks. For a scratch ticket, a goroutine asks Config.TicketReady
+// whether there is a ticket, at once and then every [TicketPoll] (500 ms), and makes no
 // connection while it does not say yes (nil): the status shows "waiting for a
 // ticket" and the holder sees nothing (a connection that closes with no Hello
 // would be counted and logged there as a refused handshake). When the check
@@ -48,6 +48,10 @@
 // ends the pane and the client: disconnected, "session ended", no reattach.
 // So does a State frame whose stream-ended fact is yes when the connection is
 // lost before the Exit.
+//
+// [NewViewer] asks its ticket service before dialing. While the service has
+// no ticket the client waits without opening a connection. Every new dial,
+// including a retry after a failed dial, asks for a fresh viewer ticket.
 //
 // A check mismatch or a gap in the output positions makes the client close the
 // connection, with a Detach, and attach again with a new ticket: the state is

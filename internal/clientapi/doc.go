@@ -1,6 +1,5 @@
-// Package clientapi is the daemon's local client protocol, version
-// "ataniq.client/1": the server side that the daemon serves on a Unix socket
-// and the client side that the console and the command line dial.
+// Package clientapi implements the daemon's "ataniq.client/1" Unix socket
+// protocol and "ataniq.client/2" on authenticated desk streams.
 //
 // This package is provisional and unqualified. It has not been tested against
 // a hostile peer beyond its own tests, and nothing here is a claim of
@@ -38,6 +37,24 @@
 // letters, digits and dashes, starting with a letter) except the codes that end
 // a connection.
 // [Client.Call] is the client side.
+//
+// # Managed requests
+//
+// [Serve] exposes only version 1. Supply its [Handler] and extensions from
+// the scratch inventory, including scratch-only status summaries. A desk
+// transport gives its authenticated stream to [ManagedServer.ServeConn].
+// Every frame on that stream must use version 2. ResolvePrincipal verifies
+// the enrolled identity on the connection. A missing verifier, failed proof
+// or top-level "principal" field gives "forbidden". The managed handler
+// obtains the verified identity from [PrincipalFromContext].
+//
+// A version 2 "hello" returns [ManagedHelloResult]. Its capabilities object
+// maps each visible target ID to an array of operation names. A managed call
+// supplies "target", "op" and optionally a "params" object. The server reads
+// the caller's current capabilities on every call and checks the principal
+// and permissions again before delivering the response. A missing target
+// permission gives "forbidden". The handler rechecks authorization when
+// committing an effect.
 //
 // # Wire
 //

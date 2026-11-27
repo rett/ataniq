@@ -193,7 +193,7 @@ func TestSeatTemplatesShowOnlyThroughText(t *testing.T) {
 		// The project pages' addresses (of ids the app checked) and the
 		// names, ids and types of a question's controls (of the app's own
 		// words and numbers).
-		"projectHref": true, "changeHref": true, "field": true, "oid": true, "qid": true, "pickName": true, "inputType": true}
+		"mount": true, "projectHref": true, "changeHref": true, "field": true, "oid": true, "qid": true, "pickName": true, "inputType": true}
 	// The fields the app fills itself: the page title and the problem's
 	// words (fixed words of this package), the relying party (the config),
 	// addresses made by cardHref and pathsHref, and the id of a page's
@@ -425,7 +425,7 @@ func TestSeatLoginGoesToTheCards(t *testing.T) {
 // The test reads the script; no script engine is among the tools.
 func TestSeatSessionScript(t *testing.T) {
 	js := newRig(t).do("GET", "/static/session.js", nil, nil).Body.String()
-	for _, want := range []string{`"/api/logout"`, `credentials: "same-origin"`, `referrerPolicy: "strict-origin"`, `location.assign("/login/")`,
+	for _, want := range []string{`"/api/logout"`, `credentials: "same-origin"`, `referrerPolicy: "strict-origin"`, `location.assign(mount + "/login/")`,
 		`redirect: "error"`, "if (resp.status === 200 && !resp.redirected) { data = await resp.json(); }",
 		`ended = !!data && typeof data === "object" && data.next === "/login/";`,
 		"} catch (e) { ended = false; }", "Logout not confirmed", "button.disabled = false;"} {
@@ -447,7 +447,7 @@ func TestSeatSessionScript(t *testing.T) {
 		t.Errorf("the logout's answer: %d %q", w.Code, w.Body)
 	}
 	guard, after, ok := strings.Cut(js, "if (ended) {")
-	if !ok || strings.Contains(guard, "location.") || !strings.HasPrefix(strings.TrimSpace(after), `location.assign("/login/");`) {
+	if !ok || strings.Contains(guard, "location.") || !strings.HasPrefix(strings.TrimSpace(after), `location.assign(mount + "/login/");`) {
 		t.Error("the move to the login page is not under the logout's answer")
 	}
 	r := newRig(t)

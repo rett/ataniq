@@ -361,10 +361,7 @@ func (d *driver) waitQuit() {
 	d.until("the quit", func() bool { return d.quit })
 }
 
-// focusSession gives the session pane the focus. The session must show its
-// first screen already: the caller waits for the agent's own words, and as the
-// writer for the session's paste mode, which the view asks of the outer
-// terminal.
+// focusSession gives the session pane the focus.
 func (d *driver) focusSession() {
 	d.t.Helper()
 	d.send(tea.KeyPressMsg{Code: tea.KeyTab})
@@ -471,10 +468,7 @@ func TestAttachViewerShowsTheScreenAndSendsNothing(t *testing.T) {
 	// goroutines, so the order in which the holder sees the two is not
 	// guaranteed. Whatever the order, the holder refuses a viewer's frame (so
 	// the agent cannot echo the viewer's keys) and counts it, so that a client
-	// that sends as a viewer shows in viewer_input_refused. Whether the
-	// client sends at all is proved by
-	// TestAttachViewerFlagWithAWriterTicketSendsNothing, where the holder
-	// does not refuse the frames.
+	// that sends as a viewer shows in viewer_input_refused.
 	viewer.typ("v")
 	viewer.send(tea.PasteMsg{Content: "pv"})
 	writer.typ("w")
@@ -499,21 +493,14 @@ func TestAttachViewerFlagWithAWriterTicketSendsNothing(t *testing.T) {
 	h := startHolder(t, echoAgent)
 	d := h.attachConsole("--viewer")
 	writeTicket(t, d.ticket, h.ticket(wire.RoleWriter))
-	d.waitViewAll("READY", "writer")
-	// The ticket decided the place. The client did not ask to write, so it
-	// says so and sends no input.
-	d.waitView("Asked to attach as viewer")
-	d.focusSession()
-	d.typ("k")
-	d.send(tea.PasteMsg{Content: "p"})
-	d.send(ctrlBackslash)
-	d.typ("q")
-	d.waitQuit()
-	h.waitDetach()
-
-	// Nothing of it reached the agent: a console that does write sees only its
-	// own key.
+	d.waitViewAll("WAITING FOR A TICKET", "requested viewer", "granted writer")
 	h.waitNoWriter()
+	d.focusSession()
+	d.send(tea.PasteMsg{Content: "p"})
+	d.typ("k")
+
+	// The viewer is still open. The holder can grant another writer ticket,
+	// and the agent echoes only the new writer's key.
 	w := h.attachConsole()
 	writeTicket(t, w.ticket, h.ticket(wire.RoleWriter))
 	w.waitView("READY")

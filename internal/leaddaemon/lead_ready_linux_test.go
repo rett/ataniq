@@ -409,26 +409,45 @@ func TestLeadReadyNotPromotedWhenStoppedMeanwhile(t *testing.T) {
 func TestLeadReadyNotPromotedWhenTheEpochChanged(t *testing.T) {
 	l := newLeadEnv(t)
 	l.readyBounds(10 * time.Second)
+	answered := make(chan struct{})
+	restarted := make(chan struct{})
+	resume := sync.OnceFunc(func() { close(restarted) })
+	defer resume()
+	pauseFirst := sync.OnceFunc(func() {
+		close(answered)
+		<-restarted
+	})
+	leadReadyHook = func(string) { pauseFirst() }
+	t.Cleanup(func() { leadReadyHook = nil })
 	l.start()
 	h := newReadyHolder(roleOf("alpha"))
 	h.epoch.Store(1) // refuses epoch 2: the new holder is not up
-	var once sync.Once
-	restarted := make(chan struct{})
-	leadReadyHook = func(stage string) {
-		once.Do(func() {
-			want(t, l.stopLead("alpha", 1), leadwire.StatusDone, "")
-			want(t, l.startLead("alpha"), leadwire.StatusDone, "")
-			close(restarted)
-		})
-	}
-	t.Cleanup(func() { leadReadyHook = nil })
-	l.upWith("alpha", h)
+	askedAgain := make(chan struct{})
+	noteEpochTwo := sync.OnceFunc(func() { close(askedAgain) })
+	l.up("alpha", func(req wire.Request, conn net.Conn) {
+		h.answer(req, conn)
+		if req.Op == wire.OpStatus && req.Epoch == 2 {
+			noteEpochTwo()
+		}
+	})
+	// The first start has returned (and released the role lock). Hold its
+	// observer between the valid answer and the epoch check across the restart.
 	select {
-	case <-restarted:
+	case <-answered:
 	case <-time.After(10 * time.Second):
-		t.Fatal("the hook never ran")
+		t.Fatal("the first observer did not receive the holder's answer")
 	}
-	l.stays("alpha", "starting", 300*time.Millisecond)
+	want(t, l.stopLead("alpha", 1), leadwire.StatusDone, "")
+	want(t, l.startLead("alpha"), leadwire.StatusDone, "")
+	resume()
+	select {
+	case <-askedAgain:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the second observer did not ask for epoch 2")
+	}
+	// Shutdown joins both observers. The next daemon adopts their recorded
+	// state, and the holder still refuses epoch 2 while we inspect it.
+	l.restart()
 	if row := l.row("alpha"); row.State != "starting" || row.Epoch != 2 {
 		t.Fatalf("the row: %+v", row)
 	}

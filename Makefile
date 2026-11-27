@@ -106,6 +106,7 @@ canary-build: doctor
 	@sh scripts/go-tool.sh build -tags ataniq_canary -trimpath -o build/canary/ataniq-console ./cmd/ataniq-console
 	@sh scripts/go-tool.sh build -tags ataniq_canary -trimpath -o build/canary/ataniq-intake ./cmd/ataniq-intake
 	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 sh scripts/go-tool.sh build -tags ataniq_canary -trimpath -o build/canary/ataniq-probe ./cmd/ataniq-probe
+	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 sh scripts/go-tool.sh build -tags ataniq_canary -trimpath -o build/canary/ataniq-hook ./cmd/ataniq-hook
 
 test-dev: doctor
 	@sh scripts/go-tool.sh test ./tests/...

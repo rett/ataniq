@@ -2,9 +2,9 @@
 {{define "standin-chat"}}<p class="banner" role="note"><strong>STAND-IN</strong> These leads and conversations are samples held by the phone trial. No real lead is read, and nothing here is an approval.</p>{{end}}
 {{define "nav"}}<nav aria-label="Main">
 <ul class="nav">
-<li><a id="nav-cards" href="/cards/"{{if eq .Current "cards"}} aria-current="page"{{end}}>Cards</a></li>
-{{if .Projects}}<li><a id="nav-projects" href="/projects/"{{if eq .Current "projects"}} aria-current="page"{{end}}>Projects</a></li>
-{{end}}{{if .Leads}}<li><a id="nav-leads" href="/leads/"{{if eq .Current "leads"}} aria-current="page"{{end}}>Leads</a></li>
+<li><a id="nav-cards" href="{{mount}}/cards/"{{if eq .Current "cards"}} aria-current="page"{{end}}>Cards</a></li>
+{{if .Projects}}<li><a id="nav-projects" href="{{mount}}/projects/"{{if eq .Current "projects"}} aria-current="page"{{end}}>Projects</a></li>
+{{end}}{{if .Leads}}<li><a id="nav-leads" href="{{mount}}/leads/"{{if eq .Current "leads"}} aria-current="page"{{end}}>Leads</a></li>
 {{end}}{{/* Section links use locally available offers. The active section alone marks its link current. */}}</ul>
 </nav>{{end}}
 {{define "readonly"}}<p class="readonly">Approve or deny on the card's own page, or at the desk.</p>{{end}}
@@ -35,14 +35,14 @@
 <h2 id="projects-h">New projects</h2>
 {{if .Listed}}{{with .Threads}}<p>Projects in progress:</p>
 <ul class="cards">
-{{range .}}<li><a href="{{projectHref .Thread ""}}">
-<span class="what">Project {{short .Thread}}</span>
+{{range .}}<li><a href="{{mount}}{{projectHref .Thread ""}}">
+<span class="what">{{if mount}}{{text instance maxName}} · {{end}}Project {{short .Thread}}</span>
 <span class="meta">{{if eq .State "summary"}}Ready to review your answers.{{else}}Round {{num .Round}} of {{num .Of}}.{{end}} {{num .Filled}} of {{num .Total}} required answers given.</span>
 </a></li>
 {{end}}</ul>
 {{else}}<p>No project is in progress.</p>
 {{end}}{{else}}<p>The projects in progress cannot be listed now.</p>
-{{end}}{{if .CanStart}}<form id="start-project" action="/projects/new" method="post">
+{{end}}{{if .CanStart}}<form id="start-project" action="{{mount}}/projects/new" method="post">
 <p>Answer a few questions about a project you want to make. Nothing starts and no agent is given anything: the answers are kept at the desk.</p>
 <button id="start-project-go" type="submit">New project</button>
 </form>
@@ -85,14 +85,14 @@
 {{define "chat-rows"}}
 {{with .}}<ul class="chat-rows">
   {{range .}}<li>
-    {{if eq .Chat "off"}}
+    {{if mount}}{{text instance maxName}} · {{end}}{{if eq .Chat "off"}}
       <strong><bdi>{{text .Key maxID}}</bdi></strong>
       <span class="chat-badge">Off</span>
       {{block "chat-off-note" .}}{{end}}
     {{else}}
       {{if .Here}}<strong><bdi>{{text .Key maxID}}</bdi></strong>
       <span class="meta">Open conversation</span>
-      {{else}}<a href="/leads/daemon/{{text .Key maxID}}#newest"><bdi>{{text .Key maxID}}</bdi></a>{{end}}
+      {{else}}<a href="{{mount}}/leads/daemon/{{text .Key maxID}}#newest"><bdi>{{text .Key maxID}}</bdi></a>{{end}}
       <span class="meta">{{template "chat-state" .}}</span>
       <span class="chat-badge">{{template "chat-sharing" .}}</span>
     {{end}}

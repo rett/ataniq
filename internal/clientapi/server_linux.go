@@ -97,6 +97,7 @@ type Counters struct {
 	invalid      atomic.Uint64
 	tooLarge     atomic.Uint64
 	unsupported  atomic.Uint64
+	forbidden    atomic.Uint64
 	internal     atomic.Uint64
 	idleTimeouts atomic.Uint64
 	servedHello  atomic.Uint64
@@ -149,6 +150,8 @@ type CounterSnapshot struct {
 	// Unsupported is the requests answered "unsupported-protocol" or
 	// "unsupported-operation".
 	Unsupported uint64
+	// Forbidden is the requests answered "forbidden".
+	Forbidden uint64
 	// Internal is the requests answered "internal".
 	Internal uint64
 	// IdleTimeouts is the connections closed for idling.
@@ -168,6 +171,7 @@ func (c *Counters) Snapshot() CounterSnapshot {
 		Invalid:      c.invalid.Load(),
 		TooLarge:     c.tooLarge.Load(),
 		Unsupported:  c.unsupported.Load(),
+		Forbidden:    c.forbidden.Load(),
 		Internal:     c.internal.Load(),
 		IdleTimeouts: c.idleTimeouts.Load(),
 		Served: map[string]uint64{
@@ -184,14 +188,17 @@ func (c *Counters) Snapshot() CounterSnapshot {
 }
 
 type server struct {
-	handler  Handler
-	maxConns int
-	idle     time.Duration
-	write    time.Duration
-	peerUID  PeerUIDFunc
-	uid      uint32
-	counters *Counters
-	ext      *extensionSet // nil when no extension is registered
+	protocol         string
+	handler          Handler
+	managed          ManagedHandler
+	resolvePrincipal func(context.Context, net.Conn) (Principal, error)
+	maxConns         int
+	idle             time.Duration
+	write            time.Duration
+	peerUID          PeerUIDFunc
+	uid              uint32
+	counters         *Counters
+	ext              *extensionSet // nil when no extension is registered
 
 	mu      sync.Mutex
 	conns   map[net.Conn]struct{} // admitted connections, counted against the cap
@@ -203,6 +210,7 @@ type server struct {
 func newServer(h Handler, opts Options) *server {
 	s := &server{
 		handler:  h,
+		protocol: Protocol,
 		maxConns: opts.MaxConns,
 		idle:     opts.IdleTimeout,
 		write:    opts.WriteTimeout,
@@ -372,7 +380,7 @@ func (s *server) admit(ctx context.Context, conn net.Conn) {
 // refuse answers a connection-level refusal and ends the connection. The
 // request id is empty: no request was read.
 func (s *server) refuse(conn net.Conn, code ErrorCode, msg string) {
-	line := encodeError("", &ErrorBody{Code: code, Message: msg})
+	line := encodeError(Protocol, "", &ErrorBody{Code: code, Message: msg})
 	conn.SetWriteDeadline(time.Now().Add(minDuration(s.write, time.Second)))
 	conn.Write(line)
 	s.lingerClose(conn)
@@ -443,11 +451,11 @@ func (s *server) serveConn(ctx context.Context, conn net.Conn) {
 		if tooLarge {
 			s.counters.tooLarge.Add(1)
 			conn.SetWriteDeadline(time.Now().Add(s.write))
-			conn.Write(encodeError("", &ErrorBody{Code: CodeTooLarge, Message: msgTooLarge}))
+			conn.Write(encodeError(s.protocol, "", &ErrorBody{Code: CodeTooLarge, Message: msgTooLarge}))
 			finish(conn)
 			return
 		}
-		resp := s.respond(ctx, buf)
+		resp := s.respond(ctx, conn, buf)
 		conn.SetWriteDeadline(time.Now().Add(s.write))
 		if _, err := conn.Write(resp); err != nil {
 			return
@@ -480,116 +488,105 @@ func readLine(br *bufio.Reader, dst []byte, max int) (line []byte, tooLarge bool
 }
 
 // respond answers one request line with one response line.
-func (s *server) respond(ctx context.Context, line []byte) []byte {
-	id, op, params, fail := decodeRequestExt(line, s.ext)
-	if fail != nil {
+func (s *server) respond(ctx context.Context, conn net.Conn, line []byte) (out []byte) {
+	req, fail := parseRequest(line, s.ext, s.protocol)
+	defer func() {
+		if recover() != nil {
+			out = encodeError(req.Protocol, req.RequestID, s.internal(msgInternal))
+		}
+	}()
+	switch {
+	case fail != nil:
 		switch fail.Code {
 		case CodeInvalidRequest:
 			s.counters.invalid.Add(1)
-		default:
+		case CodeUnsupportedProtocol, CodeUnsupportedOperation:
 			s.counters.unsupported.Add(1)
 		}
-		return encodeError(id, fail)
+	case s.protocol == ProtocolV2:
+		out, fail = s.respondManaged(ctx, conn, req)
+	default:
+		result, errBody := s.dispatch(ctx, req)
+		out, fail = s.encodeResult(req, result, errBody)
 	}
-	if s.ext.has(op) {
-		return s.respondExtension(ctx, id, op, params)
+	if fail != nil {
+		if fail.Code == CodeForbidden {
+			s.counters.forbidden.Add(1)
+		}
+		return encodeError(req.Protocol, req.RequestID, fail)
 	}
-	result, ok := s.call(ctx, op)
-	if !ok {
-		s.counters.internal.Add(1)
-		return encodeError(id, &ErrorBody{Code: CodeInternal, Message: msgInternal})
-	}
-	out, err := marshalLine(successResponse{Protocol: Protocol, RequestID: id, OK: true, Result: result})
-	if err != nil {
-		s.counters.internal.Add(1)
-		return encodeError(id, &ErrorBody{Code: CodeInternal, Message: msgInternal})
-	}
-	if len(out) > MaxResponseBytes {
-		s.counters.internal.Add(1)
-		return encodeError(id, &ErrorBody{Code: CodeInternal, Message: msgResponseTooLarge})
-	}
-	if op == OpHello {
+	switch req.Op {
+	case OpHello:
 		s.counters.servedHello.Add(1)
-	} else {
+	case OpStatus:
 		s.counters.servedStatus.Add(1)
+	default:
+		s.counters.addServedExt(req.Op)
 	}
 	return out
 }
 
-// call runs the handler for op; a panic or an error is reported as not ok.
-func (s *server) call(ctx context.Context, op string) (result any, ok bool) {
-	defer func() {
-		if recover() != nil {
-			result, ok = nil, false
-		}
-	}()
-	switch op {
+func (s *server) encodeResult(req Request, result any, fail *ErrorBody) ([]byte, *ErrorBody) {
+	if fail != nil {
+		return nil, fail
+	}
+	out, err := marshalResult(successResponse{Protocol: req.Protocol, RequestID: req.RequestID, OK: true, Result: result})
+	if err != nil {
+		return nil, s.internal(msgInternal)
+	}
+	if len(out) > MaxResponseBytes {
+		return nil, s.internal(msgResponseTooLarge)
+	}
+	return out, nil
+}
+
+func (s *server) internal(message string) *ErrorBody {
+	s.counters.internal.Add(1)
+	return &ErrorBody{Code: CodeInternal, Message: message}
+}
+
+func (s *server) limits() Limits {
+	return Limits{
+		MaxRequestBytes:  MaxRequestBytes,
+		MaxResponseBytes: MaxResponseBytes,
+		// Round up so a sub-second timeout cannot read as "no limit".
+		IdleTimeoutSeconds: int((s.idle + time.Second - 1) / time.Second),
+		MaxConnections:     s.maxConns,
+	}
+}
+
+func (s *server) dispatch(ctx context.Context, req Request) (any, *ErrorBody) {
+	switch req.Op {
 	case OpHello:
 		r := s.handler.Hello(ctx)
 		r.Protocols = SupportedProtocols()
-		r.Limits = Limits{
-			MaxRequestBytes:  MaxRequestBytes,
-			MaxResponseBytes: MaxResponseBytes,
-			// Rounded up: a timeout under a second must not read as 0, which a
-			// client could take for "no limit".
-			IdleTimeoutSeconds: int((s.idle + time.Second - 1) / time.Second),
-			MaxConnections:     s.maxConns,
-		}
+		r.Limits = s.limits()
 		r.Operations = s.ext.operations()
 		r.Mutations = s.ext.mutating()
-		return r, true
+		return r, nil
 	case OpStatus:
 		r, err := s.handler.Status(ctx)
 		if err != nil {
-			return nil, false
+			return nil, s.internal(msgInternal)
 		}
 		if r.Leads == nil {
 			r.Leads = []LeadStatus{}
 		}
-		return r, true
+		return r, nil
+	default:
+		return s.handlerResult(s.ext.byOp[req.Op].Handle(ctx, req.Op, req.Params))
 	}
-	return nil, false
 }
 
-// respondExtension answers a request for an extension's operation. A panic in
-// Handle, a result that cannot be marshalled, one over the response cap, and a
-// fail that is not well-formed are answered "internal".
-func (s *server) respondExtension(ctx context.Context, id, op string, params json.RawMessage) []byte {
-	internal := func(msg string) []byte {
-		s.counters.internal.Add(1)
-		return encodeError(id, &ErrorBody{Code: CodeInternal, Message: msg})
+// handlerResult forwards only the permitted error fields and values.
+func (s *server) handlerResult(result any, fail *ErrorBody) (any, *ErrorBody) {
+	if fail == nil {
+		return result, nil
 	}
-	result, fail, ok := s.handleExtension(ctx, op, params)
-	if !ok {
-		return internal(msgInternal)
+	if !validExtensionCode(fail.Code) || !validExtensionMessage(fail.Message) {
+		return nil, s.internal(msgInternal)
 	}
-	if fail != nil {
-		if !validExtensionCode(fail.Code) || !validExtensionMessage(fail.Message) {
-			return internal(msgInternal)
-		}
-		// Only the code and the message are sent.
-		return encodeError(id, &ErrorBody{Code: fail.Code, Message: fail.Message})
-	}
-	out, err := marshalResult(successResponse{Protocol: Protocol, RequestID: id, OK: true, Result: result})
-	if err != nil {
-		return internal(msgInternal)
-	}
-	if len(out) > MaxResponseBytes {
-		return internal(msgResponseTooLarge)
-	}
-	s.counters.addServedExt(op)
-	return out
-}
-
-// handleExtension runs the extension's Handle; a panic is reported as not ok.
-func (s *server) handleExtension(ctx context.Context, op string, params json.RawMessage) (result any, fail *ErrorBody, ok bool) {
-	defer func() {
-		if recover() != nil {
-			result, fail, ok = nil, nil, false
-		}
-	}()
-	result, fail = s.ext.byOp[op].Handle(ctx, op, params)
-	return result, fail, true
+	return nil, &ErrorBody{Code: fail.Code, Message: fail.Message}
 }
 
 type successResponse struct {
@@ -631,11 +628,11 @@ func marshalResult(v any) (out []byte, err error) {
 
 // encodeError encodes an error response line. id must be empty or a valid
 // request id.
-func encodeError(id string, body *ErrorBody) []byte {
-	out, err := marshalLine(errorResponse{Protocol: Protocol, RequestID: id, OK: false, Error: body})
+func encodeError(protocol, id string, body *ErrorBody) []byte {
+	out, err := marshalLine(errorResponse{Protocol: protocol, RequestID: id, OK: false, Error: body})
 	if err != nil {
 		// Unreachable: the body holds only strings.
-		return []byte(`{"protocol":"` + Protocol + `","request_id":"","ok":false,"error":{"code":"internal","message":"` + msgInternal + `"}}` + "\n")
+		return []byte(`{"protocol":"` + protocol + `","request_id":"","ok":false,"error":{"code":"internal","message":"` + msgInternal + `"}}` + "\n")
 	}
 	return out
 }

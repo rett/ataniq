@@ -46,6 +46,7 @@ var canaryAllowedPaths = []string{
 	"cmd/ataniq-holder/",
 	"cmd/ataniq-canary/",
 	"cmd/ataniq-canary-standin/",
+	"cmd/ataniq-hook/",
 }
 
 // canaryWholePaths hold packages that have no file outside the tag: an untagged
@@ -61,6 +62,7 @@ var canaryWholePaths = []string{
 	"internal/leadchat/",
 	"cmd/ataniq-canary/",
 	"cmd/ataniq-canary-standin/",
+	"cmd/ataniq-hook/",
 }
 
 // canaryRequiredFiles are single files outside the wholly tagged packages that
