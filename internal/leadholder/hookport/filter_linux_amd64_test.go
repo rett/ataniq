@@ -175,15 +175,34 @@ func selfGroup() (string, error) {
 }
 
 func TestHP8(t *testing.T) {
+	// Register the gate before setup so that it also sees a skipped matrix.
+	filtered := 0
+	defer func() {
+		t.Run("kernel-coverage", func(t *testing.T) { checkKernelCoverage(t, filtered) })
+	}()
+
 	marker := filepath.Join(t.TempDir(), "marker")
 	build := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "build", "-o", marker, "./testdata/marker")
 	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOTOOLCHAIN=local", "GOPROXY=off")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("static exec marker: %v\n%s", err, out)
 	}
+	// Count only completed filtered cases. Skip ends the subtest's
+	// goroutine, and a successful unfiltered control proves no filter ran.
+	run := func(op operation, mode string) {
+		t.Run(mode+"/"+op.name, func(t *testing.T) {
+			if mode == "kill" {
+				runChild(t, op, "abi-control", marker)
+			}
+			runChild(t, op, mode, marker)
+			if mode != "control" {
+				filtered++
+			}
+		})
+	}
 	for _, op := range operations() {
 		for _, mode := range []string{"control", "production", "attribution"} {
-			t.Run(mode+"/"+op.name, func(t *testing.T) { runChild(t, op, mode, marker) })
+			run(op, mode)
 		}
 	}
 	positive := []string{"accept-peer", "accepted-io", "stop", "threads"}
@@ -191,15 +210,50 @@ func TestHP8(t *testing.T) {
 		positive = append(positive, "pthread")
 	}
 	for _, name := range positive {
-		t.Run("positive/"+name, func(t *testing.T) { runChild(t, operation{name: name}, "positive", marker) })
+		run(operation{name: name}, "positive")
 	}
 	for _, abi := range []string{"x32", "i386"} {
-		t.Run("kill/"+abi, func(t *testing.T) {
-			op := operation{name: abi}
-			runChild(t, op, "abi-control", marker)
-			runChild(t, op, "kill", marker)
-		})
+		run(operation{name: abi}, "kill")
 	}
+}
+
+func checkKernelCoverage(t *testing.T, filtered int) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHP8Child$", "--", "probe", "", "")
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 77 && bytes.HasPrefix(out, []byte("UNAVAILABLE ")) {
+		unavailable(t, strings.TrimSpace(string(out)))
+	}
+	if err != nil || string(out) != "PROBED\n" {
+		t.Fatalf("seccomp capability probe: %v %q", err, out)
+	}
+	if filtered == 0 {
+		t.Fatal("seccomp TSYNC is permitted but no filtered kernel case completed")
+	}
+}
+
+// Probe the kernel directly, independently of holderProgram, install and
+// runChild. A defect that makes every holder installation report EPERM
+// must not also disguise a kernel capable of installing a TSYNC filter.
+func probeSeccomp() {
+	runtime.LockOSThread()
+	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+		childError("probe no_new_privs", err, true)
+	}
+	allow := unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW}
+	prog := unix.SockFprog{Len: 1, Filter: &allow}
+	tid, _, errno := unix.RawSyscall(unix.SYS_SECCOMP, unix.SECCOMP_SET_MODE_FILTER, unix.SECCOMP_FILTER_FLAG_TSYNC, uintptr(unsafe.Pointer(&prog)))
+	runtime.KeepAlive(prog)
+	if errno != 0 {
+		childError("probe TSYNC", errno, true)
+	}
+	if tid != 0 {
+		childError("probe TSYNC", errors.New("incomplete thread synchronization"), false)
+	}
+	fmt.Println("PROBED")
+	os.Exit(0)
 }
 
 func runChild(t *testing.T, op operation, mode, marker string) {
@@ -301,6 +355,9 @@ func TestHP8Child(t *testing.T) {
 		return
 	}
 	mode, name, marker := os.Args[sep+1], os.Args[sep+2], os.Args[sep+3]
+	if mode == "probe" {
+		probeSeccomp()
+	}
 	runtime.LockOSThread()
 	// Keep a second, known thread alive across installation.
 	checkOld := make(chan chan error)
