@@ -35,19 +35,23 @@ type Codec interface {
 	EncodeGrant(request []byte, grant Grant) ([]byte, error)
 }
 
-// turnStartID records the request ID of a successful Encode(Message),
-// which requires an observed idle thread, no live turns and no reservation.
-// An error answer releases the reservation and preserves the observed turn
-// and thread status. A success answer releases it and identifies our turn.
-// The codec remembers the IDs that complete on this thread. A completion
-// retires only its named turn.
-// Thread status applies to admission independently of those lifetimes.
-// Deltas from each live turn are accepted. StopTurn targets the latest live
-// turn/started notification, falling back to the turn named by the answer.
-// thread/closed and systemError discard it and make the thread unusable.
-// Idle status, turn/started and other completions leave it reserved.
-// Forget keeps the request ID for a late answer. Without a definitive
-// outcome, every further Message returns ErrTurn until the session restarts.
+// A bound thread admits a Message when its latest status is idle, it has no
+// live turns, and turnStartID is empty. Encoding the message reserves its
+// request ID until a valid answer arrives, including an answer after Forget.
+//
+// While awaiting that answer, the latest live turn/started holds control of
+// steering and permission requests. An error releases the reservation and
+// leaves no turn in control. A success releases it and gives control to the
+// named turn until its completion, unless that turn already completed.
+// A change of control invalidates the previous turn's pending permissions.
+//
+// Each live turn supplies deltas. StopTurn targets the latest live start,
+// with a turn known only from its answer as fallback. A completion retires
+// its turn and prevents a delayed start from making it live again. Thread
+// status governs admission independently of these turn lifetimes.
+//
+// thread/closed, systemError, or a completion beyond the MaxPending distinct
+// IDs this thread can remember ends admission and control for this codec.
 type codec struct {
 	startID     string // the one thread/start whose result may establish the binding
 	turnStartID string
