@@ -307,6 +307,9 @@ func runChild(t *testing.T, op operation, mode, marker string) {
 		// An enclosing filter that already kills this benign ABI probe
 		// cannot supply evidence for the holder's own kill rule.
 		killed := exit != nil && exit.Sys().(syscall.WaitStatus).Signal() == unix.SIGSYS
+		if killed && exit.Sys().(syscall.WaitStatus).CoreDump() {
+			t.Fatal("kernel reported a core dump for the ABI probe")
+		}
 		if mode == "abi-control" && killed && len(tail) == 0 {
 			unavailable(t, "unfiltered "+op.name+" getpid killed by SIGSYS")
 		}
@@ -376,6 +379,21 @@ func TestHP8Child(t *testing.T) {
 	}
 	var invoke call
 	if mode == "kill" || mode == "abi-control" {
+		// A host filter can also kill the unfiltered control. Disable dumps
+		// even on hosts that pipe cores to a collector and ignore RLIMIT_CORE.
+		if err := unix.Setrlimit(unix.RLIMIT_CORE, &unix.Rlimit{}); err != nil {
+			childError("set core limit", err, true)
+		}
+		if err := unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0); err != nil {
+			childError("disable core dumps", err, true)
+		}
+		dumpable, err := unix.PrctlRetInt(unix.PR_GET_DUMPABLE, 0, 0, 0, 0)
+		if err != nil {
+			childError("check dumpability", err, true)
+		}
+		if dumpable != 0 {
+			childError("check dumpability", fmt.Errorf("got %d", dumpable), false)
+		}
 		invoke = func() error {
 			switch name {
 			case "x32":
