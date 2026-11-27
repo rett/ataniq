@@ -1481,6 +1481,8 @@ func TestScratchSeatProofRunbookShellIsSafe(t *testing.T) {
 		"Stay attached: claude asks next.",
 		"`cannot-identify:`", "`uncertain delivery:`",
 		"in the leads view (not attached), `x` and `y` on `live-N`",
+		"Preflight reads the header without locking or repairing the journal.",
+		"At startup the daemon checks the registry when it takes the exclusive journal lock.",
 		"the socket paths of the leads' holders are checked only here, before the sitting, since the daemon's start does not look at them",
 	} {
 		if !strings.Contains(flat, want) {
