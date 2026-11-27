@@ -2065,8 +2065,11 @@ It checks, in this order, all of them (a pass is no finding):
      the builder replaces it, so one left is a folder made or changed by
      hand, whose unit systemd would run with the words as they are.
    - Save units and drop-ins as UTF-8 without an initial byte-order mark.
-     Write each systemd directive on one line. The release and host checks
-     report `unit-syntax` for a trailing backslash, invalid UTF-8, a lone
+     Write each release directive on one line. Both release checks report
+     `unit-syntax` for a trailing backslash. The host environment scan reads
+     continued directives in installed units, drop-ins and manager configuration.
+     The witness egress check requires single-line settings.
+     All these checks report `unit-syntax` for invalid UTF-8, a lone
      carriage return, or any control character except tab and line endings
      (LF or CRLF). They also refuse non-ASCII whitespace and the format
      characters U+200B–U+200F, U+2060 and U+FEFF anywhere, including in

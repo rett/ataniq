@@ -14,21 +14,32 @@ const UnitSyntax = "unit-syntax"
 // TrimUnitSpace removes a physical line ending, if present, and trims only
 // the ASCII space and tab that systemd ignores around unit fields.
 func TrimUnitSpace(s string) string {
-	if line, ended := strings.CutSuffix(s, "\n"); ended {
-		s = strings.TrimSuffix(line, "\r")
-	}
-	return strings.Trim(s, " \t")
+	return strings.Trim(unitLineText(s), " \t")
 }
 
-// UnitTextSafe accepts BOM-free UTF-8 physical lines with LF or CRLF endings.
-// Check comments too, before any parser can discard or join a directive.
+func unitLineText(s string) string {
+	if line, ended := strings.CutSuffix(s, "\n"); ended {
+		return strings.TrimSuffix(line, "\r")
+	}
+	return s
+}
+
+// UnitTextSafe checks release units and witness egress drop-ins. It also
+// rejects any physical line ending in a backslash, including comments.
 func UnitTextSafe(text string) bool {
+	return unitTextSafe(text, false)
+}
+
+// HostUnitTextSafe checks the physical lines of host systemd configuration
+// before joining continuations or discarding comments.
+func HostUnitTextSafe(text string) bool {
+	return unitTextSafe(text, true)
+}
+
+func unitTextSafe(text string, allowContinuations bool) bool {
 	for raw := range strings.Lines(text) {
-		line, ended := strings.CutSuffix(raw, "\n")
-		if ended {
-			line = strings.TrimSuffix(line, "\r")
-		}
-		if strings.HasSuffix(line, "\\") || !utf8.ValidString(line) {
+		line := unitLineText(raw)
+		if !allowContinuations && strings.HasSuffix(line, "\\") || !utf8.ValidString(line) {
 			return false
 		}
 		for _, r := range line {
