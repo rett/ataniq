@@ -79,6 +79,52 @@ func TestRefuseGrant(t *testing.T) {
 
 const permissionName = "item/permissions/requestApproval"
 
+func permissionFrame(profile string) []byte {
+	return []byte(`{"method":"item/permissions/requestApproval","id":7,"params":{"threadId":"thread-a","turnId":"turn-a","itemId":"item","startedAtMs":0,"cwd":"/work","permissions":` + profile + `}}`)
+}
+
+func TestNetworkOnlyRefusesFilesystem(t *testing.T) {
+	for _, profile := range []string{`{"network":{"enabled":true}}`, `{"network":{"enabled":true},"fileSystem":null}`} {
+		c, _ := active(t)
+		req := permissionFrame(profile)
+		observe(t, c, req, core.Event{Kind: "question", Text: "Permission requested"})
+		for _, fs := range []string{`{"write":["/"]}`, `{"read":["/"]}`,
+			`{"entries":[{"access":"write","path":{"type":"path","path":"/"}}]}`} {
+			reply := []byte(`{"id":7,"result":{"permissions":{"fileSystem":` + fs + `}}}`)
+			if g, err := c.DecodeGrant(req, reply); err == nil || !reflect.DeepEqual(g, protocol.Grant{}) {
+				t.Errorf("accepted filesystem %s for %s: %+v, %v", fs, profile, g, err)
+			}
+		}
+	}
+}
+
+func TestInvalidPermissionRequest(t *testing.T) {
+	c, _ := active(t)
+	for _, tc := range []struct{ name, filesystem string }{
+		{"mixed", `{"read":[],"entries":[]}`},
+		{"empty read", `{"read":[""]}`},
+		{"empty write", `{"write":[""]}`},
+		{"zero depth", `{"globScanMaxDepth":0}`},
+		{"access", `{"entries":[{"access":"other","path":{"type":"path","path":"/"}}]}`},
+		{"path member", `{"entries":[{"access":"read","path":{"type":"path","path":"/","extra":1}}]}`},
+		{"special member", `{"entries":[{"access":"read","path":{"type":"special","value":{"kind":"root","extra":1}}}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if d, err := c.Decode(permissionFrame(`{"fileSystem":` + tc.filesystem + `}`)); err == nil || !reflect.DeepEqual(d, core.Decoded{}) {
+				t.Fatalf("accepted malformed request: %+v, %v", d, err)
+			}
+		})
+	}
+}
+
+func TestUnknownRequestMember(t *testing.T) {
+	c, _ := active(t)
+	req := bytes.Replace(permissionFrame(`{}`), []byte(`"permissions"`), []byte(`"extra":1,"permissions"`), 1)
+	if d, err := c.Decode(req); err == nil || !reflect.DeepEqual(d, core.Decoded{}) {
+		t.Fatal(d, err)
+	}
+}
+
 func TestEntrySubset(t *testing.T) {
 	c, _ := active(t)
 	const request = `{"method":"item/permissions/requestApproval","id":"card","params":{"threadId":"thread-a","turnId":"turn-a","itemId":"item","startedAtMs":0,"cwd":"/work","permissions":PROFILE}}`

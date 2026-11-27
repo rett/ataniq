@@ -180,6 +180,59 @@ func TestEncodeRefusals(t *testing.T) {
 	}
 }
 
+func TestCloseActiveTurn(t *testing.T) {
+	c, req := active(t)
+	observe(t, c, req, core.Event{Kind: "question", Text: "Permission requested"})
+	g, err := c.DecodeGrant(req, frames(t, "grants")[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	observe(t, c, frames(t, "events")[5], core.Event{Kind: "ended"})
+	if b, err := c.Steer("r", "thread-a", "turn-a", "text"); b != nil || !errors.Is(err, protocol.ErrTurn) {
+		t.Errorf("steer after close: %s, %v", b, err)
+	}
+	if b, err := c.EncodeGrant(req, g); b != nil || !errors.Is(err, protocol.ErrTurn) {
+		t.Errorf("grant after close: %s, %v", b, err)
+	}
+}
+
+func TestForeignThread(t *testing.T) {
+	f := frames(t, "events")
+	for _, tc := range []struct {
+		name  string
+		frame []byte
+	}{
+		{"thread started", f[0]},
+		{"turn started", bytes.ReplaceAll(f[1], []byte("turn-a"), []byte("turn-b"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := active(t)
+			observe(t, c, bytes.ReplaceAll(tc.frame, []byte("thread-a"), []byte("thread-b")))
+			if b, err := c.Steer("r", "thread-a", "turn-a", "text"); b == nil || err != nil {
+				t.Fatal("lost original turn", err)
+			}
+			for _, thread := range []string{"thread-a", "thread-b"} {
+				if b, err := c.Steer("r", thread, "turn-b", "text"); b != nil || !errors.Is(err, protocol.ErrTurn) {
+					t.Fatal("steered foreign turn", thread, err)
+				}
+			}
+		})
+	}
+}
+
+func TestStaleDelta(t *testing.T) {
+	c, _ := active(t)
+	observe(t, c, bytes.ReplaceAll(frames(t, "events")[2], []byte("turn-a"), []byte("old")))
+}
+
+func TestStartedTurnRequiresInProgress(t *testing.T) {
+	c, _ := active(t)
+	frame := bytes.ReplaceAll(frames(t, "events")[1], []byte("inProgress"), []byte("completed"))
+	if d, err := c.Decode(frame); !errors.Is(err, core.ErrInvalidFrame) || !reflect.DeepEqual(d, core.Decoded{}) {
+		t.Fatal(d, err)
+	}
+}
+
 func TestThreadStatus(t *testing.T) {
 	for _, tc := range []struct {
 		status       string
@@ -220,7 +273,7 @@ func TestEnvelope(t *testing.T) {
 	observe(t, c, []byte(`{"id":"r","method":"other"}`))
 	for _, raw := range []string{"", "{}", "null", "[]", "{}\n{}", strings.Repeat("a", core.MaxFrameBytes),
 		`{"method":"x","emittedAtMs":0.5}`, `{"id":7,"method":"x","emittedAtMs":1}`, `{"method":"x","emittedAtMs":null}`,
-		`{"id":1,"result":{}}`, `{"id":"r","result":null}`, `{"id":"r","result":{},"error":{}}`,
+		`{"id":1,"result":{}}`, `{"id":"r","result":null}`, `{"id":"r","result":{},"error":{}}`, `{"id":"r","result":{},"x":1}`,
 		`{"id":"r","error":{"code":1}}`, `{"id":"r","error":{"code":1.2,"message":"x"}}`,
 		`{"id":"r","method":"x","result":{}}`, `{"method":"","id":"r"}`, `{"id":1.1,"method":"other"}`,
 		`{"id":"r","result":{"a":1,"a":2}}`, `{"method":"x","params":false}`, `{"method":"x","params":{"x":"\ud800"}}`,
