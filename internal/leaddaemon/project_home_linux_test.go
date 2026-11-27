@@ -37,6 +37,14 @@ func foreignProject(t *testing.T, state, project string) {
 	}
 }
 
+func TestCanaryBusyAssignmentExit(t *testing.T) {
+	var stderr bytes.Buffer
+	err := &clientapi.Error{Code: clientapi.ErrorCode(leadregistry.ErrAssignmentBusy), Message: "project has a defined lead"}
+	if code := canaryFailure("start", err, &stderr); code != ExitRefused || !strings.Contains(stderr.String(), err.Message) {
+		t.Fatalf("busy assignment: exit %d: %s", code, stderr.String())
+	}
+}
+
 func TestProjectHomeHandlersBeforeProvisioning(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "state")
 	foreignProject(t, state, "remote")

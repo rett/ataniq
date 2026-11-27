@@ -178,7 +178,8 @@ Both new and migrated projects require explicit enrollment. Define, start and
 coordinator admission return `project-home-unset` when the row is missing,
 `project-home-foreign` when another authority is home, and `project-unassigned`
 when the row has no holder. Scratch clients receive a refused receipt and
-canary clients receive the code in the error reply. A mismatched generation
+canary clients receive the code in the error reply. The canary CLI exits
+with refusal status 30 for `project-assignment-busy` as well. A mismatched generation
 or revision yields `stale-home-generation` or `stale-assignment-revision`.
 Existing launch epochs, recovery, and stop operations retain their meanings.
 This version supports initial designation. Transferring the home to another

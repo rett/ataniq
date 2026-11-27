@@ -127,7 +127,8 @@ func canaryFailure(op string, err error, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "ataniqd: the daemon refused this user (unauthorized)")
 			return ExitUnauthorized
 		case CodeRefused, clientapi.ErrorCode(leadregistry.ErrHomeMissing), clientapi.ErrorCode(leadregistry.ErrOtherHome),
-			clientapi.ErrorCode(leadregistry.ErrUnassigned), clientapi.ErrorCode(leadregistry.ErrStaleGeneration), clientapi.ErrorCode(leadregistry.ErrStaleRevision):
+			clientapi.ErrorCode(leadregistry.ErrUnassigned), clientapi.ErrorCode(leadregistry.ErrAssignmentBusy),
+			clientapi.ErrorCode(leadregistry.ErrStaleGeneration), clientapi.ErrorCode(leadregistry.ErrStaleRevision):
 			fmt.Fprintf(stderr, "ataniqd: %s refused: %s\n", op, SafeText(ce.Message))
 			return ExitRefused
 		case CodeUnavailable:
