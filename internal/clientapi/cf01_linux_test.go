@@ -197,6 +197,37 @@ func TestManagedDeliveryRechecks(t *testing.T) {
 	}
 }
 
+func TestManagedRefusalCounters(t *testing.T) {
+	for _, tc := range []struct {
+		name, request          string
+		code                   ErrorCode
+		forbidden, unsupported uint64
+	}{
+		{"parse", strings.TrimSuffix(managedHello, "}") + `,"principal":{}}`, CodeForbidden, 1, 0},
+		{"dispatch", strings.Replace(managedRead, `"a"`, `"absent"`, 1), CodeForbidden, 1, 0},
+		{"delivery", managedRead, CodeForbidden, 1, 0},
+		{"unsupported protocol", strings.Replace(managedHello, ProtocolV2, Protocol, 1), CodeUnsupportedProtocol, 0, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := Principal{Issuer: "home", ClientID: "reader"}
+			caps := TargetCapabilities{"a": {"conversation.read"}}
+			stub := &managedStub{policies: map[Principal]TargetCapabilities{p: caps}}
+			h := revokingRead{stub, func() { delete(caps, "a") }}
+			var counters Counters
+			m := NewManagedServer(h, ManagedOptions{
+				Counters:         &counters,
+				ResolvePrincipal: func(context.Context, net.Conn) (Principal, error) { return p, nil },
+			})
+			wantError(t, askManaged(t, m.s, nil, tc.request, ProtocolV2), tc.code)
+			snap := counters.Snapshot()
+			if snap.Forbidden != tc.forbidden || snap.Unsupported != tc.unsupported {
+				t.Fatalf("forbidden = %d, unsupported = %d, want %d and %d",
+					snap.Forbidden, snap.Unsupported, tc.forbidden, tc.unsupported)
+			}
+		})
+	}
+}
+
 func TestManagedStreamLimits(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
