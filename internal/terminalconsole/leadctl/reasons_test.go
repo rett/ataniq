@@ -215,10 +215,13 @@ func TestEveryObserverStateReasonHasWords(t *testing.T) {
 
 // TestNoWordsForACodeNothingSends holds that every code of the table is one
 // that is sent: by the daemon, by leadwire's error answers or by the
-// console's adapter (not-listed, conflict and invalid-request, which it makes
-// itself from an error of the client; see refusedCode in cmd/ataniq-console).
+// console's adapter (see refusedCode in cmd/ataniq-console).
 func TestNoWordsForACodeNothingSends(t *testing.T) {
-	sent := map[string]bool{"not-listed": true, "conflict": true, "invalid-request": true}
+	sent := map[string]bool{
+		"not-listed": true, "conflict": true, "invalid-request": true,
+		"define-not-offered": true, "start-not-offered": true, "stop-not-offered": true,
+		"inject-not-offered": true, "viewer-ticket-not-offered": true, "writer-ticket-not-offered": true,
+	}
 	for _, c := range daemonCodes(t) {
 		sent[c] = true
 	}

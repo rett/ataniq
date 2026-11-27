@@ -88,6 +88,9 @@ func TestReadOnlyDirectory(t *testing.T) {
 	if err != nil || len(list.Leads) != 1 || list.Leads[0].Capabilities != want || list.Leads[0].Inject {
 		t.Fatalf("directory = %+v, %v", list, err)
 	}
+	if !list.Leads[0].MessagesEnabled {
+		t.Error("missing lead.inject masked the lead's configured message switch")
+	}
 	for _, call := range []func() (LeadReceipt, error){
 		func() (LeadReceipt, error) { return l.Ticket("alpha", 1, true) },
 		func() (LeadReceipt, error) { return l.Define("alpha") },

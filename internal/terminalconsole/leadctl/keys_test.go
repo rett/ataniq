@@ -415,6 +415,7 @@ func TestARefusedMessageMayBeTriedAgainButAnUncertainOneMayNot(t *testing.T) {
 		again bool
 	}{
 		{"refused", Receipt{Status: Refused, Code: "message-in-flight"}, true},
+		{"missing operation", Receipt{Status: Refused, Code: "inject-not-offered"}, true},
 		{"unavailable", Receipt{Status: Unavailable, Code: "holder-unreachable"}, true},
 		{"not now", Receipt{Status: Done, Outcome: OutcomeNotNow}, true},
 		{"lead refused", Receipt{Status: Done, Outcome: OutcomeRefused}, true},
