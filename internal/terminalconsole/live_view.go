@@ -11,7 +11,7 @@ import (
 // invented data. Text from the source has been through clean.
 
 // liveScreenOnly says what a client gets of the session.
-const liveScreenOnly = "A client gets the visible screen only: there is no scrollback."
+const liveScreenOnly = "The holder sends the visible screen only, with no scrollback. Recent rows are kept locally after attach."
 
 // drawLiveTree draws the lead and its holder where the fixture draws its
 // projects and leads.
@@ -181,17 +181,37 @@ func (m *Model) liveHelpLines(width int) (string, []line) {
 	return "HELP", out
 }
 
-// liveLines is the single page below the cockpit's minimum size: one page,
-// the simplest of the choices, which says what a live session needs and what
-// the source reports in a line.
+// liveLines reserves two rows above the session. Keep the detach hint,
+// role and connection ahead of variable-length text on a phone display.
 func (m *Model) liveLines() []string {
-	return []string{
-		"ATANIQ / LIVE SCRATCH SESSION",
-		"A live session needs a window of " + sizeText(MinCols, MinRows) + " or more.",
-		"This window is " + sizeText(m.width, m.height) + ".",
-		"",
-		m.liveLabel(),
-		"Connection: " + m.live.st.Conn.String(),
-		"q or Ctrl-C: quit",
+	st := m.live.st
+	header := "q detach · " + m.liveRoleText() + " · "
+	if m.live.startErr != "" {
+		return []string{header + "unavailable", "LIVE SESSION UNAVAILABLE: " + m.live.startErr}
 	}
+	header += st.Conn.String()
+	lead := st.Lead
+	if lead == "" {
+		lead = "unknown"
+	}
+	detail := "Live scratch session · lead " + lead + " · epoch " + m.liveEpochText()
+	switch {
+	case m.sessionEnded():
+		detail = "SESSION ENDED · " + detail
+	case m.liveDown() && st.Reason != "":
+		detail = st.Reason
+	}
+	lines := []string{header, detail}
+	area := m.liveArea()
+	if area.Empty() || m.rep.pane == nil {
+		return lines
+	}
+	buf := uv.NewBuffer(area.Dx(), area.Dy())
+	if page, pages := m.rep.pane.DrawViewport(buf, buf.Bounds()); page != 0 {
+		lines[1] = "Recent output since attach · page " + strconv.Itoa(page) + "/" + strconv.Itoa(pages)
+	}
+	for y := 0; y < buf.Height(); y++ {
+		lines = append(lines, buf.Line(y).Render())
+	}
+	return lines
 }

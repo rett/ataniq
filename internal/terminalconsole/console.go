@@ -463,9 +463,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) handleFallbackKey(v tea.KeyPressMsg) tea.Cmd {
 	key := v.String()
 	if m.live.on() {
-		// The live session's one page has nothing to navigate.
 		if key == "q" || key == "ctrl+c" {
 			return m.quit()
+		}
+		if pane := m.rep.pane; pane != nil {
+			switch key {
+			case "pgup":
+				pane.PageRecent(-1, m.liveArea().Dy())
+			case "pgdown":
+				pane.PageRecent(1, m.liveArea().Dy())
+			}
 		}
 		return nil
 	}

@@ -8,9 +8,10 @@
 // nothing, starts no process and reads no environment, and an import guard
 // test keeps it that way.
 // The bytes it is given are untrusted, so the pane bounds what it keeps of
-// them: the screen is at most [MaxCols] by [MaxRows], neither screen keeps
-// any scrollback (the patched x/vt keeps none on the alternate screen and
-// SetScrollbackSize(0) none on the main one), a frame held for synchronized
+// them: the screen is at most [MaxCols] by [MaxRows], and scrollback is
+// disabled by default. With [Options.RecentOutput] the main screen keeps
+// [RecentRowLimit] scrolled rows and paging can hold one such window while
+// new rows arrive. The alternate screen keeps none. A frame held for synchronized
 // output is one copy of the screen, and the title is at most [MaxTitle]
 // bytes. The patched x/vt bounds
 // the rest: a cell keeps at most 64 bytes of a grapheme cluster, only a fixed
