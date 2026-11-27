@@ -18,14 +18,14 @@ const (
 
 // Build the whole owner-only file before adding its name. The anonymous
 // inode disappears on close or crash before link, leaving the name reusable.
-func (f *fileLedger) publish(name string, contents func(syscall.Stat_t) ([]byte, error)) error {
+func (f *fileLedger) publish(name string, contents func(syscall.Stat_t) ([]byte, error)) (err error) {
 	dir := int(f.dir.Fd())
 	fd, err := unix.Openat(dir, ".", unix.O_TMPFILE|unix.O_RDWR|unix.O_CLOEXEC, 0600)
 	if err != nil {
 		return err
 	}
 	file := os.NewFile(uintptr(fd), name)
-	defer file.Close()
+	defer func() { err = errors.Join(err, file.Close()) }()
 	if err = file.Chmod(0600); err != nil {
 		return err
 	}

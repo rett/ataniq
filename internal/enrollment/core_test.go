@@ -21,6 +21,8 @@ type readOnlyLedger struct {
 	locked        bool
 }
 
+func (m *readOnlyLedger) rootPath() string { return "" }
+
 func (m *readOnlyLedger) lock(Fault) (lockedLedger, error) {
 	if m.locked {
 		return nil, refuse(Occupied, nil)

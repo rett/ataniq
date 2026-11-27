@@ -79,4 +79,7 @@ submit it through the local owner capability, and return the raw signed receipt
 to the home. Archive the receipt independently. After an interruption, resume
 the saved request and replay that exact submission. Finalization checks the
 witness signature, epoch, header and original inode. Repeating it at genesis
-recovers the binding. Keep the binding outside the ledger root's restore domain.
+recovers the binding. Use `WriteBinding` to create a 0600 file at a clean
+absolute path outside the ledger root's restore domain. `ReadBinding` checks
+the signed enrollment and the named ledger's device, inode and header. These
+atomic file creations use Linux `O_TMPFILE` and `/proc/self/fd`.

@@ -20,7 +20,7 @@ import (
 // Methods are the effective method sets, including promoted methods.
 var admittedSurface = map[string]string{
 	"const": "Capacity ClaimUncertain Closed Corrupt EnrollmentFailed Fork HomeAhead HomeBehind IdentityMismatch Insecure Interrupted Legacy MissingHeader Occupied Retired Truncated Unknown Unreachable",
-	"func":  "AppendAndAdvance DecodePrepared EncodePrepared Enroll Finalize Prepare ResumePrepared Start Submit",
+	"func":  "AppendAndAdvance DecodeBinding EncodeBinding ReadBinding ValidateBinding WriteBinding DecodePrepared EncodePrepared Enroll Finalize Prepare ResumePrepared Start Submit",
 	"type":  "AdvanceReceipt Binding Error Fault FileRoot Identity LedgerStore Prepared Reason Store",
 
 	"method *Prepared": "UnmarshalJSON",
@@ -30,6 +30,9 @@ var admittedSurface = map[string]string{
 
 	"field AdvanceReceipt ataniq/internal/checkpoint.ID":      "ID",
 	"field AdvanceReceipt ataniq/internal/checkpoint.Receipt": "Receipt",
+	"field bindingFile int":                                   "Version",
+	"field bindingFile Binding":                               "Binding",
+	"field Binding string":                                    "RootPath",
 	"field Binding Identity":                                  "Identity",
 	"field Binding ataniq/internal/assignment.Header":         "Header",
 	"field Binding ataniq/internal/checkpoint.ID":             "EnrollmentID",

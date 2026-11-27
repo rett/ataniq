@@ -324,7 +324,7 @@ func finish(f lockedLedger, p Prepared, q checkpoint.Enrollment, raw []byte, r c
 	if err = json.Unmarshal(q.HeaderBytes, &frame); err != nil {
 		return Binding{}, err
 	}
-	b := Binding{Identity: rec.Identity, Header: frame.Header, Slot: q.Slot, Epoch: p.Epoch, HomePin: q.HomePublicKey, WitnessPin: bytes.Clone(p.WitnessKey), EnrollmentID: q.ID, Receipt: r}
+	b := Binding{RootPath: f.rootPath(), Identity: rec.Identity, Header: frame.Header, Slot: q.Slot, Epoch: p.Epoch, HomePin: q.HomePublicKey, WitnessPin: bytes.Clone(p.WitnessKey), EnrollmentID: q.ID, Receipt: r}
 	return b, f.check()
 }
 

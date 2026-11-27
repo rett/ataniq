@@ -14,8 +14,8 @@
 //
 // Prepare creates the home ledger in place. Carry EncodePrepared's version-1
 // JSON object to the owner. Its fields, in order, are version, epoch (a decimal
-// string), witness_key (padded standard base64), intent (padded standard base64 of the checkpoint's
-// canonical enrollment body), proof (the checkpoint proof of possession) and
+// string), witness_key and intent (padded standard base64 of the witness key
+// and canonical checkpoint enrollment body), proof (proof of possession) and
 // signature (the home signature over the preceding fields). Both signatures
 // are unpadded base64url SSHSIG text. DecodePrepared requires the exact compact
 // encoding, including field order, with no extra members or trailing newline.
@@ -24,6 +24,12 @@
 // Finalize authenticates this frame against the home stage and witness pin.
 // ResumePrepared returns the same request after an interrupted Prepare.
 // Retrying Finalize at genesis recovers the same binding after a lost return.
+//
+// WriteBinding and ReadBinding use a separate owner-protected restore domain.
+// The version-1 binding document has version and binding members in that order.
+// Its binding object uses the exported Binding field names in declaration order,
+// with byte slices in padded standard base64 and the enrollment ID as 32 octets.
+// Both operations verify the configured root and ledger inodes and the header.
 //
 // Start acquires a local lock, replays read-only, compares a challenged witness
 // read and inspects staged evidence before its first witness mutation, the
@@ -117,6 +123,7 @@ type Identity struct{ RootDevice, RootInode, LedgerDevice, LedgerInode uint64 }
 // Binding is the owner's installation record. Finalize issues it after
 // durable header creation and authenticated create-only registration.
 type Binding struct {
+	RootPath            string // Absolute path for FileRoot bindings.
 	Identity            Identity
 	Header              assignment.Header
 	Slot                checkpoint.Slot
@@ -135,6 +142,7 @@ type LedgerStore interface {
 
 // lockedLedger owns the file descriptors and exclusive cooperating-writer lock.
 type lockedLedger interface {
+	rootPath() string
 	createLedger(Prepared) error
 	resumePrepared() (preparedRecord, error)
 	prepared() ([]byte, error)
