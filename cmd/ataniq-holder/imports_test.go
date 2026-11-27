@@ -45,6 +45,8 @@ func forbiddenRepoDep(pkg string) string {
 		return "of the console only sessionpane may be in the holder"
 	case under(module + "/internal/leadcanary"):
 		return "internal/leadcanary is the daemon's side of the canary slice"
+	case under(module + "/internal/instanceid"):
+		return "only the daemon loads the instance key"
 	case under(module + "/internal/leaddaemon"):
 		return "the holder does not depend on the daemon"
 	case under(module + "/internal/leadholder/fakeagent"):
@@ -201,6 +203,7 @@ func TestImportGuardCheck(t *testing.T) {
 		{module + "/internal/leadcanary", "leadcanary"},
 		{module + "/internal/leadcanary/provision", "leadcanary"},
 		{module + "/internal/leaddaemon", "daemon"},
+		{module + "/internal/instanceid", "instance key"},
 		{module + "/internal/leadholder/fakeagent", "fake agent"},
 		{module + "/internal/leadholder/sandboxstart", "not on the written-out list"},
 		{module + "/internal/inject", "not on the written-out list"},

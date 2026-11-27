@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ataniq/internal/clientapi"
+	"ataniq/internal/instanceid"
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/canaryroot"
@@ -71,6 +72,7 @@ func newCanaryEnv(t *testing.T) *canaryEnv {
 			t.Fatal(err)
 		}
 	}
+	initTestIdentity(t, e.state)
 	if err := canaryroot.WriteMarker(e.state, role.Project()); err != nil {
 		t.Fatal(err)
 	}
@@ -100,6 +102,18 @@ func newCanaryEnv(t *testing.T) *canaryEnv {
 		},
 	}
 	return c
+}
+
+func initTestIdentity(t *testing.T, state string) {
+	t.Helper()
+	root, err := instanceid.OpenRoot(state, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if _, err := instanceid.InitAt(root, "sample"); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // daemonConfig is the daemon's config for the canary config of c.

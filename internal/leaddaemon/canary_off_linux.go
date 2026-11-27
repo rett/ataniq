@@ -25,7 +25,7 @@ type canaryMode struct{}
 // canarySetup is where [Run] checks the canary config in a tagged build.
 func (d *daemon) canarySetup() (*canaryMode, error) { return nil, nil }
 
-func (*canaryMode) openEvidence() error              { return nil }
+func (*canaryMode) openState() error                 { return nil }
 func (*canaryMode) closeEvidence() error             { return nil }
 func (*canaryMode) configure(*leadlifecycle.Options) {}
 func (*canaryMode) announce() error                  { return nil }

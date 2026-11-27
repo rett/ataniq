@@ -47,6 +47,24 @@ running ordinary `ataniqd init --state-dir DIR` to bind a **new, empty**
 registry. Reconcile the old lead history before resuming work. Only the
 lead registry carries this binding today.
 
+At managed sandbox start, the holder reads the identity from that state root
+and sets `QARGI_LEAD` to `<project>-lead-<tag>`. The tag is the first 16 hex
+digits of the authority ID. Two independently generated keys have a 1 in
+2⁶⁴ chance of sharing that prefix. The full fingerprint identifies the
+authority. For project names over 42 bytes, the holder uses the first 25
+bytes, a hyphen and the first 16 hex digits of SHA-256 of the full project
+name. This keeps the lead name within 64 bytes while distinguishing long
+projects with the same prefix. A missing, damaged or unsafe key refuses the
+start before launch. The layout role used for directories and locks stays
+`<project>-lead`.
+
+When the agent environment declares a coordinator label, the sandbox derives
+`QARGI_ACTOR` from the qualified parent. For example, a declaration of
+`demo-lead@e7:coord:topic:1` becomes
+`demo-lead-<tag>@e7:coord:topic:1`. An ordinary lead has no coordinator
+label. The profile digest now includes the lead naming rule. Recompute
+existing profile digest pins before the next managed start.
+
 ## Peer identity and directional grants
 
 A peer relationship binds an instance identity to configured endpoints and

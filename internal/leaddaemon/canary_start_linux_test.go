@@ -6,14 +6,18 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"ataniq/internal/clientapi"
+	"ataniq/internal/instanceid"
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadholder/canaryroot"
+	"ataniq/internal/leadholder/sandboxstart"
 	"ataniq/internal/leadlifecycle"
 	"ataniq/internal/leadlock"
+	"ataniq/internal/leadregistry"
 	"ataniq/internal/leadrole"
 	"ataniq/internal/leadunit"
 )
@@ -196,5 +200,63 @@ func TestCanaryBoundsAreLeadunits(t *testing.T) {
 		if pair[0] != pair[1] {
 			t.Errorf("%s: leadcanary %d, leadunit %d", name, pair[0], pair[1])
 		}
+	}
+}
+
+// Two daemon state roots launching the same role supply their own authority prefixes.
+func TestManagedLaunchTagAcrossInstances(t *testing.T) {
+	var first string
+	for range 2 {
+		c := newCanaryEnv(t)
+		d := daemon{Config: c.daemonConfig()}
+		m, err := d.canarySetup()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := m.openState(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { m.closeEvidence() })
+		id, err := instanceid.Load(c.state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, unit, err := leadcanary.Names(c.cfg.Role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _, env, err := m.router.Build(c.cfg.Role, leadregistry.Entry{Role: c.cfg.Role, Epoch: 1},
+			leadregistry.Intent{ID: "sample-intent", Epoch: 1, UnitName: unit})
+		tag := id.Authority[:16]
+		want := append(leadcanary.HolderEnvironment(), sandboxstart.AuthorityTagEnv+"="+tag)
+		if err != nil || !slices.Equal(env, want) || tag == first {
+			t.Fatalf("holder launch environment %q, %v; want %q with a distinct tag", env, err, want)
+		}
+		first = tag
+	}
+}
+
+func TestManagedLaunchRequiresInstanceKey(t *testing.T) {
+	for name, tc := range map[string]struct {
+		file   string
+		damage func(string) error
+		want   instanceid.Refusal
+	}{
+		"missing":             {instanceid.FileName, os.Remove, instanceid.ErrMissing},
+		"damaged":             {instanceid.FileName, func(p string) error { return os.WriteFile(p, []byte("damaged"), 0600) }, instanceid.ErrInvalid},
+		"unsafe":              {instanceid.FileName, func(p string) error { return os.Chmod(p, 0644) }, instanceid.ErrUnsafe},
+		"missing incarnation": {instanceid.IncarnationFile, os.Remove, instanceid.ErrInvalid},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := newCanaryEnv(t)
+			if err := tc.damage(filepath.Join(c.state, tc.file)); err != nil {
+				t.Fatal(err)
+			}
+			err := c.runToEnd(c.daemonConfig())
+			mustFail(t, err, StepState, ExitState)
+			if !errors.Is(err, tc.want) || len(c.fake.Calls()) != 0 {
+				t.Fatalf("start refusal %v, manager calls %v", err, c.fake.Calls())
+			}
+		})
 	}
 }
