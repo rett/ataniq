@@ -250,14 +250,18 @@ func ownerCall(ctx context.Context, c config, store durable.Config, cmd command,
 	return printStatus(ctx, admin, store.Pin, c.Identity.Epoch, out)
 }
 
-func printStatus(ctx context.Context, admin cp.RecoveryAdministration, pin ed25519.PublicKey, epoch uint64, out io.Writer) error {
+func signedStatus(ctx context.Context, admin cp.RecoveryAdministration, pin ed25519.PublicKey, epoch uint64) (cp.DirectoryStatus, error) {
 	var challenge cp.ID
 	rand.Read(challenge[:])
 	r, err := admin.Status(ctx, challenge)
 	if err != nil {
-		return err
+		return cp.DirectoryStatus{}, err
 	}
-	st, err := cp.VerifyDirectoryStatus(pin, epoch, challenge, r)
+	return cp.VerifyDirectoryStatus(pin, epoch, challenge, r)
+}
+
+func printStatus(ctx context.Context, admin cp.RecoveryAdministration, pin ed25519.PublicKey, epoch uint64, out io.Writer) error {
+	st, err := signedStatus(ctx, admin, pin, epoch)
 	if err != nil {
 		return err
 	}

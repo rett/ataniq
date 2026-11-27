@@ -40,7 +40,10 @@ receipt for owner reconciliation.
 ## Owner ceremony
 
 Follow these steps after establishing the authority-host installation baseline.
-Keep managed admission closed throughout the pilot.
+Keep managed admission closed throughout the pilot. On the authority host,
+verify that `ah-switch status` reports `decisions: not inhibited` before a
+new enrollment or observation. If the decision inhibit is held, follow the
+[authority-host recovery procedure](authority-host-witness.md#storage-error-and-interrupted-publication).
 
 2. **Create the home identity.** Give the seed a home-owned 0700 parent and the
    TLS directory a parent protected against group and other writes. Both
@@ -173,7 +176,7 @@ Keep managed admission closed throughout the pilot.
    ataniq-home status --config FILE
    ```
 
-   Save all three records, the verdict, the counted line and the exit status.
+   Save all three records, the verdict, the guarded constant and the exit status.
    A three-way comparison requires an archive from the same assignment head.
    A stale or conflicting archive gives `observation: DISAGREE` and exit 1.
 
@@ -212,7 +215,7 @@ Keep managed admission closed throughout the pilot.
    (previous epoch plus one). Repeat `identity-init`, pin exchange, the
    outside activation record and prepare/submit/finalize for the replacement.
    Check the new genesis and enrollment receipt, observe the fresh mirror
-   and retain its counted line as separate evidence.
+   and retain its guarded constant as separate evidence.
    [Witness retirement and replacement](authority-host-witness.md#retire-and-enroll-a-replacement)
 
 `status` works offline, including before identity creation. It reports the
@@ -234,8 +237,10 @@ through the witness owner channel.
 A completed comparison prints the replayed head, retained advance receipt
 head, freshly challenged witness head and optional owner archive. It records
 the result in the private state file `observation.json`. Differences give
-`observation: DISAGREE` and exit 1. Observe prints the managed-start and launch counts only after
-printing a comparison verdict. This producer has no execution or process-management capability.
+`observation: DISAGREE` and exit 1. After the comparison verdict, observe prints the guarded
+constant `managed_starts=0 launches=0`. Both values are zero by construction.
+Guard tests check the home command’s transitive imports and scan the home and
+enrollment source for direct process starts.
 
 Supply a protected regular archive file with exactly one ASCII line,
 `sequence=N head=HEX`, terminated by LF. Use the slot's unsigned decimal

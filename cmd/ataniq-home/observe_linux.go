@@ -49,6 +49,9 @@ func observe(ctx context.Context, cmd command, c config, p pairing, ep *link.End
 }
 
 func ownerAction(err error) error {
+	if errors.Is(err, link.ErrInhibited) {
+		return fmt.Errorf("%w\nowner action: check for a held decision inhibit with ah-switch status. New enrollment and observation require a clear inhibit. Keep managed admission closed", err)
+	}
 	var e *enrollment.Error
 	if !errors.As(err, &e) {
 		return err

@@ -82,6 +82,17 @@ func TestEnrollSubmitReceiptAndReplay(t *testing.T) {
 		}
 		return b, out.String()
 	}
+	guard := filepath.Join(admin.g.dir, "decisions.inhibit")
+	must(t, os.WriteFile(guard, nil, 0600))
+	var refusal enrollmentRefusal
+	err = enrollSubmit(t.Context(), c, store, cmd, io.Discard, connect)
+	if !errors.As(err, &refusal) || !strings.Contains(refusal.Error(), "held decision inhibit with ah-switch status. New enrollment requires a clear inhibit. Keep managed admission closed") {
+		t.Fatal("inhibited enrollment", err)
+	}
+	if _, err := os.Stat(cmd.receiptOut); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("receipt after refusal", err)
+	}
+	must(t, os.Remove(guard))
 	first, firstOut := submit(cmd)
 	cmd.receiptOut += "-replay"
 	cmd.expectDigest = ""
@@ -99,6 +110,14 @@ func TestEnrollSubmitReceiptAndReplay(t *testing.T) {
 	if firstOut != want || !strings.Contains(status.String(), "sequence=2 ") || !strings.Contains(status.String(), "slots=1 receipts=1 ") {
 		t.Fatal(firstOut)
 	}
+	// The guard still permits an exact retry of the latest committed request.
+	must(t, os.WriteFile(guard, nil, 0600))
+	cmd.receiptOut += "-inhibited"
+	replayed, _ := submit(cmd)
+	if !bytes.Equal(first, replayed) {
+		t.Fatal("inhibited retry changed receipt")
+	}
+	must(t, os.Remove(guard))
 	// A competing publisher can create the name after the preflight.
 	cmd.receiptOut += "-race"
 	err = enrollSubmit(t.Context(), c, store, cmd, io.Discard, func(config, durable.Config) (cp.RecoveryAdministration, error) {

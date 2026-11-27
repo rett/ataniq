@@ -268,6 +268,20 @@ func TestObserveArchiveFormat(t *testing.T) {
 	}
 }
 
+func TestObserveDecisionInhibit(t *testing.T) {
+	f := newPilot(t)
+	f.w.Inhibit(true)
+	out, err := f.run(t, command{events: 1}, nil)
+	if out != "" || !errors.Is(err, link.ErrInhibited) ||
+		!strings.Contains(err.Error(), "held decision inhibit with ah-switch status. New enrollment and observation require a clear inhibit. Keep managed admission closed") {
+		t.Fatal(out, err)
+	}
+	f.w.Inhibit(false)
+	if st := f.state(t); st.Head.Sequence != 0 || st.SessionKeyID != "" {
+		t.Fatal("inhibited observation changed slot", st)
+	}
+}
+
 func TestObservePartition(t *testing.T) {
 	f := newPilot(t)
 	ep, err := homeEndpoint(f.c, f.p)

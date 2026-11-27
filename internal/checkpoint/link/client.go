@@ -133,6 +133,10 @@ func (e Remote) Administration(id seatgate.Identity) (cp.RecoveryAdministration,
 	return &owner{t}, nil
 }
 
+// ErrInhibited identifies a challenged, signed read reporting inhibition.
+// Transport failures also satisfy ErrUnavailable but carry no such evidence.
+var ErrInhibited = fmt.Errorf("checkpoint: witness inhibited: %w", cp.ErrUnavailable)
+
 // ErrNotSent means no bytes of the mutation were delivered to the stream.
 var ErrNotSent = fmt.Errorf("checkpoint: mutation not sent: %w", cp.ErrUnavailable)
 
@@ -431,7 +435,10 @@ func (t transport) read(ctx context.Context, q cp.ReadRequest, m frame.Message) 
 			t.queue.resolve(ack.ID, ack.RequestDigest)
 		}
 	}
-	return a.view, err
+	if errors.Is(err, cp.ErrUnavailable) {
+		return a.view, ErrInhibited
+	}
+	return a.view, nil
 }
 
 func (c *client) Claim(ctx context.Context, q cp.Claim) (cp.Receipt, error) {

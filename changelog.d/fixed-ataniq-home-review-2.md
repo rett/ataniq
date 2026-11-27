@@ -3,3 +3,4 @@
   Both home preflight commands check retirement and the installation directory.
   The witness certificate can be one raw DER certificate or a single PEM
   CERTIFICATE block.
+  Inhibited enrollment and observation now direct the owner to switch status.

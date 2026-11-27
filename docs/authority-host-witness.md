@@ -232,7 +232,12 @@ local root. Fresh genesis reports sequence 1, zero slots, receipts and fences.
 
 Use protected transfer directories on both devices, outside witness state
 and separate from the private keys. Keep the home ledger and signing key on
-the home throughout the ceremony.
+the home throughout the ceremony. Keep managed admission closed. A new
+enrollment and a fresh home observation require the decision inhibit to be
+clear. Check `ah-switch status` for `decisions: not inhibited`. If the inhibit
+is held, follow the switch recovery procedure below. An exact retry of the
+latest committed enrollment can still return its original receipt during
+inhibition.
 
 1. As the home account, run
    `ataniq-home enroll prepare --config HOME_CONFIG --out prepared.json`.
