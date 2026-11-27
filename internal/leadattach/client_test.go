@@ -229,7 +229,7 @@ func TestARefusedTicketFileShowsItsReasonWithNoConnection(t *testing.T) {
 
 func TestATicketSourceThatFailsShowsWhy(t *testing.T) {
 	leakCheck(t)
-	e := newEnv(t, setup{mode: leadattach.ModeWriter, noStart: true})
+	e := newEnv(t, setup{pipe: true, mode: leadattach.ModeWriter, noStart: true})
 	e.tickets.err = errTest
 	e.start()
 	st := e.until("the reason", func(st terminalconsole.LiveStatus) bool {
@@ -377,7 +377,7 @@ func TestACheckForAnotherPositionIsSkipped(t *testing.T) {
 
 func TestAHolderThatReplacesTheScreenIsCountedAsAResync(t *testing.T) {
 	leakCheck(t)
-	e := newEnv(t, setup{mode: leadattach.ModeViewer})
+	e := newEnv(t, setup{pipe: true, mode: leadattach.ModeViewer})
 	hc := e.attach(wire.RoleViewer)
 	hc.write("before")
 	hc.notice(wire.ReasonResync, "output dropped: the client was too slow")
@@ -1114,7 +1114,7 @@ func (c *heldClock) NewTimer(d time.Duration) leadattach.Timer {
 func TestRepeatedResyncsBackOffUntilACheckMatches(t *testing.T) {
 	leakCheck(t)
 	var held *heldClock
-	e := newEnv(t, setup{mode: leadattach.ModeViewer, tickets: 8, mutate: func(c *leadattach.Config) {
+	e := newEnv(t, setup{pipe: true, mode: leadattach.ModeViewer, tickets: 8, mutate: func(c *leadattach.Config) {
 		held = &heldClock{base: c.Clock.(*scaledClock), timers: make(chan chan time.Time, 8)}
 		c.Clock = held
 	}})

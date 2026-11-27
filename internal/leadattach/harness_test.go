@@ -477,14 +477,15 @@ type env struct {
 }
 
 type setup struct {
-	mode       leadattach.Mode
-	pipe       bool
-	shiftEnter leadattach.ShiftEnter
-	write      time.Duration
-	handshake  time.Duration
-	noStart    bool
-	tickets    int
-	mutate     func(*leadattach.Config)
+	mode          leadattach.Mode
+	pipe          bool
+	viewerTickets leadattach.TicketSource
+	shiftEnter    leadattach.ShiftEnter
+	write         time.Duration
+	handshake     time.Duration
+	noStart       bool
+	tickets       int
+	mutate        func(*leadattach.Config)
 }
 
 func newEnv(t *testing.T, s setup) *env {
@@ -504,7 +505,11 @@ func newEnv(t *testing.T, s setup) *env {
 	if s.mutate != nil {
 		s.mutate(&cfg)
 	}
-	e.c = leadattach.New(cfg)
+	if s.viewerTickets != nil {
+		e.c = leadattach.NewViewer(cfg, s.viewerTickets)
+	} else {
+		e.c = leadattach.New(cfg)
+	}
 	t.Cleanup(e.c.Close)
 	e.tickets.give(s.tickets)
 	if s.noStart {
