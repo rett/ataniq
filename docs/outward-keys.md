@@ -97,13 +97,18 @@ ssh-add -c -t 30m SIGNING-KEY
 
 So it is the one key in the forwarded agent without `-h`, and no host takes it
 as a login key: keep it out of every `authorized_keys` and off the git host's
-list of login keys (register it there as a signing key only). An authority-host
-release is signed the same way, from the laptop or in the forwarded session:
-`ssh-keygen -Y sign -f SIGNING-KEY.pub -n authority-host-release SHA256SUMS`
-uses the agent's key when it is given the public part.
+list of login keys (register it there as a signing key only).
 
-With a FIDO2 key the literal is the `sk-ssh-ed25519@openssh.com` public key and
-each signature is a touch.
+Authority-host releases accept a passphrase-protected Ed25519 signing key.
+Keep the encrypted private key file only on the owner's laptop, never on an
+AI host or the authority host. Load it on the laptop with
+`ssh-add -c -t 30m SIGNING-KEY` for per-use confirmation and a 30-minute
+lifetime. On the laptop or in the forwarded session, sign through the agent
+using the public key file with
+`ssh-keygen -Y sign -n authority-host-release -f SIGNING-KEY.pub SHA256SUMS`.
+
+A FIDO2 hardware key is the stronger option for a later upgrade. Its public
+key literal uses `sk-ssh-ed25519@openssh.com` and each signature requires a touch.
 
 ## The cutover: from old keys to the laptop's
 

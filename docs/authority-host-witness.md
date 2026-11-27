@@ -201,6 +201,14 @@ witness validator requires the line even on the first switch.
 systemctl stop ataniq-witness.service
 ```
 
+If a departing unit is `failed`, use the
+[reset and retry procedure](#backup-restore-and-rollback).
+On first witness activation over an existing seat or notifier deployment,
+a missing service inventory holds the decision inhibit. Stop the decision
+services by hand, make the original imported release available, run
+`ah-switch recover --services-stopped` and retry activation.
+[Inventory recovery](../deploy/authority-host/README.md#the-journal-and-recover)
+
 Activate the signed release with the existing switch procedure. Leave the
 unit disabled in systemd. The switch's validator checks the unit and its
 exact link target under `/opt/authority-host/current`, even on the first
@@ -353,17 +361,20 @@ pins, epoch and signed status before resuming admission. When returning to a
 release without the witness, confirm it is stopped. Keep its single-unit
 stop command in the host list. A stop reporting exit 5 still requires
 the manager to confirm that the canonical unit is inactive or absent.
+If the departure check reports `failed` for the witness, run
+`systemctl reset-failed ataniq-witness.service` and retry the same switch or
+rollback. For a failed seat or notifier, use the reported unit name
+(`ataniq-seat.service` or `ataniq-seat-notify.service`) in that command.
+
 Departure checks query the system manager. Release checks and switch import
 refuse services, templates and service drop-ins under `etc/systemd/user/`
 with `user-service`.
 The switch records the verified service names in the transaction journal
 and the current release’s names in `deploy.json`. A shipped service drop-in
 such as `worker.service.d/10-start.conf` records `worker.service`, even if
-the host provides the unit file. If the departure inventory is missing,
-the journal stays open and decisions stay inhibited. Stop the decision
-services by hand and make the original imported release available.
-Run `ah-switch recover --services-stopped` to record its names, then retry
-the rollback to repeat the stops and manager checks.
+the host provides the unit file. If rollback stalls on a missing inventory,
+follow the same recovery procedure as for [first activation](#first-activation),
+then retry the rollback.
 Preserve witness state and keep dependent homes
 suspended until an appropriate release is active again. The no-AI listener
 check continues to check the witness account after its unit link is removed.

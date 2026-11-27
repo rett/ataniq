@@ -29,7 +29,7 @@ func (s *Switcher) checkInactive(ctx context.Context, units, restarted []string)
 			}
 			for _, state := range strings.Fields(string(out.Stdout)) {
 				if state != "inactive" {
-					return failf(CodeStopFailed, "%s has an instance not confirmed inactive; decisions stay inhibited", q(unit))
+					return departureRefusal("an instance of "+unit, state, "INSTANCE (the failed instance's unit name)")
 				}
 			}
 			continue
@@ -42,9 +42,22 @@ func (s *Switcher) checkInactive(ctx context.Context, units, restarted []string)
 				continue
 			}
 		}
-		return failf(CodeStopFailed, "%s not confirmed inactive or absent by systemctl is-active; decisions stay inhibited", q(unit))
+		return departureRefusal(unit, state, unit)
 	}
 	return nil
+}
+
+// Unit names in the subject and repair command have passed the serviceName
+// and length checks. The state is manager output and must be quoted.
+func departureRefusal(subject, state, resetUnit string) error {
+	repair := ""
+	if state == "failed" {
+		if strings.HasPrefix(resetUnit, "-") {
+			resetUnit = "-- " + resetUnit
+		}
+		repair = ". Run systemctl reset-failed " + resetUnit + " and retry"
+	}
+	return failf(CodeStopFailed, "systemd reported state %s for %s. Departure is unconfirmed and decisions stay inhibited%s", q(state), subject, repair)
 }
 
 // departing selects the recorded inventory for the direction of activation.
