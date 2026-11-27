@@ -112,30 +112,37 @@ func readTLS(dir *os.File) (seatgate.Identity, error) {
 }
 
 type homeIdentity struct {
-	tls       seatgate.Identity
-	publicKey ed25519.PublicKey
+	tls seatgate.Identity
+	key ed25519.PrivateKey
+}
+
+func loadHomeKey(c config) (ed25519.PrivateKey, error) {
+	seed, err := readFile(c.HomeKey, ed25519.SeedSize, true)
+	defer clear(seed)
+	if err != nil || len(seed) != ed25519.SeedSize {
+		return nil, errors.New("home_key: expected a private 0600 file containing one raw 32-byte seed")
+	}
+	return ed25519.NewKeyFromSeed(seed), nil
 }
 
 func loadIdentity(c config) (homeIdentity, error) {
 	var id homeIdentity
-	seed, err := readFile(c.HomeKey, ed25519.SeedSize, true)
-	defer clear(seed)
-	if err != nil || len(seed) != ed25519.SeedSize {
-		return id, errors.New("home_key: expected a private 0600 file containing one raw 32-byte seed")
+	key, err := loadHomeKey(c)
+	if err != nil {
+		return id, err
 	}
-	key := ed25519.NewKeyFromSeed(seed)
-	defer clear(key)
-	id.publicKey = key.Public().(ed25519.PublicKey)
-
 	d, err := directory(c.TLSDir, true)
 	if err != nil {
+		clear(key)
 		return id, fmt.Errorf("tls_dir: %w", err)
 	}
 	defer d.Close()
 	id.tls, err = readTLS(d)
 	if err != nil {
+		clear(key)
 		return id, fmt.Errorf("tls_dir: %w", err)
 	}
+	id.key = key
 	return id, nil
 }
 
@@ -144,6 +151,7 @@ func printPins(c config, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(out, "home_tls_pin=%s\nhome_public_key=%x\n", id.tls.Fingerprint(), id.publicKey)
+	defer clear(id.key)
+	_, err = fmt.Fprintf(out, "home_tls_pin=%s\nhome_public_key=%x\n", id.tls.Fingerprint(), id.key.Public().(ed25519.PublicKey))
 	return err
 }
