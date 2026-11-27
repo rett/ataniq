@@ -33,7 +33,7 @@ const (
 )
 
 // ScratchSKCredential is the verifier's trusted record for a credential.
-// Enrollment supplies the validated public key, and Counter is the last value
+// Enrollment must call ValidateScratchSKKey, and Counter is the last value
 // durably spent for this credential.
 type ScratchSKCredential struct {
 	ID         string
@@ -115,8 +115,8 @@ func VerifyScratchSK(c ScratchSKCredential, expected ScratchSKDecision, blob []b
 	if c.Provenance != SKWitnessed && c.Provenance != SKAttested {
 		return 0, ErrSKProvenance
 	}
-	if len(c.PublicKey) != ed25519.PublicKeySize {
-		return 0, ErrKey
+	if err := ValidateScratchSKKey(c.PublicKey); err != nil {
+		return 0, err
 	}
 	if c.ID != expected.CredentialID {
 		return 0, ErrCredential

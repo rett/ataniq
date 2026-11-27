@@ -120,6 +120,47 @@ func TestCF01(t *testing.T) {
 		refuse(t, cred, d, append(bytes.Clone(sig), 0))
 	})
 
+	t.Run("InvalidKey", func(t *testing.T) {
+		zeros, ones := strings.Repeat("00", 30), strings.Repeat("ff", 30)
+		for name, encoded := range map[string]string{
+			"identity":       "01" + zeros + "00",
+			"order2":         "ec" + ones + "7f",
+			"order4positive": "00" + zeros + "00",
+			"order4negative": "00" + zeros + "80",
+			"order8a":        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+			"order8b":        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+			"order8c":        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+			"order8d":        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+			"negativeZero":   "01" + zeros + "80",
+			"unreduced":      "f6" + ones + "7f",
+			"offCurve":       "02" + zeros + "00",
+			"short":          hex.EncodeToString(pub[:31]),
+		} {
+			t.Run(name, func(t *testing.T) {
+				c := cred
+				var err error
+				c.PublicKey, err = hex.DecodeString(encoded)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(c.PublicKey) != ed25519.PublicKeySize {
+					// Key validation precedes even a missing signature tail.
+					if _, err := VerifyScratchSK(c, d, skPrefix(c.PublicKey)); err != ErrKey {
+						t.Fatalf("malformed key length: got %v, want %v", err, ErrKey)
+					}
+				}
+				// Keep the signed fixture's suffix. The malformed enrolled key
+				// must be rejected even when the SSHSIG header matches it.
+				blob := append(skPrefix(c.PublicKey), sig[len(skPrefix(pub)):]...)
+				wantErr(t, "stored key", refuse(t, c, d, blob), ErrKey)
+				wantErr(t, "enrollment key", ValidateScratchSKKey(c.PublicKey), ErrKey)
+			})
+		}
+		if err := ValidateScratchSKKey(pub); err != nil {
+			t.Fatalf("valid enrollment key: %v", err)
+		}
+	})
+
 	t.Run("BadCounter", func(t *testing.T) {
 		for _, pair := range [][2]uint32{{0, 0}, {8, 7}, {8, 8}, {0xffffffff, 1}} {
 			c, vector := cred, v
