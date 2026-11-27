@@ -58,7 +58,7 @@ func (c *codec) permissionRequest(e envelope) (*Permissions, error) {
 		Permissions *Permissions `json:"permissions"`
 	}
 	if json.Unmarshal(e.Params, &p, json.RejectUnknownMembers(true)) != nil ||
-		p.Item == "" || p.Cwd == "" || p.Started == nil || !p.Permissions.valid() {
+		p.Thread == "" || p.Turn == "" || p.Item == "" || p.Cwd == "" || p.Started == nil || !p.Permissions.valid() {
 		return nil, ErrGrant
 	}
 	if !c.current(p.Thread, p.Turn) {

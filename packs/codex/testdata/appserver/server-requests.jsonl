@@ -1,0 +1,6 @@
+{"method":"item/commandExecution/requestApproval","id":9007199254740993,"params":{"threadId":"thread-a","turnId":"turn-a","itemId":"command","startedAtMs":0}}
+{"method":"item/fileChange/requestApproval","id":"7","params":{"threadId":"thread-a","turnId":"turn-a","itemId":"edit","startedAtMs":0}}
+{"method":"item/tool/requestUserInput","id":"input","params":{"threadId":"thread-a","turnId":"turn-a","itemId":"input","isBlocking":true,"questions":[{"id":"q","header":"Input","question":"Continue?"}]}}
+{"method":"mcpServer/elicitation/request","id":14,"params":{"serverName":"fixture","threadId":"thread-a","mode":"form","message":"Continue?","requestedSchema":{"type":"object","properties":{}}}}
+{"method":"other","id":"unknown","params":{}}
+{"method":"item/permissions/requestApproval","id":7,"params":{"threadId":"thread-a","turnId":"old-turn","itemId":"permission","startedAtMs":0,"cwd":"/work","permissions":{"fileSystem":{"write":["/work"]}}}}

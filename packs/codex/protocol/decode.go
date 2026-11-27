@@ -19,18 +19,22 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 		return c.answer(e)
 	}
 	method := e.method
+	if e.ID != nil {
+		if _, exists := c.pending[serverID(e.ID)]; exists {
+			return core.Decoded{}, core.ErrInvalidFrame
+		}
+	}
 	if method == permissionMethod {
 		if _, err := c.permissionRequest(e); err != nil {
+			if err == ErrTurn {
+				return core.Decoded{}, decline(e)
+			}
 			return core.Decoded{}, err
-		}
-		id := serverID(e.ID)
-		if _, exists := c.pending[id]; exists {
-			return core.Decoded{}, core.ErrInvalidFrame
 		}
 		if len(c.pending) >= core.MaxPending {
 			return core.Decoded{}, core.ErrPendingLimit
 		}
-		c.pending[id] = sha256.Sum256(payload)
+		c.pending[serverID(e.ID)] = sha256.Sum256(payload)
 		return event(core.Event{Kind: "question", Text: "Permission requested"}), nil
 	}
 	switch method {
@@ -39,7 +43,9 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 			return core.Decoded{}, core.ErrInvalidFrame
 		}
 	default:
-		// In particular an unknown server request is never an answer.
+		if e.ID != nil {
+			return core.Decoded{}, decline(e)
+		}
 		return core.Decoded{}, nil
 	}
 	var p struct {

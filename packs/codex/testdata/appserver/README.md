@@ -20,3 +20,16 @@ run in the earlier 0.169.0 mock qualification recording
 IDs. Both use the notification timestamp field present in the pinned schema.
 The other frames, including the permission decisions in `grants.jsonl`, are
 synthetic examples of the 0.172.0 wire shapes. Tests replay them in memory.
+
+To replay a permission decision, first encode `thread/start` and decode its
+matching result, then decode the turn notification and permission request.
+Pass the original request bytes to `DecodeGrant` and `EncodeGrant`. Encoding a
+valid reply consumes the request. A turn change discards its outstanding
+requests.
+
+For a stale permission request or an unsupported server request, `Decode`
+returns a `*protocol.Decline`. The holder can use `errors.As` to retrieve it,
+frame its `Reply` with a line feed, send it and continue. Command and file
+approvals and MCP elicitations have native decline results. User input and
+unknown methods receive request errors. A stale permission reply grants an
+empty profile for the turn.

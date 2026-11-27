@@ -345,7 +345,7 @@ func TestEnvelope(t *testing.T) {
 			t.Fatal(d)
 		}
 	}
-	observe(t, c, []byte(`{"id":"r","method":"other"}`))
+	observe(t, c, []byte(`{"method":"other"}`))
 	for _, raw := range []string{"", "{}", "null", "[]", "{}\n{}", strings.Repeat("a", core.MaxFrameBytes),
 		`{"method":"x","emittedAtMs":0.5}`, `{"id":7,"method":"x","emittedAtMs":1}`, `{"method":"x","emittedAtMs":null}`,
 		`{"id":1,"result":{}}`, `{"id":"r","result":null}`, `{"id":"r","result":{},"error":{}}`, `{"id":"r","result":{},"x":1}`,
