@@ -31,3 +31,5 @@ func (a *app) canaryRun(*canaryFlags, string, string, *leaddaemon.Config) (appli
 
 // canaryCommand handles the commands and options only a tagged build has.
 func (a *app) canaryCommand([]string) (code int, ok bool) { return 0, false }
+
+func checkInstancePlace(leaddaemon.Config, func(string) string) error { return nil }

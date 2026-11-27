@@ -23,12 +23,15 @@ var version = leaddaemon.DefaultVersion
 var usage = baseUsage + canaryUsage
 
 const baseUsage = `usage: ataniqd run [--state-dir DIR] [--runtime-dir DIR]
+       ataniqd init [--state-dir DIR] [--label TEXT]
        ataniqd status [--socket PATH] [--json]
        ataniqd version
 
 This build is read-only. The daemon answers hello and status; it starts,
 stops and manages no unit and defines no lead, and no flag changes that.
 
+  init     initialize the state root and bind its registry to this instance
+           --label TEXT       optional display label on first initialization
   run      take the daemon lock and the runtime folder lock, open the
            registry, reconcile once and serve until SIGTERM or SIGINT
            --state-dir DIR    default $XDG_STATE_HOME/ataniq, else
@@ -106,6 +109,8 @@ func (a *app) run(args []string) int {
 		return leaddaemon.ExitUsage
 	}
 	switch args[0] {
+	case "init":
+		return a.initCmd(args[1:])
 	case "run":
 		return a.runCmd(args[1:])
 	case "status":
@@ -164,23 +169,22 @@ func (a *app) flags(name string, args []string, define func(*flag.FlagSet)) int 
 	return -1
 }
 
-func (a *app) runCmd(args []string) int {
+func (a *app) runConfig(args []string) (cfg leaddaemon.Config, owner ownerFlags, code int) {
 	var stateDir, runtimeDir string
 	var canary canaryFlags
-	var owner ownerFlags
 	if code := a.flags("run", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&stateDir, "state-dir", "", "state folder")
 		fs.StringVar(&runtimeDir, "runtime-dir", "", "runtime folder")
 		canary.define(fs)
 		owner.define(fs)
 	}); code >= 0 {
-		return code
+		return cfg, owner, code
 	}
 	// Flags that exclude each other are refused before any file is read.
 	if code := a.trialCheck(&owner, &canary); code >= 0 {
-		return code
+		return cfg, owner, code
 	}
-	cfg := leaddaemon.Config{
+	cfg = leaddaemon.Config{
 		NewManager: a.newManager,
 		Signals:    a.signals,
 		Version:    version,
@@ -189,30 +193,41 @@ func (a *app) runCmd(args []string) int {
 	// With --canary (a build with the tag only) the roots are the config's.
 	applied, code := a.canaryRun(&canary, stateDir, runtimeDir, &cfg)
 	if code >= 0 {
-		return code
+		return cfg, owner, code
 	}
 	var err error
 	if !applied {
 		if stateDir == "" {
 			if stateDir, err = leaddaemon.DefaultStateDir(a.getenv); err != nil {
 				fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(err.Error()))
-				return leaddaemon.ExitConfig
+				return cfg, owner, leaddaemon.ExitConfig
 			}
 		}
 		if runtimeDir == "" {
 			if runtimeDir, err = leaddaemon.DefaultRuntimeDir(a.getenv); err != nil {
 				fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(err.Error()))
-				return leaddaemon.ExitConfig
+				return cfg, owner, leaddaemon.ExitConfig
 			}
 		}
 		cfg.StateDir, cfg.RuntimeDir = stateDir, runtimeDir
+	}
+	return cfg, owner, -1
+}
+
+func (a *app) runCmd(args []string) int {
+	cfg, owner, code := a.runConfig(args)
+	if code >= 0 {
+		return code
 	}
 	// With --owner-channel (a build with the ataniq_ownerchannel tag only) the
 	// daemon serves the owner connection.
 	if code := a.ownerRun(&owner, &cfg); code >= 0 {
 		return code
 	}
-	err = leaddaemon.Run(context.Background(), cfg)
+	err := a.requireInstance(cfg)
+	if err == nil {
+		err = leaddaemon.Run(context.Background(), cfg)
+	}
 	if err != nil {
 		fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(err.Error()))
 	}

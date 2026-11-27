@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ataniq/internal/instanceid"
 	"ataniq/internal/leadrole"
 )
 
@@ -83,6 +84,7 @@ func (e *CorruptError) Is(target error) bool { return target == ErrCorrupt }
 // Registry is the open, locked registry. Its methods are safe for concurrent
 // use. It is not safe to use after Close.
 type Registry struct {
+	binding  instanceid.Binding
 	mu       sync.Mutex
 	f        *os.File
 	roles    map[leadrole.Role]Entry
@@ -124,6 +126,20 @@ func open(dir string, opts Options, syncFile func(int) error) (*Registry, error)
 		return nil, err
 	}
 	r.f = f
+	// Resolve the state root from the locked journal's directory. A standalone
+	// registry with no instance key retains its v1 format.
+	parent, err := unix.Openat(dirFD, "..", unix.O_PATH|dirFlags, 0)
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	id, err := instanceid.LoadAt(parent)
+	unix.Close(parent)
+	if err != nil && !errors.Is(err, instanceid.ErrMissing) {
+		f.Close()
+		return nil, err
+	}
+	r.binding = id.Binding
 	if err := r.start(dirFD, syncFile); err != nil {
 		f.Close()
 		return nil, err
@@ -178,20 +194,25 @@ func openDir(dir string, syncFile func(int) error) (int, error) {
 		}
 		fd = next
 	}
-	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil {
-		unix.Close(fd)
-		return -1, fmt.Errorf("leadregistry: stat folder: %w", err)
-	}
-	if err := checkOwner(&st, dir); err != nil {
+	if err := checkDir(fd, dir); err != nil {
 		unix.Close(fd)
 		return -1, err
 	}
-	if st.Mode&0o077 != 0 {
-		unix.Close(fd)
-		return -1, fmt.Errorf("%w: folder %s has group or other permission bits (want 0700)", ErrInsecure, dir)
-	}
 	return fd, nil
+}
+
+func checkDir(fd int, dir string) error {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return fmt.Errorf("leadregistry: stat folder: %w", err)
+	}
+	if err := checkOwner(&st, dir); err != nil {
+		return err
+	}
+	if st.Mode&0o077 != 0 {
+		return fmt.Errorf("%w: folder %s has group or other permission bits (want 0700)", ErrInsecure, dir)
+	}
+	return nil
 }
 
 // Each creator confirms a directory's entry before adding the next path
@@ -220,7 +241,7 @@ func openSyncedChild(parent int, name, nextName string, flags int, syncFile func
 			return -1, fmt.Errorf("leadregistry: create folder %s: %w", name, err)
 		}
 		if created {
-			flags = flags &^ unix.O_PATH | unix.O_RDONLY
+			flags = flags&^unix.O_PATH | unix.O_RDONLY
 		}
 		fd, err = unix.Openat(parent, name, flags, 0)
 	}
@@ -267,7 +288,7 @@ func syncDirectoryAt(parent int, syncFile func(int) error) error {
 
 func openFile(dirFD int, path string) (*os.File, error) {
 	name := FileName
-	base := unix.O_RDWR | unix.O_APPEND | unix.O_NOFOLLOW | unix.O_CLOEXEC
+	base := unix.O_NONBLOCK | unix.O_RDWR | unix.O_APPEND | unix.O_NOFOLLOW | unix.O_CLOEXEC
 	created := true
 	fd, err := unix.Openat(dirFD, name, base|unix.O_CREAT|unix.O_EXCL, 0o600)
 	if err == unix.EEXIST {
@@ -305,6 +326,10 @@ func openFile(dirFD int, path string) (*os.File, error) {
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
 		return fail(fmt.Errorf("leadregistry: stat journal: %w", err))
+	}
+	var named unix.Stat_t
+	if err := unix.Fstatat(dirFD, name, &named, unix.AT_SYMLINK_NOFOLLOW); err != nil || st.Dev != named.Dev || st.Ino != named.Ino || st.Nlink != 1 {
+		return fail(fmt.Errorf("%w: journal replaced or linked", ErrInsecure))
 	}
 	if st.Mode&unix.S_IFMT != unix.S_IFREG {
 		return fail(fmt.Errorf("%w: %s is not a regular file", ErrInsecure, path))
@@ -344,6 +369,9 @@ func (r *Registry) start(dirFD int, syncFile func(int) error) error {
 		}
 		return fmt.Errorf("leadregistry: read journal: %w", err)
 	}
+	if tail > 0 && lines == 0 && r.binding.Authority != "" {
+		return &CorruptError{Line: 1, Reason: "unfinished instance header"}
+	}
 	if tail > 0 {
 		if err := r.f.Truncate(offset); err != nil {
 			return fmt.Errorf("leadregistry: cut unfinished line: %w", err)
@@ -351,7 +379,7 @@ func (r *Registry) start(dirFD int, syncFile func(int) error) error {
 	}
 	if lines == 0 {
 		line, sum, err := encodeLine(genesis, 0, r.now(), kindHeader, leadrole.Role{},
-			&headerPayload{Format: formatName, Version: formatVersion})
+			journalHeader(r.binding))
 		if err != nil {
 			return err
 		}
@@ -422,13 +450,17 @@ func (r *Registry) replayLine(n int, line []byte) error {
 		return &CorruptError{Line: n, Reason: "header line missing or repeated"}
 	}
 	switch {
+	case rec.kind == kindHeader:
+		if err := rec.payload.(*headerPayload).match(r.binding); err != nil {
+			return err
+		}
 	case rec.kind == kindRecovered || rec.kind == kindRecoveryAck:
 		next, err := applyRecovery(r.recovery, rec)
 		if err != nil {
 			return &CorruptError{Line: n, Reason: err.Error()}
 		}
 		r.recovery = next
-	case rec.kind != kindHeader:
+	default:
 		cur, ok := r.roles[rec.role]
 		next, err := reduce(cur, ok, r.roles, rec)
 		if err != nil {
