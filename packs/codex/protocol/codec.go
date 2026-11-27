@@ -26,7 +26,8 @@ type Codec interface {
 	core.Codec
 	Initialized() []byte
 	StartThread(id string) ([]byte, error)
-	// Forget releases the reservation for an abandoned start request.
+	// Forget retires an abandoned start request's ID. A forgotten turn/start
+	// may have reached the server, so it still takes an idle observation to retry.
 	Forget(id string)
 	Steer(id, thread, expectedTurn, text string) ([]byte, error)
 	DecodeGrant(request, reply []byte) (Grant, error)
@@ -120,7 +121,7 @@ func (c *codec) setIdle(idle bool) {
 
 func (c *codec) Forget(id string) {
 	if id != "" && id == c.turnStartID {
-		c.setIdle(true)
+		c.turnStartID = ""
 	}
 	if id == c.startID {
 		c.startID = ""

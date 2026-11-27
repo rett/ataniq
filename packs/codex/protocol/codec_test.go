@@ -328,6 +328,18 @@ func TestTurnStartRetry(t *testing.T) {
 			rejected := []byte(fmt.Sprintf("{\"id\":%q,\"error\":{\"code\":-1,\"message\":\"busy\"}}\n", first))
 			if abandoned {
 				s.Forget(first)
+				if _, _, err := s.Encode(msg); !errors.Is(err, protocol.ErrTurn) {
+					t.Fatalf("forgotten start permitted a retry: %v", err)
+				}
+				if _, err := s.Decode(rejected); !errors.Is(err, core.ErrUnknownAnswer) {
+					t.Fatalf("forgotten answer: %v", err)
+				}
+				if _, _, err := s.Encode(msg); !errors.Is(err, protocol.ErrTurn) {
+					t.Fatalf("forgotten answer permitted a retry: %v", err)
+				}
+				if _, err := s.Decode([]byte(idleStatus + "\n")); err != nil {
+					t.Fatal(err)
+				}
 			} else if _, err := s.Decode(rejected); err != nil {
 				t.Fatal(err)
 			}
@@ -342,6 +354,28 @@ func TestTurnStartRetry(t *testing.T) {
 				t.Fatalf("late answer released second turn/start: %v", err)
 			}
 		})
+	}
+}
+
+func TestForgottenTurnStartCompletes(t *testing.T) {
+	c, f := fresh(t), frames(t, "events")
+	startThread(t, c)
+	msg := core.Request{Operation: core.Message, Text: "hello"}
+	if _, err := c.Encode("first", msg); err != nil {
+		t.Fatal(err)
+	}
+	c.Forget("first")
+	observe(t, c, f[4]) // No turn has been identified yet.
+	if _, err := c.Encode("second", msg); !errors.Is(err, protocol.ErrTurn) {
+		t.Fatalf("unmatched completion permitted a retry: %v", err)
+	}
+	observe(t, c, f[1], core.Event{Kind: "state", State: "busy"})
+	if _, err := c.Encode("second", msg); !errors.Is(err, protocol.ErrTurn) {
+		t.Fatalf("started turn permitted a retry: %v", err)
+	}
+	observe(t, c, f[4], core.Event{Kind: "state", State: "idle"})
+	if _, err := c.Encode("second", msg); err != nil {
+		t.Fatalf("completed turn prevented a retry: %v", err)
 	}
 }
 
