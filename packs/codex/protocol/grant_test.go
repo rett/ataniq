@@ -180,7 +180,7 @@ func TestInvalidPermissionRequest(t *testing.T) {
 		{"special member", `{"entries":[{"access":"read","path":{"type":"special","value":{"kind":"root","extra":1}}}]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			wantPermissionDecline(t, c, permissionFrame(`{"fileSystem":` + tc.filesystem + `}`), "7")
+			wantPermissionDecline(t, c, permissionFrame(`{"fileSystem":`+tc.filesystem+`}`), "7")
 		})
 	}
 }
