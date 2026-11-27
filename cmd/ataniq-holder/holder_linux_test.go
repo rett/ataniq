@@ -312,13 +312,15 @@ func TestAgentEnvironmentIsExactlyTheEnvList(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unix.Close(lfd)
-	script := "report " + report + "; say REPORTED; exit 0"
+	// Keep the agent alive until the attached client acknowledges the report.
+	script := "raw; report " + report + "; say REPORTED; echo 1; exit 0"
 	extra := []string{"TERM=xterm-256color", "HOME=" + r.tree, "ZED=last", "A_FIRST=1", "EMPTY="}
 	spec := r.spec(script, extra...)
 	r.start(spec.build())
 	r.waitReady()
-	c := r.attach(wire.RoleViewer)
+	c := r.attach(wire.RoleWriter)
 	c.waitText("REPORTED")
+	c.input("x")
 	if code := r.wait(); code != exitOK {
 		t.Fatalf("the holder exited %d; stderr: %s", code, r.errbuf.String())
 	}
