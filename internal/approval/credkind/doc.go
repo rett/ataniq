@@ -1,7 +1,7 @@
-// Package credkind holds the kinds of credential that may approve from the
-// phone, and the WebAuthn assertion verifier they share.
+// Package credkind holds the credential policy, the phone's WebAuthn verifier
+// and the scratch console's security-key signature verifier.
 //
-// A credential is a WebAuthn public key credential, registered at pairing
+// A phone credential is a WebAuthn public key credential, registered at pairing
 // with attestation "none": the key, its id, and what the authenticator said
 // about itself (its AAGUID and the backup flags). Nothing about the
 // authenticator is proven. The AAGUID and the flags are claims, relayed by
@@ -25,6 +25,11 @@
 // The table of AAGUIDs is data: it names vendors, and the package depends on
 // none of them. Classify picks the kind for an AAGUID, Register registers
 // with it, and Policy limits which kinds a project accepts (all by default).
+//
+// The policy also recognizes "security-key" for the separate scratch SSHSIG
+// verifier. VerifyScratchSK checks a signature against an independently
+// enrolled key. Hardware origin, local signer use and uncached PIN entry
+// require independent qualification. Software vectors exercise the format.
 //
 // # The verifier
 //

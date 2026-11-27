@@ -15,9 +15,10 @@ const (
 
 // The names of the kinds.
 const (
-	NamePlatform = "platform-passkey"
-	NameVault    = "vault-passkey"
-	NameUnknown  = "passkey"
+	NamePlatform    = "platform-passkey"
+	NameVault       = "vault-passkey"
+	NameUnknown     = "passkey"
+	NameSecurityKey = "security-key"
 )
 
 // The errors. Each is a fixed value that holds no part of the input.
@@ -127,7 +128,7 @@ type Result struct {
 	BackupState bool
 }
 
-// Kind is a kind of credential.
+// Kind registers and verifies a WebAuthn credential.
 type Kind interface {
 	// Name is the kind's name, as a policy lists it.
 	Name() string
@@ -145,10 +146,10 @@ var kinds = []Kind{
 	passkey{name: NameUnknown},
 }
 
-// Kinds returns every kind.
+// Kinds returns the WebAuthn kinds.
 func Kinds() []Kind { return append([]Kind(nil), kinds...) }
 
-// ByName returns the kind of a name.
+// ByName looks up a WebAuthn kind.
 func ByName(name string) (Kind, bool) {
 	for _, k := range kinds {
 		if k.Name() == name {
@@ -186,12 +187,21 @@ type Policy struct {
 	Accepted []string
 }
 
+// The SSH security key has its own verifier and no WebAuthn registration.
+func policyKind(name string) bool {
+	if name == NameSecurityKey {
+		return true
+	}
+	_, ok := ByName(name)
+	return ok
+}
+
 // Check reports ErrPolicy when the policy names a kind that does not exist,
 // or a kind twice.
 func (p Policy) Check() error {
 	seen := map[string]bool{}
 	for _, name := range p.Accepted {
-		if _, ok := ByName(name); !ok || seen[name] {
+		if !policyKind(name) || seen[name] {
 			return ErrPolicy
 		}
 		seen[name] = true
@@ -201,7 +211,7 @@ func (p Policy) Check() error {
 
 // Accepts reports whether the policy accepts the kind of a name.
 func (p Policy) Accepts(name string) bool {
-	if _, ok := ByName(name); !ok {
+	if !policyKind(name) {
 		return false
 	}
 	if len(p.Accepted) == 0 {
