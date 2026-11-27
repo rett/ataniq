@@ -37,11 +37,16 @@ func TestFramerEndOfStream(t *testing.T) {
 	if n := f.Feed([]byte("tail"), unexpected); n != 0 || !errors.Is(f.Finish(), io.ErrUnexpectedEOF) {
 		t.Fatal("truncated stream")
 	}
-	if n := f.Feed(bytes.Repeat([]byte{'x'}, protocol.MaxFrameBytes*2), unexpected); n != 1 {
-		t.Fatal("oversized fragment", n)
-	}
-	if n := f.Feed([]byte("tail"), unexpected); n != 0 || f.Finish() != nil {
-		t.Fatal("oversized fragment counted twice")
+	for _, prefix := range []string{"", "ab"} {
+		if n := f.Feed([]byte(prefix), unexpected); n != 0 {
+			t.Fatal("dropped short prefix", n)
+		}
+		if n := f.Feed(bytes.Repeat([]byte{'x'}, protocol.MaxFrameBytes), unexpected); n != 1 {
+			t.Fatalf("oversized fragment after %q: %d drops", prefix, n)
+		}
+		if n := f.Feed([]byte("tail"), unexpected); n != 0 || f.Finish() != nil {
+			t.Fatalf("oversized fragment after %q counted twice", prefix)
+		}
 	}
 	var got string
 	f.Feed([]byte("new\n"), func(line []byte) { got = string(line) })

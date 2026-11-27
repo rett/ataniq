@@ -224,8 +224,12 @@ func TestEventFloorsAreAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	tooMany := make([]protocol.Event, protocol.MaxEvents+1)
+	for i := range tooMany {
+		tooMany[i] = protocol.Event{Kind: "progress"}
+	}
 	for _, events := range [][]protocol.Event{
-		make([]protocol.Event, protocol.MaxEvents+1),
+		tooMany,
 		{{Kind: "progress"}, {Kind: "other"}},
 		{{Kind: "progress", Text: "\xff"}},
 	} {
