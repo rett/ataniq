@@ -15,8 +15,9 @@ command creates `DIR/instance.key`, a singly linked, user-owned 0600 file in
 the private state root. The authority ID is 64 lowercase hexadecimal digits encoding SHA-256 over the
 ASCII bytes of `ataniq-instance-authority/1` immediately followed by the
 32 raw bytes of the Ed25519 public key (no separator or trailing newline). The
-store incarnation is an independent random 16-byte value encoded as 32
-lowercase hexadecimal digits. Recreating and initializing the root generates
+store incarnation is an independent random 16-byte value kept in the
+private file `DIR/store.incarnation` and displayed as 32 lowercase
+hexadecimal digits. Recreating and initializing the root generates
 both values afresh. The optional label is for display only.
 
 For an existing scratch root, stop the daemon and run the same init command
@@ -24,8 +25,21 @@ with the configuration's `state_root`. It validates the old journal and
 atomically replaces it with a version 2 journal bound to the authority and
 incarnation, preserving its records. Repeating init keeps the original key
 and label. On startup the daemon refuses a missing, damaged or unsafe key,
-an unbound journal, or a journal from another instance or incarnation. If
-the key for a bound journal is lost, restore the original key from backup.
+an unbound journal, or a journal from another instance or incarnation.
+A backup of `instance.key` holds the private Ed25519 seed. Protect it as a
+credential. A copied root (including a copy made with `cp -a`) is the same
+instance and must never run beside the original.
+
+To restore, stop the daemon and keep the old root and journal offline. In a
+private 0700 state directory, restore the original `instance.key` as a
+singly linked 0600 file owned by the daemon user. Run
+`ataniqd init --restored --state-dir DIR` once and record the printed
+incarnation. It preserves the authority and draws a new incarnation each
+time. An old lead registry journal now fails its binding check. Retain it
+offline for recovery and move it out of the registry directory before
+running ordinary `ataniqd init --state-dir DIR` to bind a **new, empty**
+registry. Reconcile the old lead history before resuming work. Only the
+lead registry carries this binding today.
 
 ## Peer identity and directional grants
 

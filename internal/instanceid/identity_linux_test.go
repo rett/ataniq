@@ -1,7 +1,6 @@
 package instanceid
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
@@ -58,17 +57,16 @@ func TestAuthorityEncodingAndDisplayLabel(t *testing.T) {
 	pub, _ := hex.DecodeString("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
 	fingerprint := sha256.Sum256(append([]byte("ataniq-instance-authority/1"), pub...))
 	path := filepath.Join(t.TempDir(), "state")
-	makeID(t, path, "")
+	original := makeID(t, path, "")
 	for _, label := range []string{"", "North desk", "South desk"} {
 		body := append([]byte(magic), seed...)
-		body = append(body, bytes.Repeat([]byte{0xab}, incarnationSize)...)
 		body = append(body, label...)
 		sum := sha256.Sum256(body)
 		if err := os.WriteFile(filepath.Join(path, FileName), append(body, sum[:]...), 0600); err != nil {
 			t.Fatal(err)
 		}
 		id, err := Load(path)
-		if err != nil || id.Authority != hex.EncodeToString(fingerprint[:]) || id.Incarnation != strings.Repeat("ab", 16) || id.Label != label {
+		if err != nil || id.Authority != hex.EncodeToString(fingerprint[:]) || id.Incarnation != original.Incarnation || id.Label != label {
 			t.Fatalf("load with label %q: %+v, %v", label, id, err)
 		}
 	}
@@ -181,5 +179,40 @@ func TestStateBelowSymlinkedParent(t *testing.T) {
 	}
 	if _, err := Load(path); !errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), FileName) || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("linked key: %v", err)
+	}
+}
+
+func TestIncarnationFileRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(string) error
+		want   error
+	}{
+		{"missing", os.Remove, ErrInvalid},
+		{"truncated", func(p string) error { return os.Truncate(p, 4) }, ErrInvalid},
+		{"mode", func(p string) error { return os.Chmod(p, 0640) }, ErrUnsafe},
+		{"hardlink", func(p string) error { return os.Link(p, p+".alias") }, ErrUnsafe},
+		{"symlink", func(p string) error {
+			if err := os.Rename(p, p+".saved"); err != nil {
+				return err
+			}
+			return os.Symlink(p+".saved", p)
+		}, ErrUnsafe},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state")
+			makeID(t, path, "")
+			if err := tc.change(filepath.Join(path, IncarnationFile)); err != nil {
+				t.Fatal(err)
+			}
+			root, err := OpenRoot(path, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			if _, err := InitAt(root, ""); !errors.Is(err, tc.want) || !strings.Contains(err.Error(), IncarnationFile) {
+				t.Fatalf("ordinary init: %v", err)
+			}
+		})
 	}
 }

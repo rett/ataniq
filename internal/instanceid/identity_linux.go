@@ -22,10 +22,11 @@ import (
 const FileName = "instance.key"
 
 const (
-	magic           = "ataniq-instance-v1\n"
-	incarnationSize = 16
-	maxLabel        = 128
-	fixedSize       = len(magic) + ed25519.SeedSize + incarnationSize + sha256.Size
+	magic            = "ataniq-instance-key/2\n"
+	incarnationMagic = "ataniq-store-incarnation/1\n"
+	IncarnationFile  = "store.incarnation"
+	incarnationSize  = 16
+	maxLabel         = 128
 )
 
 // Refusal identifies a key-loading failure through errors.Is or errors.As.
@@ -156,62 +157,84 @@ func Load(path string) (Identity, error) {
 	return id, nil
 }
 
-// LoadAt reads the key relative to a pinned state root.
+// LoadAt reads both identity files relative to a pinned state root.
 func LoadAt(root int) (Identity, error) {
-	fd, err := unix.Openat(root, FileName, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	id, err := loadKey(root)
+	if err != nil {
+		return Identity{}, err
+	}
+	id.Incarnation, err = loadIncarnation(root)
+	if errors.Is(err, ErrMissing) {
+		// A key without a store is not an uninitialized (legacy) root.
+		return Identity{}, fmt.Errorf("%w: missing %s; after restoring a key use init --restored", ErrInvalid, IncarnationFile)
+	}
+	return id, err
+}
+
+func loadKey(root int) (Identity, error) {
+	b, err := readPayload(root, FileName, magic, ed25519.SeedSize, maxLabel)
+	if err != nil {
+		return Identity{}, err
+	}
+	defer clear(b)
+	label := string(b[ed25519.SeedSize:])
+	if !validLabel(label) {
+		return Identity{}, fmt.Errorf("%w: %s: invalid label", ErrInvalid, FileName)
+	}
+	key := ed25519.NewKeyFromSeed(b[:ed25519.SeedSize])
+	defer clear(key)
+	pub := sha256.Sum256(append([]byte("ataniq-instance-authority/1"), key.Public().(ed25519.PublicKey)...))
+	return Identity{Binding: Binding{Authority: hex.EncodeToString(pub[:])}, Label: label}, nil
+}
+
+func loadIncarnation(root int) (string, error) {
+	b, err := readPayload(root, IncarnationFile, incarnationMagic, incarnationSize, 0)
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func readPayload(root int, name, prefix string, size, extra int) ([]byte, error) {
+	fd, err := unix.Openat(root, name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err == unix.ENOENT {
-		return Identity{}, ErrMissing
+		return nil, fmt.Errorf("%w: %s", ErrMissing, name)
+	}
+	if err == unix.ELOOP {
+		return nil, fmt.Errorf("%w: %s is a symlink", ErrUnsafe, name)
 	}
 	if err != nil {
-		if err == unix.ELOOP {
-			return Identity{}, fmt.Errorf("%w: %s is a symlink", ErrUnsafe, FileName)
-		}
-		return Identity{}, fmt.Errorf("%w: open %s: %w", ErrUnsafe, FileName, err)
+		return nil, fmt.Errorf("%w: open %s: %w", ErrUnsafe, name, err)
 	}
-	f := os.NewFile(uintptr(fd), FileName)
+	f := os.NewFile(uintptr(fd), name)
 	defer f.Close()
 	if err := checkRoot(root); err != nil {
-		return Identity{}, err
+		return nil, err
 	}
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
-		return Identity{}, err
+		return nil, err
 	}
 	if err := checkFile(st, os.Geteuid()); err != nil {
-		return Identity{}, err
+		return nil, fmt.Errorf("%s: %w", name, err)
 	}
-	b, err := io.ReadAll(io.LimitReader(f, int64(fixedSize+maxLabel+1)))
-	defer clear(b)
-	if err != nil {
-		return Identity{}, fmt.Errorf("%w: read key: %w", ErrInvalid, err)
-	}
-	if len(b) < fixedSize || len(b) > fixedSize+maxLabel || !bytes.HasPrefix(b, []byte(magic)) {
-		return Identity{}, ErrInvalid
+	minSize := len(prefix) + size + sha256.Size
+	b, err := io.ReadAll(io.LimitReader(f, int64(minSize+extra+1)))
+	if err != nil || len(b) < minSize || len(b) > minSize+extra || !bytes.HasPrefix(b, []byte(prefix)) {
+		clear(b)
+		return nil, fmt.Errorf("%w: %s", ErrInvalid, name)
 	}
 	body := b[:len(b)-sha256.Size]
 	sum := sha256.Sum256(body)
 	if !bytes.Equal(sum[:], b[len(body):]) {
-		return Identity{}, ErrInvalid
+		clear(b)
+		return nil, fmt.Errorf("%w: %s: checksum mismatch", ErrInvalid, name)
 	}
-	seedEnd := len(magic) + ed25519.SeedSize
-	label := string(body[seedEnd+incarnationSize:])
-	if !validLabel(label) {
-		return Identity{}, ErrInvalid
-	}
-	key := ed25519.NewKeyFromSeed(body[len(magic):seedEnd])
-	defer clear(key)
-	pub := sha256.Sum256(append([]byte("ataniq-instance-authority/1"), key.Public().(ed25519.PublicKey)...))
-	return Identity{
-		Binding: Binding{
-			Authority:   hex.EncodeToString(pub[:]),
-			Incarnation: hex.EncodeToString(body[seedEnd : seedEnd+incarnationSize]),
-		},
-		Label: label,
-	}, nil
+	return body[len(prefix):], nil
 }
 
-// InitAt creates the identity once. A retry loads the original identity.
-// label is used only on creation.
+// InitAt publishes the store incarnation first. An interruption before the
+// key is published leaves an incarnation that a retry can safely reuse.
 func InitAt(root *os.File, label string) (Identity, error) {
 	if !validLabel(label) {
 		return Identity{}, errors.New("display label must be valid UTF-8, at most 128 bytes, without control characters")
@@ -227,20 +250,57 @@ func InitAt(root *os.File, label string) (Identity, error) {
 	if !errors.Is(err, ErrMissing) {
 		return Identity{}, err
 	}
-	b := make([]byte, fixedSize+len(label))
-	defer clear(b)
-	copy(b, magic)
-	end := len(magic) + ed25519.SeedSize + incarnationSize
-	rand.Read(b[len(magic):end])
-	copy(b[end:], label)
-	body := b[:len(b)-sha256.Size]
-	sum := sha256.Sum256(body)
-	copy(b[len(body):], sum[:])
+	if _, err := loadIncarnation(fd); errors.Is(err, ErrMissing) {
+		if err := writeIncarnation(root, unix.RENAME_NOREPLACE); err != nil {
+			return Identity{}, err
+		}
+	} else if err != nil {
+		return Identity{}, err
+	}
+	payload := make([]byte, ed25519.SeedSize+len(label))
+	defer clear(payload)
+	rand.Read(payload[:ed25519.SeedSize])
+	copy(payload[ed25519.SeedSize:], label)
+	if err := publish(root, FileName, magic, payload, unix.RENAME_NOREPLACE); err != nil {
+		return Identity{}, err
+	}
+	return LoadAt(fd)
+}
 
+// RestoreAt gives a restored key a fresh store incarnation. The caller
+// excludes daemon starts and other initializers during the restore.
+func RestoreAt(root *os.File) (Identity, error) {
+	fd := int(root.Fd())
+	if _, err := loadKey(fd); err != nil {
+		return Identity{}, err
+	}
+	if _, err := loadIncarnation(fd); err != nil && !errors.Is(err, ErrMissing) {
+		return Identity{}, err
+	}
+	if err := writeIncarnation(root, 0); err != nil {
+		return Identity{}, err
+	}
+	return LoadAt(fd)
+}
+
+func writeIncarnation(root *os.File, flags uint) error {
+	var value [incarnationSize]byte
+	rand.Read(value[:])
+	return publish(root, IncarnationFile, incarnationMagic, value[:], flags)
+}
+
+func publish(root *os.File, dest, prefix string, payload []byte, flags uint) error {
+	body := make([]byte, len(prefix)+len(payload), len(prefix)+len(payload)+sha256.Size)
+	copy(body, prefix)
+	copy(body[len(prefix):], payload)
+	sum := sha256.Sum256(body)
+	b := append(body, sum[:]...)
+	defer clear(b)
+	fd := int(root.Fd())
 	name := ".instance-" + rand.Text()
 	tmp, err := unix.Openat(fd, name, unix.O_CREAT|unix.O_EXCL|unix.O_WRONLY|unix.O_CLOEXEC, 0600)
 	if err != nil {
-		return Identity{}, err
+		return err
 	}
 	defer unix.Unlinkat(fd, name, 0)
 	f := os.NewFile(uintptr(tmp), name)
@@ -252,14 +312,11 @@ func InitAt(root *os.File, label string) (Identity, error) {
 		err = f.Sync()
 	}
 	if err = errors.Join(err, f.Close()); err != nil {
-		return Identity{}, err
+		return err
 	}
-	err = unix.Renameat2(fd, name, fd, FileName, unix.RENAME_NOREPLACE)
+	err = unix.Renameat2(fd, name, fd, dest, flags)
 	if err != nil && err != unix.EEXIST {
-		return Identity{}, err
+		return err
 	}
-	if err := root.Sync(); err != nil {
-		return Identity{}, err
-	}
-	return LoadAt(fd)
+	return root.Sync()
 }

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"ataniq/internal/clientapi"
+	"ataniq/internal/instanceid"
 	"ataniq/internal/leaddaemon"
 	"ataniq/internal/leadlock"
 	"ataniq/internal/leadregistry"
@@ -492,5 +493,45 @@ func TestRunRefusesForeignInstanceJournal(t *testing.T) {
 	ta := newTestApp(t, nil)
 	if code := ta.run([]string{"run", "--state-dir", state, "--runtime-dir", base + "/runtime"}); code != leaddaemon.ExitRegistry || !strings.Contains(ta.err.String(), leadregistry.ErrForeignInstance.Error()) {
 		t.Fatalf("foreign journal: exit %d: %s", code, ta.err.String())
+	}
+}
+
+func TestRestoredInstanceRefusesOldJournal(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state")
+	initTestState(t, state)
+	before, err := instanceid.Load(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(state, instanceid.FileName)
+	backup, err := os.ReadFile(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Exercise both a full-root restore and a key-only restore.
+	for _, target := range []string{state, t.TempDir()} {
+		if err := os.Chmod(target, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(target, instanceid.FileName), backup, 0600); err != nil {
+			t.Fatal(err)
+		}
+		ta := newTestApp(t, nil)
+		if code := ta.run([]string{"init", "--restored", "--state-dir", target}); code != 0 {
+			t.Fatalf("restore: %d: %s", code, ta.err.String())
+		}
+		after, err := instanceid.Load(target)
+		if err != nil || after.Authority != before.Authority || after.Incarnation == before.Incarnation || len(after.Incarnation) != 32 {
+			t.Fatalf("restored identity %+v, %v", after, err)
+		}
+		if key, err := os.ReadFile(filepath.Join(target, instanceid.FileName)); err != nil || !bytes.Equal(key, backup) {
+			t.Fatal("restore changed the key")
+		}
+		if target != state {
+			initTestState(t, target)
+		}
+	}
+	if _, err := leadregistry.Open(filepath.Join(state, leaddaemon.RegistryDirName), leadregistry.Options{}); !errors.Is(err, leadregistry.ErrForeignInstance) {
+		t.Fatalf("old journal after restore: %v", err)
 	}
 }
