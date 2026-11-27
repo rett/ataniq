@@ -1,11 +1,30 @@
 # Permissions-based federation
 
-Status: required architecture; not implemented or interoperability-tested.
+Status: daemon state roots have local instance identities. Peer federation is planned.
 
 Ataniq instances can coordinate projects, exchange tasks, and communicate in
 both directions over authenticated MCP connections. Each instance remains an
 independent authority for its projects, workers, credentials, and resources.
 Federation does not require a central instance or a shared provider.
+
+## Instance identity
+
+Before the first run, use `ataniqd init --state-dir DIR [--label TEXT]` as the
+daemon user. Omitting `--state-dir` selects the same default as `run`. The
+command creates `DIR/instance.key`, a singly linked, user-owned 0600 file in
+the private state root. The authority ID is the SHA-256 digest of the raw
+32-byte Ed25519 public key, encoded as 64 lowercase hexadecimal digits. The
+store incarnation is an independent random 16-byte value encoded as 32
+lowercase hexadecimal digits. Recreating and initializing the root generates
+both values afresh. The optional label is for display only.
+
+For an existing scratch root, stop the daemon and run the same init command
+with the configuration's `state_root`. It validates the old journal and
+atomically replaces it with a version 2 journal bound to the authority and
+incarnation, preserving its records. Repeating init keeps the original key
+and label. On startup the daemon refuses a missing, damaged or unsafe key,
+an unbound journal, or a journal from another instance or incarnation. If
+the key for a bound journal is lost, restore the original key from backup.
 
 ## Peer identity and directional grants
 

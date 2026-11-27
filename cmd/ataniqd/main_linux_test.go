@@ -19,6 +19,7 @@ import (
 	"ataniq/internal/clientapi"
 	"ataniq/internal/leaddaemon"
 	"ataniq/internal/leadlock"
+	"ataniq/internal/leadregistry"
 	"ataniq/internal/leadunit"
 )
 
@@ -213,10 +214,23 @@ func TestNoStateFolderWithoutHome(t *testing.T) {
 	}
 }
 
+func initTestState(t *testing.T, state string) {
+	t.Helper()
+	ta := newTestApp(t, nil)
+	if code := ta.run([]string{"init", "--state-dir", state}); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, ta.err.String())
+	}
+}
+
 // startApp runs `ataniqd run` with args in process and waits until status
 // answers.
 func startApp(t *testing.T, ta *testApp, args []string, socket string) <-chan int {
 	t.Helper()
+	cfg, _, code := ta.runConfig(args)
+	if code >= 0 {
+		t.Fatalf("run config: exit %d: %s", code, ta.err.String())
+	}
+	initTestState(t, cfg.StateDir)
 	done := make(chan int, 1)
 	go func() { done <- ta.run(append([]string{"run"}, args...)) }()
 	deadline := time.Now().Add(20 * time.Second)
@@ -384,6 +398,7 @@ func TestSecondDaemonAsASeparateProcess(t *testing.T) {
 	args := []string{"run", "--state-dir", base + "/s", "--runtime-dir", base + "/r"}
 	socket := base + "/r/daemon.sock"
 
+	initTestState(t, base+"/s")
 	first := binary(t, args...)
 	var firstErr bytes.Buffer
 	first.Stderr = &firstErr
@@ -459,4 +474,23 @@ func asExit(err error, target **exec.ExitError) bool {
 		*target = ee
 	}
 	return ok
+}
+
+func TestRunRefusesForeignInstanceJournal(t *testing.T) {
+	base := shortDir(t)
+	state, other := base+"/s", base+"/other"
+	initTestState(t, state)
+	initTestState(t, other)
+	journal := filepath.Join(leaddaemon.RegistryDirName, leadregistry.FileName)
+	data, err := os.ReadFile(filepath.Join(other, journal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, journal), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ta := newTestApp(t, nil)
+	if code := ta.run([]string{"run", "--state-dir", state, "--runtime-dir", base + "/runtime"}); code != leaddaemon.ExitRegistry || !strings.Contains(ta.err.String(), leadregistry.ErrForeignInstance.Error()) {
+		t.Fatalf("foreign journal: exit %d: %s", code, ta.err.String())
+	}
 }

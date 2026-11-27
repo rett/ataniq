@@ -12,7 +12,9 @@
 // an append that never returned: Open cuts it off and journals the cut in a
 // recovered record, which Recovery reports until AcknowledgeRecovery journals
 // a recovery-acknowledged record after it, also across a reopen. Any other
-// damage makes Open fail with ErrCorrupt and nothing is repaired.
+// damage makes Open fail with ErrCorrupt and nothing is repaired. An instance
+// journal must have a complete header matching the parent state's authority
+// and incarnation before Open may replay or recover it.
 //
 // The shown state changes by these rules only; a record that breaks them is
 // refused when written and makes Open fail with ErrCorrupt when it is found in
@@ -139,9 +141,7 @@
 // which an older build refuses as damage, or a value of a known member that
 // an older build refuses, which has the same effect for that record.
 //
-// This package is provisional and unqualified: it is part of the lead daemon
-// work in progress, the file format is version 1 and may change before any
-// release. Version 1 has no compatibility promise until the first deployment:
-// a rule may be tightened so that a journal written by an earlier build is no
-// longer accepted, and there is no migration.
+// This package is provisional and unqualified. Standalone journals use v1.
+// InitInstance migrates a daemon's v1 journal to the instance-bound v2
+// format. Both formats may change before release.
 package leadregistry

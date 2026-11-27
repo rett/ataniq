@@ -425,6 +425,7 @@ func TestSeatGateThatCannotListenStopsTheDaemon(t *testing.T) {
 	gateInit(t, state)
 	writePins(t, state, newSeat(t, "seat").Fingerprint()+"\n", 0o600)
 	ta := newTestApp(t, nil)
+	initTestState(t, state)
 	code := ta.run([]string{"run", "--state-dir", state, "--runtime-dir", runtime, "--owner-channel", "--seat-gate", taken.Addr().String()})
 	if code != leaddaemon.ExitServe || !strings.Contains(ta.err.String(), "seat gate: cannot listen on "+taken.Addr().String()) {
 		t.Fatalf("exit %d: %q", code, ta.err.String())
