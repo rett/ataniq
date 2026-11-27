@@ -65,6 +65,52 @@ func TestTheTableShowsTheLastReceiptOfEachLead(t *testing.T) {
 	}
 }
 
+func TestDegradedRowsShowReasonsAndRefuseCommands(t *testing.T) {
+	b := twoLeads(t)
+	r := newRig(t, b, 120, 30)
+	r.key("x")
+	b.listing.Leads[0].State = "degraded"
+	b.listing.Leads[0].StateReason = "invalid-last-receipt"
+	b.listing.Leads = append(b.listing.Leads, Lead{Key: "row-3", State: "degraded", StateReason: "invalid-row"})
+	r.run(r.m.Refresh())
+	r.seen("degraded", "invalid last receipt", "row-3", "invalid lead data", b.listing.Leads[1].Key)
+	r.key("y")
+	r.key("j")
+	for _, key := range []string{"s", "d", "m", "x", "v", "w"} {
+		r.key(key)
+		if b.total() != 0 || r.m.FieldOpen() {
+			t.Fatalf("%s admitted on the degraded row", key)
+		}
+	}
+	r.key("j")
+	r.key("s")
+	if calls := b.callsOf("start"); len(calls) != 1 || calls[0].role != b.listing.Leads[1].Role {
+		t.Fatalf("start on healthy row = %+v", calls)
+	}
+}
+
+func TestDegradedRowKeepsAnUnconfirmedMessage(t *testing.T) {
+	b := twoLeads(t)
+	b.answer = func(call) (Receipt, error) { return Receipt{}, errLost }
+	r := newRig(t, b, 120, 30)
+	r.key("j")
+	r.key("m")
+	r.typ("one")
+	r.key("enter")
+	good := b.listing.Leads[1]
+	b.listing.Leads[1] = Lead{Key: good.Key, State: "degraded", StateReason: "invalid-row"}
+	r.key("r")
+	b.listing.Leads[1] = good
+	r.key("r")
+	r.key("j")
+	r.key("j")
+	r.key("m")
+	r.seen("has no final answer")
+	if r.m.FieldOpen() || len(b.callsOf("inject")) != 1 {
+		t.Fatal("the unreadable row freed the epoch's message")
+	}
+}
+
 func TestNothingAPeerSaidReachesACellButThroughTheSafeSubset(t *testing.T) {
 	hostile := "\x1b]0;pwned\a\x1b[31mred\u202e\u200b\n"
 	b := newBackend(t)
