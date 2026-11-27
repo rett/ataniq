@@ -27,16 +27,16 @@ const (
 )
 
 func main() {
-	run(os.Args[1:], os.Stdin, tablePath, new(net.Dialer).DialContext)
+	run(os.Args[1:], os.Stdin, tablePath, new(net.Dialer).DialContext, os.Exit)
 }
 
 type dialFunc func(context.Context, string, string) (net.Conn, error)
 
-func run(args []string, stdin io.Reader, path string, dial dialFunc) {
+func run(args []string, stdin io.Reader, path string, dial dialFunc, exit func(int)) {
 	// Even a stalled table read or a busy decoder must let the provider resume.
 	// All observation failures have the same provider response: silence, exit 0.
 	start := time.Now()
-	stop := time.AfterFunc(time.Until(start.Add(eventBudget)), func() { os.Exit(0) })
+	stop := time.AfterFunc(time.Until(start.Add(eventBudget)), func() { exit(0) })
 	defer stop.Stop()
 	_ = report(start, args, stdin, path, dial, stop)
 }

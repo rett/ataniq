@@ -265,6 +265,47 @@ func TestFetchReadsAtMostOneNone(t *testing.T) {
 	}
 }
 
+func TestContinuationWatchdog(t *testing.T) {
+	path := writeTable(t, strings.Replace(tableJSON, `"none"`, `"continuation"`, 1))
+	none, err := hookwire.EncodeReply(hookwire.Reply{Version: 1, Kind: hookwire.None})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name                string
+		dialDelay, wantExit time.Duration
+	}{
+		{"slow reply", 900 * time.Millisecond, 0},
+		{"stalled dial", 2 * time.Second, 1500 * time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				reply := bytes.NewReader(none)
+				conn := &testConn{reply: reply}
+				dial := func(ctx context.Context, _, _ string) (net.Conn, error) {
+					time.Sleep(tc.dialDelay)
+					return conn, ctx.Err()
+				}
+				start := time.Now()
+				var exited time.Duration
+				run([]string{"tool"}, strings.NewReader(input), path, dial, func(code int) {
+					if code != 0 {
+						t.Errorf("watchdog exit code %d", code)
+					}
+					exited = time.Since(start)
+				})
+				synctest.Wait()
+				if exited != tc.wantExit {
+					t.Errorf("watchdog exited at %v, want %v", exited, tc.wantExit)
+				}
+				if tc.wantExit == 0 && (!conn.closed || reply.Len() != 0) {
+					t.Fatal("continuation fetch did not finish")
+				}
+			})
+		})
+	}
+}
+
 func TestMainExitsSilently(t *testing.T) {
 	if len(os.Args) == 6 && os.Args[2] == "--" {
 		for _, path := range os.Args[3:] {
@@ -273,7 +314,7 @@ func TestMainExitsSilently(t *testing.T) {
 			conn.reply = bytes.NewReader(append(binary.BigEndian.AppendUint32(nil, uint32(len(body))), body...))
 			run([]string{"tool"}, strings.NewReader(input), path, func(context.Context, string, string) (net.Conn, error) {
 				return conn, nil
-			})
+			}, os.Exit)
 			if !conn.closed || conn.writes != 1 {
 				t.Fatal("incomplete exchange")
 			}
