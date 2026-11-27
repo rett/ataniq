@@ -78,6 +78,7 @@ import (
 	"strings"
 	"time"
 
+	"ataniq/internal/instanceid"
 	"ataniq/internal/leadholder/canaryroot"
 	"ataniq/internal/leadsandbox/assert"
 	"ataniq/internal/leadsandbox/mountpoints"
@@ -327,6 +328,14 @@ func (a *attempt) validate() error {
 		return err
 	}
 	a.pin = pin
+	id, err := instanceid.Load(a.in.StateRoot)
+	if err != nil {
+		return err
+	}
+	a.pin.LeadIdentity, err = profile.QualifiedLeadIdentity(pin.Project, id.Authority)
+	if err != nil {
+		return err
+	}
 	exes, err := a.sys.CheckHost(a.in)
 	if err != nil {
 		return err

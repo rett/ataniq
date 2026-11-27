@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ataniq/internal/instanceid"
 	"ataniq/internal/leadholder/canaryroot"
 	"ataniq/internal/leadsandbox/assert"
 	"ataniq/internal/leadsandbox/mountpoints"
@@ -43,6 +44,14 @@ func newWorld(t *testing.T) *world {
 	base := realpath(t, t.TempDir())
 	w := &world{t: t, base: base, state: base + "/state", run: base + "/run"}
 	mkdir(t, w.state, 0o700)
+	root, err := instanceid.OpenRoot(w.state, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if _, err := instanceid.InitAt(root, "sample"); err != nil {
+		t.Fatal(err)
+	}
 	mkdir(t, w.run, 0o700)
 	mkdir(t, RuntimeFolder(w.run, sampleRole), 0o700)
 	if err := canaryroot.WriteMarker(w.state, sampleProject); err != nil {

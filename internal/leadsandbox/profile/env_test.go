@@ -56,7 +56,7 @@ func TestEnvironmentValues(t *testing.T) {
 			"GIT_CONFIG_GLOBAL":       "/ataniq/git/config",
 			"GOCACHE":                 "/home/lead/.cache/go-build",
 			"GOMODCACHE":              "/home/lead/go/pkg/mod",
-			"QARGI_LEAD":              "arc-lead",
+			"QARGI_LEAD":              "ataniq-lead-0123456789abcdef",
 		}
 		for k, v := range tt.want {
 			want[k] = v
@@ -102,7 +102,7 @@ func TestEnvironmentIsReadFromTheInputsOnly(t *testing.T) {
 	t.Setenv("QARGI_LEAD", "someone")
 	t.Setenv("SSH_AUTH_SOCK", "/tmp/agent.sock")
 	got := envMap(t, fixture(Claude))
-	if got["HOME"] != "/home/lead" || got["TERM"] != "xterm-256color" || got["QARGI_LEAD"] != "arc-lead" {
+	if got["HOME"] != "/home/lead" || got["TERM"] != "xterm-256color" || got["QARGI_LEAD"] != "ataniq-lead-0123456789abcdef" {
 		t.Errorf("the process environment leaked in: %v", got)
 	}
 	if _, ok := got["SSH_AUTH_SOCK"]; ok {
@@ -273,13 +273,14 @@ func TestLeadIdentityShape(t *testing.T) {
 		in.LeadIdentity = id
 		if err := in.Validate(); err != nil {
 			t.Errorf("%q: %v", id, err)
-		} else if got := in.LeadIdentityValue(); got != id {
-			t.Errorf("LeadIdentityValue = %q, want %q", got, id)
+		} else if got := envMap(t, in)[EnvQargiLead]; got != id {
+			t.Errorf("QARGI_LEAD = %q, want %q", got, id)
 		}
 	}
-	// Empty means the role.
-	if got := fixture(Claude).LeadIdentityValue(); got != "arc-lead" {
-		t.Errorf("default = %q", got)
+	in := fixture(Claude)
+	in.LeadIdentity = ""
+	if got, ok := envMap(t, in)[EnvQargiLead]; ok {
+		t.Errorf("profile without an identity exported QARGI_LEAD=%q", got)
 	}
 }
 

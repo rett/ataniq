@@ -39,7 +39,7 @@ func otherHost(rt Runtime) Inputs {
 	in.GitMeta = in.Layout().GitMeta()
 	in.NeverMounted = []string{"/home/someone/checkout", "/home/someone/.ssh"}
 	in.Term, in.ColorTerm, in.Lang, in.TZ = "screen", "", "en_US.UTF-8", "Asia/Tokyo"
-	in.LeadIdentity = "another-project-lead"
+	in.LeadIdentity = "another-project-lead-fedcba9876543210"
 	return in
 }
 
@@ -54,8 +54,8 @@ func TestDigestShape(t *testing.T) {
 }
 
 const (
-	goldenClaude = "2cd0df4fb5cb55e28954e3a07173ad49a627489a363aea4d5860c1f39ba3858f"
-	goldenCodex  = "d303f0857fe4d836ba2e55d9933986f602b6f64f3cf2eec2a11e04181b5f443a"
+	goldenClaude = "89b1f8a2eddf83873b6b4b9362786b0ae959b96967b42ae2a5461738bceb6b7f"
+	goldenCodex  = "a4f78d7d1ea3b224dce875cebbd55e50dfe53041388adcfdc1ad69396cf8a5c5"
 )
 
 func TestVersionIsFour(t *testing.T) {
@@ -421,7 +421,10 @@ func TestDigestEnvironmentValues(t *testing.T) {
 			t.Errorf("%s = %q (present %v), want %q", name, got, ok, want)
 		}
 	}
-	for _, name := range []string{"TERM", "COLORTERM", "LANG", "TZ", "QARGI_LEAD"} {
+	if got, ok := has(d, EnvQargiLead); !ok || got != "<project>-lead-<authority-prefix-16hex>" {
+		t.Errorf("digest QARGI_LEAD rule = %q", got)
+	}
+	for _, name := range []string{"TERM", "COLORTERM", "LANG", "TZ"} {
 		if _, ok := has(d, name); ok {
 			t.Errorf("the digest carries the value of %s", name)
 		}
@@ -429,7 +432,7 @@ func TestDigestEnvironmentValues(t *testing.T) {
 			t.Errorf("the digest lacks the name %s", name)
 		}
 	}
-	if len(d.EnvValues) != len(d.EnvNames)-5 {
+	if len(d.EnvValues) != len(d.EnvNames)-4 {
 		t.Errorf("%d values for %d names", len(d.EnvValues), len(d.EnvNames))
 	}
 	// Sorted.
@@ -452,7 +455,7 @@ func TestDigestEnvironmentValues(t *testing.T) {
 	}
 	// The digest holds none of the host values.
 	if enc := string(o.definition().encode()); strings.Contains(enc, "alice") || strings.Contains(enc, "xterm-256color") ||
-		strings.Contains(enc, "arc-lead") || strings.Contains(enc, "C.UTF-8") {
+		strings.Contains(enc, o.LeadIdentity) || strings.Contains(enc, "C.UTF-8") {
 		t.Error("the encoding holds a host or lead value")
 	}
 }
