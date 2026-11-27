@@ -708,3 +708,21 @@ func TestInitRefusedWhileDaemonServes(t *testing.T) {
 		t.Fatalf("binding after refused init: %+v, %v", after, err)
 	}
 }
+
+func TestInitRemovesStaleRegistryCheck(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state")
+	stale := filepath.Join(state, ".registry-check-123")
+	if err := os.MkdirAll(stale, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, leadregistry.FileName), []byte("old history"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ta := newTestApp(t, nil)
+	if code := ta.run([]string{"init", "--state-dir", state}); code != 0 || !strings.Contains(ta.err.String(), "removed stale registry check copy "+filepath.Base(stale)) {
+		t.Fatalf("cleanup: %d %s", code, ta.err.String())
+	}
+	if _, err := os.Lstat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale directory: %v", err)
+	}
+}

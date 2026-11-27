@@ -120,6 +120,11 @@ func TestMigrationPreservesCorruptOriginal(t *testing.T) {
 	if _, err := InitInstance(filepath.Dir(dir), filepath.Base(dir), ""); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("init: %v", err)
 	}
+	for _, name := range []string{instanceid.FileName, instanceid.IncarnationFile} {
+		if _, err := os.Lstat(filepath.Join(filepath.Dir(dir), name)); !os.IsNotExist(err) {
+			t.Fatalf("corrupt legacy journal left %s: %v", name, err)
+		}
+	}
 	got, err := os.ReadFile(filepath.Join(dir, FileName))
 	if err != nil || !bytes.Equal(data, got) {
 		t.Fatal("original journal changed")

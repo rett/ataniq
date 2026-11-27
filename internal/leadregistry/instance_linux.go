@@ -51,20 +51,26 @@ func (h *headerPayload) match(b instanceid.Binding) error {
 // sees either the old journal or the fully written replacement.
 func InitInstance(stateDir, registryName, label string) (instanceid.Identity, error) {
 	var zero instanceid.Identity
-	if !filepath.IsLocal(registryName) || filepath.Base(registryName) != registryName || registryName == "." {
-		return zero, errors.New("expected a registry directory name")
-	}
 	root, err := instanceid.OpenRoot(stateDir, true)
 	if err != nil {
 		return zero, err
 	}
 	defer root.Close()
+	return InitInstanceAt(root, registryName, label)
+}
+
+// InitInstanceAt uses the state directory already pinned by the initializer.
+func InitInstanceAt(root *os.File, registryName, label string) (instanceid.Identity, error) {
+	var zero instanceid.Identity
+	if !filepath.IsLocal(registryName) || filepath.Base(registryName) != registryName || registryName == "." {
+		return zero, errors.New("expected a registry directory name")
+	}
 	fd, err := openSyncedChild(int(root.Fd()), registryName, FileName, unix.O_RDONLY|dirFlags|unix.O_NOFOLLOW, syncFD)
 	if err != nil {
 		return zero, err
 	}
 	defer unix.Close(fd)
-	dir := filepath.Join(stateDir, registryName)
+	dir := filepath.Join(root.Name(), registryName)
 	if err := checkDir(fd, dir); err != nil {
 		return zero, err
 	}
@@ -97,6 +103,26 @@ func InitInstance(stateDir, registryName, label string) (instanceid.Identity, er
 			}
 			return id, syncFD(fd)
 		}
+		// Validate before publishing either identity file. Keep this same
+		// descriptor locked through replacement, including the second read.
+		offset := int64(len(line))
+		r := Registry{prev: prev, roles: make(map[leadrole.Role]Entry)}
+		for n := 2; ; n++ {
+			recordLine, err := rd.ReadSlice('\n')
+			if err == io.EOF {
+				break // Normal Open owns recovery of an unfinished tail.
+			}
+			if err != nil {
+				return zero, fmt.Errorf("read registry line %d: %w", n, err)
+			}
+			if err := r.replayLine(n, recordLine[:len(recordLine)-1]); err != nil {
+				return zero, err
+			}
+		}
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			return zero, err
+		}
+		rd.Reset(f)
 	}
 	id, err := instanceid.InitAt(root, label)
 	if err != nil {
@@ -110,7 +136,7 @@ func InitInstance(stateDir, registryName, label string) (instanceid.Identity, er
 	if err != nil {
 		return zero, err
 	}
-	if err := replaceJournal(fd, rd, prev, newHeader, sum); err != nil {
+	if err := replaceJournal(fd, rd, newHeader, sum); err != nil {
 		return zero, err
 	}
 	return id, nil
@@ -118,7 +144,7 @@ func InitInstance(stateDir, registryName, label string) (instanceid.Identity, er
 
 // Rechain the original record bytes, including fields unknown to this build.
 // Replay validates the original chain and transitions before publication.
-func replaceJournal(fd int, rd *bufio.Reader, prev [sha256.Size]byte, header []byte, sum [sha256.Size]byte) error {
+func replaceJournal(fd int, rd *bufio.Reader, header []byte, sum [sha256.Size]byte) error {
 	name := ".registry-" + rand.Text()
 	tmp, err := unix.Openat(fd, name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC, 0600)
 	if err != nil {
@@ -136,7 +162,6 @@ func replaceJournal(fd int, rd *bufio.Reader, prev [sha256.Size]byte, header []b
 	if _, err := f.Write(header); err != nil {
 		return err
 	}
-	r := Registry{prev: prev, roles: make(map[leadrole.Role]Entry)}
 	for n := 2; ; n++ {
 		line, err := rd.ReadSlice('\n')
 		if err == io.EOF {
@@ -148,9 +173,6 @@ func replaceJournal(fd int, rd *bufio.Reader, prev [sha256.Size]byte, header []b
 		}
 		if err != nil {
 			return fmt.Errorf("read registry line %d: %w", n, err)
-		}
-		if err := r.replayLine(n, line[:len(line)-1]); err != nil {
-			return err
 		}
 		end := len(line) - 1 - hashSuffixLen
 		content := append(line[:end], '}')

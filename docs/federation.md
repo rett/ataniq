@@ -26,9 +26,10 @@ hexadecimal digits. Recreating and initializing the root generates
 both values afresh. The optional label is for display only.
 
 For an existing scratch root, stop the daemon and run the same init command
-with the configuration's `state_root`. Before creating a key, init checks a
-private temporary copy of the existing journal in the state root. Allow space
-for one copy. A corrupt record leaves the original journal and identity
+with the configuration's `state_root`. Before creating a key, init replays the existing
+journal under its exclusive lock and holds the lock through migration. The
+next init removes and reports any stale `.registry-check-*` replay directories
+left in the root by an interrupted earlier build. A corrupt record leaves the original journal and identity
 untouched. After validation, init atomically replaces the old journal with
 a version 2 journal bound to the authority and incarnation, preserving its
 records. Older builds cannot open this journal. Repeating init keeps the original key

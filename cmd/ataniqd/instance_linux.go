@@ -44,7 +44,7 @@ func (a *app) initCmd(args []string) int {
 		fmt.Fprintln(a.stderr, "ataniqd init: --restored and --label exclude each other")
 		return leaddaemon.ExitUsage
 	}
-	id, err := initializeInstance(stateDir, label, restored)
+	id, err := a.initializeInstance(stateDir, label, restored)
 	if err != nil {
 		fmt.Fprintln(a.stderr, "ataniqd init:", leaddaemon.SafeText(err.Error()))
 		return leaddaemon.ExitState
@@ -56,7 +56,7 @@ func (a *app) initCmd(args []string) int {
 	return leaddaemon.ExitOK
 }
 
-func initializeInstance(stateDir string, label *string, restored bool) (instanceid.Identity, error) {
+func (a *app) initializeInstance(stateDir string, label *string, restored bool) (instanceid.Identity, error) {
 	root, err := instanceid.OpenRoot(stateDir, !restored)
 	if err != nil {
 		return instanceid.Identity{}, err
@@ -64,6 +64,9 @@ func initializeInstance(stateDir string, label *string, restored bool) (instance
 	defer root.Close()
 	// Serialize initializers, including restore on a root with no journal.
 	if err := unix.Flock(int(root.Fd()), unix.LOCK_EX); err != nil {
+		return instanceid.Identity{}, err
+	}
+	if err := a.cleanRegistryChecks(root); err != nil {
 		return instanceid.Identity{}, err
 	}
 	current, err := instanceid.CheckInit(root, restored)
@@ -78,23 +81,18 @@ func initializeInstance(stateDir string, label *string, restored bool) (instance
 		defer lock.Release()
 		return instanceid.RestoreAt(root)
 	}
-	switch {
-	case current.Authority == "":
-		if err := validateBeforeKey(root); err != nil {
-			if errors.Is(err, instanceid.ErrMissing) {
-				return instanceid.Identity{}, fmt.Errorf("%s: bound journal requires its original key %s", journalPath(stateDir), filepath.Join(stateDir, instanceid.FileName))
-			}
-			return instanceid.Identity{}, fmt.Errorf("%s: %w", journalPath(stateDir), err)
-		}
-	case label != nil:
+	if current.Authority != "" && label != nil {
 		return instanceid.Identity{}, fmt.Errorf("%s already exists; --label is accepted only on first init", filepath.Join(stateDir, instanceid.FileName))
 	}
 	var display string
 	if label != nil {
 		display = *label
 	}
-	id, err := leadregistry.InitInstance(stateDir, leaddaemon.RegistryDirName, display)
+	id, err := leadregistry.InitInstanceAt(root, leaddaemon.RegistryDirName, display)
 	if err != nil {
+		if errors.Is(err, instanceid.ErrMissing) {
+			return id, fmt.Errorf("%s: bound journal requires its original key %s", journalPath(stateDir), filepath.Join(stateDir, instanceid.FileName))
+		}
 		var pe *os.PathError
 		if errors.As(err, &pe) {
 			if !filepath.IsAbs(pe.Path) {
