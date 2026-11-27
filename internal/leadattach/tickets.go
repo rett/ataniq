@@ -1,6 +1,7 @@
 package leadattach
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,14 @@ import (
 // ErrNoTicket is what a ticket source returns when it has no ticket yet. It
 // is not a failure: the client waits and asks again.
 var ErrNoTicket = errors.New("leadattach: no ticket yet")
+
+// TicketSource obtains single-use viewer tickets for one attach target.
+type TicketSource interface {
+	// ViewerTicket authorizes a fresh viewer ticket for this connection.
+	// It must honor cancellation and return any refusal as a display-safe
+	// error. ErrNoTicket means that a ticket is not yet available.
+	ViewerTicket(ctx context.Context) (string, error)
+}
 
 // maxTicketFile is the most bytes read from a ticket file. A ticket is
 // wire.TicketLen characters; anything longer is not one.

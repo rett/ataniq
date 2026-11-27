@@ -265,7 +265,7 @@ const (
 // second. A wake-up that arrives in the gap is handled when it ends.
 const liveGap = 17 * time.Millisecond
 
-// The pane's size before the window size is known to fit the cockpit.
+// The pane's initial size when the window has no room for session cells.
 const (
 	liveDefaultCols = 80
 	liveDefaultRows = 24
@@ -350,19 +350,28 @@ func (s *liveSink) Mouse(ev uv.MouseEvent) { s.get().Mouse(ev) }
 
 func (m *Model) initLive(src LiveSource) {
 	m.live = liveState{src: src, wake: make(chan struct{}, 1), done: make(chan struct{}), clock: time.Now, sink: &liveSink{}}
+	m.page = "live"
 	m.controlUnavailable = liveUnavailable
 }
 
-// startLive makes the pane and starts the source, with the size the layout
-// gives the session, or a default while the window is too small for the
-// cockpit. It returns the command that waits for the first wake-up.
+// liveArea is the rectangle available for terminal cells in either layout.
+func (m *Model) liveArea() uv.Rectangle {
+	if l := m.layout(); l.cockpit {
+		return l.inner
+	}
+	return uv.Rect(0, 2, min(m.width, paneMaxCols), min(max(m.height-2, 0), paneMaxRows))
+}
+
+// startLive makes the pane and starts the source. It returns the command
+// that waits for the first wake-up.
 func (m *Model) startLive() tea.Cmd {
 	cols, rows := liveDefaultCols, liveDefaultRows
-	if l := m.layout(); l.cockpit {
-		cols, rows = l.inner.Dx(), l.inner.Dy()
+	if area := m.liveArea(); !area.Empty() {
+		cols, rows = area.Dx(), area.Dy()
 	}
 	clock := m.live.clock
 	pane := sessionpane.New(cols, rows, sessionpane.Options{
+		RecentOutput:   true,
 		GraphemeWidths: m.graphemes,
 		Colours:        m.themeColours(),
 		Input:          m.live.sink,
@@ -589,13 +598,13 @@ func (m *Model) liveDown() bool {
 // delay. A size is skipped only when it is the one last asked for and the
 // holder reports it too (or reports no size): see LiveSource.Resize.
 func (m *Model) syncLive(debounce bool) tea.Cmd {
-	l := m.layout()
-	if !l.cockpit || m.rep.pane == nil || !m.liveWriter() {
+	area := m.liveArea()
+	if area.Empty() || m.rep.pane == nil || !m.liveWriter() {
 		return nil
 	}
 	m.resizeSeq++
-	cols := min(max(l.inner.Dx(), sessionpane.MinCols), paneMaxCols)
-	rows := min(max(l.inner.Dy(), sessionpane.MinRows), paneMaxRows)
+	cols := min(max(area.Dx(), sessionpane.MinCols), paneMaxCols)
+	rows := min(max(area.Dy(), sessionpane.MinRows), paneMaxRows)
 	holder := m.live.st.Cols == 0 || m.live.st.Rows == 0 || (m.live.st.Cols == cols && m.live.st.Rows == rows)
 	if cols == m.live.sentCols && rows == m.live.sentRows && holder {
 		return nil

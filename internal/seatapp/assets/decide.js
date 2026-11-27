@@ -9,6 +9,7 @@
 // is set with textContent, never as markup.
 "use strict";
 (function () {
+  var mount = document.documentElement.dataset.mount || "";
   var root = document.getElementById("decide");
   if (!root) { return; }
   var statusEl = document.getElementById("decide-status");
@@ -121,7 +122,7 @@
   async function post(path, body) {
     var resp;
     try {
-      resp = await fetch(path, {
+      resp = await fetch(mount + path, {
         method: "POST", credentials: "same-origin", cache: "no-store", referrer: "", referrerPolicy: "strict-origin",
         headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
       });

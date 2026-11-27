@@ -74,6 +74,8 @@ type Result struct {
 // View is the daemon's answer as the console shows it. Every string in it is
 // cleaned and bounded.
 type View struct {
+	// OfflineHomes identifies homes whose directory could not be refreshed.
+	OfflineHomes []string
 	// OwnerChannel tells whether the daemon's hello lists every operation of
 	// the owner channel: the console can then show and decide approvals
 	// through it. It is false for a daemon that lists none or only some.
@@ -111,6 +113,9 @@ type Daemon struct {
 
 // Project is one project of a view: its lead and its coordinators.
 type Project struct {
+	// HomeID is absent in the local scratch inventory. ID distinguishes
+	// projects even when their display names have been cleaned alike.
+	HomeID, ID string
 	// Name is the project's name.
 	Name string
 	// HasLead tells whether the daemon listed a lead for the project. A
@@ -165,6 +170,8 @@ const (
 // Entry is one lead, supervisor or coordinator, with the few fields a cockpit
 // shows.
 type Entry struct {
+	// ID identifies the entry. ConversationID is absent in scratch status.
+	ID, ConversationID string
 	// Kind is the kind of the entry.
 	Kind Kind
 	// Name is the entry's role string, such as "<project>/lead".

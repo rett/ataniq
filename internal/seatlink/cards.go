@@ -69,13 +69,10 @@ func (r *reviews) put(id, digest string) {
 // reading checks what every read needs before it is sent: a context that has
 // not ended and a gate that lists "read".
 func (d *Daemon) reading(ctx context.Context) error {
-	if ctx.Err() != nil {
+	if _, online := d.c.Connected(); !online || ctx.Err() != nil {
 		return seatapp.ErrDaemonUnavailable
 	}
 	if !d.offers(CapRead) {
-		if _, ok := d.c.Connected(); !ok {
-			return seatapp.ErrDaemonUnavailable
-		}
 		return seatapp.ErrNotOffered
 	}
 	return nil

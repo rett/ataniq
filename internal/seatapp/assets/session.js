@@ -7,6 +7,7 @@
 // page says so and leaves the button to tap again.
 "use strict";
 (function () {
+  var mount = document.documentElement.dataset.mount || "";
   var button = document.getElementById("logout");
   var statusEl = document.getElementById("logout-status");
   if (!button || !statusEl) { return; }
@@ -15,7 +16,7 @@
     statusEl.textContent = "";
     var ended = false;
     try {
-      var resp = await fetch("/api/logout", {
+      var resp = await fetch(mount + "/api/logout", {
         method: "POST", credentials: "same-origin", cache: "no-store", redirect: "error", referrer: "", referrerPolicy: "strict-origin",
         headers: { "Content-Type": "application/json" }, body: "{}"
       });
@@ -24,7 +25,7 @@
       ended = !!data && typeof data === "object" && data.next === "/login/";
     } catch (e) { ended = false; }
     if (ended) {
-      location.assign("/login/");
+      location.assign(mount + "/login/");
       return;
     }
     statusEl.textContent = "Logout not confirmed: the seat did not answer that the session ended. Tap again, or close this browser.";

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en"{{if mount}} data-mount="{{mount}}"{{end}}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -12,7 +12,7 @@
 <body{{if .Nav}} class="nav-page"{{end}}>
 {{with .Nav}}<a id="skip" class="skip" href="#content">Skip to content</a>
 {{end}}<header>
-<p class="brand">Authority seat</p>
+<p class="brand">Authority seat{{if mount}} · {{text instance maxName}} · <a href="/">All instances</a>{{end}}</p>
 {{with .Nav}}{{template "nav" .}}
 {{end}}</header>
 <main{{if .Nav}} id="content"{{end}}>

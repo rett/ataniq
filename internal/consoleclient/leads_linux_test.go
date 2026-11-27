@@ -309,27 +309,27 @@ func TestLeadsDetectionByHello(t *testing.T) {
 			t.Fatalf("Detect: %v", err)
 		}
 	})
-	t.Run("every operation is needed", func(t *testing.T) {
-		all := leadwire.Operations()
-		for i := range all {
-			var ops []string
-			ops = append(ops, all[:i]...)
-			ops = append(ops, all[i+1:]...)
+	for i, missing := range leadwire.Operations() {
+		t.Run("without "+missing, func(t *testing.T) {
+			all := leadwire.Operations()
+			ops := append(all[:i], all[i+1:]...)
 			f := startOwnerWith(t, clientapi.Options{}, ops)
+			f.onResult(leadwire.OpList, []byte(`{"leads":[]}`))
 			l := newLeads(t, f.dir)
-			if err := l.Detect(); !errors.Is(err, ErrLeadsVersion) {
-				t.Errorf("without %s: Detect = %v", all[i], err)
+			err := l.Detect()
+			if len(f.sent()) != 0 {
+				t.Fatalf("Detect sent %v", f.sent())
 			}
-			if _, err := l.List(); !errors.Is(err, ErrLeadsVersion) {
-				t.Errorf("without %s: List = %v", all[i], err)
+			_, listErr := l.List()
+			if missing == leadwire.OpList {
+				if !errors.Is(err, ErrLeadsVersion) || !errors.Is(listErr, ErrLeadsVersion) || len(f.sent()) != 0 {
+					t.Fatalf("Detect = %v, List = %v, sent %v", err, listErr, f.sent())
+				}
+			} else if err != nil || listErr != nil || f.count(leadwire.OpList) != 1 || len(f.sent()) != 1 {
+				t.Fatalf("Detect = %v, List = %v, sent %v", err, listErr, f.sent())
 			}
-			if len(f.sent()) != 0 || l.conn != nil {
-				t.Errorf("without %s: sent %v, kept %v", all[i], f.sent(), l.conn)
-			}
-			l.Close()
-			f.stop()
-		}
-	})
+		})
+	}
 	t.Run("all six", func(t *testing.T) {
 		d := startLeadDaemon(t)
 		l := newLeads(t, d.dir)
