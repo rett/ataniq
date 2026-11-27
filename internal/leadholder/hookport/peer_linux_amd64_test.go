@@ -18,21 +18,23 @@ import (
 
 func TestLiveLeader(t *testing.T) {
 	for _, tc := range []struct {
-		status string
-		live   bool
+		stat string
+		live bool
 	}{
-		{"Name:\ttest\nState:\tR (running)\nPid:\t1\n", true},
-		{"State: t (tracing stop)", true},
-		{"State: Z (zombie)", false},
-		{"State: X (dead)", false},
-		{"TracerState: R", false},
-		{"State: R\nState: Z", false},
-		{"State: Running", false},
-		{"State:", false},
-		{"State: S\n" + strings.Repeat("x", procLimit), false},
+		{"123 (peer) R 1", true},
+		{"123 (spaces ) Z (\nand parens)) t 1", true},
+		{"123 (peer) Z 1", false},
+		{"123 (peer) X 1", false},
+		{"123 (pretend) R 1) Z 1", false},
+		{"124 (peer) R 1", false},
+		{"123 peer) R 1", false},
+		{"123 (peer R 1", false},
+		{"123 (peer) Running 1", false},
+		{"123 (peer) ", false},
+		{"123 (peer) S " + strings.Repeat("0", procLimit), false},
 	} {
-		if got := liveLeader([]byte(tc.status)); got != tc.live {
-			t.Errorf("liveLeader(%.48q) = %v, want %v", tc.status, got, tc.live)
+		if got := liveLeader(123, []byte(tc.stat)); got != tc.live {
+			t.Errorf("liveLeader(%.48q) = %v, want %v", tc.stat, got, tc.live)
 		}
 	}
 }
@@ -166,11 +168,11 @@ func TestZombieLeaderAdmission(t *testing.T) {
 	defer unix.Close(fd)
 	p := childPeer{pid: pid, fd: fd}
 	for {
-		status, err := p.Status(pid)
+		stat, err := p.Stat(pid)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if bytes.Contains(status, []byte("\nState:\tZ (zombie)\n")) {
+		if bytes.Contains(stat, []byte(") Z ")) {
 			break
 		}
 		if ctx.Err() != nil {

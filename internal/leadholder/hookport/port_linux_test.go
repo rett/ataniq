@@ -27,17 +27,17 @@ import (
 )
 
 type fakePeers struct {
-	group, info, workerGroup, status string
-	threads                          []string
-	cgroupErr                        map[string]error
-	uid                              uint32
-	alive, open                      bool
-	t                                *testing.T
-	trace                            []string
+	group, info, workerGroup, stat string
+	threads                        []string
+	cgroupErr                      map[string]error
+	uid                            uint32
+	alive, open                    bool
+	t                              *testing.T
+	trace                          []string
 }
 
 func peers(t *testing.T) *fakePeers {
-	return &fakePeers{threads: []string{"123", "124"}, status: "State:\tS (sleeping)\n", workerGroup: "0::/unit\n", group: "0::/unit/agent\n", info: "Pid:\t123\n", uid: uint32(os.Geteuid()), alive: true, t: t}
+	return &fakePeers{threads: []string{"123", "124"}, stat: "123 (peer) S 1", workerGroup: "0::/unit\n", group: "0::/unit/agent\n", info: "Pid:\t123\n", uid: uint32(os.Geteuid()), alive: true, t: t}
 }
 
 func (p *fakePeers) Credentials(net.Conn) (*unix.Ucred, error) {
@@ -64,13 +64,13 @@ func (p *fakePeers) FDInfo(fd int) ([]byte, error) {
 	return []byte(p.info), nil
 }
 
-func (p *fakePeers) Status(pid int) ([]byte, error) {
+func (p *fakePeers) Stat(pid int) ([]byte, error) {
 	p.held(7)
 	if pid != 123 {
 		p.t.Fatal(pid)
 	}
-	p.trace = append(p.trace, "status")
-	return []byte(p.status), nil
+	p.trace = append(p.trace, "stat")
+	return []byte(p.stat), nil
 }
 
 func (p *fakePeers) Threads(pid int) ([]string, error) {
@@ -223,7 +223,7 @@ func TestHP4AdmissionBeforeRead(t *testing.T) {
 				t.Fatal("leaked connection or pidfd")
 			}
 			if tc.ok {
-				if !slices.Equal(peer.trace, []string{"cred", "open", "info", "status", "threads", "group/123", "group/124", "alive", "close"}) || c.writes != 1 {
+				if !slices.Equal(peer.trace, []string{"cred", "open", "info", "stat", "threads", "group/123", "group/124", "alive", "close"}) || c.writes != 1 {
 					t.Fatal(peer.trace, c.writes)
 				}
 			} else if c.reads != 0 || c.writes != 0 || p.Snapshot().Counters.Peer != 1 {
@@ -241,7 +241,7 @@ func TestHP4AdmissionBeforeRead(t *testing.T) {
 			case "missing leader":
 				peer.threads = []string{"124"}
 			case "zombie":
-				peer.status = "State: Z (zombie)"
+				peer.stat = "123 (peer) Z 1"
 			case "uid":
 				peer.uid++
 			case "dead":

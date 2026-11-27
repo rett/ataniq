@@ -32,7 +32,7 @@ type PeerReader interface {
 	Credentials(net.Conn) (*unix.Ucred, error)
 	PIDFD(net.Conn) (int, error)
 	FDInfo(fd int) ([]byte, error)
-	Status(pid int) ([]byte, error)
+	Stat(pid int) ([]byte, error)
 	Threads(pid int) ([]string, error)
 	Cgroup(pid int, tid string) ([]byte, error)
 	Alive(fd int) (bool, error)
@@ -82,8 +82,8 @@ func (KernelPeers) FDInfo(fd int) ([]byte, error) {
 	return readProc("/proc/self/fdinfo/" + strconv.Itoa(fd))
 }
 
-func (KernelPeers) Status(pid int) ([]byte, error) {
-	return readProc("/proc/" + strconv.Itoa(pid) + "/status")
+func (KernelPeers) Stat(pid int) ([]byte, error) {
+	return readProc("/proc/" + strconv.Itoa(pid) + "/stat")
 }
 
 func (KernelPeers) Threads(pid int) ([]string, error) {
@@ -125,24 +125,22 @@ func withinGroup(ref, group string) bool {
 	return validGroup(ref) && ref != "/" && validGroup(group) && (group == ref || strings.HasPrefix(group, ref+"/"))
 }
 
-// liveLeader requires one recognizable non-exited task state from proc status.
-func liveLeader(status []byte) bool {
-	if len(status) > procLimit {
+// Field 2 of proc stat is a parenthesized comm which can itself contain
+// spaces, newlines and closing parentheses. Field 3 follows the last ')'.
+func liveLeader(pid int, stat []byte) bool {
+	if len(stat) > procLimit {
 		return false
 	}
-	found := false
-	for line := range strings.SplitSeq(string(status), "\n") {
-		value, ok := strings.CutPrefix(line, "State:")
-		if !ok {
-			continue
-		}
-		fields := strings.Fields(value)
-		if found || len(fields) == 0 || len(fields[0]) != 1 || !strings.Contains("RSDTtPI", fields[0]) {
-			return false
-		}
-		found = true
+	pidText, rest, ok := strings.Cut(string(stat), " (")
+	if !ok || pidText != strconv.Itoa(pid) {
+		return false
 	}
-	return found
+	end := strings.LastIndexByte(rest, ')')
+	if end < 0 {
+		return false
+	}
+	state := rest[end+1:]
+	return len(state) >= 3 && state[0] == ' ' && state[2] == ' ' && strings.IndexByte("RSDTtPI", state[1]) >= 0
 }
 
 // admit checks the connecting process at admission, before any read. The
@@ -183,11 +181,11 @@ func admit(c net.Conn, p PeerReader, ref string) error {
 	}
 	// An exited leader can keep reporting its former cgroup while the
 	// remaining threads keep the pidfd alive.
-	status, err := p.Status(pid)
+	stat, err := p.Stat(pid)
 	if err != nil {
 		return err
 	}
-	if !liveLeader(status) {
+	if !liveLeader(pid, stat) {
 		return errLeaderState
 	}
 	threads, err := p.Threads(pid)
