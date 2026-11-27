@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	core "ataniq/internal/agentsession/protocol"
@@ -49,5 +50,24 @@ func TestDeclineDoesNotAnswerOutstandingGrant(t *testing.T) {
 	}
 	if _, err := c.EncodeGrant(req, protocol.Grant{Scope: "turn", Permissions: &protocol.Permissions{}}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDeclineFrameLimit(t *testing.T) {
+	c := fresh(t)
+	const empty = `{"id":"","error":{"code":-32601,"message":"Unsupported server request"}}`
+	for _, size := range []int{core.MaxFrameBytes - 1, core.MaxFrameBytes} {
+		id := strings.Repeat("x", size-len(empty))
+		_, err := c.Decode([]byte(`{"id":"` + id + `","method":"other"}`))
+		if size == core.MaxFrameBytes {
+			if !errors.Is(err, core.ErrFrameTooLarge) {
+				t.Fatalf("decline of %d bytes: %v", size, err)
+			}
+			continue
+		}
+		var declined *protocol.Decline
+		if !errors.As(err, &declined) || len(declined.Reply) != size {
+			t.Fatalf("decline of %d bytes: %v", size, err)
+		}
 	}
 }

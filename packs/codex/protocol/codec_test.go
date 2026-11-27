@@ -414,8 +414,17 @@ func TestEnvelope(t *testing.T) {
 		}
 	}
 	observe(t, c, []byte(`{"method":"other"}`))
+	for _, raw := range []string{
+		`{"method":"other","result":{}}`,
+		`{"method":"other","error":{"code":1,"message":"bad"}}`,
+		`{"id":7,"method":"other","emittedAtMs":1}`,
+	} {
+		if d, err := c.Decode([]byte(raw)); !errors.Is(err, core.ErrInvalidFrame) || !reflect.DeepEqual(d, core.Decoded{}) {
+			t.Errorf("%s: got %+v, %v", raw, d, err)
+		}
+	}
 	for _, raw := range []string{"", "{}", "null", "[]", "{}\n{}", strings.Repeat("a", core.MaxFrameBytes),
-		`{"method":"x","emittedAtMs":0.5}`, `{"id":7,"method":"x","emittedAtMs":1}`, `{"method":"x","emittedAtMs":null}`,
+		`{"method":"x","emittedAtMs":0.5}`, `{"method":"x","emittedAtMs":null}`,
 		`{"id":1,"result":{}}`, `{"id":"r","result":null}`, `{"id":"r","result":{},"error":{}}`, `{"id":"r","result":{},"x":1}`,
 		`{"id":"r","error":{"code":1}}`, `{"id":"r","error":{"code":1.2,"message":"x"}}`,
 		`{"id":"r","method":"x","result":{}}`, `{"method":"","id":"r"}`, `{"id":1.1,"method":"other"}`,
