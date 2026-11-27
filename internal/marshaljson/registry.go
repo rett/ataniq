@@ -14,7 +14,7 @@ import (
 
 // Only the frozen schemas are linked into the reader. The case corpus is test-only.
 //
-//go:embed testdata/qargi-0.3.9/registries.zip
+//go:embed schema/registries.zip
 var registries []byte
 
 // shape is the validation subset used by the four frozen J1 registries.

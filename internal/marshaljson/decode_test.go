@@ -16,10 +16,10 @@ func mustJSON(t *testing.T, v any) []byte {
 	return b
 }
 
-func TestEvidenceForActions(t *testing.T) {
-	files := archive(t, "cases.zip")
+func TestDocumentEvidence(t *testing.T) {
+	files := casesArchive(t)
 	// Start each mutation with usable evidence. This isolates each signal
-	// even when the upstream example has several reasons to withhold action.
+	// even when the upstream example has several reasons to withhold evidence.
 	for _, tc := range []struct {
 		name                       string
 		kind                       Kind
@@ -33,7 +33,7 @@ func TestEvidenceForActions(t *testing.T) {
 		{"inconsistent backend", Check, func(f map[string]any) { f["remote"] = "none" }, false, true, false},
 		{"free stale", Check, func(f map[string]any) {
 			f["answer"] = "free-stale"
-			f["lead"] = map[string]any{"id": "lead", "user": "user", "host": "host", "since": "now"}
+			f["lead"] = map[string]any{"id": "lead", "user": "user", "host": "host", "since": "now", "worktree": "0123456789abcdef"}
 		}, true, false, false},
 		{"warning", Check, func(f map[string]any) { f["warnings"] = []string{"opaque text"} }, false, true, false},
 		{"unnamed without inventory", Check, func(f map[string]any) { f["feature"], f["answer"] = nil, nil }, false, true, false},
@@ -41,21 +41,13 @@ func TestEvidenceForActions(t *testing.T) {
 		{"stale without lead", Check, func(f map[string]any) { f["answer"] = "free-stale" }, true, true, false},
 		{"extension", Check, func(f map[string]any) { f["Answer"] = "free" }, false, false, true},
 		{"status", Status, nil, false, false, false},
-		{"stale lease", Status, func(f map[string]any) { firstRow(f)["lease"] = "stale" }, true, false, false},
 		{"nested extension", Status, func(f map[string]any) { firstRow(f)["lead"].(map[string]any)["extra"] = true }, false, false, true},
-		{"bad signature", Status, func(f map[string]any) { firstRow(f)["integrity"] = "INVALID" }, false, true, false},
-		{"unverified", Status, func(f map[string]any) { firstRow(f)["integrity"] = "cannot verify" }, false, true, false},
-		{"provisional", Status, func(f map[string]any) { firstRow(f)["provisional"] = true }, false, true, false},
 		{"foreign row", Status, func(f map[string]any) { firstRow(f)["project"] = "other" }, false, true, false},
 		{"map data", Status, func(f map[string]any) { firstRow(f)["overlap"] = map[string][]string{"truncated": {"file"}} }, false, false, false},
 		{"handoff", Handoff, nil, false, false, false},
 		{"fallback", Handoff, func(f map[string]any) { f["backend_fallback"] = true }, false, true, false},
 		{"truncated", Handoff, func(f map[string]any) { f["truncated"] = true }, false, true, false},
 		{"omitted despite flag", Handoff, func(f map[string]any) { f["lists_left_out"] = map[string]int{"gates": 1} }, false, true, false},
-		{"record text truncated", Handoff, func(f map[string]any) {
-			record := firstRow(f)["record"].(map[string]any)
-			record["data"].(map[string]any)["truncated"] = []string{"note"}
-		}, false, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			name := "valid-refs"
@@ -67,20 +59,29 @@ func TestEvidenceForActions(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tc.kind == Handoff {
-				f["backend"], f["remote"] = "local", "none"
+				useLocalHandoff(f)
 			}
 			if tc.change != nil {
 				tc.change(f)
 			}
 			d, err := Decode(tc.kind, mustJSON(t, f))
-			if err != nil || d.Unknown != tc.unknown || d.Stale != tc.stale || d.Incomplete != tc.incomplete ||
-				d.ActionsAllowed() != !(tc.unknown || tc.stale || tc.incomplete) {
-				t.Fatalf("unknown=%v stale=%v incomplete=%v allowed=%v err=%v", d.Unknown, d.Stale, d.Incomplete, d.ActionsAllowed(), err)
+			if err != nil || d.Unknown() != tc.unknown || d.Stale() != tc.stale || d.Incomplete() != tc.incomplete ||
+				d.UsableEvidence("app", "r1") != !(tc.unknown || tc.stale || tc.incomplete) {
+				t.Fatalf("unknown=%v stale=%v incomplete=%v usable=%v err=%v", d.Unknown(), d.Stale(), d.Incomplete(), d.UsableEvidence("app", "r1"), err)
 			}
-			if _, ok := d.Fields["Answer"]; ok {
+			if _, ok := d.Fields()["Answer"]; ok {
 				t.Fatal("unknown field retained")
 			}
 		})
+	}
+}
+
+// Use the local backend so handoff evidence has current provenance. Local
+// records omit the provisional field that belongs to shared refs.
+func useLocalHandoff(f map[string]any) {
+	f["backend"], f["remote"] = "local", "none"
+	for _, item := range f["features"].([]any) {
+		delete(item.(map[string]any)["record"].(map[string]any), "provisional")
 	}
 }
 
@@ -89,7 +90,7 @@ func firstRow(f map[string]any) map[string]any {
 }
 
 func TestRevisionEqualityAndBounds(t *testing.T) {
-	files := archive(t, "cases.zip")
+	files := casesArchive(t)
 	body := fixture(t, files, Status, "valid-refs")
 	decode := func(n string) (Revision, error) {
 		b := bytes.Replace(body, []byte(`"rev": 1`), []byte(`"rev": `+n), 1)
@@ -97,7 +98,7 @@ func TestRevisionEqualityAndBounds(t *testing.T) {
 		if err != nil {
 			return Revision{}, err
 		}
-		return firstRow(d.Fields)["rev"].(Revision), nil
+		return firstRow(d.Fields())["rev"].(Revision), nil
 	}
 	maximum, e1 := decode("9007199254740991")
 	again, e2 := decode("9007199254740991")
@@ -113,7 +114,7 @@ func TestRevisionEqualityAndBounds(t *testing.T) {
 }
 
 func TestFailedInput(t *testing.T) {
-	files := archive(t, "cases.zip")
+	files := casesArchive(t)
 	body := fixture(t, files, Check, "valid-refs-name")
 	for _, tc := range []struct {
 		kind Kind
@@ -128,14 +129,14 @@ func TestFailedInput(t *testing.T) {
 		{Check, bytes.Replace(body, []byte(`"r1"`), []byte(`"r1","extra":[1.5]`), 1)},
 	} {
 		d, err := Decode(tc.kind, tc.body)
-		if err == nil || d.ActionsAllowed() {
-			t.Fatal("invalid input enabled actions or decoded successfully")
+		if err == nil || d.UsableEvidence("app", "r1") {
+			t.Fatal("invalid input gave usable evidence or decoded successfully")
 		}
 	}
 }
 
 func TestLargeStatusInventory(t *testing.T) {
-	files := archive(t, "cases.zip")
+	files := casesArchive(t)
 	var fields map[string]any
 	if err := json.Unmarshal(fixture(t, files, Status, "valid-refs"), &fields); err != nil {
 		t.Fatal(err)
@@ -143,13 +144,13 @@ func TestLargeStatusInventory(t *testing.T) {
 	row := firstRow(fields)
 	row["note"] = strings.Repeat("x", 64<<10) + "🌓"
 	d, err := Decode(Status, mustJSON(t, fields))
-	if err != nil || !d.ActionsAllowed() || firstRow(d.Fields)["note"] != row["note"] {
+	if err != nil || !d.UsableEvidence("app", "r1") || firstRow(d.Fields())["note"] != row["note"] {
 		t.Fatal("large valid status lost", err)
 	}
 }
 
 func TestUnicodeEscapes(t *testing.T) {
-	files := archive(t, "cases.zip")
+	files := casesArchive(t)
 	body := fixture(t, files, Check, "valid-refs-name")
 	for _, tc := range []struct{ encoded, want string }{
 		{`"\ud83c\udf13"`, "🌓"},
@@ -157,30 +158,29 @@ func TestUnicodeEscapes(t *testing.T) {
 		{`"\u0061"`, "a"},
 	} {
 		d, err := Decode(Check, bytes.Replace(body, []byte(`"r1"`), []byte(tc.encoded), 1))
-		if err != nil || d.Fields["feature"] != tc.want {
-			t.Errorf("%s: got %q, err %v", tc.encoded, d.Fields["feature"], err)
+		if err != nil || d.Fields()["feature"] != tc.want {
+			t.Errorf("%s: got %q, err %v", tc.encoded, d.Fields()["feature"], err)
 		}
 	}
 }
 
-func TestActionRequiresSameRecordRevision(t *testing.T) {
-	files := archive(t, "cases.zip")
+func TestEvidenceRequiresSameRecordRevision(t *testing.T) {
+	files := casesArchive(t)
 	for _, kind := range []Kind{Status, Check, Handoff} {
 		var f map[string]any
 		if err := json.Unmarshal(fixture(t, files, kind, "valid-refs"), &f); err != nil {
 			t.Fatal(err)
 		}
-		f["features"] = []any{firstRow(f)}
 		if kind == Handoff {
-			f["backend"], f["remote"] = "local", "none"
+			useLocalHandoff(f)
 		}
 		d, err := Decode(kind, mustJSON(t, f))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !d.AllowsRevision("app", "r1", Revision{1}) || d.AllowsRevision("app", "r1", Revision{0}) ||
-			d.AllowsRevision("app", "r1", Revision{2}) || d.AllowsRevision("app", "missing", Revision{1}) ||
-			d.AllowsRevision("other", "r1", Revision{1}) {
+		if !d.MatchesRevision("app", "r1", Revision{value: 1, observed: true}) || d.MatchesRevision("app", "r1", Revision{value: 0, observed: true}) ||
+			d.MatchesRevision("app", "r1", Revision{value: 2, observed: true}) || d.MatchesRevision("app", "missing", Revision{value: 1, observed: true}) ||
+			d.MatchesRevision("other", "r1", Revision{value: 1, observed: true}) {
 			t.Fatalf("revision check failed for %s", kind)
 		}
 		row := firstRow(f)
@@ -188,7 +188,7 @@ func TestActionRequiresSameRecordRevision(t *testing.T) {
 			record := row["record"].(map[string]any)
 			record["has_record"] = false
 			d, err = Decode(kind, mustJSON(t, f))
-			if err != nil || d.AllowsRevision("app", "r1", Revision{1}) {
+			if err != nil || d.MatchesRevision("app", "r1", Revision{value: 1, observed: true}) {
 				t.Fatalf("absent record: err %v", err)
 			}
 			record["has_record"] = true
@@ -196,26 +196,26 @@ func TestActionRequiresSameRecordRevision(t *testing.T) {
 			status := row["status"]
 			row["status"] = "unled"
 			d, err = Decode(kind, mustJSON(t, f))
-			if err != nil || d.AllowsRevision("app", "r1", Revision{1}) {
+			if err != nil || d.MatchesRevision("app", "r1", Revision{value: 1, observed: true}) {
 				t.Fatalf("unled feature: err %v", err)
 			}
 			row["status"] = status
 		}
 		f["features"] = []any{row, row}
 		d, err = Decode(kind, mustJSON(t, f))
-		if err != nil || d.AllowsRevision("app", "r1", Revision{1}) {
+		if err != nil || d.MatchesRevision("app", "r1", Revision{value: 1, observed: true}) {
 			t.Fatalf("ambiguous %s row: err %v", kind, err)
 		}
 		f["features"], f["extra"] = []any{row}, true
 		d, err = Decode(kind, mustJSON(t, f))
-		if err != nil || d.AllowsRevision("app", "r1", Revision{1}) {
+		if err != nil || d.MatchesRevision("app", "r1", Revision{value: 1, observed: true}) {
 			t.Fatalf("unknown %s with matching revision: err %v", kind, err)
 		}
 	}
 }
 
 func TestVerbResult(t *testing.T) {
-	files := archive(t, "cases.zip")
+	files := casesArchive(t)
 	ok := fixture(t, files, Check, "valid-refs-name")
 	line := string(fixture(t, files, Refusal, "valid"))
 	remote := strings.NewReplacer("marshal-feature-held", "marshal-remote-unreachable", `"exit":1`, `"exit":3`).Replace(line)
@@ -226,7 +226,7 @@ func TestVerbResult(t *testing.T) {
 		stderr, reason string
 		wantError      bool
 	}{
-		{"success", 0, ok, "warning only", "", false},
+		{"success", 0, ok, "", "", false},
 		{"held", 1, nil, "warning\n" + line + "human block\n", "conflict", false},
 		{"unknown feature", 1, nil, strings.Replace(line, "marshal-feature-held", "marshal-feature-unknown", 1), "not-found", false},
 		{"unreachable", 3, nil, remote, "remote-unreachable", false},
@@ -242,8 +242,8 @@ func TestVerbResult(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d, err := DecodeResult(Check, tc.exit, tc.stdout, []byte(tc.stderr))
-			if (err != nil) != tc.wantError || d.RefusalReason() != tc.reason || d.ActionsAllowed() != (tc.exit == 0 && !tc.wantError) {
-				t.Errorf("reason=%q allowed=%v err=%v", d.RefusalReason(), d.ActionsAllowed(), err)
+			if (err != nil) != tc.wantError || d.RefusalReason() != tc.reason || d.UsableEvidence("app", "r1") != (tc.exit == 0 && !tc.wantError) {
+				t.Errorf("reason=%q usable=%v err=%v", d.RefusalReason(), d.UsableEvidence("app", "r1"), err)
 			}
 		})
 	}
@@ -253,16 +253,162 @@ func TestVerbResult(t *testing.T) {
 }
 
 func TestReservedRefusalFields(t *testing.T) {
-	files := archive(t, "cases.zip")
+	files := casesArchive(t)
 	line := fixture(t, files, Refusal, "valid")
 	line = bytes.Replace(line, []byte(`"epoch":null`), []byte(`"epoch":{"future":42}`), 1)
 	d, err := Decode(Refusal, line)
-	if err != nil || d.Unknown || d.ActionsAllowed() || d.RefusalReason() != "conflict" {
+	if err != nil || d.Unknown() || d.UsableEvidence("app", "r1") || d.RefusalReason() != "conflict" {
 		t.Fatalf("reserved field changed refusal: %v", err)
 	}
 	for _, key := range []string{"epoch", "state", "tx"} {
-		if _, exists := d.Fields[key]; exists {
+		if _, exists := d.Fields()[key]; exists {
 			t.Errorf("reserved field %s exposed", key)
 		}
+	}
+}
+
+func TestHandBuiltDocument(t *testing.T) {
+	var rebuilt Document
+	if err := json.Unmarshal([]byte(`{"Kind":"qargi-marshal-status","Fields":{"project":"app","features":[]}}`), &rebuilt); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []Document{{}, rebuilt} {
+		if d.UsableEvidence("app", "r1") || d.MatchesRevision("app", "r1", Revision{}) {
+			t.Fatal("undecoded evidence passed a usability check")
+		}
+	}
+
+	files := casesArchive(t)
+	d, err := Decode(Status, fixture(t, files, Status, "valid-refs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := d.Fields()
+	row := firstRow(view)
+	rev := row["rev"].(Revision)
+	row["feature"] = "other"
+	view["features"].([]any)[0] = nil
+	view["project"] = "elsewhere"
+	if !d.MatchesRevision("app", "r1", rev) || d.MatchesRevision("elsewhere", "other", rev) {
+		t.Fatal("editing displayed fields changed the decoded evidence")
+	}
+}
+
+func TestSuccessfulResultWithStderr(t *testing.T) {
+	files := casesArchive(t)
+	for _, kind := range []Kind{Status, Handoff, Check} {
+		var f map[string]any
+		name := "valid-refs"
+		if kind == Check {
+			name = "valid-refs-name"
+		}
+		if err := json.Unmarshal(fixture(t, files, kind, name), &f); err != nil {
+			t.Fatal(err)
+		}
+		if kind == Handoff {
+			useLocalHandoff(f)
+		}
+		body := mustJSON(t, f)
+		for _, stderr := range []string{"", "\n", "qargi: warning: damaged record\n", "diagnostic"} {
+			d, err := DecodeResult(kind, 0, body, []byte(stderr))
+			warned := len(strings.Trim(stderr, "\n")) != 0
+			if err != nil || d.Incomplete() != warned || d.UsableEvidence("app", "r1") == warned || d.RefusalReason() != "" {
+				t.Fatalf("%s stderr %q: incomplete=%v err=%v", kind, stderr, d.Incomplete(), err)
+			}
+		}
+	}
+}
+
+func TestZeroRevisionMatchesNothing(t *testing.T) {
+	files := casesArchive(t)
+	body := fixture(t, files, Status, "valid-refs")
+	body = bytes.Replace(body, []byte(`"rev": 1`), []byte(`"rev": 0`), 1)
+	d, err := Decode(Status, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := firstRow(d.Fields())["rev"].(Revision)
+	if observed == (Revision{}) || !d.MatchesRevision("app", "r1", observed) || d.MatchesRevision("app", "r1", Revision{}) {
+		t.Fatal("an observed revision of zero must be distinct from an unobserved revision")
+	}
+}
+
+func TestInventoryEvidenceByFeature(t *testing.T) {
+	files := casesArchive(t)
+	for _, tc := range []struct {
+		name   string
+		kind   Kind
+		damage func(map[string]any)
+	}{
+		{"stale", Status, func(r map[string]any) { r["lease"] = "stale" }},
+		{"provisional", Status, func(r map[string]any) { r["provisional"] = true }},
+		{"invalid", Status, func(r map[string]any) { r["integrity"] = "INVALID" }},
+		{"unverifiable", Check, func(r map[string]any) { r["integrity"] = "cannot verify" }},
+		{"overlap warning", Check, func(r map[string]any) { r["warnings"] = []string{"another feature changes the same files"} }},
+		{"truncated record", Handoff, func(r map[string]any) {
+			r["record"].(map[string]any)["data"].(map[string]any)["truncated"] = []string{"goal"}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := fixture(t, files, tc.kind, "valid-refs")
+			var f, other map[string]any
+			for _, dst := range []*map[string]any{&f, &other} {
+				if err := json.Unmarshal(body, dst); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Keep the real healthy and unled rows. Add a third, damaged row.
+			damaged := firstRow(other)
+			if tc.kind == Handoff {
+				useLocalHandoff(f)
+				useLocalHandoff(other)
+				damaged["name"] = "r3"
+			} else {
+				damaged["feature"] = "r3"
+			}
+			tc.damage(damaged)
+			f["features"] = append(f["features"].([]any), damaged)
+			body = mustJSON(t, f)
+			for _, warn := range []string{"", "capture warning"} {
+				d, err := DecodeResult(tc.kind, 0, body, []byte(warn))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, name := range []string{"r1", "r2", "r3", "absent"} {
+					want := warn == "" && name == "r1"
+					rev := Revision{value: 1, observed: true}
+					if name == "r2" {
+						rev.value = 0
+					}
+					if d.UsableEvidence("app", name) != want || d.MatchesRevision("app", name, rev) != want {
+						t.Errorf("feature %s, stderr %q: want usable and matching = %v", name, warn, want)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestDocumentSizeLimit(t *testing.T) {
+	files := casesArchive(t)
+	body := fixture(t, files, Check, "valid-refs-name")
+	atLimit := append(body, bytes.Repeat([]byte{' '}, MaxDocumentBytes-len(body))...)
+	if d, err := DecodeResult(Check, 0, atLimit, nil); err != nil || !d.UsableEvidence("app", "r1") {
+		t.Fatalf("exactly MaxDocumentBytes: %v", err)
+	}
+	over := append(atLimit, '{') // A collector may retain just the first excess byte.
+	check := func(d Document, err error) {
+		t.Helper()
+		if err != nil || !d.Incomplete() || d.Fields() != nil || d.RefusalReason() != "" || d.UsableEvidence("app", "r1") {
+			t.Fatalf("oversize capture: kind=%q, incomplete=%v, err=%v", d.Kind(), d.Incomplete(), err)
+		}
+	}
+	check(Decode(Check, over))
+	check(DecodeResult(Check, 0, over, nil))
+	check(DecodeResult(Check, 0, body, over))
+	check(DecodeResult(Check, 1, over, fixture(t, files, Refusal, "valid")))
+	check(DecodeResult(Check, 1, nil, over))
+	if _, err := Decode(Refusal, over); err == nil {
+		t.Fatal("oversize refusal line accepted")
 	}
 }

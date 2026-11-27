@@ -17,57 +17,89 @@ const (
 	Refusal Kind = "qargi-refusal"
 )
 
-// Revision is an opaque record revision. Revisions support equality only.
-type Revision struct{ value int64 }
+// MaxDocumentBytes is the decoder's 1 MiB capture limit per output stream.
+// A collector can retain up to MaxDocumentBytes+1 bytes to signal overflow.
+// J1 refusal lines retain their separate 4096-byte wire bound.
+const MaxDocumentBytes = 1 << 20
 
-// Document holds the known fields of a snapshot. Treat them as read-only.
+// Revision is an opaque record revision. Revisions support equality only.
+// Its zero value denotes an unobserved revision and matches no record.
+type Revision struct {
+	value    int64
+	observed bool
+}
+
+// Document holds the known fields of a snapshot. Its zero value is unusable.
 // Objects are map[string]any, arrays are []any and integers are int64,
 // except for rev, which is a Revision.
 type Document struct {
-	Kind                       Kind
-	Fields                     map[string]any
-	Unknown, Stale, Incomplete bool
+	kind                       Kind
+	fields                     map[string]any
+	revisions                  map[string]Revision
+	unknown, stale, incomplete bool
 }
 
-// ActionsAllowed reports whether the whole document can support a dependent
-// action. The caller must also check its project, target and authorization.
-func (d Document) ActionsAllowed() bool {
-	return (d.Kind == Status || d.Kind == Check || d.Kind == Handoff) &&
-		d.Fields != nil && !d.Unknown && !d.Stale && !d.Incomplete
+func (d Document) Kind() Kind    { return d.kind }
+func (d Document) Unknown() bool { return d.unknown }
+
+// Stale reports document-wide staleness, including a stale named check.
+func (d Document) Stale() bool { return d.stale }
+
+// Incomplete reports document-wide omissions, warnings or inconsistencies.
+func (d Document) Incomplete() bool { return d.incomplete }
+
+// Fields returns a deep copy so display code can never alter checked evidence.
+func (d Document) Fields() map[string]any {
+	if d.fields == nil {
+		return nil
+	}
+	return copyField(d.fields).(map[string]any)
 }
 
-// AllowsRevision checks evidence for an action that also depends on a
-// previously observed record. J1 supplies no ordering or lease fence for rev.
-func (d Document) AllowsRevision(project, feature string, expected Revision) bool {
-	if !d.ActionsAllowed() || d.Fields["project"] != project {
+func copyField(v any) any {
+	switch v := v.(type) {
+	case map[string]any:
+		fields := make(map[string]any, len(v))
+		for k, child := range v {
+			fields[k] = copyField(child)
+		}
+		return fields
+	case []any:
+		items := make([]any, len(v))
+		for i, child := range v {
+			items[i] = copyField(child)
+		}
+		return items
+	default:
+		return v
+	}
+}
+
+// UsableEvidence reports whether the snapshot supplies usable evidence for
+// this project and feature. Authorization remains the caller's responsibility.
+func (d Document) UsableEvidence(project, feature string) bool {
+	if d.fields["project"] != project || d.unknown || d.stale || d.incomplete {
 		return false
 	}
-	rows, _ := d.Fields["features"].([]any)
-	found := false
-	for _, item := range rows {
-		row := item.(map[string]any)
-		name := row["feature"]
-		if d.Kind == Handoff {
-			name = row["name"]
-			row = row["record"].(map[string]any)
-		}
-		if name == feature {
-			if found || row["status"] == "unled" || row["has_record"] == false || row["rev"] != expected {
-				return false
-			}
-			found = true
-		}
+	if d.kind == Check && d.fields["feature"] == feature {
+		return true // A named check has an answer but no record revision.
 	}
-	return found
+	return d.revisions[feature].observed
+}
+
+// MatchesRevision also requires a previously observed revision of that record.
+// J1 supplies no ordering or lease fence for rev.
+func (d Document) MatchesRevision(project, feature string, expected Revision) bool {
+	return expected.observed && d.UsableEvidence(project, feature) && d.revisions[feature] == expected
 }
 
 // RefusalReason classifies a decoded refusal by its catalogue code. The
-// original code, including an unfamiliar one, is available in Fields["code"].
+// original code, including an unfamiliar one, is available in Fields()["code"].
 func (d Document) RefusalReason() string {
-	if d.Kind != Refusal {
+	if d.kind != Refusal {
 		return ""
 	}
-	switch d.Fields["code"] {
+	switch d.fields["code"] {
 	case "marshal-feature-held":
 		return "conflict"
 	case "marshal-feature-unknown":
@@ -82,6 +114,7 @@ func (d Document) RefusalReason() string {
 // Decode reads one complete document of the expected kind, including the
 // version prefix for a refusal line. It checks Unicode, duplicate keys and
 // exact integers throughout the input, including in unrecognized fields.
+// An oversized document yields incomplete evidence with no decoded fields.
 // An error always returns the zero document. Use DecodeResult for verb output.
 func Decode(expected Kind, data []byte) (Document, error) {
 	s := schemas[expected]
@@ -95,6 +128,8 @@ func Decode(expected Kind, data []byte) (Document, error) {
 			return Document{}, errors.New("invalid refusal line")
 		}
 		data = body
+	} else if len(data) > MaxDocumentBytes {
+		return Document{kind: expected, incomplete: true}, nil
 	}
 	fields, err := object(data)
 	if err != nil {
@@ -104,8 +139,8 @@ func Decode(expected Kind, data []byte) (Document, error) {
 	if fields["kind"] != string(expected) || fields["schema"] != int64(1) {
 		return Document{}, errors.New("unexpected kind or unsupported schema")
 	}
-	d := Document{Kind: expected, Fields: fields}
-	if err := s.check(fields, s.Defs, &d.Unknown); err != nil {
+	d := Document{kind: expected, fields: fields}
+	if err := s.check(fields, s.Defs, &d.unknown); err != nil {
 		return Document{}, err
 	}
 	if expected == Refusal {
@@ -122,22 +157,33 @@ func Decode(expected Kind, data []byte) (Document, error) {
 
 // DecodeResult reads a completed status, check or handoff call. A nonzero
 // status requires one refusal line on stderr and an equal exit field. Warnings
-// may precede the line. Success bytes left by a failed write are never used.
+// may precede the line. If either stream exceeds MaxDocumentBytes, the result
+// is incomplete and classification stops before any bytes are interpreted.
 func DecodeResult(expected Kind, exit int, stdout, stderr []byte) (Document, error) {
 	if expected != Status && expected != Check && expected != Handoff {
 		return Document{}, errors.New("unexpected verb result kind")
 	}
+	if len(stdout) > MaxDocumentBytes || len(stderr) > MaxDocumentBytes {
+		return Document{kind: expected, incomplete: true}, nil
+	}
 	var refusal []byte
+	var warning bool
 	for line := range bytes.SplitSeq(stderr, []byte{'\n'}) {
 		if bytes.HasPrefix(line, []byte("qargi-refusal/")) {
 			if refusal != nil || exit == 0 {
 				return Document{}, errors.New("ambiguous verb output")
 			}
 			refusal = line
+		} else if len(line) > 0 {
+			warning = true
 		}
 	}
 	if exit == 0 {
-		return Decode(expected, stdout)
+		d, err := Decode(expected, stdout)
+		if err == nil && warning {
+			d.incomplete = true
+		}
+		return d, err
 	}
 	if refusal == nil || len(stdout) != 0 {
 		return Document{}, errors.New("failed verb without an unambiguous refusal")
@@ -146,7 +192,7 @@ func DecodeResult(expected Kind, exit int, stdout, stderr []byte) (Document, err
 	if err != nil {
 		return Document{}, err
 	}
-	if d.Fields["exit"] != int64(exit) {
+	if d.fields["exit"] != int64(exit) {
 		return Document{}, errors.New("refusal exit differs from process status")
 	}
 	return d, nil
@@ -158,36 +204,48 @@ func nonemptyList(v any) bool {
 }
 
 func (d *Document) assess() {
-	f := d.Fields
+	f := d.fields
 	remote := f["remote"]
-	d.Stale = remote == "unchecked" || remote == "not-asked" || f["answer"] == "free-stale"
-	d.Incomplete = f["backend_fallback"] == true || f["truncated"] == true ||
+	d.stale = remote == "unchecked" || remote == "not-asked" || f["answer"] == "free-stale"
+	d.incomplete = f["backend_fallback"] == true || f["truncated"] == true ||
 		(f["backend"] == "local") != (remote == "none") || nonemptyList(f["warnings"])
 	rows, hasRows := f["features"].([]any)
-	if d.Kind == Handoff && (f["features_omitted"] != nil || f["features_left_out"] != nil ||
-		f["features_left_out_more"] != nil || f["lists_left_out"] != nil) {
-		// Each field describes an omission, even if the summary flag disagrees.
-		d.Incomplete = true
+	if d.kind == Handoff && (f["features_omitted"] != nil || f["features_left_out"] != nil ||
+		f["features_left_out_more"] != nil || f["lists_left_out"] != nil ||
+		!completeEnvironment(f["environment"].(map[string]any))) {
+		// Omissions block the whole handoff, even if its summary flag disagrees.
+		d.incomplete = true
 	}
-	if d.Kind == Check {
+	if d.kind == Check {
 		named := f["feature"] != nil
 		if named == hasRows || named != (f["answer"] != nil) ||
-			(f["answer"] == "free-stale") != (f["lead"] != nil) {
-			d.Incomplete = true
+			(f["answer"] == "free-stale") != (f["lead"] != nil) || !completeLead(f["lead"]) {
+			d.incomplete = true
 		}
 	}
+	d.revisions = make(map[string]Revision, len(rows))
 	for _, item := range rows {
 		row := item.(map[string]any)
-		if d.Kind == Handoff {
-			row = row["record"].(map[string]any)
-			data := row["data"].(map[string]any)
-			d.Incomplete = d.Incomplete || nonemptyList(data["truncated"])
-		} else if row["project"] != f["project"] || nonemptyList(row["warnings"]) {
-			d.Incomplete = true
+		name, _ := row["feature"].(string)
+		record := row
+		incomplete := nonemptyList(row["warnings"])
+		if d.kind == Handoff {
+			name = row["name"].(string)
+			record = row["record"].(map[string]any)
+			data := record["data"].(map[string]any)
+			incomplete = nonemptyList(data["truncated"]) || !completeSuite(row["suite"].(map[string]any))
+		} else if row["project"] != f["project"] {
+			d.incomplete = true
 		}
-		row["rev"] = Revision{row["rev"].(int64)}
-		d.Stale = d.Stale || row["lease"] == "stale"
-		d.Incomplete = d.Incomplete || row["provisional"] == true ||
-			row["integrity"] == "INVALID" || row["integrity"] == "cannot verify"
+		rev := Revision{value: record["rev"].(int64), observed: true}
+		record["rev"] = rev
+		_, duplicate := d.revisions[name]
+		if duplicate || incomplete || !d.completeRecord(record) || record["status"] == "unled" || record["has_record"] == false ||
+			record["lease"] == "stale" || record["provisional"] == true ||
+			record["integrity"] == "INVALID" || record["integrity"] == "cannot verify" {
+			// Keep the name so later duplicates cannot restore a usable revision.
+			rev = Revision{}
+		}
+		d.revisions[name] = rev
 	}
 }
