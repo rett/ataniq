@@ -1,0 +1,6 @@
+{"method":"thread/started","params":{"thread":{"id":"thread-a","cliVersion":"0.172.0","createdAt":0,"updatedAt":0,"cwd":"/work","ephemeral":true,"modelProvider":"fixture","preview":"","projectId":null,"sessionId":"session-a","source":"appServer","status":{"type":"idle"},"turns":[]}}}
+{"method":"turn/started","params":{"threadId":"thread-a","turn":{"id":"turn-a","rootTurnId":"turn-a","items":[],"itemsView":"notLoaded","status":"inProgress","error":null,"startedAt":1794574058,"completedAt":null,"durationMs":null}},"emittedAtMs":1794574058093}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-a","turnId":"turn-a","itemId":"item-a","delta":"two words"}}
+{"id":7,"method":"item/permissions/requestApproval","params":{"threadId":"thread-a","turnId":"turn-a","itemId":"item-b","startedAtMs":0,"cwd":"/work","permissions":{"network":{"enabled":true},"fileSystem":{"read":["/work/a","/work/b"],"write":["/work/a"]}}}}
+{"method":"turn/completed","params":{"threadId":"thread-a","turn":{"id":"turn-a","rootTurnId":"turn-a","items":[],"itemsView":"notLoaded","status":"completed","error":null,"startedAt":1794574058,"completedAt":1794574058,"durationMs":23}},"emittedAtMs":1794574058116}
+{"method":"thread/closed","params":{"threadId":"thread-a"}}

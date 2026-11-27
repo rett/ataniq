@@ -1,0 +1,105 @@
+{
+  "schema": "ataniq.pack-declaration/1",
+  "builds": {
+    "0.172.0": [
+      {
+        "id": "session-start",
+        "event": "SessionStart",
+        "fields": [
+          {"name": "event", "pointer": "/hook_event_name"},
+          {"name": "session", "pointer": "/session_id"},
+          {"name": "model", "pointer": "/model"},
+          {"name": "mode", "pointer": "/permission_mode"}
+        ],
+        "output": "none",
+        "async": false,
+        "timeout_ms": 300
+      },
+      {
+        "id": "prompt-submit",
+        "event": "UserPromptSubmit",
+        "fields": [
+          {"name": "event", "pointer": "/hook_event_name"},
+          {"name": "session", "pointer": "/session_id"},
+          {"name": "model", "pointer": "/model"},
+          {"name": "mode", "pointer": "/permission_mode"}
+        ],
+        "output": "none",
+        "async": false,
+        "timeout_ms": 300
+      },
+      {
+        "id": "pre-tool",
+        "event": "PreToolUse",
+        "fields": [
+          {"name": "event", "pointer": "/hook_event_name"},
+          {"name": "session", "pointer": "/session_id"},
+          {"name": "model", "pointer": "/model"},
+          {"name": "mode", "pointer": "/permission_mode"},
+          {"name": "tool", "pointer": "/tool_name"}
+        ],
+        "digests": [{"name": "input", "pointer": "/tool_input"}],
+        "output": "none",
+        "async": false,
+        "timeout_ms": 300
+      },
+      {
+        "id": "permission-request",
+        "event": "PermissionRequest",
+        "fields": [
+          {"name": "event", "pointer": "/hook_event_name"},
+          {"name": "session", "pointer": "/session_id"},
+          {"name": "model", "pointer": "/model"},
+          {"name": "mode", "pointer": "/permission_mode"},
+          {"name": "tool", "pointer": "/tool_name"}
+        ],
+        "digests": [{"name": "input", "pointer": "/tool_input"}],
+        "output": "none",
+        "async": false,
+        "timeout_ms": 300
+      },
+      {
+        "id": "post-tool",
+        "event": "PostToolUse",
+        "fields": [
+          {"name": "event", "pointer": "/hook_event_name"},
+          {"name": "session", "pointer": "/session_id"},
+          {"name": "model", "pointer": "/model"},
+          {"name": "mode", "pointer": "/permission_mode"},
+          {"name": "tool", "pointer": "/tool_name"}
+        ],
+        "digests": [{"name": "input", "pointer": "/tool_input"}],
+        "output": "none",
+        "async": false,
+        "timeout_ms": 300
+      },
+      {
+        "id": "stop",
+        "event": "Stop",
+        "fields": [
+          {"name": "event", "pointer": "/hook_event_name"},
+          {"name": "session", "pointer": "/session_id"},
+          {"name": "model", "pointer": "/model"},
+          {"name": "mode", "pointer": "/permission_mode"},
+          {"name": "stop_active", "pointer": "/stop_hook_active"}
+        ],
+        "output": "none",
+        "async": false,
+        "timeout_ms": 300
+      },
+      {
+        "id": "session-end",
+        "event": "SessionEnd",
+        "fields": [
+          {"name": "event", "pointer": "/hook_event_name"},
+          {"name": "session", "pointer": "/session_id"},
+          {"name": "model", "pointer": "/model"},
+          {"name": "mode", "pointer": "/permission_mode"}
+        ],
+        "output": "none",
+        "async": false,
+        "timeout_ms": 300
+      }
+    ]
+  }
+}

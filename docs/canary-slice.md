@@ -176,7 +176,8 @@ make canary-build
 
 It runs doctor and builds, with the tag, into `build/canary/` (ignored by
 git): `ataniqd`, `ataniq-holder`, `ataniq-canary`, `ataniq-canary-standin`,
-`ataniq-console`, `ataniq-intake` and `ataniq-probe`. It runs none of them.
+`ataniq-console`, `ataniq-intake`, `ataniq-probe` and the static helper
+`ataniq-hook`. It runs none of them. The run script leaves the helper unused.
 `ataniqd`, `ataniq-holder`, `ataniq-canary` and `ataniq-canary-standin` name the
 tag in their `--version` output.
 
