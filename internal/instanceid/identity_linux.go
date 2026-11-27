@@ -23,6 +23,7 @@ const FileName = "instance.key"
 
 const (
 	magic            = "ataniq-instance-key/2\n"
+	legacyKeyMagic   = "ataniq-instance-v1\n"
 	incarnationMagic = "ataniq-store-incarnation/1\n"
 	IncarnationFile  = "store.incarnation"
 	incarnationSize  = 16
@@ -259,7 +260,16 @@ func readPayload(root int, name, prefix string, size, extra int) ([]byte, error)
 		return nil, err
 	}
 	minSize := len(prefix) + size + sha256.Size
-	b, err := io.ReadAll(io.LimitReader(f, int64(minSize+extra+1)))
+	limit := minSize + extra
+	if name == FileName {
+		limit = max(limit, len(legacyKeyMagic)+ed25519.SeedSize+incarnationSize+maxLabel+sha256.Size)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, int64(limit+1)))
+	legacyKey := name == FileName && bytes.HasPrefix(b, []byte(legacyKeyMagic))
+	if legacyKey {
+		prefix = legacyKeyMagic
+		minSize = len(prefix) + ed25519.SeedSize + incarnationSize + sha256.Size
+	}
 	if err != nil || len(b) < minSize || len(b) > minSize+extra || !bytes.HasPrefix(b, []byte(prefix)) {
 		clear(b)
 		return nil, ErrInvalid
@@ -269,6 +279,13 @@ func readPayload(root int, name, prefix string, size, extra int) ([]byte, error)
 	if !bytes.Equal(sum[:], b[len(body):]) {
 		clear(b)
 		return nil, fmt.Errorf("%w: checksum mismatch", ErrInvalid)
+	}
+	if legacyKey {
+		defer clear(b)
+		if !validLabel(string(body[len(prefix)+ed25519.SeedSize+incarnationSize:])) {
+			return nil, ErrInvalid
+		}
+		return nil, fmt.Errorf("%w: key made by a pre-release build; re-run init on a fresh root", ErrInvalid)
 	}
 	return body[len(prefix):], nil
 }

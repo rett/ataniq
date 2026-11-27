@@ -36,7 +36,9 @@ records. Older builds cannot open this journal. Repeating init keeps the origina
 and label. Supply `--label` only on the first init. Any later `--label`,
 including an empty or identical value, is refused. On startup the daemon
 refuses a missing, damaged or unsafe identity, an unbound journal, or a
-journal from another instance or incarnation.
+journal from another instance or incarnation. If the key was made by the
+pre-release build that embedded the incarnation in `instance.key`, keep
+that root offline and re-run init on a fresh root.
 
 A backup of `instance.key` holds the private Ed25519 seed. Protect it as a
 credential. A copied root (including a copy made with `cp -a`) is the same
