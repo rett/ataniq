@@ -38,7 +38,7 @@ func parseCommand(args []string) (command, bool) {
 	c.op, args = args[0], args[1:]
 	files := map[string]*string{"--config": &c.configPath}
 	switch c.op {
-	case "identity-init", "pins", "check", "serve", "status":
+	case "identity-init", "pins", "check", "serve", "status", "retire":
 	case "observe":
 		files["--events"], files["--archive"] = &count, &c.archive
 	case "enroll":
@@ -88,10 +88,6 @@ func run(args []string, out, diag io.Writer, uid int) int {
 		fmt.Fprintln(out, usage)
 		return 0
 	}
-	if len(args) > 0 && args[0] == "retire" {
-		fmt.Fprintln(diag, "not built in this release")
-		return 2
-	}
 	cmd, ok := parseCommand(args)
 	if !ok {
 		fmt.Fprintln(diag, usage)
@@ -110,7 +106,7 @@ func execute(cmd command, out io.Writer, uid int) error {
 	}
 	level := fullPhase
 	switch cmd.op {
-	case "identity-init", "pins", "status":
+	case "identity-init", "pins", "status", "retire":
 		level = identityPhase
 	}
 	c, err := loadConfig(cmd.configPath, level)
@@ -124,6 +120,26 @@ func execute(cmd command, out io.Writer, uid int) error {
 		return printPins(c, out)
 	case "status":
 		return status(c, out)
+	case "retire":
+		return retire(c, out)
+	}
+	// Only an external binding directory can carry an installation marker.
+	// Existing pre-enrollment preflights can run without a usable binding.
+	if cmd.op != "check" && bindingOutsideState(c) {
+		dir, err := lockInstallation(c.Binding, false)
+		if err != nil {
+			return err
+		}
+		defer dir.Close()
+	}
+	if cmd.op != "check" {
+		retired, err := isRetired(c)
+		if err != nil {
+			return err
+		}
+		if retired {
+			return errRetired
+		}
 	}
 	pair, err := loadPairing(c)
 	if err != nil {

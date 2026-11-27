@@ -131,17 +131,11 @@ func TestCheckRequiresWitness(t *testing.T) {
 }
 
 func TestHomeUsage(t *testing.T) {
-	for _, op := range []string{"retire"} {
-		code, out, diag := invoke("/missing", op, 1000)
-		if code != 2 || out != "" || diag != "not built in this release\n" {
-			t.Error(op, code, out, diag)
-		}
-	}
 	for _, args := range [][]string{nil, {"bad"}, {"pins"}, {"check", "-config", "/missing"}, {"pins", "--config", "/missing", "extra"},
 		{"enroll"}, {"enroll", "unknown"}, {"enroll", "prepare", "--config", "/missing"},
 		{"enroll", "finalize", "--config", "/missing", "--out", "/out"},
 		{"enroll", "resume", "--out", "/one", "--out", "/two"},
-		{"serve", "--check", "--check", "--config", "/missing"}, {"status", "--check"}, {"observe"}, {"observe", "--events", "-1", "--config", "/c"}, {"observe", "--config", "/c", "--events", "17"}, {"observe", "--config", "/c", "--archive", "/a", "--archive", "/b"}} {
+		{"serve", "--check", "--check", "--config", "/missing"}, {"status", "--check"}, {"retire"}, {"retire", "--events", "1", "--config", "/c"}, {"observe"}, {"observe", "--events", "-1", "--config", "/c"}, {"observe", "--config", "/c", "--events", "17"}, {"observe", "--config", "/c", "--archive", "/a", "--archive", "/b"}} {
 		var diag, out bytes.Buffer
 		if code := run(args, &out, &diag, 1000); code != 2 || diag.String() != usage+"\n" || out.Len() != 0 {
 			t.Error(args, code, out.String(), diag.String())

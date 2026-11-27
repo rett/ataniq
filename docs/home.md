@@ -135,8 +135,7 @@ Keep managed admission closed throughout the pilot.
 `status` works offline, including before identity creation. It reports the
 presence of the signing key and TLS files, prepared record, binding validation
 and ledger head sequence from local replay. A fresh header has sequence 0.
-Exit 0 indicates success, 1 indicates refusal, and 2 indicates incorrect usage
-or the reserved command `retire`.
+Exit 0 indicates success, 1 indicates refusal, and 2 indicates incorrect usage.
 
 ## Observe the mirror
 
@@ -162,3 +161,20 @@ Keep the original signed evidence off-host. The witness CLI in this checkout
 prints directory journal position and digest in its status summary. Obtain
 the slot head from the owner client's authenticated slot read. Copying the
 directory position or an enrollment receipt digest will give a disagreement.
+
+## Retire the local home
+
+Stop the active foreground commands. Under the home account, run
+`ataniq-home retire --config FILE`. It writes and syncs the empty 0600
+`retired` marker in the protected directory containing `binding`. Dedicate
+that directory to this installation and keep it outside the restore domain.
+The same operation marks `state/retired` and `HOME_KEY.retired` beside the
+signing seed. These two empty 0600 files guard the old root and key path if
+the binding configuration changes. Repeat an interrupted retirement to sync
+all three markers. Retirement blocks serve (including its preflight),
+observe and all three enrollment steps for this installation. Keep the ledger,
+receipt, binding, keys and marker together as evidence of the old pairing.
+
+`ataniq-home status --config FILE` still replays the ledger offline. It prints
+`retired=true` or `retired=false` and, when a completed comparison exists,
+`last_observation=agree` or `last_observation=DISAGREE` with the differences.

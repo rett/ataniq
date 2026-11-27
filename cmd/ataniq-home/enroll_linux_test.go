@@ -40,7 +40,7 @@ func TestEnrollAndStatus(t *testing.T) {
 	path, m, witness, _ := ceremonyConfig(t)
 	dir := filepath.Dir(path)
 	state := m["state"].(string)
-	if got := call(t, path, "status"); got != "home_key=false tls_key=false tls_cert=false\nprepared=false binding=absent\nledger=absent\n" {
+	if got := call(t, path, "status"); got != "home_key=false tls_key=false tls_cert=false\nprepared=false binding=absent\nledger=absent\nretired=false\n" {
 		t.Fatal(got)
 	}
 	call(t, path, "identity-init")
@@ -77,7 +77,7 @@ func TestEnrollAndStatus(t *testing.T) {
 	}
 	before := names(t, state)
 	got = call(t, path, "status")
-	if got != "home_key=true tls_key=true tls_cert=true\nprepared=true binding=absent\nledger_head_sequence=0\n" || !slices.Equal(before, names(t, state)) {
+	if got != "home_key=true tls_key=true tls_cert=true\nprepared=true binding=absent\nledger_head_sequence=0\nretired=false\n" || !slices.Equal(before, names(t, state)) {
 		t.Fatal(got)
 	}
 	w, err := cp.NewMemory(c.Slot.Witness, c.Epoch, witness)
@@ -108,7 +108,7 @@ func TestEnrollAndStatus(t *testing.T) {
 	if out != want {
 		t.Fatal(out)
 	}
-	if got := call(t, path, "status"); got != "home_key=true tls_key=true tls_cert=true\nprepared=false binding=valid\nledger_head_sequence=0\n" {
+	if got := call(t, path, "status"); got != "home_key=true tls_key=true tls_cert=true\nprepared=false binding=valid\nledger_head_sequence=0\nretired=false\n" {
 		t.Fatal(got)
 	}
 
