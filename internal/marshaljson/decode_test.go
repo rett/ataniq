@@ -178,9 +178,9 @@ func TestActionRequiresSameRecordRevision(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !d.AllowsRevision("app", "r1", Revision{1}) || d.AllowsRevision("app", "r1", Revision{0}) ||
-			d.AllowsRevision("app", "r1", Revision{2}) || d.AllowsRevision("app", "missing", Revision{1}) ||
-			d.AllowsRevision("other", "r1", Revision{1}) {
+		if !d.AllowsRevision("app", "r1", Revision{value: 1, observed: true}) || d.AllowsRevision("app", "r1", Revision{value: 0, observed: true}) ||
+			d.AllowsRevision("app", "r1", Revision{value: 2, observed: true}) || d.AllowsRevision("app", "missing", Revision{value: 1, observed: true}) ||
+			d.AllowsRevision("other", "r1", Revision{value: 1, observed: true}) {
 			t.Fatalf("revision check failed for %s", kind)
 		}
 		row := firstRow(f)
@@ -188,7 +188,7 @@ func TestActionRequiresSameRecordRevision(t *testing.T) {
 			record := row["record"].(map[string]any)
 			record["has_record"] = false
 			d, err = Decode(kind, mustJSON(t, f))
-			if err != nil || d.AllowsRevision("app", "r1", Revision{1}) {
+			if err != nil || d.AllowsRevision("app", "r1", Revision{value: 1, observed: true}) {
 				t.Fatalf("absent record: err %v", err)
 			}
 			record["has_record"] = true
@@ -196,19 +196,19 @@ func TestActionRequiresSameRecordRevision(t *testing.T) {
 			status := row["status"]
 			row["status"] = "unled"
 			d, err = Decode(kind, mustJSON(t, f))
-			if err != nil || d.AllowsRevision("app", "r1", Revision{1}) {
+			if err != nil || d.AllowsRevision("app", "r1", Revision{value: 1, observed: true}) {
 				t.Fatalf("unled feature: err %v", err)
 			}
 			row["status"] = status
 		}
 		f["features"] = []any{row, row}
 		d, err = Decode(kind, mustJSON(t, f))
-		if err != nil || d.AllowsRevision("app", "r1", Revision{1}) {
+		if err != nil || d.AllowsRevision("app", "r1", Revision{value: 1, observed: true}) {
 			t.Fatalf("ambiguous %s row: err %v", kind, err)
 		}
 		f["features"], f["extra"] = []any{row}, true
 		d, err = Decode(kind, mustJSON(t, f))
-		if err != nil || d.AllowsRevision("app", "r1", Revision{1}) {
+		if err != nil || d.AllowsRevision("app", "r1", Revision{value: 1, observed: true}) {
 			t.Fatalf("unknown %s with matching revision: err %v", kind, err)
 		}
 	}
@@ -316,5 +316,19 @@ func TestSuccessfulResultWithStderr(t *testing.T) {
 				t.Fatalf("%s stderr %q: incomplete=%v err=%v", kind, stderr, d.Incomplete(), err)
 			}
 		}
+	}
+}
+
+func TestZeroRevisionMatchesNothing(t *testing.T) {
+	files := archive(t, "cases.zip")
+	body := fixture(t, files, Status, "valid-refs")
+	body = bytes.Replace(body, []byte(`"rev": 1`), []byte(`"rev": 0`), 1)
+	d, err := Decode(Status, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := firstRow(d.Fields())["rev"].(Revision)
+	if observed == (Revision{}) || !d.AllowsRevision("app", "r1", observed) || d.AllowsRevision("app", "r1", Revision{}) {
+		t.Fatal("an observed revision of zero must be distinct from an unobserved revision")
 	}
 }

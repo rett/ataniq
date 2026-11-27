@@ -18,7 +18,11 @@ const (
 )
 
 // Revision is an opaque record revision. Revisions support equality only.
-type Revision struct{ value int64 }
+// Its zero value denotes an unobserved revision and matches no record.
+type Revision struct {
+	value    int64
+	observed bool
+}
 
 // Document holds the known fields of a snapshot. Its zero value is unusable.
 // Objects are map[string]any, arrays are []any and integers are int64,
@@ -71,7 +75,7 @@ func (d Document) ActionsAllowed() bool {
 // AllowsRevision checks evidence for an action that also depends on a
 // previously observed record. J1 supplies no ordering or lease fence for rev.
 func (d Document) AllowsRevision(project, feature string, expected Revision) bool {
-	if !d.ActionsAllowed() || d.fields["project"] != project {
+	if !expected.observed || !d.ActionsAllowed() || d.fields["project"] != project {
 		return false
 	}
 	rows, _ := d.fields["features"].([]any)
@@ -224,7 +228,7 @@ func (d *Document) assess() {
 		} else if row["project"] != f["project"] || nonemptyList(row["warnings"]) {
 			d.incomplete = true
 		}
-		row["rev"] = Revision{row["rev"].(int64)}
+		row["rev"] = Revision{value: row["rev"].(int64), observed: true}
 		d.stale = d.stale || row["lease"] == "stale"
 		d.incomplete = d.incomplete || row["provisional"] == true ||
 			row["integrity"] == "INVALID" || row["integrity"] == "cannot verify"
