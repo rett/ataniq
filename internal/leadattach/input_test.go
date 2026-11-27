@@ -309,23 +309,38 @@ func TestAViewerSendsNothing(t *testing.T) {
 	}
 }
 
-func TestAClientThatWantsToViewSendsNothingEvenIfGrantedTheWriter(t *testing.T) {
-	leakCheck(t)
-	e := newEnv(t, setup{mode: leadattach.ModeViewer})
-	hc := e.attach(wire.RoleWriter)
-	e.sink.Key(keyA)
-	e.c.Resize(100, 30)
-	st := e.c.Status()
-	if st.Role != terminalconsole.LiveWriter || st.RefusedInput != 1 {
-		t.Errorf("role %q, refused %d", st.Role, st.RefusedInput)
-	}
-	ns := e.c.Notices()
-	if len(ns) != 1 || ns[0].Code != "role-granted" {
-		t.Errorf("notices %+v", ns)
-	}
-	e.c.Close()
-	if types := hc.closed(); string(types) != string(wire.TypeDetach) {
-		t.Errorf("sent %q", types)
+func TestRoleMismatchReleasesSlotAtRedemption(t *testing.T) {
+	for _, tc := range []struct {
+		want leadattach.Mode
+		got  wire.Role
+	}{
+		{leadattach.ModeViewer, wire.RoleWriter},
+		{leadattach.ModeWriter, wire.RoleViewer},
+	} {
+		t.Run(string(tc.want), func(t *testing.T) {
+			leakCheck(t)
+			e := newEnv(t, setup{mode: tc.want, pipe: true, tickets: 1})
+			hc := e.h.accept()
+			hc.welcome(tc.got)
+			e.sink.Key(keyA)
+			e.c.Resize(100, 30)
+			// The holder must get its place back without waiting for a
+			// snapshot, a user close, or a replacement ticket.
+			if types := hc.closed(); string(types) != string(wire.TypeDetach) {
+				t.Fatalf("frames before release %q, want only detach", types)
+			}
+			st := e.untilConn(terminalconsole.LiveWaitingTicket)
+			if st.Role != "" || st.RefusedInput != 1 || counter(st, "client-snapshots") != 0 {
+				t.Fatalf("mismatched welcome accepted: %+v", st)
+			}
+			if !strings.Contains(st.Reason, string(tc.want)) || !strings.Contains(st.Reason, string(tc.got)) {
+				t.Errorf("refusal did not name both roles: %q", st.Reason)
+			}
+			if ns := e.c.Notices(); len(ns) != 1 || ns[0].Code != "role-mismatch" {
+				t.Errorf("notices %+v", ns)
+			}
+			e.attach(wire.Role(tc.want))
+		})
 	}
 }
 
@@ -540,7 +555,7 @@ func TestASizeAskedWhileConnectingIsSentAfterTheFirstSnapshot(t *testing.T) {
 
 func TestASizeAskedWhileTheHolderResyncsIsSentWithTheNextSnapshot(t *testing.T) {
 	leakCheck(t)
-	e := newEnv(t, setup{mode: leadattach.ModeWriter})
+	e := newEnv(t, setup{pipe: true, mode: leadattach.ModeWriter})
 	hc := e.attach(wire.RoleWriter)
 	hc.notice(wire.ReasonResync, "a new snapshot follows")
 	e.untilConn(terminalconsole.LiveResyncing)
@@ -574,7 +589,7 @@ func TestAViewerDoesNotSendTheSizeItWants(t *testing.T) {
 
 func TestAHolderResyncNoticeStopsInputUntilTheNextSnapshot(t *testing.T) {
 	leakCheck(t)
-	e := newEnv(t, setup{mode: leadattach.ModeWriter})
+	e := newEnv(t, setup{pipe: true, mode: leadattach.ModeWriter})
 	hc := e.attach(wire.RoleWriter)
 	e.sink.Key(keyA)
 	if got := hc.input(1); got != "a" {

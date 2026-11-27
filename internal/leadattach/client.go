@@ -99,6 +99,19 @@ func New(cfg Config) *Client {
 	return c
 }
 
+// NewViewer returns a read-only client that obtains a ticket from source
+// after each successful dial, including reconnects for a new snapshot.
+// It ignores cfg.Mode and the scratch ticket callbacks in cfg.
+func NewViewer(cfg Config, source TicketSource) *Client {
+	cfg.Mode = ModeViewer
+	cfg.TicketReady, cfg.Tickets = nil, nil
+	c := New(cfg)
+	if source != nil {
+		c.cfg.Tickets = func() (string, error) { return source.ViewerTicket(c.ctx) }
+	}
+	return c
+}
+
 // cleanName makes the client name fit a Hello: clean, at most 64 bytes, and
 // never empty.
 func cleanName(s string) string {

@@ -117,6 +117,9 @@ const (
 	// outLost: the connection ended, or the holder refused it, and a new
 	// ticket may give another.
 	outLost outcomeKind = iota
+	// outRoleMismatch: the welcome claimed the wrong place. Detach to
+	// release it before asking for another ticket.
+	outRoleMismatch
 	// outProtocol: the holder broke the protocol; the next attempt waits
 	// longer each time.
 	outProtocol
@@ -182,7 +185,7 @@ func (c *Client) attach(nc net.Conn, ticket string, resync bool) (out outcome) {
 		if !started {
 			close(cn.sendDone)
 		}
-		if n := cn.finish(out.kind == outClosed || out.kind == outResync); n > 0 {
+		if n := cn.finish(out.kind == outClosed || out.kind == outResync || out.kind == outRoleMismatch); n > 0 {
 			// Input that was queued and never written is not sent later, to
 			// a different screen; it is counted.
 			c.mu.Lock()
@@ -327,6 +330,11 @@ func (s *session) handshake(f wire.Frame) *outcome {
 	if w.Version != wire.ProtocolVersion {
 		return &outcome{kind: outStop, reason: versionReason(w.Version)}
 	}
+	if want := wire.Role(c.cfg.Mode); w.Role != want {
+		reason := "requested " + string(want) + " but the ticket granted " + string(w.Role)
+		c.mutate(func() { c.addNoticeLocked(liveNotice("role-mismatch", reason)) })
+		return &outcome{kind: outRoleMismatch, reason: reason}
+	}
 	s.welcomed = true
 	_ = s.cn.nc.SetReadDeadline(time.Time{})
 	if c.ctx.Err() != nil {
@@ -342,9 +350,6 @@ func (s *session) handshake(f wire.Frame) *outcome {
 		// snapshot of the connection is applied: until then the pane shows
 		// another screen and the modes are not the holder's, so input
 		// would go to a screen the user cannot see.
-		if want := wire.Role(c.cfg.Mode); want != w.Role {
-			c.addNoticeLocked(terminalconsole.LiveNotice{Code: "role-granted", Text: "Asked to attach as " + string(want) + "; the holder granted " + string(w.Role) + "."})
-		}
 	})
 	return nil
 }

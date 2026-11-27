@@ -719,8 +719,8 @@ ataniq-console --daemon DIR [--theme dark|light] [--no-bell]
 - `--ticket-file FILE` names a file, mode 0600, from which the console reads a
   single-use attach ticket each time it needs one. `ataniq-scratch ticket NAME`
   writes it.
-- `--viewer` asks for the read-only place. The ticket decides which place the
-  holder grants: see [Writer and viewer](#writer-and-viewer).
+- `--viewer` requires a viewer ticket. Without the flag, attach requires a
+  writer ticket. See [Writer and viewer](#writer-and-viewer).
 - `--shift-enter esc-cr|lf|csi-u|backslash-cr` chooses what Shift+Enter sends
   to the session. The default is `esc-cr`, which is what Alt+Enter sends.
   Agents differ in the key they take for a new line, and a terminal without an
@@ -797,16 +797,15 @@ and there is no takeover. A client that holds the writer place keeps it until
 it detaches or the holder's operator removes it with
 `ataniq-scratch release-writer NAME`; a console cannot take it from another.
 
-`--viewer` says the console wants the read-only place; it does not choose it.
-If the ticket is for the writer, the holder grants the writer place anyway, the
-console shows a notice that it asked for a viewer and was granted the writer,
-and, because it asked to read only, it sends no input and its keys and paste
-are dropped and counted. If the ticket is for the viewer and the console was
-not given `--viewer`, the console is a viewer all the same, with the same kind
-of notice, and says so in the focus bar: keys typed in session focus are not
-sent, and the reason is given. A viewer shows the screen as the holder keeps
-it, at the holder's size, cut or padded at the top left corner of the session
-pane. It sends no key, no paste and no size. The holder would refuse them and
+If the holder grants the writer place to a console started with `--viewer`,
+or the viewer place to one started without it, the console immediately detaches
+and frees the place. It sends no input and shows the requested and granted
+roles. To attach, write a fresh ticket for the requested role to the ticket
+file. For a scratch viewer, use `ataniq-scratch ticket NAME --viewer`.
+
+An attached viewer shows the screen at the holder's size, cut or padded at the
+top left corner of the session pane. Its focus bar explains that keys are not
+sent. It sends no key, no paste and no size. The holder would refuse them and
 count them as refused input if it got them.
 
 Only the writer sets the size of the session's screen. When the writer's pane
