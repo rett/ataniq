@@ -56,13 +56,13 @@ func TestPinnedCases(t *testing.T) {
 				d, err := Decode(kind, body)
 				switch c.Expect {
 				case "valid":
-					if err != nil || d.Kind != kind {
-						t.Fatalf("got kind %q, err %v", d.Kind, err)
+					if err != nil || d.Kind() != kind {
+						t.Fatalf("got kind %q, err %v", d.Kind(), err)
 					}
-					if c.File == "valid-unknown-field.json" && !d.Unknown {
+					if c.File == "valid-unknown-field.json" && !d.Unknown() {
 						t.Fatal("unknown fields went undetected")
 					}
-					if (kind == Refusal || d.Unknown || c.File == "valid-truncated.json") && d.ActionsAllowed() {
+					if (kind == Refusal || d.Unknown() || c.File == "valid-truncated.json") && d.ActionsAllowed() {
 						t.Fatal("incomplete or refused input enabled actions")
 					}
 				case "invalid":

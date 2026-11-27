@@ -20,34 +20,66 @@ const (
 // Revision is an opaque record revision. Revisions support equality only.
 type Revision struct{ value int64 }
 
-// Document holds the known fields of a snapshot. Treat them as read-only.
+// Document holds the known fields of a snapshot. Its zero value is unusable.
 // Objects are map[string]any, arrays are []any and integers are int64,
 // except for rev, which is a Revision.
 type Document struct {
-	Kind                       Kind
-	Fields                     map[string]any
-	Unknown, Stale, Incomplete bool
+	kind                       Kind
+	fields                     map[string]any
+	unknown, stale, incomplete bool
+}
+
+func (d Document) Kind() Kind       { return d.kind }
+func (d Document) Unknown() bool    { return d.unknown }
+func (d Document) Stale() bool      { return d.stale }
+func (d Document) Incomplete() bool { return d.incomplete }
+
+// Fields returns a deep copy so display code can never alter checked evidence.
+func (d Document) Fields() map[string]any {
+	if d.fields == nil {
+		return nil
+	}
+	return copyField(d.fields).(map[string]any)
+}
+
+func copyField(v any) any {
+	switch v := v.(type) {
+	case map[string]any:
+		fields := make(map[string]any, len(v))
+		for k, child := range v {
+			fields[k] = copyField(child)
+		}
+		return fields
+	case []any:
+		items := make([]any, len(v))
+		for i, child := range v {
+			items[i] = copyField(child)
+		}
+		return items
+	default:
+		return v
+	}
 }
 
 // ActionsAllowed reports whether the whole document can support a dependent
 // action. The caller must also check its project, target and authorization.
 func (d Document) ActionsAllowed() bool {
-	return (d.Kind == Status || d.Kind == Check || d.Kind == Handoff) &&
-		d.Fields != nil && !d.Unknown && !d.Stale && !d.Incomplete
+	return (d.kind == Status || d.kind == Check || d.kind == Handoff) &&
+		d.fields != nil && !d.unknown && !d.stale && !d.incomplete
 }
 
 // AllowsRevision checks evidence for an action that also depends on a
 // previously observed record. J1 supplies no ordering or lease fence for rev.
 func (d Document) AllowsRevision(project, feature string, expected Revision) bool {
-	if !d.ActionsAllowed() || d.Fields["project"] != project {
+	if !d.ActionsAllowed() || d.fields["project"] != project {
 		return false
 	}
-	rows, _ := d.Fields["features"].([]any)
+	rows, _ := d.fields["features"].([]any)
 	found := false
 	for _, item := range rows {
 		row := item.(map[string]any)
 		name := row["feature"]
-		if d.Kind == Handoff {
+		if d.kind == Handoff {
 			name = row["name"]
 			row = row["record"].(map[string]any)
 		}
@@ -62,12 +94,12 @@ func (d Document) AllowsRevision(project, feature string, expected Revision) boo
 }
 
 // RefusalReason classifies a decoded refusal by its catalogue code. The
-// original code, including an unfamiliar one, is available in Fields["code"].
+// original code, including an unfamiliar one, is available in Fields()["code"].
 func (d Document) RefusalReason() string {
-	if d.Kind != Refusal {
+	if d.kind != Refusal {
 		return ""
 	}
-	switch d.Fields["code"] {
+	switch d.fields["code"] {
 	case "marshal-feature-held":
 		return "conflict"
 	case "marshal-feature-unknown":
@@ -104,8 +136,8 @@ func Decode(expected Kind, data []byte) (Document, error) {
 	if fields["kind"] != string(expected) || fields["schema"] != int64(1) {
 		return Document{}, errors.New("unexpected kind or unsupported schema")
 	}
-	d := Document{Kind: expected, Fields: fields}
-	if err := s.check(fields, s.Defs, &d.Unknown); err != nil {
+	d := Document{kind: expected, fields: fields}
+	if err := s.check(fields, s.Defs, &d.unknown); err != nil {
 		return Document{}, err
 	}
 	if expected == Refusal {
@@ -146,7 +178,7 @@ func DecodeResult(expected Kind, exit int, stdout, stderr []byte) (Document, err
 	if err != nil {
 		return Document{}, err
 	}
-	if d.Fields["exit"] != int64(exit) {
+	if d.fields["exit"] != int64(exit) {
 		return Document{}, errors.New("refusal exit differs from process status")
 	}
 	return d, nil
@@ -158,36 +190,36 @@ func nonemptyList(v any) bool {
 }
 
 func (d *Document) assess() {
-	f := d.Fields
+	f := d.fields
 	remote := f["remote"]
-	d.Stale = remote == "unchecked" || remote == "not-asked" || f["answer"] == "free-stale"
-	d.Incomplete = f["backend_fallback"] == true || f["truncated"] == true ||
+	d.stale = remote == "unchecked" || remote == "not-asked" || f["answer"] == "free-stale"
+	d.incomplete = f["backend_fallback"] == true || f["truncated"] == true ||
 		(f["backend"] == "local") != (remote == "none") || nonemptyList(f["warnings"])
 	rows, hasRows := f["features"].([]any)
-	if d.Kind == Handoff && (f["features_omitted"] != nil || f["features_left_out"] != nil ||
+	if d.kind == Handoff && (f["features_omitted"] != nil || f["features_left_out"] != nil ||
 		f["features_left_out_more"] != nil || f["lists_left_out"] != nil) {
 		// Each field describes an omission, even if the summary flag disagrees.
-		d.Incomplete = true
+		d.incomplete = true
 	}
-	if d.Kind == Check {
+	if d.kind == Check {
 		named := f["feature"] != nil
 		if named == hasRows || named != (f["answer"] != nil) ||
 			(f["answer"] == "free-stale") != (f["lead"] != nil) {
-			d.Incomplete = true
+			d.incomplete = true
 		}
 	}
 	for _, item := range rows {
 		row := item.(map[string]any)
-		if d.Kind == Handoff {
+		if d.kind == Handoff {
 			row = row["record"].(map[string]any)
 			data := row["data"].(map[string]any)
-			d.Incomplete = d.Incomplete || nonemptyList(data["truncated"])
+			d.incomplete = d.incomplete || nonemptyList(data["truncated"])
 		} else if row["project"] != f["project"] || nonemptyList(row["warnings"]) {
-			d.Incomplete = true
+			d.incomplete = true
 		}
 		row["rev"] = Revision{row["rev"].(int64)}
-		d.Stale = d.Stale || row["lease"] == "stale"
-		d.Incomplete = d.Incomplete || row["provisional"] == true ||
+		d.stale = d.stale || row["lease"] == "stale"
+		d.incomplete = d.incomplete || row["provisional"] == true ||
 			row["integrity"] == "INVALID" || row["integrity"] == "cannot verify"
 	}
 }

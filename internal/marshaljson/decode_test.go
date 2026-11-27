@@ -73,11 +73,11 @@ func TestEvidenceForActions(t *testing.T) {
 				tc.change(f)
 			}
 			d, err := Decode(tc.kind, mustJSON(t, f))
-			if err != nil || d.Unknown != tc.unknown || d.Stale != tc.stale || d.Incomplete != tc.incomplete ||
+			if err != nil || d.Unknown() != tc.unknown || d.Stale() != tc.stale || d.Incomplete() != tc.incomplete ||
 				d.ActionsAllowed() != !(tc.unknown || tc.stale || tc.incomplete) {
-				t.Fatalf("unknown=%v stale=%v incomplete=%v allowed=%v err=%v", d.Unknown, d.Stale, d.Incomplete, d.ActionsAllowed(), err)
+				t.Fatalf("unknown=%v stale=%v incomplete=%v allowed=%v err=%v", d.Unknown(), d.Stale(), d.Incomplete(), d.ActionsAllowed(), err)
 			}
-			if _, ok := d.Fields["Answer"]; ok {
+			if _, ok := d.Fields()["Answer"]; ok {
 				t.Fatal("unknown field retained")
 			}
 		})
@@ -97,7 +97,7 @@ func TestRevisionEqualityAndBounds(t *testing.T) {
 		if err != nil {
 			return Revision{}, err
 		}
-		return firstRow(d.Fields)["rev"].(Revision), nil
+		return firstRow(d.Fields())["rev"].(Revision), nil
 	}
 	maximum, e1 := decode("9007199254740991")
 	again, e2 := decode("9007199254740991")
@@ -143,7 +143,7 @@ func TestLargeStatusInventory(t *testing.T) {
 	row := firstRow(fields)
 	row["note"] = strings.Repeat("x", 64<<10) + "🌓"
 	d, err := Decode(Status, mustJSON(t, fields))
-	if err != nil || !d.ActionsAllowed() || firstRow(d.Fields)["note"] != row["note"] {
+	if err != nil || !d.ActionsAllowed() || firstRow(d.Fields())["note"] != row["note"] {
 		t.Fatal("large valid status lost", err)
 	}
 }
@@ -157,8 +157,8 @@ func TestUnicodeEscapes(t *testing.T) {
 		{`"\u0061"`, "a"},
 	} {
 		d, err := Decode(Check, bytes.Replace(body, []byte(`"r1"`), []byte(tc.encoded), 1))
-		if err != nil || d.Fields["feature"] != tc.want {
-			t.Errorf("%s: got %q, err %v", tc.encoded, d.Fields["feature"], err)
+		if err != nil || d.Fields()["feature"] != tc.want {
+			t.Errorf("%s: got %q, err %v", tc.encoded, d.Fields()["feature"], err)
 		}
 	}
 }
@@ -257,12 +257,39 @@ func TestReservedRefusalFields(t *testing.T) {
 	line := fixture(t, files, Refusal, "valid")
 	line = bytes.Replace(line, []byte(`"epoch":null`), []byte(`"epoch":{"future":42}`), 1)
 	d, err := Decode(Refusal, line)
-	if err != nil || d.Unknown || d.ActionsAllowed() || d.RefusalReason() != "conflict" {
+	if err != nil || d.Unknown() || d.ActionsAllowed() || d.RefusalReason() != "conflict" {
 		t.Fatalf("reserved field changed refusal: %v", err)
 	}
 	for _, key := range []string{"epoch", "state", "tx"} {
-		if _, exists := d.Fields[key]; exists {
+		if _, exists := d.Fields()[key]; exists {
 			t.Errorf("reserved field %s exposed", key)
 		}
+	}
+}
+
+func TestHandBuiltDocument(t *testing.T) {
+	var rebuilt Document
+	if err := json.Unmarshal([]byte(`{"Kind":"qargi-marshal-status","Fields":{"project":"app","features":[]}}`), &rebuilt); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []Document{{}, rebuilt} {
+		if d.ActionsAllowed() || d.AllowsRevision("app", "r1", Revision{}) {
+			t.Fatal("undecoded evidence passed a usability check")
+		}
+	}
+
+	files := archive(t, "cases.zip")
+	d, err := Decode(Status, fixture(t, files, Status, "valid-refs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := d.Fields()
+	row := firstRow(view)
+	rev := row["rev"].(Revision)
+	row["feature"] = "other"
+	view["features"].([]any)[0] = nil
+	view["project"] = "elsewhere"
+	if !d.AllowsRevision("app", "r1", rev) || d.AllowsRevision("elsewhere", "other", rev) {
+		t.Fatal("editing displayed fields changed the decoded evidence")
 	}
 }
