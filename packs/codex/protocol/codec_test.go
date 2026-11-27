@@ -15,6 +15,7 @@ import (
 
 	core "ataniq/internal/agentsession/protocol"
 	"ataniq/internal/pack"
+	"ataniq/internal/pack/packtest"
 	"ataniq/packs/codex/protocol"
 	"ataniq/packs/holder"
 )
@@ -227,6 +228,10 @@ func TestThreadStartBinding(t *testing.T) {
 
 func TestThreadStartFailure(t *testing.T) {
 	c := fresh(t)
+	if _, err := c.StartThread("abandoned"); err != nil {
+		t.Fatal(err)
+	}
+	c.Forget("abandoned")
 	if _, err := c.StartThread("start"); err != nil {
 		t.Fatal(err)
 	}
@@ -255,6 +260,47 @@ func TestTurnStartConsumesIdle(t *testing.T) {
 	}
 }
 
+type sessionPack struct {
+	pack.Pack
+	codec protocol.Codec
+}
+
+func (p sessionPack) ProtocolCodec(string) (core.Codec, bool) { return p.codec, true }
+
+func TestTurnStartRetry(t *testing.T) {
+	for _, abandoned := range []bool{false, true} {
+		t.Run(fmt.Sprintf("abandoned=%t", abandoned), func(t *testing.T) {
+			c := fresh(t)
+			startThread(t, c)
+			s, err := core.From(sessionPack{packtest.Beta, c}, "1.0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			msg := core.Request{Operation: core.Message, Text: "hello"}
+			first, _, err := s.Encode(msg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rejected := []byte(fmt.Sprintf("{\"id\":%q,\"error\":{\"code\":-1,\"message\":\"busy\"}}\n", first))
+			if abandoned {
+				s.Forget(first)
+			} else if _, err := s.Decode(rejected); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := s.Encode(msg); err != nil {
+				t.Fatalf("second turn/start: %v", err)
+			}
+			s.Forget(first)
+			if _, err := s.Decode(rejected); !errors.Is(err, core.ErrUnknownAnswer) {
+				t.Fatalf("late answer: %v", err)
+			}
+			if _, _, err := s.Encode(msg); !errors.Is(err, protocol.ErrTurn) {
+				t.Fatalf("late answer released second turn/start: %v", err)
+			}
+		})
+	}
+}
+
 func TestCloseActiveTurn(t *testing.T) {
 	c, req := active(t)
 	observe(t, c, req, core.Event{Kind: "question", Text: "Permission requested"})
@@ -268,6 +314,28 @@ func TestCloseActiveTurn(t *testing.T) {
 	}
 	if b, err := c.EncodeGrant(req, g); b != nil || !errors.Is(err, protocol.ErrTurn) {
 		t.Errorf("grant after close: %s, %v", b, err)
+	}
+}
+
+func TestLateTurnStartFailureKeepsObservedState(t *testing.T) {
+	f := frames(t, "events")
+	for _, later := range [][]byte{f[1], f[5], []byte(`{"id":"first","result":{}}`)} {
+		c := fresh(t)
+		startThread(t, c)
+		msg := core.Request{Operation: core.Message, Text: "hello"}
+		if _, err := c.Encode("first", msg); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Decode(later); err != nil {
+			t.Fatal(err)
+		}
+		c.Forget("first")
+		if _, err := c.Decode([]byte(`{"id":"first","error":{"code":-1,"message":"late"}}`)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Encode("second", msg); !errors.Is(err, protocol.ErrTurn) {
+			t.Fatalf("released idle after %s: %v", later, err)
+		}
 	}
 }
 

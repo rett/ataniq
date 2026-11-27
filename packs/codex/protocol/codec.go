@@ -26,17 +26,20 @@ type Codec interface {
 	core.Codec
 	Initialized() []byte
 	StartThread(id string) ([]byte, error)
+	// Forget releases the reservation for an abandoned start request.
+	Forget(id string)
 	Steer(id, thread, expectedTurn, text string) ([]byte, error)
 	DecodeGrant(request, reply []byte) (Grant, error)
 	EncodeGrant(request []byte, grant Grant) ([]byte, error)
 }
 
 type codec struct {
-	startID string // the one thread/start whose result may establish the binding
-	thread  string
-	turn    string
-	closed  bool
-	idle    bool
+	startID     string // the one thread/start whose result may establish the binding
+	turnStartID string // the turn/start that consumed the observed idle state
+	thread      string
+	turn        string
+	closed      bool
+	idle        bool
 	// Outstanding permission requests on this turn, keyed by string or
 	// integer wire ID. The digest binds the decision to the observed bytes.
 	pending map[any][sha256.Size]byte
@@ -95,6 +98,7 @@ func (c *codec) Encode(id string, req core.Request) ([]byte, error) {
 		}
 		b, err := c.message(id, "turn/start", "", req.Text)
 		if err == nil {
+			c.turnStartID = id
 			c.idle = false
 		}
 		return b, err
@@ -105,6 +109,21 @@ func (c *codec) Encode(id string, req core.Request) ([]byte, error) {
 		return request(id, "turn/interrupt", map[string]string{"threadId": c.thread, "turnId": c.turn})
 	default:
 		return nil, core.ErrUnsupported
+	}
+}
+
+// A definitive answer or observation supersedes the turn/start reservation.
+func (c *codec) setIdle(idle bool) {
+	c.turnStartID = ""
+	c.idle = idle
+}
+
+func (c *codec) Forget(id string) {
+	if id != "" && id == c.turnStartID {
+		c.setIdle(true)
+	}
+	if id == c.startID {
+		c.startID = ""
 	}
 }
 

@@ -68,7 +68,9 @@ type Decoded struct {
 // on the wire, including for open and stop requests. It returns ErrUnsupported
 // for an omitted operation. Decode must distinguish answers from notifications
 // and reject malformed answers. Decode transfers ownership of its result to
-// the caller. One codec serves one launch and does no I/O.
+// the caller. A codec that reserves state in Encode can implement Forget(string)
+// to release it when the caller abandons the request. One codec serves one
+// launch and does no I/O.
 type Codec interface {
 	Framing() Framing
 	Encode(id string, req Request) ([]byte, error)
@@ -150,6 +152,12 @@ func (s *Session) Encode(req Request) (id string, frame []byte, err error) {
 // Forget retires an abandoned request, for example after a timeout. It makes
 // a late answer stale. It makes no assertion about delivery to the peer.
 func (s *Session) Forget(id string) {
+	if _, ok := s.pending[id]; !ok {
+		return
+	}
+	if c, ok := s.codec.(interface{ Forget(string) }); ok {
+		c.Forget(id)
+	}
 	delete(s.pending, id)
 }
 
@@ -202,7 +210,7 @@ func (s *Session) Decode(frame []byte) (Decoded, error) {
 		}
 	}
 	if d.AnswerTo != nil {
-		s.Forget(*d.AnswerTo)
+		delete(s.pending, *d.AnswerTo)
 	}
 	return d, nil
 }

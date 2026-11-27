@@ -83,7 +83,8 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 	switch method {
 	case "thread/closed":
 		c.setTurn("")
-		c.closed, c.idle = true, false
+		c.closed = true
+		c.setIdle(false)
 		return event(core.Event{Kind: "ended"}), nil
 	case "thread/status/changed":
 		return c.status(p.Status)
@@ -103,7 +104,7 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 				return core.Decoded{}, core.ErrInvalidFrame
 			}
 			c.setTurn(p.Turn.ID)
-			c.idle = false
+			c.setIdle(false)
 			return state("busy"), nil
 		}
 		switch p.Turn.Status {
@@ -113,7 +114,7 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 		}
 		if c.current(p.ThreadID, p.Turn.ID) {
 			c.setTurn("")
-			c.idle = true
+			c.setIdle(true)
 			return state("idle"), nil
 		}
 	}
@@ -156,7 +157,7 @@ func (c *codec) status(s threadStatus) (core.Decoded, error) {
 	if s.Type != "active" {
 		c.setTurn("")
 	}
-	c.idle = s.Type == "idle"
+	c.setIdle(s.Type == "idle")
 	return state(observed), nil
 }
 
@@ -180,6 +181,9 @@ func (c *codec) answer(e envelope) (core.Decoded, error) {
 		d.Events = []core.Event{{Kind: "progress", Text: "Request failed: " + *detail.Message}}
 	} else if e.Result.Kind() != '{' {
 		return core.Decoded{}, core.ErrInvalidFrame
+	}
+	if id == c.turnStartID {
+		c.setIdle(e.Error != nil)
 	}
 	if id == c.startID {
 		if e.Error == nil {
