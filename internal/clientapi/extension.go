@@ -181,8 +181,9 @@ func PrincipalFromContext(ctx context.Context) (Principal, bool) {
 }
 
 // ManagedHandler serves only protocol v2. Its methods may run concurrently.
-// Capabilities returns a stable snapshot for the principal in ctx on each
-// request. Operations follow the same naming rules as extension operations.
+// Capabilities returns a stable snapshot for the principal in ctx at dispatch
+// and again at delivery. Managed and extension operations follow the same
+// naming rules.
 // HandleManaged receives only a target and operation from that snapshot.
 // It must recheck current authorization when committing an effect. Its result
 // and error follow the same wire rules as Extension.Handle.

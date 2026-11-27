@@ -1,6 +1,5 @@
-// Package clientapi implements the daemon's local Unix socket protocol. The
-// console and command line use "ataniq.client/1". A server can also enable
-// principal-bound managed requests using "ataniq.client/2".
+// Package clientapi implements the daemon's "ataniq.client/1" Unix socket
+// protocol and "ataniq.client/2" on authenticated desk streams.
 //
 // This package is provisional and unqualified. It has not been tested against
 // a hostile peer beyond its own tests, and nothing here is a claim of
@@ -41,18 +40,21 @@
 //
 // # Managed requests
 //
-// A server enables version 2 with [Options].Managed. Each request selects
-// its protocol independently. For a managed request, ResolvePrincipal must
-// verify the enrolled identity on the admitted connection. A missing verifier
-// or failed verification gives "forbidden". The managed handler obtains the
-// verified identity from [PrincipalFromContext].
+// [Serve] exposes only version 1. Supply its [Handler] and extensions from
+// the scratch inventory, including scratch-only status summaries. A desk
+// transport gives its authenticated stream to [ManagedServer.ServeConn].
+// Every frame on that stream must use version 2. ResolvePrincipal verifies
+// the enrolled identity on the connection. A missing verifier, failed proof
+// or top-level "principal" field gives "forbidden". The managed handler
+// obtains the verified identity from [PrincipalFromContext].
 //
 // A version 2 "hello" returns [ManagedHelloResult]. Its capabilities object
 // maps each visible target ID to an array of operation names. A managed call
 // supplies "target", "op" and optionally a "params" object. The server reads
-// the caller's current capabilities on every call. A missing target permission
-// gives "forbidden". The handler rechecks authorization when committing an
-// effect. Version 1 keeps its own hello and extension dispatch.
+// the caller's current capabilities on every call and checks the principal
+// and permissions again before delivering the response. A missing target
+// permission gives "forbidden". The handler rechecks authorization when
+// committing an effect.
 //
 // # Wire
 //

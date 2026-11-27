@@ -56,12 +56,12 @@ func TestProtocolV2PrincipalAndTargetCapabilities(t *testing.T) {
 	peer, other := net.Pipe()
 	defer peer.Close()
 	defer other.Close()
-	s := newServer(&stubHandler{}, Options{Managed: m, ResolvePrincipal: func(ctx context.Context, conn net.Conn) (Principal, error) {
+	s := NewManagedServer(m, ManagedOptions{ResolvePrincipal: func(ctx context.Context, conn net.Conn) (Principal, error) {
 		if conn == peer {
 			return first, nil
 		}
 		return second, nil
-	}})
+	}}).s
 	hello := func(c net.Conn) ManagedHelloResult {
 		t.Helper()
 		r := askManaged(t, s, c, managedHello, ProtocolV2)
@@ -72,7 +72,7 @@ func TestProtocolV2PrincipalAndTargetCapabilities(t *testing.T) {
 		return h
 	}
 	got := hello(peer)
-	if !reflect.DeepEqual(got.Capabilities, caps) || !reflect.DeepEqual(got.Protocols, []string{Protocol, ProtocolV2}) ||
+	if !reflect.DeepEqual(got.Capabilities, caps) || !reflect.DeepEqual(got.Protocols, []string{ProtocolV2}) ||
 		got.Limits.MaxRequestBytes != MaxRequestBytes || got.Limits.MaxResponseBytes != MaxResponseBytes ||
 		got.Limits.MaxConnections != DefaultMaxConns || got.Limits.IdleTimeoutSeconds != 30 {
 		t.Fatalf("hello = %+v", got)
@@ -108,12 +108,13 @@ func TestManagedRefusedWithoutPrincipal(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := &managedStub{}
-			opts := Options{Managed: m}
+			opts := ManagedOptions{}
 			if tc.name != "missing resolver" {
 				opts.ResolvePrincipal = func(context.Context, net.Conn) (Principal, error) { return tc.p, tc.err }
 			}
-			s := newServer(&stubHandler{}, opts)
+			s := NewManagedServer(m, opts).s
 			for _, req := range []string{managedHello, managedRead} {
+				wantError(t, askManaged(t, s, nil, req, ProtocolV2), CodeForbidden)
 				req = strings.TrimSuffix(req, "}") + `,"principal":{"issuer":"home","client_id":"one"}}`
 				r := askManaged(t, s, nil, req, ProtocolV2)
 				wantError(t, r, CodeForbidden)
@@ -134,9 +135,9 @@ func TestManagedTargetIdentityOnTheWire(t *testing.T) {
 		"�": {"conversation.read"}, "🌱": {"conversation.read"}, "empty": nil,
 	}
 	m := &managedStub{policies: map[Principal]TargetCapabilities{p: caps}}
-	s := newServer(nil, Options{Managed: m, ResolvePrincipal: func(context.Context, net.Conn) (Principal, error) {
+	s := NewManagedServer(m, ManagedOptions{ResolvePrincipal: func(context.Context, net.Conn) (Principal, error) {
 		return p, nil
-	}})
+	}}).s
 	r := askManaged(t, s, nil, managedHello, ProtocolV2)
 	var h ManagedHelloResult
 	if !r.OK || json.Unmarshal(r.Result, &h) != nil || h.Capabilities["empty"] == nil {
@@ -163,9 +164,9 @@ func TestManagedHelloRequiresAddressableCapabilities(t *testing.T) {
 		{"": {"conversation.read"}}, {"\xff": {"conversation.read"}}, {"a": {"status"}},
 	} {
 		m := &managedStub{policies: map[Principal]TargetCapabilities{p: caps}}
-		s := newServer(nil, Options{Managed: m, ResolvePrincipal: func(context.Context, net.Conn) (Principal, error) {
+		s := NewManagedServer(m, ManagedOptions{ResolvePrincipal: func(context.Context, net.Conn) (Principal, error) {
 			return p, nil
-		}})
+		}}).s
 		wantError(t, askManaged(t, s, nil, managedHello, ProtocolV2), CodeInternal)
 	}
 }
@@ -174,10 +175,11 @@ func TestProtocolV2SeparateFromLegacy(t *testing.T) {
 	m := &managedStub{}
 	h := &stubHandler{version: "v"}
 	resolutions := 0
-	s := newServer(h, Options{Managed: m, ResolvePrincipal: func(context.Context, net.Conn) (Principal, error) {
+	desk := NewManagedServer(m, ManagedOptions{ResolvePrincipal: func(context.Context, net.Conn) (Principal, error) {
 		resolutions++
 		return Principal{Issuer: "home", ClientID: "one"}, nil
-	}})
+	}}).s
+	s := newServer(h, Options{})
 	x := newRecordingExtension(true, "conversation.read")
 	var err error
 	s.ext, err = newExtensionSet([]Extension{x})
@@ -197,12 +199,11 @@ func TestProtocolV2SeparateFromLegacy(t *testing.T) {
 	if m.calls != 0 || m.projections != 0 || resolutions != 0 {
 		t.Fatal("/1 reached managed code")
 	}
-	wantError(t, askManaged(t, s, nil, managedRead, ProtocolV2), CodeForbidden)
-	wantError(t, askManaged(t, s, nil, strings.Replace(managedHello, "hello", "status", 1), ProtocolV2), CodeUnsupportedOperation)
+	wantError(t, askManaged(t, desk, nil, managedRead, ProtocolV2), CodeForbidden)
+	wantError(t, askManaged(t, desk, nil, strings.Replace(managedHello, "hello", "status", 1), ProtocolV2), CodeUnsupportedOperation)
 	if hello, status := h.calls(); hello != 1 || status != 0 || len(x.calls()) != 1 {
 		t.Fatal("/2 reached a legacy handler")
 	}
-	s.managed = nil
 	r = askManaged(t, s, nil, managedHello, Protocol)
 	wantError(t, r, CodeUnsupportedProtocol)
 	if !reflect.DeepEqual(r.Error.SupportedProtocols, []string{Protocol}) {
@@ -212,7 +213,7 @@ func TestProtocolV2SeparateFromLegacy(t *testing.T) {
 
 func TestProtocolV2RejectsInvalidRequests(t *testing.T) {
 	m := &managedStub{}
-	s := newServer(nil, Options{Managed: m})
+	s := NewManagedServer(m, ManagedOptions{}).s
 	for _, replacement := range []string{`"Target":"a"`, `"target":""`, `"target":7`, `"target":"a","target":"b"`} {
 		req := strings.Replace(managedRead, `"target":"a"`, replacement, 1)
 		var r Response
@@ -234,9 +235,9 @@ func TestProtocolV2RejectsInvalidRequests(t *testing.T) {
 	if r.Protocol != ProtocolV2 || r.RequestID != "" {
 		t.Fatalf("invalid ID response = %+v", r)
 	}
-	r = askManaged(t, s, nil, strings.Replace(managedHello, ProtocolV2, "other", 1), Protocol)
+	r = askManaged(t, s, nil, strings.Replace(managedHello, ProtocolV2, "other", 1), ProtocolV2)
 	wantError(t, r, CodeUnsupportedProtocol)
-	if !reflect.DeepEqual(r.Error.SupportedProtocols, []string{Protocol, ProtocolV2}) {
+	if !reflect.DeepEqual(r.Error.SupportedProtocols, []string{ProtocolV2}) {
 		t.Fatalf("protocols = %v", r.Error.SupportedProtocols)
 	}
 	if m.calls != 0 || m.projections != 0 {
@@ -248,15 +249,14 @@ func TestPrincipalRecheckedOnOneConnection(t *testing.T) {
 	p := Principal{Issuer: "home", ClientID: "one"}
 	m := &managedStub{policies: map[Principal]TargetCapabilities{p: {"a": {"conversation.read"}}}}
 	serverEnd, clientEnd := net.Pipe()
-	h := &stubHandler{}
 	n := 0
-	s := newServer(h, Options{Managed: m, ResolvePrincipal: func(ctx context.Context, c net.Conn) (Principal, error) {
+	s := NewManagedServer(m, ManagedOptions{ResolvePrincipal: func(ctx context.Context, c net.Conn) (Principal, error) {
 		n++
-		if c != serverEnd || n > 1 {
+		if c != serverEnd || n > 2 {
 			return Principal{}, errors.New("no current proof")
 		}
 		return p, nil
-	}})
+	}}).s
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -278,7 +278,8 @@ func TestPrincipalRecheckedOnOneConnection(t *testing.T) {
 				t.Fatal(string(line))
 			}
 		case 1:
-			if !resp.OK || resp.Protocol != Protocol {
+			wantError(t, resp, CodeUnsupportedProtocol)
+			if resp.Protocol != ProtocolV2 {
 				t.Fatal(string(line))
 			}
 		case 2:
@@ -288,7 +289,7 @@ func TestPrincipalRecheckedOnOneConnection(t *testing.T) {
 			}
 		}
 	}
-	if m.calls != 0 || m.projections != 1 || n != 2 {
+	if m.calls != 0 || m.projections != 2 || n != 3 {
 		t.Fatalf("handler = %+v, resolutions = %d", m, n)
 	}
 }
@@ -325,12 +326,12 @@ func (m failingManaged) HandleManaged(context.Context, string, string, json.RawM
 func TestProtocolV2HandlerFailures(t *testing.T) {
 	for _, failure := range []string{"verifier panic", "policy error", "policy panic", "large hello", "handler panic", "invalid result", "large result", "malformed error", "handler refusal"} {
 		t.Run(failure, func(t *testing.T) {
-			s := newServer(nil, Options{Managed: failingManaged{failure}, ResolvePrincipal: func(context.Context, net.Conn) (Principal, error) {
+			s := NewManagedServer(failingManaged{failure}, ManagedOptions{ResolvePrincipal: func(context.Context, net.Conn) (Principal, error) {
 				if failure == "verifier panic" {
 					panic("private verifier panic")
 				}
 				return Principal{Issuer: "home", ClientID: "one"}, nil
-			}})
+			}}).s
 			req := managedRead
 			if failure == "large hello" {
 				req = managedHello

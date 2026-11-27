@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -86,13 +85,6 @@ type Options struct {
 	// name is not well-formed or collides with a base operation or another
 	// extension's.
 	Extra []Extension
-	// Managed enables ProtocolV2. Legacy requests never dispatch here.
-	Managed ManagedHandler
-	// ResolvePrincipal verifies the current enrolled identity of this connection
-	// for each managed request. It must use authenticated channel state and
-	// respect cancellation. A nil verifier, incomplete identity or verification
-	// error refuses the request before Managed is called.
-	ResolvePrincipal func(context.Context, net.Conn) (Principal, error)
 }
 
 // Counters count what a server did. The zero value is ready to use, and it is
@@ -192,6 +184,7 @@ func (c *Counters) Snapshot() CounterSnapshot {
 }
 
 type server struct {
+	protocol         string
 	handler          Handler
 	managed          ManagedHandler
 	resolvePrincipal func(context.Context, net.Conn) (Principal, error)
@@ -212,17 +205,16 @@ type server struct {
 
 func newServer(h Handler, opts Options) *server {
 	s := &server{
-		handler:          h,
-		managed:          opts.Managed,
-		resolvePrincipal: opts.ResolvePrincipal,
-		maxConns:         opts.MaxConns,
-		idle:             opts.IdleTimeout,
-		write:            opts.WriteTimeout,
-		peerUID:          opts.PeerUID,
-		uid:              uint32(os.Geteuid()),
-		counters:         opts.Counters,
-		conns:            map[net.Conn]struct{}{},
-		drains:           map[net.Conn]struct{}{},
+		handler:  h,
+		protocol: Protocol,
+		maxConns: opts.MaxConns,
+		idle:     opts.IdleTimeout,
+		write:    opts.WriteTimeout,
+		peerUID:  opts.PeerUID,
+		uid:      uint32(os.Geteuid()),
+		counters: opts.Counters,
+		conns:    map[net.Conn]struct{}{},
+		drains:   map[net.Conn]struct{}{},
 	}
 	if s.maxConns <= 0 {
 		s.maxConns = DefaultMaxConns
@@ -455,7 +447,7 @@ func (s *server) serveConn(ctx context.Context, conn net.Conn) {
 		if tooLarge {
 			s.counters.tooLarge.Add(1)
 			conn.SetWriteDeadline(time.Now().Add(s.write))
-			conn.Write(encodeError(Protocol, "", &ErrorBody{Code: CodeTooLarge, Message: msgTooLarge}))
+			conn.Write(encodeError(s.protocol, "", &ErrorBody{Code: CodeTooLarge, Message: msgTooLarge}))
 			finish(conn)
 			return
 		}
@@ -492,27 +484,30 @@ func readLine(br *bufio.Reader, dst []byte, max int) (line []byte, tooLarge bool
 }
 
 // respond answers one request line with one response line.
-func (s *server) respond(ctx context.Context, conn net.Conn, line []byte) []byte {
-	req, fail := parseRequest(line, s.ext, s.managed != nil)
+func (s *server) respond(ctx context.Context, conn net.Conn, line []byte) (out []byte) {
+	req, fail := parseRequest(line, s.ext, s.protocol)
 	if fail != nil {
 		switch fail.Code {
 		case CodeInvalidRequest:
 			s.counters.invalid.Add(1)
-		default:
+		case CodeUnsupportedProtocol, CodeUnsupportedOperation:
 			s.counters.unsupported.Add(1)
 		}
 		return encodeError(req.Protocol, req.RequestID, fail)
 	}
-	result, fail := s.dispatch(ctx, conn, req)
+	defer func() {
+		if recover() != nil {
+			out = encodeError(req.Protocol, req.RequestID, s.internal(msgInternal))
+		}
+	}()
+	if s.protocol == ProtocolV2 {
+		out, fail = s.respondManaged(ctx, conn, req)
+	} else {
+		result, errBody := s.dispatch(ctx, req)
+		out, fail = s.encodeResult(req, result, errBody)
+	}
 	if fail != nil {
 		return encodeError(req.Protocol, req.RequestID, fail)
-	}
-	out, err := marshalResult(successResponse{Protocol: req.Protocol, RequestID: req.RequestID, OK: true, Result: result})
-	if err != nil {
-		return encodeError(req.Protocol, req.RequestID, s.internal(msgInternal))
-	}
-	if len(out) > MaxResponseBytes {
-		return encodeError(req.Protocol, req.RequestID, s.internal(msgResponseTooLarge))
 	}
 	switch req.Op {
 	case OpHello:
@@ -523,6 +518,20 @@ func (s *server) respond(ctx context.Context, conn net.Conn, line []byte) []byte
 		s.counters.addServedExt(req.Op)
 	}
 	return out
+}
+
+func (s *server) encodeResult(req Request, result any, fail *ErrorBody) ([]byte, *ErrorBody) {
+	if fail != nil {
+		return nil, fail
+	}
+	out, err := marshalResult(successResponse{Protocol: req.Protocol, RequestID: req.RequestID, OK: true, Result: result})
+	if err != nil {
+		return nil, s.internal(msgInternal)
+	}
+	if len(out) > MaxResponseBytes {
+		return nil, s.internal(msgResponseTooLarge)
+	}
+	return out, nil
 }
 
 func (s *server) internal(message string) *ErrorBody {
@@ -540,15 +549,7 @@ func (s *server) limits() Limits {
 	}
 }
 
-func (s *server) dispatch(ctx context.Context, conn net.Conn, req Request) (result any, fail *ErrorBody) {
-	defer func() {
-		if recover() != nil {
-			result, fail = nil, s.internal(msgInternal)
-		}
-	}()
-	if req.Protocol == ProtocolV2 {
-		return s.dispatchManaged(ctx, conn, req)
-	}
+func (s *server) dispatch(ctx context.Context, req Request) (any, *ErrorBody) {
 	switch req.Op {
 	case OpHello:
 		r := s.handler.Hello(ctx)
@@ -569,33 +570,6 @@ func (s *server) dispatch(ctx context.Context, conn net.Conn, req Request) (resu
 	default:
 		return s.handlerResult(s.ext.byOp[req.Op].Handle(ctx, req.Op, req.Params))
 	}
-}
-
-func (s *server) dispatchManaged(ctx context.Context, conn net.Conn, req Request) (any, *ErrorBody) {
-	forbidden := &ErrorBody{Code: CodeForbidden, Message: msgForbidden}
-	if s.resolvePrincipal == nil {
-		return nil, forbidden
-	}
-	p, err := s.resolvePrincipal(ctx, conn)
-	if err != nil || p.Issuer == "" || p.ClientID == "" {
-		return nil, forbidden
-	}
-	ctx = context.WithValue(ctx, principalKey{}, p)
-	caps, err := s.managed.Capabilities(ctx)
-	if err != nil {
-		return nil, s.internal(msgInternal)
-	}
-	if req.Op == OpHello {
-		view, ok := caps.forHello()
-		if !ok {
-			return nil, s.internal(msgInternal)
-		}
-		return ManagedHelloResult{Protocols: []string{Protocol, ProtocolV2}, Limits: s.limits(), Capabilities: view}, nil
-	}
-	if !slices.Contains(caps[req.Target], req.Op) {
-		return nil, forbidden
-	}
-	return s.handlerResult(s.managed.HandleManaged(ctx, req.Target, req.Op, req.Params))
 }
 
 // handlerResult forwards only the permitted error fields and values.

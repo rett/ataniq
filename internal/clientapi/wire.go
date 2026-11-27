@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"slices"
 	"strconv"
 	"time"
 	"unicode/utf16"
@@ -60,8 +61,8 @@ const (
 	// CodeUnauthorized: the peer UID differs from the server's. The
 	// connection is closed after this response.
 	CodeUnauthorized ErrorCode = "unauthorized"
-	// CodeForbidden refuses a managed request without a current principal or
-	// permission for the target and operation.
+	// CodeForbidden refuses a wire-supplied principal or a managed request
+	// without current proof and permission for the target and operation.
 	CodeForbidden ErrorCode = "forbidden"
 	// CodeBusy: the server is at its connection cap. The connection is closed
 	// after this response.
@@ -178,9 +179,33 @@ func (caps TargetCapabilities) forHello() (TargetCapabilities, bool) {
 		if ops == nil {
 			ops = []string{}
 		}
-		view[id] = ops
+		view[id] = slices.Clone(ops)
 	}
 	return view, true
+}
+
+// permitsView checks every target (including read-only inventory rows with
+// no operations) and operation already encoded into a hello response.
+func (caps TargetCapabilities) permitsView(view TargetCapabilities) bool {
+	for id, advertised := range view {
+		current, ok := caps[id]
+		if !ok {
+			return false
+		}
+		if slices.Equal(current, advertised) {
+			continue
+		}
+		allowed := make(map[string]bool, len(current))
+		for _, op := range current {
+			allowed[op] = true
+		}
+		for _, op := range advertised {
+			if !allowed[op] {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // ManagedHelloResult advertises the protocols and effective wire limits of
@@ -402,8 +427,9 @@ type StatusResult struct {
 	Leads []LeadStatus `json:"leads"`
 }
 
-// Handler supplies the values the server answers with. Both methods are
-// read-only and may be called concurrently from several connections.
+// Handler supplies the scratch inventory for the local version 1 listener.
+// Its status rows and summary must come from scratch state. Both methods
+// are read-only and may be called concurrently from several connections.
 type Handler interface {
 	// Hello returns the hello result. The server fills Protocols, Limits,
 	// Operations and Mutations itself, as they describe the server; the
@@ -472,14 +498,13 @@ func decodeRequest(line []byte) (id, op string, fail *ErrorBody) {
 // nil when the member is absent. For the base operations params is ignored and
 // returned nil, as any unknown field is.
 func decodeRequestExt(line []byte, exts *extensionSet) (id, op string, params json.RawMessage, fail *ErrorBody) {
-	req, fail := parseRequest(line, exts, false)
+	req, fail := parseRequest(line, exts, Protocol)
 	return req.RequestID, req.Op, req.Params, fail
 }
 
-// parseRequest selects the protocol for this line only. Before a recognized
-// protocol is decoded, errors use the legacy response envelope.
-func parseRequest(line []byte, exts *extensionSet, managed bool) (Request, *ErrorBody) {
-	req := Request{Protocol: Protocol}
+// parseRequest uses the protocol of the endpoint for every response envelope.
+func parseRequest(line []byte, exts *extensionSet, protocol string) (Request, *ErrorBody) {
+	req := Request{Protocol: protocol}
 	invalid := &ErrorBody{Code: CodeInvalidRequest, Message: msgInvalidRequest}
 	if !utf8.Valid(line) {
 		return req, invalid
@@ -507,9 +532,6 @@ func parseRequest(line []byte, exts *extensionSet, managed bool) (Request, *Erro
 		return s, true
 	}
 	proto, hasProtocol := str("protocol")
-	if managed && proto == ProtocolV2 {
-		req.Protocol = ProtocolV2
-	}
 	rid, ok := str("request_id")
 	if !ok || !validRequestID(rid) {
 		return req, invalid
@@ -519,11 +541,10 @@ func parseRequest(line []byte, exts *extensionSet, managed bool) (Request, *Erro
 		return req, invalid
 	}
 	if proto != req.Protocol {
-		protocols := SupportedProtocols()
-		if managed {
-			protocols = append(protocols, ProtocolV2)
-		}
-		return req, &ErrorBody{Code: CodeUnsupportedProtocol, Message: msgUnsupportedProtocol, SupportedProtocols: protocols}
+		return req, &ErrorBody{Code: CodeUnsupportedProtocol, Message: msgUnsupportedProtocol, SupportedProtocols: []string{protocol}}
+	}
+	if _, claim := fields["principal"]; proto == ProtocolV2 && claim {
+		return req, &ErrorBody{Code: CodeForbidden, Message: msgForbidden}
 	}
 	op, ok := str("op")
 	if !ok {
