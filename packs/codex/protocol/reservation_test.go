@@ -13,6 +13,96 @@ type observation struct {
 	kind, requestID, turn string
 }
 
+type reservationVerdict struct {
+	admit bool
+	stop  string
+	live  map[string]int // turn ID -> position of its latest started notification
+}
+
+// The v2 schema in ../testdata/appserver identifies a particular Turn in
+// TurnStartResponse, TurnStartedNotification and TurnCompletedNotification.
+// ThreadStatusChangedNotification identifies only a thread. Keep its latest
+// status independently of the evidence about individual turns.
+func reservationOracle(history []observation) reservationVerdict {
+	live := make(map[string]int)
+	completed := make(map[string]bool)
+	status := "idle" // the initial thread/start result
+	var answer observation
+	for i, obs := range history {
+		switch obs.kind {
+		case "success", "error":
+			if obs.requestID == "first" && answer.kind == "" {
+				answer = obs
+				if obs.kind == "success" && !completed[obs.turn] {
+					if _, seen := live[obs.turn]; !seen {
+						live[obs.turn] = 0 // known from the response only
+					}
+				}
+			}
+		case "started":
+			live[obs.turn] = i + 1
+		case "completed":
+			delete(live, obs.turn)
+			completed[obs.turn] = true
+		case "idle", "active", "notLoaded":
+			status = obs.kind
+		case "closed", "systemError":
+			return reservationVerdict{}
+		}
+	}
+
+	// TurnInterruptParams requires one turnId. Prefer the most recent live
+	// started notification. A possibly late response only supplies a fallback.
+	var stop string
+	for turn, position := range live {
+		if stop == "" || position > live[stop] {
+			stop = turn
+		}
+	}
+	settled := answer.kind == "error" || (answer.kind == "success" && completed[answer.turn])
+	return reservationVerdict{admit: settled && len(live) == 0 && status == "idle", stop: stop, live: live}
+}
+
+// AgentMessageDeltaNotification carries its own threadId and turnId.
+func (v reservationVerdict) routes(thread, turn string) bool {
+	_, live := v.live[turn]
+	return thread == "t" && live
+}
+
+var (
+	successA   = observation{kind: "success", requestID: "first", turn: "a"}
+	errorFirst = observation{kind: "error", requestID: "first"}
+	startedB   = observation{kind: "started", turn: "b"}
+	completedA = observation{kind: "completed", turn: "a"}
+	completedB = observation{kind: "completed", turn: "b"}
+	idle       = observation{kind: "idle"}
+)
+
+var overlapHistories = []struct {
+	name                  string
+	history               []observation
+	stop                  string
+	deltaA, deltaB, admit bool
+}{
+	{"complete accepted turn", []observation{successA, startedB, completedA}, "b", false, true, false},
+	{"late success", []observation{startedB, successA, completedA}, "b", false, true, false},
+	{"complete notified turn", []observation{successA, startedB, completedB}, "a", true, false, false},
+	{"both turns live", []observation{startedB, idle, successA}, "b", true, true, false},
+	{"late error", []observation{successA, startedB, idle, errorFirst, completedA}, "b", false, true, false},
+	{"rejected start", []observation{startedB, idle, errorFirst}, "b", false, true, false},
+	{"both completed", []observation{successA, startedB, completedB, idle, completedA}, "", false, false, true},
+	{"unloaded thread", []observation{successA, {kind: "notLoaded"}, completedA}, "", false, false, false},
+}
+
+func TestTurnReservationOracle(t *testing.T) {
+	for _, tc := range overlapHistories {
+		v := reservationOracle(tc.history)
+		if v.admit != tc.admit || v.stop != tc.stop || v.routes("t", "a") != tc.deltaA || v.routes("t", "b") != tc.deltaB {
+			t.Errorf("%s: got %+v, want admit=%t stop=%q deltaA=%t deltaB=%t", tc.name, v, tc.admit, tc.stop, tc.deltaA, tc.deltaB)
+		}
+	}
+}
+
 func messageAllowed(history []observation) bool {
 	current := ""
 	idle, usable := true, true
