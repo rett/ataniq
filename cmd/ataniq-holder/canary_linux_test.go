@@ -458,13 +458,15 @@ func TestCanaryCounters(t *testing.T) {
 }
 
 func TestCanaryStartRequiresAuthorityTag(t *testing.T) {
-	c := newCanaryRig(t)
-	t.Setenv(sandboxstart.AuthorityTagEnv, "")
-	if code := c.runNow(c.spec("").build()); code != exitSandbox || !strings.Contains(c.errbuf.String(), "authority tag") {
-		t.Fatalf("missing identity: exit %d, stderr %q", code, c.errbuf.String())
-	}
-	if calls := c.sys.callList(); len(calls) != 0 || len(c.launches()) != 0 {
-		t.Fatalf("start continued after identity refusal: %v", calls)
+	for _, tag := range []string{"", "0123456789abcdeg"} {
+		c := newCanaryRig(t)
+		t.Setenv(sandboxstart.AuthorityTagEnv, tag)
+		if code := c.runNow(c.spec("").build()); code != exitSandbox || !strings.Contains(c.errbuf.String(), "authority tag") {
+			t.Fatalf("tag %q: exit %d, stderr %q", tag, code, c.errbuf.String())
+		}
+		if calls := c.sys.callList(); len(calls) != 0 || len(c.launches()) != 0 {
+			t.Fatalf("tag %q: start continued after identity refusal: %v", tag, calls)
+		}
 	}
 }
 

@@ -63,7 +63,7 @@ func TestManagedLeadIdentityRefusedBeforeLaunch(t *testing.T) {
 		"missing": "", "short": "123456789abcdef", "long": "0123456789abcdef0",
 		"uppercase": "0123456789abcdeF", "punctuation": "0123456789abcd-f",
 		"non-hex letter": "0123456789abcdeg",
-		"newline": "0123456789abcde\n", "non-ascii": "0123456789abcdé",
+		"newline":        "0123456789abcde\n", "non-ascii": "0123456789abcdé",
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := newWorld(t)
