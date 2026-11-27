@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"maps"
 	"net/http"
 	"strconv"
 	"time"
@@ -245,15 +246,27 @@ const rpName = "Authority seat"
 
 // pages holds one parsed template set per page. A page that does not parse is
 // a bug of the build, so the failure is a panic at start.
-var pages = func() map[string]*template.Template {
+var pages = pageTemplates("", "")
+
+func pageTemplates(prefix, name string) map[string]*template.Template {
+	fm := maps.Clone(funcs)
+	fm["mount"] = func() string { return prefix }
+	fm["instance"] = func() string { return name }
 	m := map[string]*template.Template{}
 	for _, name := range pageNames {
-		t := template.New("layout.html").Funcs(funcs)
+		t := template.New("layout.html").Funcs(fm)
 		template.Must(t.ParseFS(templateFS, "templates/layout.html", "templates/parts.html", "templates/"+name+".html"))
 		m[name] = t
 	}
 	return m
-}()
+}
+
+func (a *app) pageTemplate(name string) *template.Template {
+	if a.pages != nil {
+		return a.pages[name]
+	}
+	return pages[name]
+}
 
 // page returns the handler of a page: the template is executed into a buffer
 // first so that a failure sends nothing half-written.
@@ -261,7 +274,7 @@ func (a *app) page(name string) http.HandlerFunc {
 	data := pageData{Title: pageTitles[name], RPID: a.cfg.RPID, RPName: rpName}
 	return func(w http.ResponseWriter, r *http.Request) {
 		var buf bytes.Buffer
-		if err := pages[name].Execute(&buf, data); err != nil {
+		if err := a.pageTemplate(name).Execute(&buf, data); err != nil {
 			writeText(w, http.StatusInternalServerError, "internal error\n")
 			return
 		}
@@ -278,7 +291,7 @@ func (a *app) page(name string) http.HandlerFunc {
 // once render reported it written.
 func (a *app) render(w http.ResponseWriter, name string, status int, data any) bool {
 	var buf bytes.Buffer
-	if err := pages[name].Execute(&buf, data); err != nil {
+	if err := a.pageTemplate(name).Execute(&buf, data); err != nil {
 		writeText(w, http.StatusInternalServerError, "internal error\n")
 		return false
 	}

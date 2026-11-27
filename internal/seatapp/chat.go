@@ -178,7 +178,7 @@ func (a *app) chatPage(w http.ResponseWriter, r *http.Request, s Session) {
 	h := s.chat
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	_, gone, live := a.sess.look(cookieValue(r, SessionCookie))
+	_, gone, live := a.sess.look(cookieValue(r, SessionCookie+a.cookieSuffix))
 	if !live || ctx.Err() != nil {
 		a.problem(w, r, problemUnavailable)
 		return
@@ -324,7 +324,7 @@ func newestAfter(v ChatView) int64 {
 }
 
 func (a *app) chatLive(w http.ResponseWriter, r *http.Request, p Chat, ctx context.Context, standIn bool) bool {
-	_, _, ok := a.sess.look(cookieValue(r, SessionCookie))
+	_, _, ok := a.sess.look(cookieValue(r, SessionCookie+a.cookieSuffix))
 	if !ok || !p.ChatOffered() || ctx.Err() != nil {
 		a.problemBanner(w, r, problemUnavailable, ok && standIn)
 		return false

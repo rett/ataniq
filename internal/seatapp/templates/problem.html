@@ -3,5 +3,5 @@
 {{if .StandIn}}{{template "standin-chat"}}{{end}}
 <p role="status">{{.Message}}</p>
 {{if .Retry}}<p><a id="retry" href="">Try this page again</a></p>
-{{end}}<p><a id="back" href="/cards/">Back to the cards</a></p>
+{{end}}<p><a id="back" href="{{mount}}/cards/">Back to the cards</a></p>
 {{end}}

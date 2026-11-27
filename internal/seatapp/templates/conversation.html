@@ -5,7 +5,7 @@
 {{template "chat-rule"}}
 
 <nav class="chat-links" aria-label="Cockpit sections">
-  <a id="chat-back" href="/leads/">Back to Leads</a>
+  <a id="chat-back" href="{{mount}}/leads/">Back to Leads</a>
   <a id="chat-conversation" href="#conversation-h">Conversation</a>
   <a id="chat-evidence" href="#evidence-h">Evidence</a>
   <a id="chat-timeline" href="#timeline-h">Timeline</a>
@@ -15,8 +15,8 @@
     <p class="chat-source">Source · {{if .Sample}}<strong>STAND-IN</strong> phone trial{{else}}Daemon chat{{end}} · Epoch {{num .Epoch}}</p>
     <h2 id="conversation-h" tabindex="-1">Conversation</h2>
     <p class="chat-links">
-      <a id="chat-refresh" href="/leads/daemon/{{text .Selected.Key maxID}}">Refresh</a>
-      {{if .JumpRemote}}<a id="chat-jump" href="/leads/daemon/{{text .Selected.Key maxID}}#newest">Jump to newest</a>
+      <a id="chat-refresh" href="{{mount}}/leads/daemon/{{text .Selected.Key maxID}}">Refresh</a>
+      {{if .JumpRemote}}<a id="chat-jump" href="{{mount}}/leads/daemon/{{text .Selected.Key maxID}}#newest">Jump to newest</a>
       {{else if .Messages}}<a id="chat-jump" href="#newest">Jump to newest</a>{{end}}
     </p>
     {{template "watch-leads" .Watch}}
@@ -37,8 +37,8 @@
     {{if not .Messages}}<p id="newest" tabindex="-1">{{if .Head}}No messages on this page.{{else}}No messages yet.{{end}}</p>{{end}}
 
     {{if or .HavePrev .More}}<nav class="chat-links" aria-label="Conversation pages">
-      {{if .HavePrev}}<a id="chat-prev" href="/leads/daemon/{{text .Selected.Key maxID}}?after={{num .PrevAfter}}">Show earlier</a>{{end}}
-      {{if .More}}<a id="chat-next" href="/leads/daemon/{{text .Selected.Key maxID}}?after={{num .LastSeq}}">Show later</a>{{end}}
+      {{if .HavePrev}}<a id="chat-prev" href="{{mount}}/leads/daemon/{{text .Selected.Key maxID}}?after={{num .PrevAfter}}">Show earlier</a>{{end}}
+      {{if .More}}<a id="chat-next" href="{{mount}}/leads/daemon/{{text .Selected.Key maxID}}?after={{num .LastSeq}}">Show later</a>{{end}}
     </nav>{{end}}
   </section>
 
@@ -62,7 +62,7 @@
     <h2 id="evidence-h" tabindex="-1">Evidence &amp; approvals</h2>
     <p>Terminal attachment is available at the desk.</p>
     {{with .Sample}}<p class="chat-source"><strong>STAND-IN</strong> Sample gate · {{text .Gate maxLine}}</p>{{end}}
-    <p class="chat-links"><a id="chat-cards" href="/cards/">Open Cards</a></p>
+    <p class="chat-links"><a id="chat-cards" href="{{mount}}/cards/">Open Cards</a></p>
   </section>
 
   <section class="chat-timeline" aria-labelledby="timeline-h">

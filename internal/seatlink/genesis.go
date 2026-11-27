@@ -151,13 +151,10 @@ var v1 = sync.OnceValues(catalog.V1)
 // genesis-not-ready and genesis-no-template, are [seatapp.ErrGenesisNotReady]
 // and [seatapp.ErrGenesisNoTemplate]. Nothing is retried.
 func (d *Daemon) Genesis(ctx context.Context, c seatapp.GenesisCall) (seatapp.GenesisView, error) {
-	if ctx.Err() != nil {
+	if _, online := d.c.Connected(); !online || ctx.Err() != nil {
 		return seatapp.GenesisView{}, seatapp.ErrDaemonUnavailable
 	}
 	if !d.offers(CapGenesis) {
-		if _, ok := d.c.Connected(); !ok {
-			return seatapp.GenesisView{}, seatapp.ErrDaemonUnavailable
-		}
 		return seatapp.GenesisView{}, seatapp.ErrNotOffered
 	}
 	params, err := genesisParams(c)

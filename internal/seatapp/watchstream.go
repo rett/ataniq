@@ -506,7 +506,7 @@ func (a *app) watchStream(w http.ResponseWriter, r *http.Request) {
 	life, stopLife := timer(max(a.streamLife-streamFinish, a.streamLife/2))
 	defer stopLife()
 
-	s, gone, _, ok := a.sess.lookUntil(cookieValue(r, SessionCookie))
+	s, gone, _, ok := a.sess.lookUntil(cookieValue(r, SessionCookie+a.cookieSuffix))
 	if !ok {
 		refuseStream(w, http.StatusForbidden, streamTextEnded, 0)
 		return

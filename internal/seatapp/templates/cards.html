@@ -1,4 +1,4 @@
-{{define "head"}}{{if .Push}}<link rel="manifest" href="/manifest.webmanifest">
+{{define "head"}}{{if .Push}}<link rel="manifest" href="{{mount}}/manifest.webmanifest">
 <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
 {{end}}{{end}}
 {{define "content"}}
@@ -7,8 +7,8 @@
 <section aria-labelledby="waiting">
 <h2 id="waiting">Waiting for you</h2>
 {{with .Listing.Pending}}<ul class="cards">
-{{range .}}<li><a href="{{cardHref .ID}}">
-<span class="what">{{text .Project maxName}} · {{text .Verb maxName}}{{if .Feature}} {{text .Feature maxName}}{{end}}</span>
+{{range .}}<li><a href="{{mount}}{{cardHref .ID}}">
+<span class="what">{{if mount}}{{text instance maxName}} · {{end}}{{text .Project maxName}} · {{text .Verb maxName}}{{if .Feature}} {{text .Feature maxName}}{{end}}</span>
 <span class="meta">{{text .ID maxID}}. Asked {{when .Asked}}. Ends {{until $.Now .Expires}}.</span>
 {{if .Held}}<span class="held">Held: decided past the limit.</span>{{end}}
 </a></li>
@@ -19,8 +19,8 @@
 <section aria-labelledby="recent">
 <h2 id="recent">Recent</h2>
 {{with .Listing.Recent}}<ul class="cards">
-{{range .}}<li><a href="{{cardHref .ID}}">
-<span class="what">{{text .Project maxName}} · {{text .Verb maxName}}{{if .Feature}} {{text .Feature maxName}}{{end}}</span>
+{{range .}}<li><a href="{{mount}}{{cardHref .ID}}">
+<span class="what">{{if mount}}{{text instance maxName}} · {{end}}{{text .Project maxName}} · {{text .Verb maxName}}{{if .Feature}} {{text .Feature maxName}}{{end}}</span>
 <span class="meta">{{text .ID maxID}}. {{text .State maxID}}, {{when .At}}.</span>
 {{if .Line}}<span class="line">{{text .Line maxLine}}</span>{{end}}
 </a></li>

@@ -3,13 +3,13 @@
 {{if .Note}}<p id="answer-note" class="note-line" role="status">{{.Note}}</p>
 {{end}}<p>Now: {{if .Row.OwnersWords}}<q class="owners">{{text .Row.Value maxLine}}</q> <span class="meta">(your own words)</span>{{else}}{{text .Row.Value maxLine}}{{end}}</p>
 <p class="note">A change clears the later answers that depended on it; their questions are asked again.</p>
-<form id="change" action="{{projectHref .Thread "change"}}" method="post"{{if .Note}} aria-describedby="answer-note"{{end}}>
+<form id="change" action="{{mount}}{{projectHref .Thread "change"}}" method="post"{{if .Note}} aria-describedby="answer-note"{{end}}>
 <input type="hidden" id="node" name="node" value="{{text .Row.Node maxID}}">
 {{template "question" .Question}}
 <button id="send" type="submit">Change it</button>
 </form>
 <nav aria-label="Project">
-<p><a id="keep" href="{{projectHref .Thread ""}}">Keep the answer and go back</a></p>
+<p><a id="keep" href="{{mount}}{{projectHref .Thread ""}}">Keep the answer and go back</a></p>
 </nav>
 {{template "leave"}}
 {{end}}

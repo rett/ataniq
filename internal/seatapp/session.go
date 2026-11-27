@@ -76,8 +76,9 @@ type Session struct {
 	Kind string
 	// key is the session's key in the app's table, for the state the app
 	// keeps with it (see decide.go).
-	key  tokenKey
-	chat *chatHistory
+	key       tokenKey
+	chat      *chatHistory
+	directory *directoryMemory
 }
 
 // session is one session as the app keeps it.
@@ -270,6 +271,7 @@ func (ss *sessions) add(k tokenKey, s Session) {
 	}
 	s.CredentialID = append([]byte(nil), s.CredentialID...)
 	s.chat = &chatHistory{}
+	s.directory = &directoryMemory{rows: make(map[string][]directoryRow)}
 	ss.m[k] = &session{Session: s, created: now, used: now, gone: make(chan struct{})}
 }
 
@@ -364,7 +366,7 @@ func clearCookie(w http.ResponseWriter, name string) {
 
 // session returns the session of a request, if it has one that is live.
 func (a *app) session(r *http.Request) (Session, bool) {
-	return a.sess.get(cookieValue(r, SessionCookie))
+	return a.sess.get(cookieValue(r, SessionCookie+a.cookieSuffix))
 }
 
 // loginPath is the login page.
@@ -385,7 +387,7 @@ func (a *app) authed(h func(http.ResponseWriter, *http.Request, Session)) http.H
 		}
 		s, ok := a.session(r)
 		if !ok {
-			w.Header().Set("Location", loginPath)
+			w.Header().Set("Location", a.mount+loginPath)
 			writeText(w, http.StatusSeeOther, "log in first\n")
 			return
 		}
