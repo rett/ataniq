@@ -1,0 +1,7 @@
+shipped: launch refused [pack-launch-policy-unrecorded] stage=0 at=policy
+sample/lead on-request render: launch refused [pack-launch-selection-lead-flag] stage=0 at=policy
+sample/lead on-request expanded: launch refused [pack-launch-mode-class-refused] stage=2 at=argv[1] value="on-request"
+sample/coord/f1 on-request render: launch refused [pack-launch-mode-class-refused] stage=2 at=argv[1] value="on-request"
+sample/coord/f1 on-request expanded: launch refused [pack-launch-mode-class-refused] stage=2 at=argv[1] value="on-request"
+candidate files: launch refused [pack-launch-file-refused] stage=2 at=file[#0]
+isolated file /etc/codex/hooks.json: launch refused [pack-launch-file-refused] stage=2 at=file[#0]

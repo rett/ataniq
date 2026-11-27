@@ -1,0 +1,51 @@
+{
+  "schema": "ataniq.pack-declaration/1",
+  "builds": {
+    "0.172.0": {
+      "binds": [
+        {
+          "role": "provider-policy",
+          "kind": "file",
+          "inside": "/etc/codex/requirements.toml"
+        },
+        {
+          "role": "provider-policy",
+          "kind": "file",
+          "inside": "/etc/codex/hooks.json"
+        },
+        {
+          "role": "config-overlay",
+          "kind": "file",
+          "inside": "/home/lead/.codex/config.toml"
+        },
+        {
+          "role": "config-overlay",
+          "kind": "folder",
+          "inside": "/home/lead/.codex/rules"
+        },
+        {
+          "role": "session-store",
+          "kind": "folder",
+          "inside": "/home/lead/.codex/sessions"
+        }
+      ],
+      "launch": {
+        "argv": [
+          "codex",
+          "--ask-for-approval={permission_mode}",
+          "--no-daemon",
+          "--strict-config",
+          "--model={model}"
+        ],
+        "grammars": {
+          "model": "^[a-z][a-z0-9.-]{0,63}$"
+        },
+        "permission_modes": [
+          {
+            "name": "on-request"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "/etc/codex/requirements.toml": {
+    "role":"provider-policy","format":"toml",
+    "values":{
+      "allow_managed_hooks_only":true,
+      "allowed_approval_policies":["on-request"],
+      "allowed_approvals_reviewers":["user"],
+      "features":{"hooks":true}
+    }
+  },
+  "/etc/codex/hooks.json": {
+    "role":"managed-hooks","format":"json",
+    "values":{"hooks":{
+      {{range $i, $row := .Rows}}{{if $i}},{{end}}
+      {{quote .Event}}: [{"hooks":[{
+        "type":"command",
+        "command":["/ataniq/hook/ataniq-hook",{{quote .ID}}],
+        "async":{{.Async}}
+      }]}]{{end}}
+    }}
+  },
+  "/home/lead/.codex/config.toml": {
+    "role":"config","format":"toml",
+    "values":{"projects":{ {{quote .Tree}}:{"trust_level":"untrusted"} }}
+  }
+}
