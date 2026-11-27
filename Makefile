@@ -1,4 +1,4 @@
-.PHONY: bootstrap doctor test test-canary test-ownerchannel ownerchannel-build scratch-seat-build canary-build test-dev test-patched qualification-host-build qualification-leadsandbox-build changelog-fold changelog-check
+.PHONY: bootstrap doctor test test-canary test-ownerchannel ownerchannel-build scratch-seat-build home-build canary-build test-dev test-patched qualification-host-build qualification-leadsandbox-build changelog-fold changelog-check
 
 # The patched charmbracelet modules in third_party/patched are directory
 # replacements, so ./... does not reach them; they are tested by package name
@@ -81,6 +81,11 @@ ownerchannel-build: doctor
 scratch-seat-build: doctor
 	@mkdir -p build/scratch-seat
 	@sh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary -trimpath -o build/scratch-seat/ataniqd ./cmd/ataniqd
+
+# Build the checkpoint home's Linux command for the local identity ceremony.
+home-build: doctor
+	@mkdir -p build/home
+	@sh scripts/go-tool.sh build -trimpath -o build/home/ataniq-home ./cmd/ataniq-home
 
 # The binaries of the attended canary run, built with the canary build tag into
 # build/canary/, which git ignores: the daemon, the holder, the provisioning
