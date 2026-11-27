@@ -1,6 +1,6 @@
 The J1 pin is the four `KIND/v1` directories from Qargi 0.3.9 under
 `tests/fixtures/json/`. Both ZIP files preserve the upstream paths and bytes.
-`registries.zip` holds just the four schema files embedded by the decoder.
+The decoder embeds the four schema files from [registries.zip](../schema/registries.zip).
 `cases.zip` holds the four case lists and all their inputs, including malformed
 JSON and refusal lines with their wire prefix.
 

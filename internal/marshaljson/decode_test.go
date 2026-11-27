@@ -17,7 +17,7 @@ func mustJSON(t *testing.T, v any) []byte {
 }
 
 func TestEvidenceForActions(t *testing.T) {
-	files := archive(t, "cases.zip")
+	files := casesArchive(t)
 	// Start each mutation with usable evidence. This isolates each signal
 	// even when the upstream example has several reasons to withhold action.
 	for _, tc := range []struct {
@@ -81,7 +81,7 @@ func firstRow(f map[string]any) map[string]any {
 }
 
 func TestRevisionEqualityAndBounds(t *testing.T) {
-	files := archive(t, "cases.zip")
+	files := casesArchive(t)
 	body := fixture(t, files, Status, "valid-refs")
 	decode := func(n string) (Revision, error) {
 		b := bytes.Replace(body, []byte(`"rev": 1`), []byte(`"rev": `+n), 1)
@@ -105,7 +105,7 @@ func TestRevisionEqualityAndBounds(t *testing.T) {
 }
 
 func TestFailedInput(t *testing.T) {
-	files := archive(t, "cases.zip")
+	files := casesArchive(t)
 	body := fixture(t, files, Check, "valid-refs-name")
 	for _, tc := range []struct {
 		kind Kind
@@ -127,7 +127,7 @@ func TestFailedInput(t *testing.T) {
 }
 
 func TestLargeStatusInventory(t *testing.T) {
-	files := archive(t, "cases.zip")
+	files := casesArchive(t)
 	var fields map[string]any
 	if err := json.Unmarshal(fixture(t, files, Status, "valid-refs"), &fields); err != nil {
 		t.Fatal(err)
@@ -141,7 +141,7 @@ func TestLargeStatusInventory(t *testing.T) {
 }
 
 func TestUnicodeEscapes(t *testing.T) {
-	files := archive(t, "cases.zip")
+	files := casesArchive(t)
 	body := fixture(t, files, Check, "valid-refs-name")
 	for _, tc := range []struct{ encoded, want string }{
 		{`"\ud83c\udf13"`, "🌓"},
@@ -156,7 +156,7 @@ func TestUnicodeEscapes(t *testing.T) {
 }
 
 func TestActionRequiresSameRecordRevision(t *testing.T) {
-	files := archive(t, "cases.zip")
+	files := casesArchive(t)
 	for _, kind := range []Kind{Status, Check, Handoff} {
 		var f map[string]any
 		if err := json.Unmarshal(fixture(t, files, kind, "valid-refs"), &f); err != nil {
@@ -206,7 +206,7 @@ func TestActionRequiresSameRecordRevision(t *testing.T) {
 }
 
 func TestVerbResult(t *testing.T) {
-	files := archive(t, "cases.zip")
+	files := casesArchive(t)
 	ok := fixture(t, files, Check, "valid-refs-name")
 	line := string(fixture(t, files, Refusal, "valid"))
 	remote := strings.NewReplacer("marshal-feature-held", "marshal-remote-unreachable", `"exit":1`, `"exit":3`).Replace(line)
@@ -244,7 +244,7 @@ func TestVerbResult(t *testing.T) {
 }
 
 func TestReservedRefusalFields(t *testing.T) {
-	files := archive(t, "cases.zip")
+	files := casesArchive(t)
 	line := fixture(t, files, Refusal, "valid")
 	line = bytes.Replace(line, []byte(`"epoch":null`), []byte(`"epoch":{"future":42}`), 1)
 	d, err := Decode(Refusal, line)
@@ -269,7 +269,7 @@ func TestHandBuiltDocument(t *testing.T) {
 		}
 	}
 
-	files := archive(t, "cases.zip")
+	files := casesArchive(t)
 	d, err := Decode(Status, fixture(t, files, Status, "valid-refs"))
 	if err != nil {
 		t.Fatal(err)
@@ -286,7 +286,7 @@ func TestHandBuiltDocument(t *testing.T) {
 }
 
 func TestSuccessfulResultWithStderr(t *testing.T) {
-	files := archive(t, "cases.zip")
+	files := casesArchive(t)
 	for _, kind := range []Kind{Status, Handoff, Check} {
 		var f map[string]any
 		name := "valid-refs"
@@ -311,7 +311,7 @@ func TestSuccessfulResultWithStderr(t *testing.T) {
 }
 
 func TestZeroRevisionMatchesNothing(t *testing.T) {
-	files := archive(t, "cases.zip")
+	files := casesArchive(t)
 	body := fixture(t, files, Status, "valid-refs")
 	body = bytes.Replace(body, []byte(`"rev": 1`), []byte(`"rev": 0`), 1)
 	d, err := Decode(Status, body)
@@ -325,7 +325,7 @@ func TestZeroRevisionMatchesNothing(t *testing.T) {
 }
 
 func TestInventoryEvidenceByFeature(t *testing.T) {
-	files := archive(t, "cases.zip")
+	files := casesArchive(t)
 	for _, tc := range []struct {
 		name   string
 		kind   Kind
@@ -380,7 +380,7 @@ func TestInventoryEvidenceByFeature(t *testing.T) {
 }
 
 func TestDocumentSizeLimit(t *testing.T) {
-	files := archive(t, "cases.zip")
+	files := casesArchive(t)
 	body := fixture(t, files, Check, "valid-refs-name")
 	atLimit := append(body, bytes.Repeat([]byte{' '}, MaxDocumentBytes-len(body))...)
 	if d, err := DecodeResult(Check, 0, atLimit, nil); err != nil || !d.ActionsAllowed("app", "r1") {

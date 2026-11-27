@@ -2,6 +2,7 @@ package marshaljson
 
 import (
 	"archive/zip"
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -20,9 +21,9 @@ const manifestHash = "46845896d1679464689825440aec9d242355e0aecb7a77a889ba9bea08
 
 var kinds = []Kind{Status, Check, Handoff, Refusal}
 
-func archive(t *testing.T, name string) fs.FS {
+func casesArchive(t *testing.T) fs.FS {
 	t.Helper()
-	f, err := zip.OpenReader(path.Join(fixtureDir, name))
+	f, err := zip.OpenReader(path.Join(fixtureDir, "cases.zip"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +46,7 @@ func fixture(t *testing.T, files fs.FS, kind Kind, name string) []byte {
 }
 
 func TestPinnedCases(t *testing.T) {
-	files := archive(t, "cases.zip")
+	files := casesArchive(t)
 	for _, kind := range kinds {
 		var cases []struct{ File, Expect string }
 		if err := json.Unmarshal(fixture(t, files, kind, "cases"), &cases); err != nil {
@@ -109,8 +110,12 @@ func checkManifest(t *testing.T, lines []string) {
 }
 
 func TestPinnedHashes(t *testing.T) {
-	lines := hashes(t, archive(t, "cases.zip"), ".")
-	checkManifest(t, append(lines, hashes(t, archive(t, "registries.zip"), ".")...))
+	lines := hashes(t, casesArchive(t), ".")
+	schemas, err := zip.NewReader(bytes.NewReader(registries), int64(len(registries)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkManifest(t, append(lines, hashes(t, schemas, ".")...))
 }
 
 func installedVersionSkip(files fs.FS) string {
