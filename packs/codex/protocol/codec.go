@@ -36,9 +36,10 @@ type Codec interface {
 
 // A turnReservation records the request ID of a successful Encode(Message),
 // which requires an observed idle thread and no outstanding reservation.
-// An error answer releases it back to idle. A success answer (result.turn.id)
-// and turn/completed for that turn on this thread also release it, in either
-// order. Until the answer names the turn, the reservation remembers the IDs
+// An error answer releases the reservation and preserves the observed turn
+// and thread status. A success answer (result.turn.id) and turn/completed
+// for that turn on this thread also release the reservation, in either order.
+// Until the answer names the turn, the reservation remembers the IDs
 // that complete on this thread. Once named, the current reserved turn stays
 // available for progress and interruption across a stale idle status.
 // thread/closed and systemError discard it and make the thread unusable.

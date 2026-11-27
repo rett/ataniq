@@ -40,9 +40,7 @@ func messageAllowed(history []observation) bool {
 				continue
 			}
 			awaitingAnswer = ""
-			if obs.kind == "error" {
-				current, idle = "", true
-			} else if !completed[obs.turn] {
+			if obs.kind == "success" && !completed[obs.turn] {
 				awaitingCompletion = obs.turn
 				current, idle = obs.turn, false
 			}

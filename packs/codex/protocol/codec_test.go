@@ -262,6 +262,7 @@ func TestTurnStartConsumesIdle(t *testing.T) {
 
 const idleStatus = `{"method":"thread/status/changed","params":{"threadId":"thread-a","status":{"type":"idle"}}}`
 const turnStartAnswer = `{"id":"first","result":{"turn":{"id":"turn-a"}}}`
+const turnStartError = `{"id":"first","error":{"code":-1,"message":"failed"}}`
 
 func TestAcceptedTurnStartSurvivesStaleIdle(t *testing.T) {
 	c, f := fresh(t), frames(t, "events")
@@ -327,12 +328,41 @@ func TestTurnStartSurvivesUnrelatedCompletion(t *testing.T) {
 		t.Fatalf("unrelated completion released pending start: %s, %v", b, err)
 	}
 	observe(t, c, []byte(`{"method":"thread/status/changed","params":{"threadId":"thread-a","status":{"type":"active","activeFlags":[]}}}`), core.Event{Kind: "state", State: "busy"})
-	if _, err := c.Decode([]byte(`{"id":"first","error":{"code":-1,"message":"failed"}}`)); err != nil {
+	if _, err := c.Decode([]byte(turnStartError)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Encode("retry", msg); err != nil {
-		t.Fatalf("rejected start did not release reservation: %v", err)
+	if b, err := c.Encode("retry", msg); b != nil || !errors.Is(err, protocol.ErrTurn) {
+		t.Fatalf("rejected start permitted a retry while active: %s, %v", b, err)
 	}
+	observe(t, c, []byte(idleStatus), core.Event{Kind: "state", State: "idle"})
+	if _, err := c.Encode("retry", msg); err != nil {
+		t.Fatalf("retry after idle: %v", err)
+	}
+}
+
+func TestRejectedTurnStartPreservesObservedTurn(t *testing.T) {
+	c, f := fresh(t), frames(t, "events")
+	startThread(t, c)
+	msg := core.Request{Operation: core.Message, Text: "hello"}
+	if _, err := c.Encode("first", msg); err != nil {
+		t.Fatal(err)
+	}
+	turnB := func(frame []byte) []byte {
+		return bytes.ReplaceAll(frame, []byte("turn-a"), []byte("turn-b"))
+	}
+	observe(t, c, turnB(f[1]), core.Event{Kind: "state", State: "busy"})
+	if _, err := c.Decode([]byte(turnStartError)); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := c.Encode("second", msg); b != nil || !errors.Is(err, protocol.ErrTurn) {
+		t.Fatalf("rejected start permitted a second message during turn-b: %s, %v", b, err)
+	}
+	observe(t, c, turnB(f[2]), core.Event{Kind: "progress", Text: "two words"})
+	frame, err := c.Encode("stop", core.Request{Operation: core.StopTurn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	equalJSON(t, frame, `{"method":"turn/interrupt","id":"stop","params":{"threadId":"thread-a","turnId":"turn-b"}}`)
 }
 
 type sessionPack struct {
