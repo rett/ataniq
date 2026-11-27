@@ -99,7 +99,7 @@ func FuzzDecodeRequest(f *testing.F) {
 
 		h := &recordingHandler{}
 		s := newServer(h, Options{})
-		out := s.respond(context.Background(), line)
+		out := s.respond(context.Background(), nil, line)
 
 		if len(h.ops) > 1 {
 			t.Fatalf("one request reached the handler %d times", len(h.ops))
