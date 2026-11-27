@@ -48,7 +48,9 @@ func reservationOracle(history []observation) oracleState {
 				}
 			}
 		case "started":
-			s.live[obs.turn] = i + 1
+			if !s.completed[obs.turn] {
+				s.live[obs.turn] = i + 1
+			}
 		case "completed", "interrupted":
 			delete(s.live, obs.turn)
 			s.completed[obs.turn] = true
@@ -115,6 +117,8 @@ var overlapHistories = []struct {
 	{"rejected start", []observation{startedB, idle, errorFirst}, "b", "", false, true, false},
 	{"both completed", []observation{successA, startedB, completedB, idle, completedA}, "", "", false, false, true},
 	{"unloaded thread", []observation{successA, {kind: "notLoaded"}, completedA}, "", "", false, false, false},
+	{"late start after completion", []observation{successA, completedA, {kind: "started", turn: "a"}}, "", "", false, false, true},
+	{"late start before answer", []observation{completedB, startedB}, "", "", false, false, false},
 	{"provisional control", []observation{startedB, idle}, "b", "b", false, true, false},
 }
 
@@ -286,7 +290,7 @@ func TestSystemErrorDiscardsPendingStart(t *testing.T) {
 	if _, err := c.Decode([]byte(`{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"systemError"}}}`)); err != nil {
 		t.Fatal(err)
 	}
-	if c.reservation.requestID != "" || c.ownTurn != "" || c.reservation.completed != nil {
+	if c.turnStartID != "" || c.ownTurn != "" || c.completed != nil {
 		t.Fatal("systemError retained the start reservation")
 	}
 }
@@ -294,8 +298,36 @@ func TestSystemErrorDiscardsPendingStart(t *testing.T) {
 func TestTurnStartAnswerReleasesReservation(t *testing.T) {
 	for _, answer := range []observation{successA, errorFirst} {
 		c := replayReservation(t, []observation{startedB, answer})
-		if c.reservation.requestID != "" || c.reservation.completed != nil {
-			t.Fatalf("%v retained reservation %+v", answer, c.reservation)
+		if c.turnStartID != "" {
+			t.Fatalf("%v retained reservation %q", answer, c.turnStartID)
 		}
 	}
+}
+
+func TestCompletedTurnLimitFailsClosed(t *testing.T) {
+	c := replayReservation(t, []observation{startedB})
+	complete := func(i int) core.Decoded {
+		t.Helper()
+		d, err := c.Decode(fmt.Appendf(nil, `{"method":"turn/completed","params":{"threadId":"t","turn":{"id":"old-%d","items":[],"status":"completed"}}}`, i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	for i := range core.MaxPending {
+		complete(i)
+	}
+	complete(0) // repeats need no extra space
+	if _, err := c.Steer("steer", "t", "b", "text"); err != nil {
+		t.Fatal("lost control at capacity", err)
+	}
+	if d := complete(core.MaxPending); !slices.Equal(d.Events, []core.Event{{Kind: "state", State: "unknown"}}) {
+		t.Fatal("overflow", d)
+	}
+	for _, obs := range []observation{idle, successA, startedB, completedB} {
+		if _, err := c.Decode([]byte(reservationFrames[obs])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	checkReservation(t, c, nil, reservationVerdict{})
 }

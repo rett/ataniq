@@ -110,12 +110,21 @@ func TestPendingServerIDs(t *testing.T) {
 	}
 	observePermission(t, c, withID("0"))
 	f := frames(t, "events")
+	if _, err := c.Decode([]byte(turnStartAnswer)); err != nil {
+		t.Fatal(err)
+	}
 	observe(t, c, f[4], core.Event{Kind: "state", State: "idle"})
-	observe(t, c, f[1], core.Event{Kind: "state", State: "busy"})
-	if b, err := c.EncodeGrant(req, protocol.Grant{Scope: "turn", Permissions: &protocol.Permissions{}}); b != nil || err == nil {
+	sendMessage(t, c, "second")
+	observe(t, c, f[1]) // a delayed start from the first message
+	wantPermissionDecline(t, c, req, "7")
+	next := func(frame []byte) []byte {
+		return bytes.ReplaceAll(frame, []byte("turn-a"), []byte("turn-b"))
+	}
+	observe(t, c, next(f[1]), core.Event{Kind: "state", State: "busy"})
+	if b, err := c.EncodeGrant(req, grant); b != nil || err == nil {
 		t.Fatal("old request survived turn boundary")
 	}
-	observePermission(t, c, req)
+	observePermission(t, c, next(req))
 }
 
 func TestRefuseGrant(t *testing.T) {

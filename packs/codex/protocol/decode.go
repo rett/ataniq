@@ -105,6 +105,9 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 			if p.Turn.Status != "inProgress" {
 				return core.Decoded{}, core.ErrInvalidFrame
 			}
+			if c.completed[p.Turn.ID] {
+				return core.Decoded{}, nil
+			}
 			c.removeLiveTurn(p.Turn.ID)
 			c.liveTurns = append(c.liveTurns, p.Turn.ID)
 			return state("busy"), nil
@@ -114,9 +117,15 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 		default:
 			return core.Decoded{}, core.ErrInvalidFrame
 		}
-		if c.reservation.completed != nil {
-			c.reservation.completed[p.Turn.ID] = true
+		if !c.completed[p.Turn.ID] && len(c.completed) == core.MaxPending {
+			// Evicting evidence could give a delayed start control of a new message.
+			c.closeThread()
+			return state("unknown"), nil
 		}
+		if c.completed == nil {
+			c.completed = make(map[string]bool)
+		}
+		c.completed[p.Turn.ID] = true
 		if p.Turn.ID == c.ownTurn {
 			c.ownTurn = ""
 		}
@@ -137,8 +146,9 @@ func (c *codec) removeLiveTurn(turn string) bool {
 }
 
 func (c *codec) closeThread() {
-	c.reservation = turnReservation{}
+	c.turnStartID = ""
 	c.ownTurn = ""
+	c.completed = nil
 	c.liveTurns = nil
 	c.closed = true
 	c.threadState = "unknown"
@@ -201,7 +211,7 @@ func (c *codec) answer(e envelope) (core.Decoded, error) {
 	} else if e.Result.Kind() != '{' {
 		return core.Decoded{}, core.ErrInvalidFrame
 	}
-	if id == c.reservation.requestID {
+	if id == c.turnStartID {
 		if e.Error == nil {
 			var result struct {
 				Turn struct {
@@ -211,7 +221,7 @@ func (c *codec) answer(e envelope) (core.Decoded, error) {
 			if json.Unmarshal(e.Result, &result) != nil || result.Turn.ID == "" {
 				return core.Decoded{}, core.ErrInvalidFrame
 			}
-			if !c.reservation.completed[result.Turn.ID] {
+			if !c.completed[result.Turn.ID] {
 				c.ownTurn = result.Turn.ID
 				// An answer may arrive after a newer turn/started. Keep that
 				// interrupt target ahead of a turn known only from its answer.
@@ -220,7 +230,7 @@ func (c *codec) answer(e envelope) (core.Decoded, error) {
 				}
 			}
 		}
-		c.reservation = turnReservation{}
+		c.turnStartID = ""
 	}
 	if id == c.startID {
 		if e.Error == nil {
