@@ -260,6 +260,50 @@ func TestTurnStartConsumesIdle(t *testing.T) {
 	}
 }
 
+const idleStatus = `{"method":"thread/status/changed","params":{"threadId":"thread-a","status":{"type":"idle"}}}`
+
+func TestTurnStartSurvivesIdleObservation(t *testing.T) {
+	f := frames(t, "events")
+	for _, afterTurn := range []bool{false, true} {
+		t.Run(fmt.Sprintf("afterTurn=%t", afterTurn), func(t *testing.T) {
+			c := fresh(t)
+			startThread(t, c)
+			if afterTurn {
+				observe(t, c, f[1], core.Event{Kind: "state", State: "busy"})
+				observe(t, c, f[4], core.Event{Kind: "state", State: "idle"})
+			}
+			msg := core.Request{Operation: core.Message, Text: "hello"}
+			if _, err := c.Encode("first", msg); err != nil {
+				t.Fatal(err)
+			}
+			observe(t, c, []byte(idleStatus), core.Event{Kind: "state", State: "idle"})
+			if b, err := c.Encode("second", msg); b != nil || !errors.Is(err, protocol.ErrTurn) {
+				t.Fatalf("idle notification released pending start: %s, %v", b, err)
+			}
+		})
+	}
+}
+
+func TestTurnStartSurvivesUnrelatedCompletion(t *testing.T) {
+	c := fresh(t)
+	startThread(t, c)
+	msg := core.Request{Operation: core.Message, Text: "hello"}
+	if _, err := c.Encode("first", msg); err != nil {
+		t.Fatal(err)
+	}
+	observe(t, c, frames(t, "events")[4])
+	if b, err := c.Encode("second", msg); b != nil || !errors.Is(err, protocol.ErrTurn) {
+		t.Fatalf("unrelated completion released pending start: %s, %v", b, err)
+	}
+	observe(t, c, []byte(`{"method":"thread/status/changed","params":{"threadId":"thread-a","status":{"type":"active","activeFlags":[]}}}`), core.Event{Kind: "state", State: "busy"})
+	if _, err := c.Decode([]byte(`{"id":"first","error":{"code":-1,"message":"failed"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Encode("retry", msg); err != nil {
+		t.Fatalf("rejected start did not release reservation: %v", err)
+	}
+}
+
 type sessionPack struct {
 	pack.Pack
 	codec protocol.Codec

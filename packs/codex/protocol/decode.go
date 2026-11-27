@@ -135,13 +135,17 @@ func (c *codec) status(s threadStatus) (core.Decoded, error) {
 	switch s.Type {
 	case "idle":
 		observed = "idle"
+		// The server may have sent this before it received our turn/start.
+		c.idle = c.turnStartID == ""
 	case "systemError", "notLoaded":
 		observed = "unknown"
+		c.setIdle(false)
 	case "active":
 		if s.Flags == nil {
 			return core.Decoded{}, core.ErrInvalidFrame
 		}
 		observed = "busy"
+		c.idle = false
 		if slices.Contains(s.Flags, "waitingOnApproval") {
 			observed = "blocked"
 		}
@@ -154,7 +158,6 @@ func (c *codec) status(s threadStatus) (core.Decoded, error) {
 	if s.Type != "active" {
 		c.setTurn("")
 	}
-	c.setIdle(s.Type == "idle")
 	return state(observed), nil
 }
 
