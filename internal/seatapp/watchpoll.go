@@ -187,7 +187,7 @@ func answerOf(s WatchState, in watchBody) watchAnswer {
 // request ends, or the session does (ended). At most maxHeldPolls polls of a
 // session are held, one for each tab, and the oldest is replaced past that.
 func (a *app) watchPost(w http.ResponseWriter, r *http.Request) {
-	s, gone, ok := a.sess.look(cookieValue(r, SessionCookie))
+	s, gone, ok := a.sess.look(cookieValue(r, SessionCookie+a.cookieSuffix))
 	if !ok {
 		writeJSON(w, http.StatusOK, watchAnswer{State: watchEnded, Card: cardUnknown})
 		return
@@ -260,7 +260,7 @@ func (a *app) watchPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The session may have ended by its idle time or its age meanwhile.
-	if _, _, ok := a.sess.look(cookieValue(r, SessionCookie)); !ok {
+	if _, _, ok := a.sess.look(cookieValue(r, SessionCookie+a.cookieSuffix)); !ok {
 		writeJSON(w, http.StatusOK, watchAnswer{State: watchEnded, Card: cardUnknown})
 		return
 	}

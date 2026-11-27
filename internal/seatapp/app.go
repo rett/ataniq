@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"html/template"
 	"io"
 	"mime"
 	"net/http"
@@ -218,10 +219,12 @@ func canonicalOrigin(o string, insecureLoopback bool) (origin, host string, err 
 
 // app is the handler's state.
 type app struct {
-	cfg   Config
-	pair  *pairing
-	login *logins
-	sess  *sessions
+	cfg                 Config
+	pages               map[string]*template.Template
+	mount, cookieSuffix string
+	pair                *pairing
+	login               *logins
+	sess                *sessions
 	// reads bounds the reads of each credential's sessions, and decides
 	// their decision challenges.
 	reads   *limiter
@@ -416,7 +419,7 @@ const pairPath = "/pair/"
 // the one it has.
 func (a *app) redirect(to string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Location", to)
+		w.Header().Set("Location", a.mount+to)
 		writeText(w, http.StatusPermanentRedirect, "moved\n")
 	}
 }
@@ -483,8 +486,8 @@ func permissionsPolicy(get string) string {
 		", camera=(), microphone=(), geolocation=(), payment=(), usb=(), bluetooth=(), serial=(), hid=(), clipboard-read=(), clipboard-write=()"
 }
 
-// guard sets the headers and cuts every request body at MaxBody.
-func (a *app) guard(next http.Handler) http.Handler {
+// protect sets the headers and cuts every request body at MaxBody.
+func protect(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		for _, kv := range securityHeaders {
@@ -497,6 +500,12 @@ func (a *app) guard(next http.Handler) http.Handler {
 		if r.Body != nil {
 			r.Body = http.MaxBytesReader(w, r.Body, MaxBody)
 		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (a *app) guard(next http.Handler) http.Handler {
+	return protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// ServeMux redirects unclean paths before matching a handler. A
 		// malformed chat path must never become a link copied from the URL.
 		if strings.HasPrefix(r.URL.Path, "/leads/") && r.URL.Path != "/leads/" &&
@@ -505,7 +514,7 @@ func (a *app) guard(next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
-	})
+	}))
 }
 
 // post wraps a POST handler with the checks every changing request passes:

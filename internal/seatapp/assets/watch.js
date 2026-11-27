@@ -47,6 +47,7 @@
 // textContent, never as markup, and never taken from the seat's answer.
 "use strict";
 (function () {
+  var mount = document.documentElement.dataset.mount || "";
   var root = document.getElementById("watch");
   var statusEl = document.getElementById("watch-status");
   if (!root || !statusEl) { return; }
@@ -71,6 +72,12 @@
   var CHAT_PAGE = /^\/leads\/daemon\/[a-z0-9][a-z0-9-]{0,31}$/; // a conversation's own path
   var POLL_PATH = "/api/watch";
   var STREAM_PATH = "/api/watch/stream";
+  if (mount) {
+    LOGIN_PATH = mount + LOGIN_PATH;
+    CARDS_PATH = mount + CARDS_PATH;
+    LEADS_PATH = mount + LEADS_PATH;
+    CHAT_PAGE = new RegExp("^" + mount + CHAT_PAGE.source.slice(1));
+  }
   var STREAM_KIND = "cards-changed";  // the card list's one kind of event; any other is skipped
   var STREAM_KIND_CHAT = "chat-changed"; // the Leads pages' one kind of event; any other is skipped
   var MAX_CURSOR = 9007199254740991;   // 2^53-1, the largest chat cursor
@@ -335,7 +342,7 @@
   // send makes the one kind of request of this script, the poll's and the
   // stream's: a same-origin JSON POST, with no redirect and no cache.
   function send(path, body, ctl) {
-    return fetch(path, {
+    return fetch(mount + path, {
       method: "POST", credentials: "same-origin", cache: "no-store", redirect: "error", referrer: "", referrerPolicy: "strict-origin",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctl.signal
     });

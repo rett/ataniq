@@ -284,7 +284,7 @@ func (a *app) form(h func(http.ResponseWriter, *http.Request, Session)) http.Han
 		}
 		s, ok := a.session(r)
 		if !ok {
-			w.Header().Set("Location", loginPath)
+			w.Header().Set("Location", a.mount+loginPath)
 			writeText(w, http.StatusSeeOther, "log in first\n")
 			return
 		}
@@ -305,11 +305,11 @@ func (a *app) form(h func(http.ResponseWriter, *http.Request, Session)) http.Han
 // that the browser loads the page with a GET and a reload never sends the
 // form again. to is made of the app's own words and ids it checked; note is
 // one of the words of genesisNotes, or "".
-func seeOther(w http.ResponseWriter, to, note string) {
+func (a *app) seeOther(w http.ResponseWriter, to, note string) {
 	if note != "" {
 		to += "?note=" + url.QueryEscape(note)
 	}
-	w.Header().Set("Location", to)
+	w.Header().Set("Location", a.mount+to)
 	writeText(w, http.StatusSeeOther, "see other\n")
 }
 
@@ -396,9 +396,9 @@ func (a *app) postCall(w http.ResponseWriter, r *http.Request, s Session, c Gene
 	g, ctx, cancel, err := a.genesisCall(r, s)
 	if err != nil {
 		if errors.Is(err, errTooMany) {
-			seeOther(w, back, "many")
+			a.seeOther(w, back, "many")
 		} else {
-			seeOther(w, projectsPath, "")
+			a.seeOther(w, projectsPath, "")
 		}
 		return GenesisView{}, false
 	}
@@ -408,13 +408,13 @@ func (a *app) postCall(w http.ResponseWriter, r *http.Request, s Session, c Gene
 	case err == nil:
 		return v, true
 	case errors.Is(err, ErrNotOffered):
-		seeOther(w, projectsPath, "")
+		a.seeOther(w, projectsPath, "")
 	case errors.Is(err, ErrGenesisUnknownThread), errors.Is(err, ErrGenesisBusy):
-		seeOther(w, projectsPath, noteWord(err))
+		a.seeOther(w, projectsPath, noteWord(err))
 	case errors.Is(err, ErrGenesisDone), errors.Is(err, ErrGenesisStaleRound):
-		seeOther(w, projectHref(c.Thread, ""), noteWord(err))
+		a.seeOther(w, projectHref(c.Thread, ""), noteWord(err))
 	default:
-		seeOther(w, back, noteWord(err))
+		a.seeOther(w, back, noteWord(err))
 	}
 	return GenesisView{}, false
 }
@@ -470,10 +470,10 @@ func (a *app) projectStart(w http.ResponseWriter, r *http.Request, s Session) {
 		return
 	}
 	if !ValidThreadID(v.Thread) {
-		seeOther(w, projectsPath, "failed")
+		a.seeOther(w, projectsPath, "failed")
 		return
 	}
-	seeOther(w, projectHref(v.Thread, ""), "")
+	a.seeOther(w, projectHref(v.Thread, ""), "")
 }
 
 // resetOf is the count of answers a change cleared, from a request's query:
@@ -568,7 +568,7 @@ func (a *app) changePage(w http.ResponseWriter, r *http.Request, s Session) {
 		return
 	}
 	if v.State == GenesisStateFinished {
-		seeOther(w, projectHref(thread, ""), "done")
+		a.seeOther(w, projectHref(thread, ""), "done")
 		return
 	}
 	for _, g := range [][]GenesisRow{v.YouChose, v.DecidedForYou, v.Defaults} {
@@ -712,9 +712,9 @@ func plainText(s string) bool {
 
 // rejectAnswer redirects to the question that failed local validation. The
 // address carries only a fixed note code and the question's form position.
-func rejectAnswer(w http.ResponseWriter, back string, i int, err error) {
+func (a *app) rejectAnswer(w http.ResponseWriter, back string, i int, err error) {
 	index := strconv.Itoa(i)
-	seeOther(w, back+"?note="+noteWord(err)+"&q="+index+"#q"+index+"-group", "")
+	a.seeOther(w, back+"?note="+noteWord(err)+"&q="+index+"#q"+index+"-group", "")
 }
 
 // projectAnswer answers POST /projects/{thread}/answer: the answers of the
@@ -722,14 +722,14 @@ func rejectAnswer(w http.ResponseWriter, back string, i int, err error) {
 func (a *app) projectAnswer(w http.ResponseWriter, r *http.Request, s Session) {
 	thread := r.PathValue("thread")
 	if !ValidThreadID(thread) {
-		seeOther(w, projectsPath, "unknown")
+		a.seeOther(w, projectsPath, "unknown")
 		return
 	}
 	back := projectHref(thread, "")
 	form := r.PostForm
 	round, err := strconv.Atoi(form.Get("round"))
 	if err != nil || round < 1 || round > MaxGenesisRounds || strconv.Itoa(round) != form.Get("round") {
-		seeOther(w, back, "bad")
+		a.seeOther(w, back, "bad")
 		return
 	}
 	c := GenesisCall{Verb: GenesisVerbAnswer, Thread: thread, Round: round}
@@ -740,7 +740,7 @@ func (a *app) projectAnswer(w http.ResponseWriter, r *http.Request, s Session) {
 			continue
 		}
 		if !validNodeID(node) || seen[node] {
-			seeOther(w, back, "bad")
+			a.seeOther(w, back, "bad")
 			return
 		}
 		seen[node] = true
@@ -749,19 +749,19 @@ func (a *app) projectAnswer(w http.ResponseWriter, r *http.Request, s Session) {
 			continue
 		}
 		if err != nil {
-			rejectAnswer(w, back, i, err)
+			a.rejectAnswer(w, back, i, err)
 			return
 		}
 		c.Answers = append(c.Answers, GenesisAnswer{Node: node, Pick: p})
 	}
 	if len(c.Answers) == 0 {
-		seeOther(w, back, "bad")
+		a.seeOther(w, back, "bad")
 		return
 	}
 	if _, ok := a.postCall(w, r, s, c, back); !ok {
 		return
 	}
-	seeOther(w, back, "")
+	a.seeOther(w, back, "")
 }
 
 // projectChange answers POST /projects/{thread}/change: the new answer of
@@ -770,11 +770,11 @@ func (a *app) projectAnswer(w http.ResponseWriter, r *http.Request, s Session) {
 func (a *app) projectChange(w http.ResponseWriter, r *http.Request, s Session) {
 	thread, node := r.PathValue("thread"), r.PostForm.Get("node")
 	if !ValidThreadID(thread) {
-		seeOther(w, projectsPath, "unknown")
+		a.seeOther(w, projectsPath, "unknown")
 		return
 	}
 	if !validNodeID(node) {
-		seeOther(w, projectHref(thread, ""), "bad")
+		a.seeOther(w, projectHref(thread, ""), "bad")
 		return
 	}
 	back := changeHref(thread, node)
@@ -783,7 +783,7 @@ func (a *app) projectChange(w http.ResponseWriter, r *http.Request, s Session) {
 		err = ErrGenesisBadAnswer
 	}
 	if err != nil {
-		rejectAnswer(w, back, 0, err)
+		a.rejectAnswer(w, back, 0, err)
 		return
 	}
 	v, ok := a.postCall(w, r, s, GenesisCall{Verb: GenesisVerbChange, Thread: thread, Node: node, Pick: p}, back)
@@ -792,10 +792,10 @@ func (a *app) projectChange(w http.ResponseWriter, r *http.Request, s Session) {
 	}
 	to := projectHref(thread, "")
 	if v.Reset > 0 && v.Reset <= MaxGenesisRows {
-		seeOther(w, to+"?reset="+strconv.Itoa(v.Reset), "")
+		a.seeOther(w, to+"?reset="+strconv.Itoa(v.Reset), "")
 		return
 	}
-	seeOther(w, to, "changed")
+	a.seeOther(w, to, "changed")
 }
 
 // projectFinish answers POST /projects/{thread}/finish: the brief frozen,
@@ -803,14 +803,14 @@ func (a *app) projectChange(w http.ResponseWriter, r *http.Request, s Session) {
 func (a *app) projectFinish(w http.ResponseWriter, r *http.Request, s Session) {
 	thread := r.PathValue("thread")
 	if !ValidThreadID(thread) {
-		seeOther(w, projectsPath, "unknown")
+		a.seeOther(w, projectsPath, "unknown")
 		return
 	}
 	back := projectHref(thread, "")
 	if _, ok := a.postCall(w, r, s, GenesisCall{Verb: GenesisVerbFinish, Thread: thread}, back); !ok {
 		return
 	}
-	seeOther(w, back, "")
+	a.seeOther(w, back, "")
 }
 
 // projectDiscard answers POST /projects/{thread}/discard: the thread and its
@@ -818,11 +818,11 @@ func (a *app) projectFinish(w http.ResponseWriter, r *http.Request, s Session) {
 func (a *app) projectDiscard(w http.ResponseWriter, r *http.Request, s Session) {
 	thread := r.PathValue("thread")
 	if !ValidThreadID(thread) {
-		seeOther(w, projectsPath, "unknown")
+		a.seeOther(w, projectsPath, "unknown")
 		return
 	}
 	if _, ok := a.postCall(w, r, s, GenesisCall{Verb: GenesisVerbDiscard, Thread: thread}, projectHref(thread, "")); !ok {
 		return
 	}
-	seeOther(w, projectsPath, "discarded")
+	a.seeOther(w, projectsPath, "discarded")
 }

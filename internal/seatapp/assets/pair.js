@@ -3,6 +3,7 @@
 // with textContent, never as markup.
 "use strict";
 (function () {
+  var mount = document.documentElement.dataset.mount || "";
   var root = document.getElementById("pair");
   var statusEl = document.getElementById("status");
   var button = document.getElementById("start");
@@ -82,7 +83,7 @@
   async function post(path, body) {
     var resp;
     try {
-      resp = await fetch(path, {
+      resp = await fetch(mount + path, {
         method: "POST", credentials: "omit", cache: "no-store", referrer: "", referrerPolicy: "strict-origin",
         headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
       });

@@ -514,7 +514,7 @@ func (a *app) decideSession(w http.ResponseWriter, r *http.Request) (Session, bo
 func (a *app) failDecide(w http.ResponseWriter, s Session, e decideError) {
 	if e == errDecideRevoked {
 		a.sess.endCredential(s.CredentialID)
-		clearCookie(w, SessionCookie)
+		clearCookie(w, SessionCookie+a.cookieSuffix)
 	}
 	writeDecideError(w, e)
 }
