@@ -3,7 +3,9 @@ package noaicheck
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -317,6 +319,66 @@ func TestCheckEnv(t *testing.T) {
 		{"too large", func(f *fixture) { f.file("etc/profile", strings.Repeat("#\n", maxEnvFile/2+1)) },
 			[]Hit{{Kind: KindUnreadable, Path: "/etc/profile", Detail: errTooLarge.Error()}}},
 	}, (*Checker).CheckEnv)
+}
+
+func TestNoAIJoinUnitContinuations(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"a\\\nb\\\r\nc\r\n", "a b c\r\n"},
+		{"a\\\\\nb\n", "a\\\\\nb\n"},
+		{"a\\\\\\\nb\n", "a\\\\ b\n"},
+		{"a\\ \nb", "a\\ \nb"},
+		{"a\\", "a "},
+		{"a\\\n", "a "},
+	} {
+		if got := JoinUnitContinuations(tc.input); got != tc.want {
+			t.Errorf("JoinUnitContinuations(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestNoAIHostUnitContinuations(t *testing.T) {
+	vendor, err := os.ReadFile("testdata/systemd-pcrosseparator.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const unit = "usr/lib/systemd/system/example.service"
+	const dropIn = "etc/systemd/system/example.service.d/10-env.conf"
+	const manager = "etc/systemd/system.conf.d/10-env.conf"
+	const key = "ANTHROPIC_API_KEY"
+	for _, tc := range []struct {
+		name, file, text string
+		kind, detail     string
+	}{
+		{"pcrosseparator", "usr/lib/systemd/system/systemd-pcrosseparator.service", string(vendor), "", ""},
+		{"continued environment", unit, "[Service]\nEnvironment=A=1 \\\n  ANTHROPIC_API_KEY=x\n", KindEnv, key},
+		{"drop-in with intervening comments", dropIn, "[Service]\nEnvironment=A=1 \\\n # comment\\\n ; comment\n  ANTHROPIC_API_KEY=x\n", KindEnv, key},
+		{"directive after a comment", manager, "[Manager]\n# comment\\\nDefaultEnvironment=ANTHROPIC_API_KEY=x\n", KindEnv, key},
+		{"nonbreaking space before header", unit, "\u00a0[Service]\n", KindUnit, UnitSyntax},
+		{"NUL in continued text", unit, "[Unit]\nDescription=first\\\nsecond\x00\n", KindUnit, UnitSyntax},
+		{"invalid UTF-8 in comment", unit, "[Service]\n# \xff\\\n", KindUnit, UnitSyntax},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := cleanFixture(t)
+			f.dir(releaseDir)
+			f.file(tc.file, tc.text)
+			l := testLists()
+			l.PackagesAllow = []string{"bash"}
+			l.NFTDigest = NFTDigest([]byte("x"))
+			c := f.checker(l)
+			c.RequirePolicy = true
+			r, err := c.RunPhase(PhasePre, f.abs(releaseDir), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var want []Hit
+			if tc.kind != "" {
+				want = []Hit{{tc.kind, "/" + tc.file, tc.detail}}
+			}
+			if !r.Complete || !slices.Equal(r.Hits, want) {
+				t.Errorf("complete %v, hits %v, want %v", r.Complete, r.Hits, want)
+			}
+		})
+	}
 }
 
 // A source in a function body runs only when the function is called: one

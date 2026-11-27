@@ -68,6 +68,9 @@ func TestReleaseUnitText(t *testing.T) {
 			t.Run("initial BOM", func(t *testing.T) {
 				check(t, "\ufeff[Service]\n"+exec, noaicheck.UnitSyntax)
 			})
+			t.Run("continued directive", func(t *testing.T) {
+				check(t, "[Service]\nEnvironment=A=1 \\\n B=2\n"+exec, noaicheck.UnitSyntax)
+			})
 			t.Run("letters and ASCII spacing", func(t *testing.T) {
 				check(t, "[Unit]\r\nDescription=Café 東京\r\n \t[Service]\t \r\n\t"+exec, "")
 			})
