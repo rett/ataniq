@@ -88,13 +88,13 @@ with the seat gate together:
                     (--owner-settings)".
   --check           with --owner-settings: make every check the daemon makes
                     before it takes a lock (the folder's refusals, the
-                    settings, the roots, the root marker, the gate's address,
+                    settings, the roots, instance identity, the root marker, the gate's address,
                     key and pins, the daemon's socket path) and one more that
                     the start does not make, the socket paths of every lead's
                     holder (a holder meets that limit only when it starts);
                     print one line each, "pass" or "FAIL" with the reason,
                     then what the daemon would read, and exit: 0 when nothing
-                    is refused, 10 otherwise. It binds, locks, makes and
+                    is refused, 11 for instance identity, 10 for config. It binds, locks, makes and
                     starts nothing.
   --expect-state DIR
                     with --check (and with --keys-prefix or --keys-since):

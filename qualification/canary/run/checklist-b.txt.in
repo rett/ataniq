@@ -53,8 +53,8 @@ ADVICE
   - Keep the T3 window large: 100x30 or more, and do not resize it after 16.
   - Console command (T3): @BIN@/ataniq-console --attach @HOLDER_RUN@ \
       --ticket-file @HOLDER_RUN@/ticket
+  - After step 8, in T2: @BIN@/ataniqd init --state-dir "@ROOT@/state"
   - Daemon (T2): @BIN@/ataniqd run --canary @CONFIG@
-
 IF IT FAILS   Ctrl-C the daemon (T2), answer the clean-up prompts, revoke any
   login made (account page), then: sh @RESET@ --root @ROOT@  (word: reset)
   and run netcheck and preflight again. Hints for paths: @HINTS@

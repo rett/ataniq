@@ -402,6 +402,12 @@ standard input that is not a terminal.
 
 ## Prepare and reset
 
+After step 8 provisions the root and writes the marker, and before starting
+the daemon at step 10, run `build/canary/ataniqd init --state-dir "ROOT/state"`
+in T2, substituting the prepared root for ROOT. Record the authority and
+incarnation. Repeat init on the newly provisioned state root after every
+`canary-reset.sh`, which removes the previous identity.
+
 Two helpers write the set-up of a pass (A with the stand-in, B with the live agent), and put it back (a third, the
 preflight, looks at it before the run). Neither answers a
 prompt, and neither starts a unit, a daemon, a sandbox or an agent. They lie

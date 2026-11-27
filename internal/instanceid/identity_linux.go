@@ -22,10 +22,11 @@ import (
 const FileName = "instance.key"
 
 const (
-	magic           = "ataniq-instance-v1\n"
-	incarnationSize = 16
-	maxLabel        = 128
-	fixedSize       = len(magic) + ed25519.SeedSize + incarnationSize + sha256.Size
+	magic            = "ataniq-instance-key/2\n"
+	incarnationMagic = "ataniq-store-incarnation/1\n"
+	IncarnationFile  = "store.incarnation"
+	incarnationSize  = 16
+	maxLabel         = 128
 )
 
 // Refusal identifies a key-loading failure through errors.Is or errors.As.
@@ -55,9 +56,9 @@ type Identity struct {
 // missing components and confirms each new directory entry on disk.
 func OpenRoot(path string, create bool) (*os.File, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" {
-		return nil, fmt.Errorf("%w: expected a clean absolute state directory", ErrUnsafe)
+		return nil, fmt.Errorf("%w: expected a clean absolute state directory, got %q", ErrUnsafe, path)
 	}
-	const flags = unix.O_DIRECTORY | unix.O_NOFOLLOW | unix.O_CLOEXEC
+	const flags = unix.O_DIRECTORY | unix.O_CLOEXEC
 	fd, err := unix.Open("/", unix.O_PATH|flags, 0)
 	if err != nil {
 		return nil, err
@@ -66,7 +67,7 @@ func OpenRoot(path string, create bool) (*os.File, error) {
 	for i, part := range parts {
 		how := unix.O_PATH | flags
 		if i == len(parts)-1 {
-			how = unix.O_RDONLY | flags
+			how = unix.O_RDONLY | flags | unix.O_NOFOLLOW
 		}
 		next, err := unix.Openat(fd, part, how, 0)
 		if err == unix.ENOENT && create {
@@ -92,17 +93,21 @@ func OpenRoot(path string, create bool) (*os.File, error) {
 		}
 		unix.Close(fd)
 		if err == unix.ENOENT {
-			return nil, ErrMissing
+			return nil, fmt.Errorf("%s: %w", path, ErrMissing)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("%w: open state path: %w", ErrUnsafe, err)
+			partPath := "/" + strings.Join(parts[:i+1], "/")
+			if err == unix.ENOTDIR || err == unix.ELOOP {
+				return nil, fmt.Errorf("%w: %s is a symlink or not a directory", ErrUnsafe, partPath)
+			}
+			return nil, fmt.Errorf("%w: open %s: %w", ErrUnsafe, partPath, err)
 		}
 		fd = next
 	}
 	f := os.NewFile(uintptr(fd), path)
 	if err := checkRoot(fd); err != nil {
 		f.Close()
-		return nil, err
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return f, nil
 }
@@ -138,6 +143,14 @@ func validLabel(s string) bool {
 	return len(s) <= maxLabel && utf8.ValidString(s) && strings.IndexFunc(s, unicode.IsControl) < 0
 }
 
+// ValidateLabel checks a proposed display label before init touches the root.
+func ValidateLabel(label string) error {
+	if !validLabel(label) {
+		return errors.New("display label must be valid UTF-8, at most 128 bytes, without control characters")
+	}
+	return nil
+}
+
 // Load reads the existing identity without creating a root or a key.
 func Load(path string) (Identity, error) {
 	root, err := OpenRoot(path, false)
@@ -145,91 +158,175 @@ func Load(path string) (Identity, error) {
 		return Identity{}, err
 	}
 	defer root.Close()
-	return LoadAt(int(root.Fd()))
+	return readIdentity(int(root.Fd()), path, existing)
 }
 
-// LoadAt reads the key relative to a pinned state root.
+// LoadAt reads both identity files relative to a pinned state root.
 func LoadAt(root int) (Identity, error) {
-	fd, err := unix.Openat(root, FileName, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	if err == unix.ENOENT {
-		return Identity{}, ErrMissing
+	return readIdentity(root, "", existing)
+}
+
+type readMode int
+
+const (
+	existing readMode = iota
+	firstInit
+	restore
+)
+
+// CheckInit validates both existing files before the command creates a
+// journal or takes the daemon lock. An empty authority means init needs a new
+// key. A restored root must already have its key and may lack an incarnation.
+func CheckInit(root *os.File, restored bool) (Identity, error) {
+	mode := firstInit
+	if restored {
+		mode = restore
+	}
+	return readIdentity(int(root.Fd()), root.Name(), mode)
+}
+
+func readIdentity(root int, dir string, mode readMode) (Identity, error) {
+	id, err := loadKey(root)
+	if err != nil && !(mode == firstInit && errors.Is(err, ErrMissing)) {
+		return Identity{}, &os.PathError{Op: "load", Path: filepath.Join(dir, FileName), Err: err}
+	}
+	id.Incarnation, err = loadIncarnation(root)
+	if errors.Is(err, ErrMissing) {
+		if id.Authority == "" || mode == restore {
+			return id, nil
+		}
+		err = fmt.Errorf("%w: missing store incarnation; after restoring a key use init --restored", ErrInvalid)
 	}
 	if err != nil {
-		return Identity{}, fmt.Errorf("%w: open key: %w", ErrUnsafe, err)
+		return Identity{}, &os.PathError{Op: "load", Path: filepath.Join(dir, IncarnationFile), Err: err}
 	}
-	f := os.NewFile(uintptr(fd), FileName)
+	return id, nil
+}
+
+func loadKey(root int) (Identity, error) {
+	b, err := readPayload(root, FileName, magic, ed25519.SeedSize, maxLabel)
+	if err != nil {
+		return Identity{}, err
+	}
+	defer clear(b)
+	label := string(b[ed25519.SeedSize:])
+	if !validLabel(label) {
+		return Identity{}, fmt.Errorf("%w: invalid label", ErrInvalid)
+	}
+	key := ed25519.NewKeyFromSeed(b[:ed25519.SeedSize])
+	defer clear(key)
+	pub := sha256.Sum256(append([]byte("ataniq-instance-authority/1"), key.Public().(ed25519.PublicKey)...))
+	return Identity{Binding: Binding{Authority: hex.EncodeToString(pub[:])}, Label: label}, nil
+}
+
+func loadIncarnation(root int) (string, error) {
+	b, err := readPayload(root, IncarnationFile, incarnationMagic, incarnationSize, 0)
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func readPayload(root int, name, prefix string, size, extra int) ([]byte, error) {
+	fd, err := unix.Openat(root, name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err == unix.ENOENT {
+		return nil, ErrMissing
+	}
+	if err == unix.ELOOP {
+		return nil, fmt.Errorf("%w: symlink", ErrUnsafe)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrUnsafe, err)
+	}
+	f := os.NewFile(uintptr(fd), name)
 	defer f.Close()
 	if err := checkRoot(root); err != nil {
-		return Identity{}, err
+		return nil, err
 	}
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
-		return Identity{}, err
+		return nil, err
 	}
 	if err := checkFile(st, os.Geteuid()); err != nil {
-		return Identity{}, err
+		return nil, err
 	}
-	b, err := io.ReadAll(io.LimitReader(f, int64(fixedSize+maxLabel+1)))
-	defer clear(b)
-	if err != nil {
-		return Identity{}, fmt.Errorf("%w: read key: %w", ErrInvalid, err)
-	}
-	if len(b) < fixedSize || len(b) > fixedSize+maxLabel || !bytes.HasPrefix(b, []byte(magic)) {
-		return Identity{}, ErrInvalid
+	minSize := len(prefix) + size + sha256.Size
+	b, err := io.ReadAll(io.LimitReader(f, int64(minSize+extra+1)))
+	if err != nil || len(b) < minSize || len(b) > minSize+extra || !bytes.HasPrefix(b, []byte(prefix)) {
+		clear(b)
+		return nil, ErrInvalid
 	}
 	body := b[:len(b)-sha256.Size]
 	sum := sha256.Sum256(body)
 	if !bytes.Equal(sum[:], b[len(body):]) {
-		return Identity{}, ErrInvalid
+		clear(b)
+		return nil, fmt.Errorf("%w: checksum mismatch", ErrInvalid)
 	}
-	seedEnd := len(magic) + ed25519.SeedSize
-	label := string(body[seedEnd+incarnationSize:])
-	if !validLabel(label) {
-		return Identity{}, ErrInvalid
-	}
-	key := ed25519.NewKeyFromSeed(body[len(magic):seedEnd])
-	defer clear(key)
-	pub := sha256.Sum256(key.Public().(ed25519.PublicKey))
-	return Identity{
-		Binding: Binding{
-			Authority:   hex.EncodeToString(pub[:]),
-			Incarnation: hex.EncodeToString(body[seedEnd : seedEnd+incarnationSize]),
-		},
-		Label: label,
-	}, nil
+	return body[len(prefix):], nil
 }
 
-// InitAt creates the identity once. A retry loads the original identity.
-// label is used only on creation.
+// InitAt publishes the store incarnation first. An interruption before the
+// key is published leaves an incarnation that a retry can safely reuse.
 func InitAt(root *os.File, label string) (Identity, error) {
-	if !validLabel(label) {
-		return Identity{}, errors.New("display label must be valid UTF-8, at most 128 bytes, without control characters")
+	if err := ValidateLabel(label); err != nil {
+		return Identity{}, err
 	}
 	fd := int(root.Fd())
 	if err := checkRoot(fd); err != nil {
 		return Identity{}, err
 	}
-	id, err := LoadAt(fd)
-	if err == nil {
-		return id, root.Sync()
-	}
-	if !errors.Is(err, ErrMissing) {
+	id, err := CheckInit(root, false)
+	if err != nil {
 		return Identity{}, err
 	}
-	b := make([]byte, fixedSize+len(label))
-	defer clear(b)
-	copy(b, magic)
-	end := len(magic) + ed25519.SeedSize + incarnationSize
-	rand.Read(b[len(magic):end])
-	copy(b[end:], label)
-	body := b[:len(b)-sha256.Size]
-	sum := sha256.Sum256(body)
-	copy(b[len(body):], sum[:])
+	if id.Authority != "" {
+		return id, root.Sync()
+	}
+	if id.Incarnation == "" {
+		if err := writeIncarnation(root, unix.RENAME_NOREPLACE); err != nil {
+			return Identity{}, err
+		}
+	}
+	payload := make([]byte, ed25519.SeedSize+len(label))
+	defer clear(payload)
+	rand.Read(payload[:ed25519.SeedSize])
+	copy(payload[ed25519.SeedSize:], label)
+	if err := publish(root, FileName, magic, payload, unix.RENAME_NOREPLACE); err != nil {
+		return Identity{}, err
+	}
+	return readIdentity(int(root.Fd()), root.Name(), existing)
+}
 
+// RestoreAt gives a restored key a fresh store incarnation. The caller
+// excludes daemon starts and other initializers during the restore.
+func RestoreAt(root *os.File) (Identity, error) {
+	if _, err := CheckInit(root, true); err != nil {
+		return Identity{}, err
+	}
+	if err := writeIncarnation(root, 0); err != nil {
+		return Identity{}, err
+	}
+	return readIdentity(int(root.Fd()), root.Name(), existing)
+}
+
+func writeIncarnation(root *os.File, flags uint) error {
+	var value [incarnationSize]byte
+	rand.Read(value[:])
+	return publish(root, IncarnationFile, incarnationMagic, value[:], flags)
+}
+
+func publish(root *os.File, dest, prefix string, payload []byte, flags uint) error {
+	body := make([]byte, len(prefix)+len(payload), len(prefix)+len(payload)+sha256.Size)
+	copy(body, prefix)
+	copy(body[len(prefix):], payload)
+	sum := sha256.Sum256(body)
+	b := append(body, sum[:]...)
+	defer clear(b)
+	fd := int(root.Fd())
 	name := ".instance-" + rand.Text()
 	tmp, err := unix.Openat(fd, name, unix.O_CREAT|unix.O_EXCL|unix.O_WRONLY|unix.O_CLOEXEC, 0600)
 	if err != nil {
-		return Identity{}, err
+		return err
 	}
 	defer unix.Unlinkat(fd, name, 0)
 	f := os.NewFile(uintptr(tmp), name)
@@ -241,14 +338,11 @@ func InitAt(root *os.File, label string) (Identity, error) {
 		err = f.Sync()
 	}
 	if err = errors.Join(err, f.Close()); err != nil {
-		return Identity{}, err
+		return err
 	}
-	err = unix.Renameat2(fd, name, fd, FileName, unix.RENAME_NOREPLACE)
+	err = unix.Renameat2(fd, name, fd, dest, flags)
 	if err != nil && err != unix.EEXIST {
-		return Identity{}, err
+		return err
 	}
-	if err := root.Sync(); err != nil {
-		return Identity{}, err
-	}
-	return LoadAt(fd)
+	return root.Sync()
 }

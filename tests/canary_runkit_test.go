@@ -5661,7 +5661,8 @@ func TestCanaryRunKitPreflightReady(t *testing.T) {
 	}
 	for _, want := range []string{
 		"ok:   the binaries are newer than the newest commit that touches the code (by file time: --version names no commit;",
-		"     " + p.bin + "/ataniqd run --canary " + p.root + "/config.json",
+		"after every canary-reset",
+		"     " + p.bin + "/ataniqd init --state-dir \"" + p.root + "/state\"\n     " + p.bin + "/ataniqd run --canary " + p.root + "/config.json",
 		"     " + p.bin + "/ataniq-console --attach " + p.root + "/runtime/leads/throwaway-one-lead --ticket-file " + p.root + "/runtime/leads/throwaway-one-lead/ticket",
 		"BEFORE you press Enter at step 10",
 		"The run never starts the daemon or the console for you.",

@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"ataniq/internal/leaddaemon"
+	"ataniq/internal/leadregistry"
 	"ataniq/internal/leadunit"
 	"ataniq/internal/leadunit/systemdmgr"
 )
@@ -23,7 +24,7 @@ var version = leaddaemon.DefaultVersion
 var usage = baseUsage + canaryUsage
 
 const baseUsage = `usage: ataniqd run [--state-dir DIR] [--runtime-dir DIR]
-       ataniqd init [--state-dir DIR] [--label TEXT]
+       ataniqd init [--state-dir DIR] [--label TEXT | --restored]
        ataniqd status [--socket PATH] [--json]
        ataniqd version
 
@@ -32,6 +33,7 @@ stops and manages no unit and defines no lead, and no flag changes that.
 
   init     initialize the state root and bind its registry to this instance
            --label TEXT       optional display label on first initialization
+           --restored         give a restored key a new store incarnation
   run      take the daemon lock and the runtime folder lock, open the
            registry, reconcile once and serve until SIGTERM or SIGINT
            --state-dir DIR    default $XDG_STATE_HOME/ataniq, else
@@ -229,7 +231,15 @@ func (a *app) runCmd(args []string) int {
 		err = leaddaemon.Run(context.Background(), cfg)
 	}
 	if err != nil {
-		fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(err.Error()))
+		message := err.Error()
+		var start *leaddaemon.StartupError
+		if errors.As(err, &start) && start.Step == leaddaemon.StepRegistry {
+			message = fmt.Sprintf("registry: %s: %v", journalPath(cfg.StateDir), start.Err)
+			if errors.Is(err, leadregistry.ErrUnbound) {
+				message = fmt.Sprintf("registry: %s has no instance binding; run %s", journalPath(cfg.StateDir), initHint(cfg.StateDir))
+			}
+		}
+		fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(message))
 	}
 	return leaddaemon.ExitCode(err)
 }

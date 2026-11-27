@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"ataniq/internal/clientapi"
+	"ataniq/internal/instanceid"
 	"ataniq/internal/leaddaemon"
 	"ataniq/internal/leadlock"
 	"ataniq/internal/leadregistry"
@@ -492,5 +493,207 @@ func TestRunRefusesForeignInstanceJournal(t *testing.T) {
 	ta := newTestApp(t, nil)
 	if code := ta.run([]string{"run", "--state-dir", state, "--runtime-dir", base + "/runtime"}); code != leaddaemon.ExitRegistry || !strings.Contains(ta.err.String(), leadregistry.ErrForeignInstance.Error()) {
 		t.Fatalf("foreign journal: exit %d: %s", code, ta.err.String())
+	}
+}
+
+func TestRestoredInstanceRefusesOldJournal(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state")
+	initTestState(t, state)
+	before, err := instanceid.Load(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(state, instanceid.FileName)
+	backup, err := os.ReadFile(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Exercise both a full-root restore and a key-only restore.
+	for _, target := range []string{state, t.TempDir()} {
+		if err := os.Chmod(target, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(target, instanceid.FileName), backup, 0600); err != nil {
+			t.Fatal(err)
+		}
+		ta := newTestApp(t, nil)
+		if code := ta.run([]string{"init", "--restored", "--state-dir", target}); code != 0 {
+			t.Fatalf("restore: %d: %s", code, ta.err.String())
+		}
+		after, err := instanceid.Load(target)
+		if err != nil || after.Authority != before.Authority || after.Incarnation == before.Incarnation || len(after.Incarnation) != 32 {
+			t.Fatalf("restored identity %+v, %v", after, err)
+		}
+		if key, err := os.ReadFile(filepath.Join(target, instanceid.FileName)); err != nil || !bytes.Equal(key, backup) {
+			t.Fatal("restore changed the key")
+		}
+		if target != state {
+			initTestState(t, target)
+		}
+	}
+	if _, err := leadregistry.Open(filepath.Join(state, leaddaemon.RegistryDirName), leadregistry.Options{}); !errors.Is(err, leadregistry.ErrForeignInstance) {
+		t.Fatalf("old journal after restore: %v", err)
+	}
+}
+
+func TestInitLabelOnlyOnFirstInitialization(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "a state")
+	cmd := func(flags ...string) (int, string) {
+		ta := newTestApp(t, nil)
+		code := ta.run(append([]string{"init", "--state-dir", state}, flags...))
+		return code, ta.err.String()
+	}
+	if code, msg := cmd("--label", "first"); code != 0 {
+		t.Fatalf("init: %d %s", code, msg)
+	}
+	before, err := instanceid.Load(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, label := range []string{"first", "second", ""} {
+		code, msg := cmd("--label", label)
+		if code != leaddaemon.ExitState || !strings.Contains(msg, filepath.Join(state, instanceid.FileName)) || !strings.Contains(msg, "--label is accepted only on first init") {
+			t.Errorf("second --label %q: %d %s", label, code, msg)
+		}
+	}
+	if code, msg := cmd(); code != 0 {
+		t.Fatalf("ordinary retry: %d %s", code, msg)
+	}
+	if got, err := instanceid.Load(state); err != nil || got != before {
+		t.Fatalf("label retry: %+v, %v", got, err)
+	}
+}
+
+func TestInstanceRefusalsNameTheirFiles(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "state")
+	key := filepath.Join(state, instanceid.FileName)
+	run := func() (int, string) {
+		ta := newTestApp(t, nil)
+		code := ta.run([]string{"run", "--state-dir", state, "--runtime-dir", filepath.Join(dir, "runtime")})
+		return code, ta.err.String()
+	}
+	if code, msg := run(); code != leaddaemon.ExitState || !strings.Contains(msg, key) || !strings.Contains(msg, initHint(state)) {
+		t.Fatalf("missing key: %d %s", code, msg)
+	}
+	initTestState(t, state)
+	journal := journalPath(state)
+	v1, err := os.ReadFile("../../internal/leadregistry/testdata/v1-base/registry.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(journal, v1, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if code, msg := run(); code != leaddaemon.ExitRegistry || !strings.Contains(msg, journal) || !strings.Contains(msg, initHint(state)) {
+		t.Fatalf("unbound journal: %d %s", code, msg)
+	}
+	for _, change := range []func() error{
+		func() error { return os.Truncate(key, 1) },
+		func() error { return os.Chmod(key, 0640) },
+	} {
+		if err := change(); err != nil {
+			t.Fatal(err)
+		}
+		if code, msg := run(); code != leaddaemon.ExitState || !strings.Contains(msg, key) {
+			t.Fatalf("refused key: %d %s", code, msg)
+		}
+	}
+}
+
+func TestInitValidatesLegacyJournalBeforeCreatingIdentity(t *testing.T) {
+	base, err := os.ReadFile("../../internal/leadregistry/testdata/v1-base/registry.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "state")
+	dir := filepath.Join(state, leaddaemon.RegistryDirName)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := journalPath(state)
+	bad := append(bytes.Clone(base), "damaged complete record\nunfinished"...)
+	if err := os.WriteFile(path, bad, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		ta := newTestApp(t, nil)
+		if code := ta.run([]string{"init", "--state-dir", state}); code != leaddaemon.ExitState || !strings.Contains(ta.err.String(), path) || !strings.Contains(ta.err.String(), "corrupt journal") {
+			t.Fatalf("init: %d %s", code, ta.err.String())
+		}
+		entries, err := os.ReadDir(state)
+		if err != nil || len(entries) != 1 || entries[0].Name() != leaddaemon.RegistryDirName {
+			t.Fatalf("refused init left files in state: %v, %v", entries, err)
+		}
+		if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, bad) {
+			t.Fatalf("refused init changed journal: %v", err)
+		}
+	}
+	// A valid journal with an uncommitted tail must reach normal migration
+	// intact. The first real open owns the recovery record.
+	if err := os.WriteFile(path, append(base, "unfinished"...), 0600); err != nil {
+		t.Fatal(err)
+	}
+	initTestState(t, state)
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.HasSuffix(got, []byte("unfinished")) {
+		t.Fatalf("lost torn tail: %v", err)
+	}
+}
+
+func TestInvalidIdentityInitLeavesOnlyOriginalFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		flags []string
+	}{
+		{instanceid.FileName, []string{"--restored"}},
+		{instanceid.IncarnationFile, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := filepath.Join(t.TempDir(), "state")
+			if err := os.Mkdir(state, 0700); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(state, tc.name)
+			if err := os.WriteFile(path, []byte("bad"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			ta := newTestApp(t, nil)
+			if code := ta.run(append([]string{"init", "--state-dir", state}, tc.flags...)); code != leaddaemon.ExitState || !strings.Contains(ta.err.String(), path) {
+				t.Fatalf("init: %d %s", code, ta.err.String())
+			}
+			entries, err := os.ReadDir(state)
+			if err != nil || len(entries) != 1 || entries[0].Name() != tc.name {
+				t.Fatalf("refused init left %v, %v", entries, err)
+			}
+		})
+	}
+}
+
+// A full daemon start holds both the daemon and journal locks. Neither form
+// of init can change the binding while the daemon answers clients.
+func TestInitRefusedWhileDaemonServes(t *testing.T) {
+	dir := shortDir(t)
+	state, runtime := filepath.Join(dir, "state"), filepath.Join(dir, "run")
+	daemon := newTestApp(t, nil)
+	done := startApp(t, daemon, []string{"--state-dir", state, "--runtime-dir", runtime}, filepath.Join(runtime, "daemon.sock"))
+	defer func() {
+		daemon.signals <- syscall.SIGTERM
+		if code := <-done; code != 0 {
+			t.Errorf("daemon exit: %d", code)
+		}
+	}()
+	before, err := instanceid.Load(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "--state-dir", state}, {"init", "--restored", "--state-dir", state}} {
+		ta := newTestApp(t, nil)
+		if code := ta.run(args); code != leaddaemon.ExitState || !strings.Contains(ta.err.String(), "lock") {
+			t.Fatalf("%v: %d %s", args, code, ta.err.String())
+		}
+	}
+	if after, err := instanceid.Load(state); err != nil || after != before {
+		t.Fatalf("binding after refused init: %+v, %v", after, err)
 	}
 }
