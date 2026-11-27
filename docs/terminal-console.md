@@ -412,13 +412,20 @@ client is in every build. See [the scratch leads guide](scratch-leads.md).
 
 The lead client reads the capabilities again on each reconnect. Each action
 needs its own offer. For `d`, `s`, `x` and `m` these are `lead.define`,
-`lead.start`, `lead.stop` and `lead.inject`, respectively. Both `w` and `v`
-need `lead.ticket` for the requested role. The client refuses a missing
-capability with "the daemon does not offer …" and the action's name, for
-example "the daemon does not offer a writer ticket for this lead". The view
-can show a generic no-answer message for this refusal. If an earlier command
-has an unresolved outcome, the client keeps its original command ID across
-reconnects, including when the new connection lacks the capability to retry it.
+`lead.start`, `lead.stop` and `lead.inject`, respectively. Both `w` (writer)
+and `v` (viewer) need `lead.ticket`. When the hello includes `ticket_roles`,
+it names the roles available. Without that field, `lead.ticket` suffices for
+a viewer ticket. A writer ticket also needs `lead.list`, `lead.define`,
+`lead.start`, `lead.stop` and `lead.inject`.
+
+If the connection lacks the operation or ticket role for a new command,
+the client sends nothing. The receipt line names the action, for example
+"message: refused: the daemon does not offer sending a message to this lead"
+or "attach ticket: refused: the daemon does not offer a writer ticket for
+this lead". After a message refusal for a missing operation, `m` opens the
+editor again in the same epoch. If an earlier command has an unresolved
+outcome, the client keeps its original command ID across reconnects,
+including when the new connection lacks the capability to retry it.
 
 ### Opening the view and what it shows
 

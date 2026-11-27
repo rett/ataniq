@@ -71,6 +71,13 @@ var reasonWords = map[string]string{
 	"unavailable":     "the daemon could not carry it out",
 	"not-listed":      "the lead is not one of this daemon's",
 
+	"define-not-offered":        "the daemon does not offer defining this lead",
+	"start-not-offered":         "the daemon does not offer starting this lead",
+	"stop-not-offered":          "the daemon does not offer stopping this lead",
+	"inject-not-offered":        "the daemon does not offer sending a message to this lead",
+	"viewer-ticket-not-offered": "the daemon does not offer a viewer ticket for this lead",
+	"writer-ticket-not-offered": "the daemon does not offer a writer ticket for this lead",
+
 	// The control plane's own (leadwire).
 	"max-running":       "the limit of running leads is reached",
 	"second-message":    "a message was already sent in this epoch",

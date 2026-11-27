@@ -167,6 +167,9 @@ type LeadRow struct {
 	Epoch       uint64
 	Unit        string
 	Inject      bool
+	// MessagesEnabled is the lead's configured message switch. Inject also
+	// requires the current connection to offer lead.inject.
+	MessagesEnabled bool
 	// MessageSpent says that the epoch's message was sent and is not free
 	// again. A message that was not delivered (the holder answered not-now or
 	// refused with nothing written, or refused the request itself) leaves it
@@ -865,17 +868,18 @@ func buildListing(res leadwire.ListResult, caps LeadCapabilities) (LeadListing, 
 		rowCaps := caps
 		rowCaps.Inject = caps.Inject && w.Inject
 		row := LeadRow{
-			Capabilities: rowCaps,
-			Key:          clean(w.Key),
-			Role:         w.Role,
-			Defined:      w.Defined,
-			Provision:    leadWord(w.Provision),
-			State:        clean(w.State),
-			StateReason:  leadWord(w.StateReason),
-			Epoch:        w.Epoch,
-			Unit:         clean(w.Unit),
-			Inject:       rowCaps.Inject,
-			MessageSpent: w.MessageSpent,
+			Capabilities:    rowCaps,
+			Key:             clean(w.Key),
+			Role:            w.Role,
+			Defined:         w.Defined,
+			Provision:       leadWord(w.Provision),
+			State:           clean(w.State),
+			StateReason:     leadWord(w.StateReason),
+			Epoch:           w.Epoch,
+			Unit:            clean(w.Unit),
+			Inject:          rowCaps.Inject,
+			MessagesEnabled: w.Inject,
+			MessageSpent:    w.MessageSpent,
 			MessageResult: LeadDelivery{
 				Outcome: leadWord(w.MessageResult.Outcome),
 				Reason:  leadWord(w.MessageResult.Reason),

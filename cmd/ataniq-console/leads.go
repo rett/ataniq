@@ -111,7 +111,7 @@ func (a *leadsAdapter) List() (leadctl.Listing, error) {
 	for _, r := range l.Leads {
 		lead := leadctl.Lead{
 			Key: r.Key, Role: r.Role, Defined: r.Defined, Provision: r.Provision,
-			State: r.State, StateReason: r.StateReason, Epoch: r.Epoch, Unit: r.Unit, Inject: r.Inject, MessageSpent: r.MessageSpent,
+			State: r.State, StateReason: r.StateReason, Epoch: r.Epoch, Unit: r.Unit, Inject: r.MessagesEnabled, MessageSpent: r.MessageSpent,
 			MessageResult: leadctl.Delivery{Outcome: r.MessageResult.Outcome, Reason: r.MessageResult.Reason, Written: r.MessageResult.Written},
 		}
 		if r.Last != nil {
@@ -129,26 +129,30 @@ func (a *leadsAdapter) List() (leadctl.Listing, error) {
 // Define provisions and defines the lead role.
 func (a *leadsAdapter) Define(role string) (leadctl.Receipt, error) {
 	r, err := a.c.Define(role)
-	return a.answer(leadctl.OpDefine, r, err)
+	return a.answer(leadctl.OpDefine, "define-not-offered", r, err)
 }
 
 // Start starts the lead role.
 func (a *leadsAdapter) Start(role string) (leadctl.Receipt, error) {
 	r, err := a.c.Start(role)
-	return a.answer(leadctl.OpStart, r, err)
+	return a.answer(leadctl.OpStart, "start-not-offered", r, err)
 }
 
 // Stop stops the lead role in epoch.
 func (a *leadsAdapter) Stop(role string, epoch uint64) (leadctl.Receipt, error) {
 	r, err := a.c.Stop(role, epoch)
-	return a.answer(leadctl.OpStop, r, err)
+	return a.answer(leadctl.OpStop, "stop-not-offered", r, err)
 }
 
 // Ticket asks for an attach ticket. A done ticket's attach kind is
 // remembered for the loop.
 func (a *leadsAdapter) Ticket(role string, epoch uint64, writer bool) (leadctl.Receipt, error) {
 	cr, err := a.c.Ticket(role, epoch, writer)
-	r, err := a.answer(leadctl.OpTicket, cr, err)
+	missing := "viewer-ticket-not-offered"
+	if writer {
+		missing = "writer-ticket-not-offered"
+	}
+	r, err := a.answer(leadctl.OpTicket, missing, cr, err)
 	if err == nil && r.Status == leadctl.Done {
 		a.remember(attachTarget{r.Folder, r.TicketFile}, a.kindOf(cr))
 	}
@@ -158,7 +162,7 @@ func (a *leadsAdapter) Ticket(role string, epoch uint64, writer bool) (leadctl.R
 // Send sends one message to the lead in epoch.
 func (a *leadsAdapter) Send(role string, epoch uint64, messageID, body string) (leadctl.Receipt, error) {
 	r, err := a.c.Send(role, epoch, messageID, body)
-	return a.answer(leadctl.OpInject, r, err)
+	return a.answer(leadctl.OpInject, "inject-not-offered", r, err)
 }
 
 // attachKind is the kind of attach a request of the view is for: the kind of
@@ -193,9 +197,9 @@ func (a *leadsAdapter) remember(t attachTarget, k attachKind) {
 // A receipt that answers an earlier command (Earlier) is given to the view
 // with the flag set: the view draws it as the answer to an earlier command
 // and never attaches with it. This is the one place that reads the flag.
-func (a *leadsAdapter) answer(op leadctl.Op, r consoleclient.LeadReceipt, err error) (leadctl.Receipt, error) {
+func (a *leadsAdapter) answer(op leadctl.Op, missing string, r consoleclient.LeadReceipt, err error) (leadctl.Receipt, error) {
 	if err != nil {
-		if code, ok := refusedCode(err); ok {
+		if code, ok := refusedCode(err, missing); ok {
 			return leadctl.Receipt{Op: op, Status: leadctl.Refused, Code: code}, nil
 		}
 		return leadctl.Receipt{}, errNoReceipt
@@ -210,13 +214,15 @@ func (a *leadsAdapter) answer(op leadctl.Op, r consoleclient.LeadReceipt, err er
 
 // refusedCode maps an error of the client for a command that was refused
 // before the daemon admitted it to the reason code of a refusal, where the
-// view has words for the code: not-listed, conflict and invalid-request. The
+// view has words for the code. missing names the capability the call needs. The
 // other errors of the client are left to the fixed line of a lost answer:
 // the client's own limits (too many commands without an answer, no command
 // id) and "could not take the command now" are no refusal the daemon made,
 // and the view has no words for them.
-func refusedCode(err error) (string, bool) {
+func refusedCode(err error, missing string) (string, bool) {
 	switch {
+	case errors.Is(err, consoleclient.ErrLeadCapability):
+		return missing, true
 	case errors.Is(err, consoleclient.ErrLeadNotListed):
 		return "not-listed", true
 	case errors.Is(err, consoleclient.ErrCommandConflict):
