@@ -35,8 +35,8 @@ choose one. The console draws on the alternate screen.
 ## Layout
 
 A window of at least 100 columns by 30 rows shows the three-pane cockpit.
-A smaller window shows single-column pages instead (see
-[Small windows](#small-windows)).
+A smaller window shows single-column pages, or the live terminal with
+`--attach`. See [Small windows](#small-windows).
 
 The cockpit has these parts:
 
@@ -65,12 +65,16 @@ replay continues at the new size.
 
 ### Small windows
 
-Below 100x30 the console shows single-column pages: projects, leads, a lead's
+Below 100x30 the demo and daemon console show single-column pages: projects, leads, a lead's
 conversation, project tasks, help and the action list. Use arrows or j/k to
 select, Enter to open, t for project tasks, Escape to go back, ? for help,
 Ctrl+K for the action list and q or Ctrl+C to quit. In longer views the arrows
 scroll. The a key explains why full attach is unavailable. These pages have no
 session terminal, no zoom and no replay key.
+
+With `--attach`, a small window such as 80x24 or 60x20 shows the live
+terminal below a compact header. Press PgUp or PgDn to page through recent
+output and `q` to detach.
 
 The demo identity takes priority at height one. At height two the selected
 project or lead takes the remaining line on the projects and leads pages, and
@@ -796,6 +800,12 @@ as `live scratch session · lead NAME · writer · epoch 7`, and the Session blo
 and the evidence pane show the role, the holder's runtime and version, the
 holder's screen size, the connection, the holder's counters and the notices.
 
+Below cockpit size, the first line keeps the `q detach` hint, role and
+connection state. The next line gives the lead and epoch or a status message.
+The terminal uses the remaining rows. A writer requests that viewport size.
+A viewer sees the top-left portion of the holder's screen and leaves its size
+alone.
+
 The connection shows as one of: connecting, attached, resyncing, waiting for a
 ticket, or disconnected, with the reason when there is one. Over the session
 pane a banner says WAITING FOR A TICKET, DISCONNECTED or CONNECTING, and
@@ -861,10 +871,15 @@ The holder holds some keys back, and the console shows a notice when it does:
 The return key, Ctrl+\ by default, is the console's and never reaches the
 session in session focus.
 
-A client gets the visible screen only: there is no scrollback, and a console
-that attaches late shows the screen as it is, not what scrolled away. What you
-select and copy is that screen. The session's own requests to the clipboard
-(OSC 52) are dropped and counted, as in the fixture.
+The holder sends a snapshot of the visible screen. Rows that scrolled away
+before attachment are unavailable. From then on, this client keeps up to 64
+rows that scroll off the main screen. Output on the alternate screen adds no
+rows to this history. Restoring a holder snapshot clears it.
+
+In the narrow attach layout, PgUp moves one page back and PgDn moves one
+page forward. The page stays fixed while new output arrives. Keep pressing
+PgDn to return to live output. The session's own clipboard requests (OSC 52)
+are dropped and counted, as in the fixture.
 
 ### Tickets
 
