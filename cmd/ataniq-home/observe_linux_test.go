@@ -122,46 +122,31 @@ func TestObserveArchive(t *testing.T) {
 	}
 }
 
-type cutAtCommit func() error
+type observeFault func(string) error
 
-func (f cutAtCommit) After(point string) error {
-	if point == "advance.committed" {
-		return f()
+func (f observeFault) After(point string) error { return f(point) }
+
+func TestObserveReportsInterruptedAdvance(t *testing.T) {
+	f := newPilot(t)
+	cut := errors.New("lost before receipt save")
+	fault := observeFault(func(point string) error {
+		if point == "advance.committed" {
+			return cut
+		}
+		return nil
+	})
+	_, err := f.run(t, command{events: 2}, fault)
+	var refusal *enrollment.Error
+	if !errors.Is(err, cut) || !errors.As(err, &refusal) || refusal.Reason != enrollment.Interrupted ||
+		!strings.Contains(err.Error(), "owner action: preserve the staged intent") || f.state(t).Head.Sequence != 1 {
+		t.Fatal(err, f.state(t))
 	}
-	return nil
-}
-func TestObserveRestart(t *testing.T) {
-	for _, tc := range []struct {
-		name                  string
-		cuts, events, wantSeq int
-		failure               bool
-	}{
-		{"committed advance recovered", 1, 16, 16, false}, {"retry budget exhausted", 3, 4, 3, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newPilot(t)
-			cuts := 0
-			fault := cutAtCommit(func() error {
-				if cuts == tc.cuts {
-					return nil
-				}
-				cuts++
-				// Simulate the independent owner's fence/release of the interrupted
-				// writer. The home client cannot release a witness session.
-				f.release(t)
-				return errors.New("lost before receipt save")
-			})
-			out, err := f.run(t, command{events: tc.events}, fault)
-			if cuts != tc.cuts || (err != nil) != tc.failure || int(f.state(t).Head.Sequence) != tc.wantSeq {
-				t.Fatal(out, err, cuts, f.state(t))
-			}
-			if tc.failure && !strings.Contains(err.Error(), "lost before receipt save") {
-				t.Fatal(err)
-			}
-			if !tc.failure && !strings.Contains(out, "observation: agree\n") {
-				t.Fatal(out)
-			}
-		})
+	// Only the independent owner can release the interrupted writer.
+	f.release(t)
+	out, err := f.run(t, command{events: 0}, nil)
+	must(t, err)
+	if !strings.Contains(out, "observation: agree\n") || f.state(t).Head.Sequence != 1 {
+		t.Fatal(out, f.state(t))
 	}
 }
 func TestObserveRefusesRestores(t *testing.T) {

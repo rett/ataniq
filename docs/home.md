@@ -169,8 +169,8 @@ Keep managed admission closed throughout the pilot.
 
    **Partition during observation.** Interrupt witness polling on the
    disposable pair. An unavailable witness gives a refusal and an owner
-   action. Restore polling. A stopped append closes the store and starts
-   again, with at most three starts in one invocation. A committed advance
+   action. Restore polling. A stopped append closes the store and exits
+   with the original failure and its owner action. A committed advance
    can recover its receipt once the old writer is fenced and the owner
    releases its session. An occupied session or a local suffix without a
    verified witness commit needs owner reconciliation. Preserve the pending

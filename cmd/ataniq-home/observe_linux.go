@@ -72,80 +72,38 @@ func ownerAction(err error) error {
 	return fmt.Errorf("%w\nowner action: %s", err, action)
 }
 
-// Reopen a stopped handle at most twice. Only the exact witnessed successor
-// counts as the interrupted sample. A signed, unchanged predecessor permits
-// trying that sample again. Any other head requires owner reconciliation.
 func observeStore(ctx context.Context, cmd command, c config, b enrollment.Binding, home ed25519.PrivateKey, ep *link.Endpoint, signer assignment.Signer, out io.Writer, fault enrollment.Fault) (err error) {
 	root := enrollment.FileRoot{Path: c.State}
-	var store *enrollment.Store
-	defer func() {
-		if store != nil {
-			err = errors.Join(err, store.Close())
-		}
-	}()
-	var before, after assignment.Checkpoint
-	remaining := cmd.events
-	for attempt := 1; attempt <= 3; attempt++ {
-		_, session, err := ed25519.GenerateKey(nil)
-		if err != nil {
-			return err
-		}
+	_, session, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		return err
+	}
+	defer clear(session)
+	client, err := ep.Connect(ctx, c.Slot, home, session)
+	if errors.Is(err, cp.ErrUnavailable) {
+		return &enrollment.Error{Reason: enrollment.Unreachable, Err: err}
+	}
+	if err != nil {
+		return err
+	}
+	store, err := enrollment.Start(ctx, root, b, client, session, fault)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, store.Close()) }()
 
-		client, err := ep.Connect(ctx, c.Slot, home, session)
-		if err != nil {
-			clear(session)
-		}
-		if errors.Is(err, cp.ErrUnavailable) {
-			return &enrollment.Error{Reason: enrollment.Unreachable, Err: err}
-		}
-		if err != nil {
-			return err
-		}
-		store, err = enrollment.Start(ctx, root, b, client, session, fault)
-		clear(session)
-		if err != nil {
-			return err
-		}
+	for range cmd.events {
 		ledger, err := store.Ledger()
 		if err != nil {
 			return err
 		}
-		if attempt > 1 {
-			switch ledger.Checkpoint() {
-			case after:
-				remaining--
-			case before:
-			default:
-				return errors.New("restart found a different head; preserve the ledger for owner reconciliation")
-			}
+		event, err := mirrorEvent(ledger, b.Header, signer)
+		if err != nil {
+			return err
 		}
-		for remaining > 0 {
-			e, err := mirrorEvent(ledger, b.Header, signer)
-			if err != nil {
-				return err
-			}
-			next, err := assignment.Apply(ledger, e)
-			if err != nil {
-				return err
-			}
-			before, after = ledger.Checkpoint(), next.Checkpoint()
-			_, err = enrollment.AppendAndAdvance(ctx, store, e)
-			if err != nil {
-				if _, probe := store.Ledger(); probe == nil || attempt == 3 || ctx.Err() != nil {
-					return err
-				}
-				if closeErr := store.Close(); closeErr != nil {
-					return errors.Join(err, closeErr)
-				}
-				store = nil
-				break
-			}
-			ledger = next
-			remaining--
-		}
-		if remaining == 0 {
-			return compareObservation(ctx, cmd.archive, root, b, store, client, out)
+		if _, err := enrollment.AppendAndAdvance(ctx, store, event); err != nil {
+			return err
 		}
 	}
-	return errors.New("observation restart limit reached")
+	return compareObservation(ctx, cmd.archive, root, b, store, client, out)
 }
