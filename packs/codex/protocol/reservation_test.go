@@ -28,16 +28,19 @@ type reservationVerdict struct {
 // ThreadStatusChangedNotification identifies only a thread. Keep its latest
 // status independently of the evidence about individual turns.
 type oracleState struct {
-	answer    observation
-	completed map[string]bool
-	status    string
-	live      map[string]int
+	answer           observation
+	priorCompletions int // distinct IDs outside the search's turn alphabet
+	completed        map[string]bool
+	status           string
+	live             map[string]int
 }
 
 func reservationOracle(history []observation) oracleState {
 	s := oracleState{status: "idle", completed: make(map[string]bool), live: make(map[string]int)}
 	for i, obs := range history {
 		switch obs.kind {
+		case "full completion history":
+			s.priorCompletions = core.MaxPending
 		case "success", "error":
 			if obs.requestID == "first" && s.answer.kind == "" {
 				s.answer = obs
@@ -80,7 +83,7 @@ func (s oracleState) verdict() reservationVerdict {
 	}
 	settled := s.answer.kind == "error" || (s.answer.kind == "success" && s.completed[s.answer.turn])
 	switch {
-	case s.answer.kind == "":
+	case s.answer.kind == "" && s.priorCompletions+len(s.completed) <= core.MaxPending:
 		control = stop
 	case s.answer.kind == "success" && !settled:
 		control = s.answer.turn
@@ -180,10 +183,15 @@ func replayReservation(t *testing.T, history []observation) *codec {
 		t.Fatal(err)
 	}
 	for _, obs := range history {
-		if obs.kind == "forget" {
+		switch obs.kind {
+		case "full completion history":
+			completeOtherTurns(t, c, core.MaxPending)
+		case "forget":
 			c.Forget("first")
-		} else if _, err := c.Decode([]byte(reservationFrames[obs])); err != nil {
-			t.Fatalf("%v: decode %v: %v", history, obs, err)
+		default:
+			if _, err := c.Decode([]byte(reservationFrames[obs])); err != nil {
+				t.Fatalf("%v: decode %v: %v", history, obs, err)
+			}
 		}
 	}
 
@@ -259,7 +267,8 @@ func TestOverlappingTurnReservations(t *testing.T) {
 func TestTurnReservationSequences(t *testing.T) {
 	// Replay from the bound thread so each history and its destructive probes
 	// have private state. Expand a representative of each combined state once.
-	queue := [][]observation{nil}
+	// At capacity, the first completion of a or b evicts an older ID.
+	queue := [][]observation{nil, {{kind: "full completion history"}}}
 	seen := make(map[string]bool)
 	maxDepth := 0
 	for len(queue) > 0 {
@@ -304,30 +313,38 @@ func TestTurnStartAnswerReleasesReservation(t *testing.T) {
 	}
 }
 
-func TestCompletedTurnLimitFailsClosed(t *testing.T) {
-	c := replayReservation(t, []observation{startedB})
-	complete := func(i int) core.Decoded {
-		t.Helper()
-		d, err := c.Decode(fmt.Appendf(nil, `{"method":"turn/completed","params":{"threadId":"t","turn":{"id":"old-%d","items":[],"status":"completed"}}}`, i))
+func completeOtherTurns(t *testing.T, c Codec, count int) {
+	t.Helper()
+	for i := range count {
+		_, err := c.Decode(fmt.Appendf(nil, `{"method":"turn/completed","params":{"threadId":"t","turn":{"id":"old-%d","items":[],"status":"completed"}}}`, i))
 		if err != nil {
 			t.Fatal(err)
 		}
-		return d
 	}
-	for i := range core.MaxPending {
-		complete(i)
-	}
-	complete(0) // repeats need no extra space
-	if _, err := c.Steer("steer", "t", "b", "text"); err != nil {
-		t.Fatal("lost control at capacity", err)
-	}
-	if d := complete(core.MaxPending); !slices.Equal(d.Events, []core.Event{{Kind: "state", State: "unknown"}}) {
-		t.Fatal("overflow", d)
-	}
-	for _, obs := range []observation{idle, successA, startedB, completedB} {
-		if _, err := c.Decode([]byte(reservationFrames[obs])); err != nil {
+}
+
+func TestEvictedTurnStartCannotControl(t *testing.T) {
+	c := replayReservation(t, []observation{completedA, completedB})
+	completeOtherTurns(t, c, core.MaxPending-2)
+	decode := func(frame string) {
+		t.Helper()
+		if _, err := c.Decode([]byte(frame)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	checkReservation(t, c, nil, reservationVerdict{})
+	decode(reservationFrames[completedA])
+	decode(`{"method":"turn/started","params":{"threadId":"t","turn":{"id":"last","items":[],"status":"inProgress"}}}`)
+	if _, err := c.Steer("steer", "t", "last", "text"); err != nil {
+		t.Fatal("duplicate completion at capacity cost provisional control", err)
+	}
+	// Repeating a completion keeps its original FIFO position. Only a
+	// falls out when the next distinct completion arrives.
+	decode(`{"method":"turn/completed","params":{"threadId":"t","turn":{"id":"last","items":[],"status":"completed"}}}`)
+	decode(reservationFrames[startedB])
+	decode(reservationFrames[observation{kind: "started", turn: "a"}])
+	want := reservationVerdict{stop: "a", live: map[string]int{"a": 1}}
+	checkReservation(t, c, nil, want)
+	// Release the reservation. The stale live turn alone blocks admission.
+	decode(reservationFrames[errorFirst])
+	checkReservation(t, c, nil, want)
 }

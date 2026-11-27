@@ -39,23 +39,27 @@ type Codec interface {
 // live turns, and turnStartID is empty. Encoding the message reserves its
 // request ID until a valid answer arrives, including an answer after Forget.
 //
-// While awaiting that answer, the latest live turn/started holds control of
-// steering and permission requests. An error releases the reservation and
-// leaves no turn in control. A success releases it and gives control to the
-// named turn until its completion, unless that turn already completed.
+// While awaiting that answer, the latest live turn/started holds provisional
+// control of steering and permission requests until the first completed ID
+// is evicted. After eviction, only our turn/start answer can give control.
+// An error releases the reservation and leaves no turn in control. A success
+// releases it and gives control to the named turn unless its completion is
+// remembered. Completing the controlling turn releases control.
 // A change of control invalidates the previous turn's pending permissions.
 //
 // Each live turn supplies deltas. StopTurn targets the latest live start,
 // with a turn known only from its answer as fallback. A completion retires
-// its turn and prevents a delayed start from making it live again. Thread
-// status governs admission independently of these turn lifetimes.
+// its turn. The codec remembers up to MaxPending distinct completed IDs in
+// FIFO order and ignores delayed starts for them. A delayed start for an
+// evicted ID can become live and block admission. Thread status governs
+// admission independently of these turn lifetimes.
 //
-// thread/closed, systemError, or a completion beyond the MaxPending distinct
-// IDs this thread can remember ends admission and control for this codec.
+// thread/closed or systemError ends admission and control for this codec.
 type codec struct {
 	startID     string // the one thread/start whose result may establish the binding
 	turnStartID string
-	completed   map[string]bool // completed turn IDs on this thread
+	completed   []string // oldest completion first
+	evicted     bool     // a delayed start can now name a forgotten completion
 	thread      string
 	ownTurn     string   // the live turn identified by our turn/start answer
 	liveTurns   []string // interrupt preference increases from first to last
@@ -142,7 +146,7 @@ func (c *codec) Forget(id string) {
 }
 
 func (c *codec) controlTurn() string {
-	if c.turnStartID != "" && len(c.liveTurns) > 0 {
+	if !c.evicted && c.turnStartID != "" && len(c.liveTurns) > 0 {
 		return c.liveTurns[len(c.liveTurns)-1]
 	}
 	return c.ownTurn
