@@ -26,11 +26,7 @@ const directoryFlags = syscall.O_RDONLY | syscall.O_DIRECTORY | syscall.O_NOFOLL
 // Linux O_PATH is absent from the frozen syscall package on amd64.
 const pathDirectoryFlags = 0x200000 | directoryFlags
 
-func (root FileRoot) lock(fault Fault) (lockedLedger, error) {
-	path, err := filepath.Abs(root.Path)
-	if err != nil || root.Path == "" {
-		return nil, refuse(Insecure, err)
-	}
+func openDirectory(path string) (*fileLedger, error) {
 	flags := pathDirectoryFlags
 	if path == "/" {
 		flags = directoryFlags
@@ -39,10 +35,7 @@ func (root FileRoot) lock(fault Fault) (lockedLedger, error) {
 	if err != nil {
 		return nil, refuse(Insecure, err)
 	}
-	l := &fileLedger{dir: os.NewFile(uintptr(fd), "/"), fault: fault}
-	fail := func(err error) (lockedLedger, error) {
-		return nil, errors.Join(err, l.close())
-	}
+	l := &fileLedger{dir: os.NewFile(uintptr(fd), "/"), path: path}
 	names := strings.FieldsFunc(path, func(r rune) bool { return r == '/' })
 	for i, name := range names {
 		if i == len(names)-1 {
@@ -50,26 +43,51 @@ func (root FileRoot) lock(fault Fault) (lockedLedger, error) {
 		}
 		next, err := syscall.Openat(int(l.dir.Fd()), name, flags, 0)
 		if err != nil {
-			return fail(refuse(Insecure, err))
+			return nil, errors.Join(refuse(Insecure, err), l.close())
 		}
 		l.parents = append(l.parents, l.dir)
 		l.dir = os.NewFile(uintptr(next), name)
 	}
+	return l, nil
+}
+
+func (root FileRoot) openRoot() (*fileLedger, error) {
+	path, err := filepath.Abs(root.Path)
+	if err != nil || root.Path == "" {
+		return nil, refuse(Insecure, err)
+	}
+	l, err := openDirectory(path)
+	if err != nil {
+		return nil, err
+	}
 	st, err := inspect(l.dir, true)
 	if err != nil {
-		return fail(err)
-	}
-	if err := syscall.Flock(int(l.dir.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return fail(refuse(Occupied, err))
-		}
-		return fail(refuse(Insecure, err))
+		return nil, errors.Join(err, l.close())
 	}
 	l.identity = Identity{RootDevice: uint64(st.Dev), RootInode: st.Ino}
 	return l, nil
 }
 
+func (root FileRoot) lock(fault Fault) (lockedLedger, error) {
+	l, err := root.openRoot()
+	if err != nil {
+		return nil, err
+	}
+	if err = syscall.Flock(int(l.dir.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		r := Insecure
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			r = Occupied
+		}
+		return nil, errors.Join(refuse(r, err), l.close())
+	}
+	l.fault = fault
+	return l, nil
+}
+
+func (f *fileLedger) rootPath() string { return f.path }
+
 type fileLedger struct {
+	path        string
 	parents     []*os.File
 	dir, ledger *os.File
 	identity    Identity
@@ -83,14 +101,18 @@ func inspect(f *os.File, directory bool) (syscall.Stat_t, error) {
 	if err := syscall.Fstat(int(f.Fd()), &st); err != nil {
 		return st, refuse(Insecure, err)
 	}
+	return st, checkOwnerMode(st, directory, f.Name())
+}
+
+func checkOwnerMode(st syscall.Stat_t, directory bool, name string) error {
 	want := uint32(syscall.S_IFREG | 0600)
 	if directory {
 		want = syscall.S_IFDIR | 0700
 	}
 	if st.Mode != want || int(st.Uid) != os.Geteuid() || (!directory && st.Nlink != 1) {
-		return st, refuse(Insecure, fmt.Errorf("unexpected owner, mode or link count on %s", f.Name()))
+		return refuse(Insecure, fmt.Errorf("unexpected owner, mode or link count on %s", name))
 	}
-	return st, nil
+	return nil
 }
 
 func (f *fileLedger) open(name string, flags int) (*os.File, syscall.Stat_t, error) {
@@ -146,27 +168,6 @@ func (f *fileLedger) createFile(name string, data []byte, op string) (*os.File, 
 	return file, nil
 }
 
-func (f *fileLedger) createLedger(header []byte) (Identity, error) {
-	if names, err := f.dir.Readdirnames(1); err != io.EOF || len(names) != 0 {
-		if err != nil {
-			return Identity{}, err
-		}
-		return Identity{}, errors.New("enrollment requires an empty root")
-	}
-	file, err := f.createFile(ledgerName, header, "header")
-	if err != nil {
-		return Identity{}, err
-	}
-	f.ledger = file
-	st, err := inspect(file, false)
-	if err != nil {
-		return Identity{}, err
-	}
-	f.size, f.changed = int64(len(header)), st.Ctim
-	f.identity.LedgerDevice, f.identity.LedgerInode = uint64(st.Dev), st.Ino
-	return f.identity, nil
-}
-
 func (f *fileLedger) readLedger() (io.Reader, Identity, error) {
 	file, st, err := f.open(ledgerName, syscall.O_RDONLY)
 	if errors.Is(err, os.ErrNotExist) {
@@ -195,6 +196,25 @@ func (f *fileLedger) check() error {
 	if _, err := inspect(f.dir, true); err != nil {
 		return err
 	}
+	if err := f.checkPath(); err != nil {
+		return err
+	}
+	held, err := inspect(f.ledger, false)
+	if err != nil {
+		return err
+	}
+	if err := f.checkLedger(held); err != nil {
+		return err
+	}
+	file, st, err := f.open(ledgerName, syscall.O_RDONLY)
+	if err != nil {
+		return refuse(Insecure, err)
+	}
+	defer func() { _ = file.Close() }()
+	return f.checkLedger(st)
+}
+
+func (f *fileLedger) checkPath() error {
 	// Verify each named edge relative to its pinned parent. This also catches
 	// replacement of an ancestor with a symlink back to the original tree.
 	child := f.dir
@@ -218,19 +238,7 @@ func (f *fileLedger) check() error {
 		}
 		child = parent
 	}
-	held, err := inspect(f.ledger, false)
-	if err != nil {
-		return err
-	}
-	if err := f.checkLedger(held); err != nil {
-		return err
-	}
-	file, st, err := f.open(ledgerName, syscall.O_RDONLY)
-	if err != nil {
-		return refuse(Insecure, err)
-	}
-	defer func() { _ = file.Close() }()
-	return f.checkLedger(st)
+	return nil
 }
 
 func (f *fileLedger) checkLedger(st syscall.Stat_t) error {

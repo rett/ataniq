@@ -1,6 +1,7 @@
 package enrollment
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -58,6 +59,18 @@ func (s *Store) loadReceipt(ctx context.Context, head assignment.Checkpoint, las
 	raw, err := s.files.receipt()
 	if err != nil || raw == nil {
 		return err
+	}
+	// Genesis occupies the retention slot until the first durable advance.
+	// Start has already authenticated the binding and its historical receipt.
+	var genesis completedRecord
+	if exactJSON(raw, &genesis) == nil {
+		r, err := unpackReceipt(genesis.Receipt)
+		if err != nil || genesis.Identity != s.b.Identity ||
+			!bytes.Equal(r.Body, s.b.Receipt.Body) || !bytes.Equal(r.Signature, s.b.Receipt.Signature) ||
+			(head.Sequence != 0 && !(head.Sequence == 1 && recovered != nil)) {
+			return refuse(Interrupted, errors.New("invalid retained enrollment receipt"))
+		}
+		return nil
 	}
 	var r checkpoint.Receipt
 	if err := json.Unmarshal(raw, &r); err != nil {
