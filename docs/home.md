@@ -98,7 +98,10 @@ Keep managed admission closed throughout the pilot.
    empty. Confirm the poll at the home firewall, record the observed source
    address and set the inbound rule and `trust_sources` to that host prefix.
    If the config changes, stop with SIGINT or SIGTERM, check and restart.
-   The command prints one line on startup and one on shutdown.
+   The command prints one line on startup and one on shutdown. For the
+   partition drill, stop `serve`, confirm that the witness loses the poll
+   path, then restart it with the same config and confirm that polls resume.
+   Keep the ledger and pairing in place throughout the interruption.
 
 8. **Enroll the disposable mirror.** In a protected transfer directory on the
    home, prepare the ledger at its final path.
@@ -131,6 +134,73 @@ Keep managed admission closed throughout the pilot.
    finalize at genesis recovers the same binding. Prepared exports and binding
    files use exclusive, atomic publication with Linux `O_TMPFILE` and
    `/proc/self/fd`.
+
+9. **Observe, interrupt and replace the mirror.** Stop the foreground
+   `serve` process to free its listener. Under the home account, run
+
+   ```sh
+   ataniq-home observe --config FILE --events 3
+   ```
+
+   Save the output. Verify that the replayed home head, the witness
+   receipt and the challenged read have the same sequence and digest,
+   followed by `observation: agree` and `managed_starts=0 launches=0`.
+
+   On the authority host, record the signed witness status and obtain a
+   freshly challenged **slot** read through the authenticated owner channel.
+   Verify the slot, epoch and home header. Retain that evidence off-host
+   and write the slot sequence and digest to the one-line archive described
+   below. After the observer exits, fence its writer and release its claimed
+   session on the owner channel. Bring the archive to the home and run
+
+   ```sh
+   ataniq-home observe --config FILE --events 0 --archive ARCHIVE
+   ataniq-home status --config FILE
+   ```
+
+   Save all three records, the verdict, the counted line and the exit status.
+   A three-way comparison requires an archive from the same assignment head.
+   A stale or conflicting archive gives `observation: DISAGREE` and exit 1.
+
+   **Partition during observation.** Interrupt witness polling on the
+   disposable pair. An unavailable witness gives a refusal and an owner
+   action. Restore polling. A stopped append closes the store and starts
+   again, with at most three starts in one invocation. A committed advance
+   can recover its receipt once the old writer is fenced and the owner
+   releases its session. An occupied session or a local suffix without a
+   verified witness commit needs owner reconciliation. Preserve the pending
+   intent and both journals. Compare the recovered head with the owner
+   record before appending another sample.
+
+   **Restore drill.** Take snapshots of the disposable pair at two witnessed
+   heads and keep the binding and latest owner archive outside both backups.
+   With the writer fenced, restore one side at a time at its enrolled path.
+   Preserve the pinned root and ledger inodes when testing rollback. Run
+   `observe --config FILE --events 0 --archive ARCHIVE` and retain the refusal.
+   An older home prefix gives `home behind`, an older witness head gives
+   `home ahead`, and different digests at the same sequence give `fork`.
+   A plain copy can give `store identity mismatch` before head comparison.
+   Restoring both sides to the same earlier advance can leave their heads
+   equal. The newer independent archive then detects the rollback. Stop on
+   unexplained evidence and retain the original files.
+
+   **Retire and enroll at epoch 2.** Stop and fence the disposable writer.
+   Run `ataniq-home retire --config FILE` and check `retired=true` in local
+   status. On the authority host, have the owner issue the separate
+   `ataniq-witness` owner operation `Retire` through its authenticated Unix
+   socket. Supply the exact challenged slot state, a fresh mutation ID and
+   the digest of the owner's disposition. Archive the verified receipt
+   and a freshly challenged tombstone. The current witness executable
+   exposes retirement through its typed owner API.
+
+   Preserve the old state and installation records. Prepare an empty home
+   root, new seed and TLS paths, and a fresh binding directory. Configure
+   the replacement witness in its own fresh directory at **epoch 2**
+   (previous epoch plus one). Repeat `identity-init`, pin exchange, the
+   outside activation record and prepare/submit/finalize for the replacement.
+   Check the new genesis and enrollment receipt, observe the fresh mirror
+   and retain its counted line as separate evidence.
+   [Witness retirement and replacement](authority-host-witness.md#retire-and-enroll-a-replacement)
 
 `status` works offline, including before identity creation. It reports the
 presence of the signing key and TLS files, prepared record, binding validation
@@ -168,8 +238,8 @@ Stop the active foreground commands. Under the home account, run
 `ataniq-home retire --config FILE`. It writes and syncs the empty 0600
 `retired` marker in the protected directory containing `binding`. Dedicate
 that directory to this installation and keep it outside the restore domain.
-The same operation marks `state/retired` and `HOME_KEY.retired` beside the
-signing seed. These two empty 0600 files guard the old root and key path if
+The same operation creates `retired` in the old state root and
+`HOME_KEY.retired` beside the old signing seed. These two empty 0600 files guard the old root and key path if
 the binding configuration changes. Repeat an interrupted retirement to sync
 all three markers. Retirement blocks serve (including its preflight),
 observe and all three enrollment steps for this installation. Keep the ledger,
