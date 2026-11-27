@@ -238,15 +238,25 @@ func TestReadAuthenticationAndOwnerIsolation(t *testing.T) {
 		_, err = tr.read(t.Context(), q, ownerRead)
 		must(t, err)
 	}
+	checkRefusal := func(t *testing.T, tr transport) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+		defer cancel()
+		_, err := tr.exchange(ctx, ownerRead)
+		if !errors.Is(err, cp.ErrRefused) || errors.Is(err, cp.ErrUnavailable) {
+			t.Fatalf("owner read: want refusal, got %v", err)
+		}
+	}
 	t.Run("owner listener", func(t *testing.T) {
 		oe := f.endpoint(testOwner(t, f.s, f.w, f.w.Administration(), ownerID.Fingerprint()))
 		ready(t, oe)
 		for _, peer := range peers {
 			t.Run(peer.name, func(t *testing.T) {
-				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
-				defer cancel()
 				tr, err := oe.transport(peer.id)
 				must(t, err)
+				t.Run("exchange", func(t *testing.T) { checkRefusal(t, tr) })
+				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+				defer cancel()
 				raw, err := oe.DialContext(ctx, oe.Network, oe.Address)
 				must(t, err)
 				defer raw.Close()
@@ -267,9 +277,8 @@ func TestReadAuthenticationAndOwnerIsolation(t *testing.T) {
 		}
 	})
 	t.Run("owner read exchange", func(t *testing.T) {
-		// On a socket a failed application write can close the client
-		// before it reads the queued alert. On net.Pipe the server's
-		// alert write completes only when the client reads it.
+		// On net.Pipe the server's alert write completes only when the
+		// client reads it, even if its own write is still blocked.
 		oe := f.endpoint(serveNetwork(t, "pipe", func(l net.Listener) error {
 			return f.s.serveOwner(l, f.w.Administration(), f.w, ownerID.Fingerprint(), func(net.Conn) func() { return func() {} })
 		}))
@@ -278,12 +287,7 @@ func TestReadAuthenticationAndOwnerIsolation(t *testing.T) {
 			t.Run(peer.name, func(t *testing.T) {
 				tr, err := oe.transport(peer.id)
 				must(t, err)
-				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
-				defer cancel()
-				_, err = tr.exchange(ctx, ownerRead)
-				if !errors.Is(err, cp.ErrRefused) || errors.Is(err, cp.ErrUnavailable) {
-					t.Fatalf("owner read: want refusal, got %v", err)
-				}
+				checkRefusal(t, tr)
 			})
 		}
 	})
