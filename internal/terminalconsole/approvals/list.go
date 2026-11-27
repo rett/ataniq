@@ -99,6 +99,11 @@ func (m *Model) rebuildList() {
 		}
 		text := clip(it.Verb)
 		text += nameText(it.Feature)
+		if it.BindingSHA256 == "" {
+			text += "  open for binding tag"
+		} else {
+			text += "  " + bindingTagLine(it.BindingSHA256)
+		}
 		text += "  " + clip(it.Project) + "  asked " + clock(it.Asked, now)
 		if !recent {
 			text += "  expires " + clock(it.Expires, it.Asked)
