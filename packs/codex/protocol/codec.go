@@ -35,32 +35,30 @@ type Codec interface {
 	EncodeGrant(request []byte, grant Grant) ([]byte, error)
 }
 
-// A turnReservation records the request ID of a successful Encode(Message),
-// which requires an observed idle thread, no live turns and no reservation.
-// An error answer releases the reservation and preserves the observed turn
-// and thread status. A success answer (result.turn.id) and turn/completed
-// for that turn on this thread also release the reservation, in either order.
-// Until the answer names the turn, the reservation remembers the IDs
-// that complete on this thread. A completion retires only its named turn.
-// Thread status applies to admission independently of those lifetimes.
-// Deltas from each live turn are accepted. StopTurn targets the latest live
-// turn/started notification, falling back to the turn named by the answer.
-// thread/closed and systemError discard it and make the thread unusable.
-// Idle status, turn/started and other completions leave it reserved.
-// Forget keeps the request ID for a late answer. Without a definitive
-// outcome, every further Message returns ErrTurn until the session restarts.
-type turnReservation struct {
-	requestID string
-	turnID    string
-	completed map[string]bool
-}
-
+// A bound thread admits a Message when its latest status is idle, it has no
+// live turns, and turnStartID is empty. Encoding the message reserves its
+// request ID until a valid answer arrives, including an answer after Forget.
+//
+// While awaiting that answer, the latest live turn/started holds control of
+// steering and permission requests. An error releases the reservation and
+// leaves no turn in control. A success releases it and gives control to the
+// named turn until its completion, unless that turn already completed.
+// A change of control invalidates the previous turn's pending permissions.
+//
+// Each live turn supplies deltas. StopTurn targets the latest live start,
+// with a turn known only from its answer as fallback. A completion retires
+// its turn and prevents a delayed start from making it live again. Thread
+// status governs admission independently of these turn lifetimes.
+//
+// thread/closed, systemError, or a completion beyond the MaxPending distinct
+// IDs this thread can remember ends admission and control for this codec.
 type codec struct {
 	startID     string // the one thread/start whose result may establish the binding
-	reservation turnReservation
+	turnStartID string
+	completed   map[string]bool // completed turn IDs on this thread
 	thread      string
+	ownTurn     string   // the live turn identified by our turn/start answer
 	liveTurns   []string // interrupt preference increases from first to last
-	controlTurn string   // turn authorized for steering and permission requests
 	closed      bool
 	threadState agentsession.State // latest status reported for the bound thread
 	// Outstanding permission requests on this turn, keyed by string or
@@ -87,16 +85,19 @@ func (c *codec) StartThread(id string) ([]byte, error) {
 	if c.startID != "" || c.thread != "" {
 		return nil, ErrTurn
 	}
-	b, err := request(id, "thread/start", map[string]string{"approvalPolicy": "on-request", "sandbox": "read-only"})
+	b, err := c.request(id, "thread/start", map[string]string{"approvalPolicy": "on-request", "sandbox": "read-only"})
 	if err == nil {
 		c.startID = id
 	}
 	return b, err
 }
 
-func request(id, method string, params any) ([]byte, error) {
+func (c *codec) request(id, method string, params any) ([]byte, error) {
 	if id == "" {
 		return nil, core.ErrInvalidFrame
+	}
+	if id == c.turnStartID || id == c.startID {
+		return nil, ErrTurn
 	}
 	b, err := json.Marshal(map[string]any{"id": id, "method": method, "params": params}, json.Deterministic(true))
 	if err != nil {
@@ -114,21 +115,21 @@ func (c *codec) Encode(id string, req core.Request) ([]byte, error) {
 	}
 	switch req.Operation {
 	case core.Open:
-		return request(id, "initialize", map[string]any{"clientInfo": map[string]string{"name": "ataniq", "version": "1"}})
+		return c.request(id, "initialize", map[string]any{"clientInfo": map[string]string{"name": "ataniq", "version": "1"}})
 	case core.Message:
-		if c.threadState != "idle" || len(c.liveTurns) != 0 || c.reservation.requestID != "" {
+		if c.threadState != "idle" || len(c.liveTurns) != 0 || c.turnStartID != "" {
 			return nil, ErrTurn
 		}
 		b, err := c.message(id, "turn/start", "", req.Text)
 		if err == nil {
-			c.reservation = turnReservation{requestID: id, completed: make(map[string]bool)}
+			c.turnStartID = id
 		}
 		return b, err
 	case core.StopTurn:
 		if len(c.liveTurns) == 0 {
 			return nil, ErrTurn
 		}
-		return request(id, "turn/interrupt", map[string]string{"threadId": c.thread, "turnId": c.liveTurns[len(c.liveTurns)-1]})
+		return c.request(id, "turn/interrupt", map[string]string{"threadId": c.thread, "turnId": c.liveTurns[len(c.liveTurns)-1]})
 	default:
 		return nil, core.ErrUnsupported
 	}
@@ -140,8 +141,15 @@ func (c *codec) Forget(id string) {
 	}
 }
 
+func (c *codec) controlTurn() string {
+	if c.turnStartID != "" && len(c.liveTurns) > 0 {
+		return c.liveTurns[len(c.liveTurns)-1]
+	}
+	return c.ownTurn
+}
+
 func (c *codec) current(thread, turn string) bool {
-	return turn != "" && turn == c.controlTurn && thread == c.thread
+	return turn != "" && turn == c.controlTurn() && thread == c.thread
 }
 
 func (c *codec) Steer(id, thread, expectedTurn, text string) ([]byte, error) {
@@ -159,7 +167,7 @@ func (c *codec) message(id, method, expectedTurn, text string) ([]byte, error) {
 	if expectedTurn != "" {
 		params["expectedTurnId"] = expectedTurn
 	}
-	return request(id, method, params)
+	return c.request(id, method, params)
 }
 
 // Keep request IDs in their original wire type. A server request may use an
