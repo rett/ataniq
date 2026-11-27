@@ -51,11 +51,9 @@ import (
 //
 // What ready means here is the holder's word and no more: the holder is up and
 // the agent was started. The agent's login is not observed, so ready is not a
-// claim that the agent works. There is no way back: this file never sets
-// starting, sets degraded only for a holder that confirms another build, a
-// lead that is ready stays so until a stop (or, adopted, until it is found to
-// be another build), and a failed or slow observation leaves the lead
-// starting with nothing else changed.
+// claim that the agent works. After readiness the observer polls for loss of
+// contact or exit. Only degradation due to those polls can be cleared by a
+// fresh healthy status for the epoch.
 //
 // The observer never blocks lead.start or a client call, and takes no lock
 // across the holder call: it takes the role's operation lock, as a try-lock,
@@ -78,6 +76,11 @@ const (
 	// it doubles after each question that did not settle the matter, up to
 	// eight times this.
 	DefaultReadyBackoff = 200 * time.Millisecond
+	// DefaultHealthEvery is the interval between status checks after readiness.
+	DefaultHealthEvery = 30 * time.Second
+
+	codeHolderUnreachable = "holder-unreachable"
+	codeLeadExited        = "lead-exited"
 
 	// codeHolderReady is the reason code of a state the observer sets.
 	codeHolderReady = "holder-ready"
@@ -116,9 +119,8 @@ type readyObserver struct {
 
 // startObservers lets observers run, under ctx (the server's: it ends when the
 // daemon is stopping), and starts one for every lead that the registry shows
-// starting with its launch recorded and a holder command, as a daemon that
-// adopts a running lead after a restart has. Nothing runs before this: a
-// start that is served has the server running.
+// starting or eligible for health polling, with a recorded launch and a
+// holder command. This includes leads adopted after a daemon restart.
 func (l *leadMode) startObservers(ctx context.Context) {
 	o := &l.ready
 	o.mu.Lock()
@@ -134,7 +136,7 @@ func (l *leadMode) startObservers(ctx context.Context) {
 		if lr.in.holderCommand() == nil {
 			continue
 		}
-		if e, ok := lr.in.ext.runningEntry(); ok && e.Shown.State == leadregistry.StateStarting {
+		if e, ok := lr.in.ext.runningEntry(); ok && (e.Shown.State == leadregistry.StateStarting || watchesHealth(e)) {
 			l.observeReady(lr, e.Epoch)
 		}
 	}
@@ -226,6 +228,7 @@ func (l *leadMode) observeReady(lr *leadRole, epoch uint64) {
 			}
 		}()
 		l.watchReady(ctx, lr, epoch)
+		l.watchHealth(ctx, lr, epoch)
 	}()
 }
 
@@ -294,9 +297,7 @@ func (l *leadMode) readyStep(ctx, base context.Context, lr *leadRole, epoch uint
 		return true, ""
 	}
 	ext := lr.in.ext
-	resp, _, err := callHolder(ctx, ext.holderDir, wire.Request{
-		Op: wire.OpStatus, Epoch: epoch, CommandID: ext.commandID("status", epoch),
-	}, l.cm.dialFor, l.cm.dialFor)
+	resp, err := l.holderStatus(ctx, lr, epoch)
 	switch {
 	case err != nil:
 		why = "no usable answer"
@@ -343,6 +344,98 @@ func (l *leadMode) readyStep(ctx, base context.Context, lr *leadRole, epoch uint
 		return true, ""
 	}
 	return false, "the operation lock was held"
+}
+
+func (l *leadMode) holderStatus(ctx context.Context, lr *leadRole, epoch uint64) (wire.Response, error) {
+	ext := lr.in.ext
+	resp, _, err := callHolder(ctx, ext.holderDir, wire.Request{
+		Op: wire.OpStatus, Epoch: epoch, CommandID: ext.commandID("status", epoch),
+	}, l.cm.dialFor, l.cm.dialFor)
+	return resp, err
+}
+
+// healthDegraded distinguishes poll observations from a build-skew refusal.
+func healthDegraded(e leadregistry.Entry) bool {
+	return e.Shown.State == leadregistry.StateDegraded &&
+		(e.Shown.Reason.Code == codeHolderUnreachable || e.Shown.Reason.Code == codeLeadExited)
+}
+
+func watchesHealth(e leadregistry.Entry) bool {
+	return e.Shown.State == leadregistry.StateReady || healthDegraded(e)
+}
+
+func (l *leadMode) watchHealth(ctx context.Context, lr *leadRole, epoch uint64) {
+	every := l.healthEvery
+	if every <= 0 {
+		every = DefaultHealthEvery
+	}
+	t := time.NewTimer(every)
+	defer t.Stop()
+	for {
+		e, ok := lr.in.ext.runningEntry()
+		if !ok || e.Epoch != epoch || !watchesHealth(e) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		resp, err := l.holderStatus(ctx, lr, epoch)
+		var status *wire.Status
+		if err == nil && resp.OK {
+			status = resp.Status
+		}
+		l.recordHealth(ctx, lr, epoch, status)
+		t.Reset(every)
+	}
+}
+
+// recordHealth applies one poll under the same operation lock as stop and
+// start. A busy role discards the sample and gets a fresh one next time.
+func (l *leadMode) recordHealth(ctx context.Context, lr *leadRole, epoch uint64, status *wire.Status) {
+	e, ok := lr.in.ext.runningEntry()
+	if ctx.Err() != nil || !ok || e.Epoch != epoch || !watchesHealth(e) {
+		return
+	}
+	state := leadregistry.StateDegraded
+	var reason leadregistry.Reason
+	switch {
+	case status == nil:
+		reason = leadregistry.Reason{Code: codeHolderUnreachable, Detail: "the holder did not return a usable status"}
+	case status.Epoch != epoch || status.Lead != lr.role.String():
+		return
+	case status.Facts.TUIExited == wire.FactYes || status.Facts.TreeGone == wire.FactYes:
+		reason = leadregistry.Reason{Code: codeLeadExited, Detail: "the holder reports that the agent exited"}
+	case status.Facts.TUIExited != wire.FactNo:
+		return
+	default:
+		state = leadregistry.StateReady
+		reason = leadregistry.Reason{Code: codeHolderReady, Detail: detailHolderReady}
+	}
+	if state == e.Shown.State && (state == leadregistry.StateReady || reason.Code == e.Shown.Reason.Code) {
+		return
+	}
+	// A previous daemon may have recorded the degradation. Require this
+	// daemon's expected build before publishing ready again.
+	if state == leadregistry.StateReady && lr.in.ext.holderBuild(epoch) != nil {
+		return
+	}
+	if !lr.tryLock() {
+		return
+	}
+	defer lr.unlock()
+	current, ok := lr.in.ext.runningEntry()
+	if ctx.Err() != nil || !ok || current.Epoch != epoch || current.Shown != e.Shown {
+		return
+	}
+	_, err := l.reg.SetState(lr.role, leadregistry.StateChange{
+		Epoch: epoch, State: state, Evidence: leadregistry.EvidenceObservation, Reason: reason,
+	})
+	if err != nil {
+		l.registryDown(err)
+		l.d.logf("scratch health %q: cannot record %s for epoch %d: %s", lr.key, state, epoch, SafeText(err.Error()))
+	}
 }
 
 // markSkewed shows the lead of epoch, whose holder.json confirms another
@@ -406,8 +499,8 @@ func (l *leadMode) showSkewed(lr *leadRole, epoch uint64, f *opFail) error {
 }
 
 // revalidateAdopted reads again, before the daemon serves, the holder.json of
-// every lead it found shown ready (with its launch recorded and a holder
-// command): an earlier daemon set ready for its own build. A file of the epoch
+// every lead it found ready or degraded by a health poll (with a launch and
+// a holder command): an earlier daemon set ready for its own build. A file of the epoch
 // that confirms another build than this daemon's (buildid.Confirmed) makes the
 // lead shown degraded (showSkewed): its unit is not stopped and nothing is
 // asked of its holder. Any other answer of the check leaves the lead as it is
@@ -422,7 +515,7 @@ func (l *leadMode) revalidateAdopted() error {
 			continue
 		}
 		e, ok := lr.in.ext.runningEntry()
-		if !ok || e.Shown.State != leadregistry.StateReady {
+		if !ok || !watchesHealth(e) {
 			continue
 		}
 		err := lr.in.ext.holderBuild(e.Epoch)
@@ -431,7 +524,7 @@ func (l *leadMode) revalidateAdopted() error {
 		}
 		op := "scratch ready " + strconv.Quote(lr.key)
 		if !buildid.Confirmed(err) {
-			l.d.logf("%s: the adopted ready lead's build cannot be confirmed for epoch %d; it stays ready: %s", op, e.Epoch, SafeText(err.Error()))
+			l.d.logf("%s: the adopted %s lead's build cannot be confirmed for epoch %d; it stays %s: %s", op, e.Shown.State, e.Epoch, e.Shown.State, SafeText(err.Error()))
 			continue
 		}
 		f := lr.in.ext.skewRefusal(op, err)
@@ -444,7 +537,7 @@ func (l *leadMode) revalidateAdopted() error {
 			l.registryDown(serr)
 			return fmt.Errorf("scratch mode: the lead %q of epoch %d is another build than this daemon's, and its state degraded cannot be recorded: %w; the daemon does not serve a state it could not record", lr.key, e.Epoch, serr)
 		}
-		l.d.logf("%s: the holder of epoch %d, which this daemon adopted shown ready, is not its build; the lead is shown degraded and its unit is left running: stop the lead and start it again", op, e.Epoch)
+		l.d.logf("%s: the holder of epoch %d, which this daemon adopted shown %s, is not its build; the lead is shown degraded and its unit is left running: stop the lead and start it again", op, e.Epoch, e.Shown.State)
 	}
 	return nil
 }
