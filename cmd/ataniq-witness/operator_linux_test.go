@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"ataniq/internal/assignment"
 	cp "ataniq/internal/checkpoint"
 	"ataniq/internal/checkpoint/durable"
 	"ataniq/internal/checkpoint/link"
@@ -139,16 +138,12 @@ func TestWitnessAttendedEnrollment(t *testing.T) {
 	remote := link.Remote{Network: "unix", Address: c.Socket, ServerPin: c.ServicePin, WitnessPin: store.Pin, Epoch: c.Identity.Epoch}
 	admin, err := remote.Administration(owner)
 	must(t, err)
-	kid, err := cp.KeyID(pub)
-	must(t, err)
-	header := assignment.Header{Schema: 1, Authority: c.Slot.Authority, Store: c.Slot.Store, Incarnation: "first", LedgerID: "ledger", KeyID: kid}
-	raw, err := header.Bytes()
-	must(t, err)
-	enrollment := cp.Enrollment{ID: cp.ID{1}, Slot: c.Slot, HeaderBytes: raw, HomePublicKey: pub}
-	enrollment.ProofOfPossession, err = cp.ProveEnrollment(homeKey, enrollment)
-	must(t, err)
-	_, err = admin.Enroll(ctx, enrollment)
-	must(t, err)
+	cmd, _, _ := prepareOnHome(t, c, homeKey, path)
+	var output bytes.Buffer
+	args := []string{"enroll-submit", "--config", path, "--prepared", cmd.prepared, "--receipt-out", cmd.receiptOut, "--expect-digest", cmd.expectDigest}
+	if code := run(ctx, filepath.Dir(path), args, &output, &output); code != 0 || !strings.Contains(output.String(), "slots=1 receipts=1 ") {
+		t.Fatalf("enroll-submit: exit %d, %s", code, &output)
+	}
 	cl, err := home.Connect(ctx, c.Slot, homeKey, sessionKey)
 	must(t, err)
 	q := cp.ReadRequest{Slot: c.Slot, Challenge: cp.ID{2}}

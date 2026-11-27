@@ -12,6 +12,7 @@ separate files under protected directories.
 | `run` | Witness service | Opens and re-proves the store, grants the configured home access to one slot, polls outbound and serves the owner socket. |
 | `status` | Local root | Verifies a fresh signed status and prints the epoch, directory sequence, predecessor digest, counts and inhibition reason. |
 | `acknowledge` | Local root | Sends a pinned, epoch-bound acknowledgement over the owner socket. |
+| `enroll-submit --config FILE --prepared FILE --receipt-out FILE [--expect-digest HEX]` | Local root | Checks the signed home request and its pairing, submits it over the owner socket, writes the signed receipt and prints both digests and verified witness status. |
 | `recover` | Witness service, under owner control | Re-proves storage and serves only the owner socket with decisions inhibited. |
 | `complete-publication` | Witness service, offline | Finishes publication of one unambiguous staged signed genesis pair and prints `witness publication completed`. |
 
@@ -223,18 +224,39 @@ Verify the effective account and restrictions, the output filter and the
 absence of a witness IP listener. Run `WITNESS status --config CONFIG` as
 local root. Fresh genesis reports sequence 1, zero slots, receipts and fences.
 
-Store initialization and home enrollment are separate steps. For the attended
-enrollment use the trusted local owner client of
-`link.Remote.Administration` on the configured Unix socket. This command
-exposes status and storage acknowledgement as CLI operations. The link's
-typed owner API also accepts enrollment, release, retirement and settlement.
-Submit `Enroll` with the exact slot, fresh mutation ID, the immutable home
-header bytes, the pinned home public key and the home's detached proof over
-the canonical enrollment body. Keep the exact request before sending.
-Check the returned receipt against the request, witness key and epoch.
-Archive it independently. A fresh signed read must agree with home replay
-before any managed admission. Provisioning this service alone starts no
-managed work. [Owner link protocol](../internal/checkpoint/link/README.md)
+### Enroll the home
+
+Use protected transfer directories on both devices, outside witness state
+and separate from the private keys. Keep the home ledger and signing key on
+the home throughout the ceremony.
+
+1. As the home account, run
+   `ataniq-home enroll prepare --config HOME_CONFIG --out prepared.json`.
+   Read the printed `prepared_sha256` on the home device. Keep the original
+   and transfer the exact file to the authority host over an authenticated channel.
+2. As local root on the authority host, substitute the hex value read on the
+   home device for `HOME_DIGEST` and run
+
+   ```sh
+   WITNESS enroll-submit --config CONFIG --prepared prepared.json --receipt-out receipt.bin --expect-digest HOME_DIGEST
+   ```
+
+   The command prints `prepared_digest` and checks the comparison before it
+   contacts the witness. A mismatch stops enrollment. Check the transfer and
+   the digest on the home device. On success the command publishes the raw
+   signed receipt in a new 0600 file, prints `receipt_digest`, then prints
+   the signed directory status summary. For the first enrollment, expect one
+   slot. Archive the receipt, digests and status line with the off-host record.
+   After an interrupted submission, replay the identical Prepared with the
+   same home digest and a fresh receipt filename to recover the same receipt.
+   If the slot has advanced since enrollment, the receipt records the original
+   enrollment and the status line reports the current directory position.
+3. Return the exact receipt to the home. As the home account, run
+   `ataniq-home enroll finalize --config HOME_CONFIG --prepared prepared.json --receipt receipt.bin`.
+   Finalize verifies the receipt and ledger identity and publishes the binding.
+   Compare its `receipt_digest` with the owner's archived value. Verify that
+   a fresh signed read agrees with home replay before opening managed admission.
+   [Home enrollment and recovery](home.md)
 
 ## Outage or uncertain delivery
 

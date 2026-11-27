@@ -213,6 +213,23 @@ func Submit(ctx context.Context, admin checkpoint.Administration, p Prepared) ([
 		}
 	}
 	r, err := admin.Enroll(ctx, q)
+	var reason *checkpoint.Reason
+	if errors.As(err, &reason) && reason.Kind == checkpoint.Superseded {
+		// Later slot activity moved the enrollment receipt into history.
+		// Recover that exact acknowledgement without changing current state.
+		read := checkpoint.ReadRequest{Slot: q.Slot, Challenge: id(), ReceiptID: q.ID}
+		v, readErr := admin.Read(ctx, read)
+		if readErr != nil {
+			return nil, readErr
+		}
+		if readErr = checkpoint.VerifyView(p.WitnessKey, read, v); readErr != nil {
+			return nil, readErr
+		}
+		if v.Current.Epoch != p.Epoch || v.Prior == nil {
+			return nil, err
+		}
+		r, err = *v.Prior, nil
+	}
 	if err != nil {
 		return nil, err
 	}
