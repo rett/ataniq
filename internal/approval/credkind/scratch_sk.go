@@ -42,6 +42,18 @@ type ScratchSKCredential struct {
 	Counter    uint32
 }
 
+// ScratchSKScope is the home's authorization context. AllowFeatureFinish is
+// an explicit project opt-in, DeskClass comes from the authenticated desk's
+// enrollment, and the remaining fields come from the pending card and trial.
+// These values must be obtained independently of the submitted signature.
+type ScratchSKScope struct {
+	AllowFeatureFinish bool
+	DeskClass          string
+	DisposableLocal    bool
+	CardClass          string
+	Verb               string
+}
+
 // ScratchSKDecision describes one expected console decision at the home.
 // The desk reconstructs it from its own session and the card it displays.
 // ExporterSHA256 is the hash of the desk connection's contextual TLS exporter.
@@ -111,7 +123,11 @@ func skPrefix(pub ed25519.PublicKey) []byte {
 // returns the signed counter for the challenge spend. The caller must recheck
 // eligibility, the current counter, expiry and challenge state at spend time
 // and retain the counter atomically with the spend. No decision is issued here.
-func VerifyScratchSK(c ScratchSKCredential, expected ScratchSKDecision, blob []byte) (uint32, error) {
+func VerifyScratchSK(c ScratchSKCredential, expected ScratchSKDecision, scope ScratchSKScope, blob []byte) (uint32, error) {
+	if !scope.AllowFeatureFinish || scope.DeskClass != "laptop" || !scope.DisposableLocal ||
+		scope.CardClass != "ref-move" || scope.Verb != "feature finish" {
+		return 0, ErrNotAccepted
+	}
 	if c.Provenance != SKWitnessed && c.Provenance != SKAttested {
 		return 0, ErrSKProvenance
 	}

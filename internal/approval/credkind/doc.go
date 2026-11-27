@@ -26,9 +26,10 @@
 // none of them. Classify picks the kind for an AAGUID, Register registers
 // with it, and Policy limits which kinds a project accepts (all by default).
 //
-// The policy also recognizes "security-key" for the separate scratch SSHSIG
-// verifier. VerifyScratchSK checks a signature against an independently
-// enrolled key. Hardware origin, local signer use and uncached PIN entry
+// The separate scratch SSHSIG verifier requires an explicit opt-in for a
+// disposable local ref-move / feature finish card from a laptop-class desk.
+// VerifyScratchSK checks a signature against an independently enrolled
+// security-key. Hardware origin, local signer use and uncached PIN entry
 // require independent qualification. Software vectors exercise the format.
 //
 // # The verifier

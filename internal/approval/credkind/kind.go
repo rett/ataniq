@@ -180,20 +180,12 @@ func Verify(c Credential, in AssertionInput, e Expect) (Result, error) {
 	return k.Verify(c, in, e)
 }
 
-// Policy is the kinds a project accepts. With no names it accepts every kind.
+// Policy lists the WebAuthn kinds a project accepts. With no names it accepts
+// every WebAuthn kind.
 // A name that is not a kind matches nothing, so a policy that names only
 // unknown kinds accepts nothing; Check finds such a name.
 type Policy struct {
 	Accepted []string
-}
-
-// The SSH security key has its own verifier and no WebAuthn registration.
-func policyKind(name string) bool {
-	if name == NameSecurityKey {
-		return true
-	}
-	_, ok := ByName(name)
-	return ok
 }
 
 // Check reports ErrPolicy when the policy names a kind that does not exist,
@@ -201,7 +193,7 @@ func policyKind(name string) bool {
 func (p Policy) Check() error {
 	seen := map[string]bool{}
 	for _, name := range p.Accepted {
-		if !policyKind(name) || seen[name] {
+		if _, ok := ByName(name); !ok || seen[name] {
 			return ErrPolicy
 		}
 		seen[name] = true
@@ -211,7 +203,7 @@ func (p Policy) Check() error {
 
 // Accepts reports whether the policy accepts the kind of a name.
 func (p Policy) Accepts(name string) bool {
-	if !policyKind(name) {
+	if _, ok := ByName(name); !ok {
 		return false
 	}
 	if len(p.Accepted) == 0 {
