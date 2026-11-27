@@ -471,7 +471,7 @@ version, and e runs pasta, bubblewrap, ip, curl and a throwaway user unit.
    outside the checks, which guard against mistakes, not attackers); the settings file is a
    private regular file with one name and the proof's settings; the folder
    is not, lies not in and holds not the drop folder, the mirror, the work
-   folder or the sandbox template the settings name; the scratch roots and the suite; the root marker and instance identity (step f); the gate's address, key
+   folder or the sandbox template the settings name; the scratch roots and the suite; the root marker, instance identity (step f) and registry header; the gate's address, key
    fingerprint and pins; and the socket paths of the daemon and of every
    lead's holder. It then lists what the daemon will read (the settings
    file, the gate's key, certificate and pins, read only; the key list; the
@@ -480,7 +480,7 @@ version, and e runs pasta, bubblewrap, ip, curl and a throwaway user unit.
    failed preflight` and names the start that would fail (the daemon's, or,
    when a holder's socket path is the one refusal, the later start of that
    lead's holder), and `--status` says the sitting failed preflight. The daemon makes these checks at its start too and
-   refuses (exit 11 for the instance identity, 10 for config) with the same reasons, before any lock, with one
+   refuses (exit 11 for the instance identity, 14 for the registry header, 10 for config) with the same reasons, before any lock, with one
    exception: the socket paths of the leads' holders are checked only here,
    before the sitting, since the daemon's start does not look at them (a
    holder meets that limit only when it starts, during the sitting). The

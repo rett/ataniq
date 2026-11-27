@@ -42,16 +42,30 @@ A backup of `instance.key` holds the private Ed25519 seed. Protect it as a
 credential. A copied root (including a copy made with `cp -a`) is the same
 instance and must never run beside the original.
 
+### Restore an instance
+
+If only the key was lost and the root is intact, put the original key back as
+`instance.key` and start normally. The missing-key diagnostic checks the
+surviving incarnation against the journal header and names the authority
+whose key is needed. A backup restore needs a fresh incarnation even when it
+includes all the files.
+
 To restore, stop the daemon and keep the old root and journal offline. In a
 private 0700 state directory, restore the original `instance.key` as a
 singly linked 0600 file owned by the daemon user. Run
 `ataniqd init --restored --state-dir DIR` once and record the printed
 incarnation. It preserves the authority and draws a new incarnation each
-time. An old lead registry journal now fails its binding check. Retain it
+time. If a journal is still in place, the command warns and refuses before
+changing the incarnation. Move the journal offline first, or explicitly use
+`--restored --leave-old-journal` to acknowledge that the old journal will
+remain in place and fail its binding check. Both run and scratch
+`run --check` report exit 14 for that journal. Retain it
 offline for recovery and move it out of the registry directory before
 running ordinary `ataniqd init --state-dir DIR` to bind a **new, empty**
 registry. Reconcile the old lead history and enroll each project in the new
 registry before resuming work. Only the lead registry carries this binding today.
+
+### Sandbox identity
 
 At managed sandbox start, the daemon reads the identity from that state root
 and passes the holder only the short tag, from which the holder sets

@@ -304,7 +304,7 @@ func TestScratchInstanceInitialization(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg, _, _ := ta.runConfig(args[1:])
-	if err := ta.requireInstance(cfg); !errors.Is(err, instanceid.ErrInvalid) || leaddaemon.ExitCode(err) != leaddaemon.ExitState {
+	if err := ta.requireInstance(cfg, false); !errors.Is(err, instanceid.ErrInvalid) || leaddaemon.ExitCode(err) != leaddaemon.ExitState {
 		t.Fatalf("damaged key: %v", err)
 	}
 	if code := ta.run(args); code != leaddaemon.ExitState {

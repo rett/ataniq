@@ -46,6 +46,58 @@ func (h *headerPayload) match(b instanceid.Binding) error {
 	return nil
 }
 
+// ReadHeaderAt reads the existing registry header without locking or repairing
+// the journal. A missing or empty journal has no header. V1 has a zero binding.
+func ReadHeaderAt(root *os.File) (*instanceid.Binding, error) {
+	dir, err := unix.Openat(int(root.Fd()), DirName, unix.O_RDONLY|dirFlags|unix.O_NOFOLLOW, 0)
+	if err == unix.ENOENT {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer unix.Close(dir)
+	path := filepath.Join(root.Name(), DirName)
+	if err := checkDir(dir, path); err != nil {
+		return nil, err
+	}
+	fd, err := unix.Openat(dir, FileName, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err == unix.ENOENT {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	f := os.NewFile(uintptr(fd), filepath.Join(path, FileName))
+	defer f.Close()
+	if err := checkJournalFile(dir, fd, f.Name()); err != nil {
+		return nil, err
+	}
+	header, _, size, err := readInitHeader(bufio.NewReaderSize(f, MaxLineBytes+1))
+	if err != nil || size == 0 {
+		return nil, err
+	}
+	h := header.payload.(*headerPayload)
+	return &instanceid.Binding{Authority: h.Authority, Incarnation: h.Incarnation}, nil
+}
+
+// A zero record denotes an empty file. The length includes the newline so
+// migration can revisit the records after validating them.
+func readInitHeader(rd *bufio.Reader) (record, [sha256.Size]byte, int64, error) {
+	line, err := rd.ReadSlice('\n')
+	if err == io.EOF && len(line) == 0 {
+		return record{}, genesis, 0, nil
+	}
+	if err != nil {
+		return record{}, genesis, 0, &CorruptError{Line: 1, Reason: "cannot read complete header"}
+	}
+	header, prev, err := decodeLine(genesis, 0, line[:len(line)-1])
+	if err != nil || header.kind != kindHeader {
+		return record{}, genesis, 0, &CorruptError{Line: 1, Reason: "invalid header"}
+	}
+	return header, prev, int64(len(line)), nil
+}
+
 // InitInstance initializes a private state root and binds its registry.
 // The old journal stays locked throughout migration. A retry after a crash
 // sees either the old journal or the fully written replacement.
@@ -80,18 +132,12 @@ func InitInstanceAt(root *os.File, registryName, label string) (instanceid.Ident
 	}
 	defer f.Close()
 	rd := bufio.NewReaderSize(f, MaxLineBytes+1)
-	line, err := rd.ReadSlice('\n')
-	empty := err == io.EOF && len(line) == 0
-	var header record
-	var prev [sha256.Size]byte
+	header, prev, offset, err := readInitHeader(rd)
+	if err != nil {
+		return zero, err
+	}
+	empty := offset == 0
 	if !empty {
-		if err != nil {
-			return zero, &CorruptError{Line: 1, Reason: "cannot read complete header"}
-		}
-		header, prev, err = decodeLine(genesis, 0, line[:len(line)-1])
-		if err != nil || header.kind != kindHeader {
-			return zero, &CorruptError{Line: 1, Reason: "invalid header"}
-		}
 		h := header.payload.(*headerPayload)
 		if h.Version == boundFormatVersion {
 			id, err := instanceid.LoadAt(int(root.Fd()))
@@ -105,7 +151,6 @@ func InitInstanceAt(root *os.File, registryName, label string) (instanceid.Ident
 		}
 		// Validate before publishing either identity file. Keep this same
 		// descriptor locked through replacement, including the second read.
-		offset := int64(len(line))
 		r := Registry{prev: prev, roles: make(map[leadrole.Role]Entry)}
 		for n := 2; ; n++ {
 			recordLine, err := rd.ReadSlice('\n')

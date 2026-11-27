@@ -18,10 +18,11 @@ import (
 func (a *app) initCmd(args []string) int {
 	var stateDir string
 	var label *string
-	var restored bool
+	var restored, leaveJournal bool
 	if code := a.flags("init", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&stateDir, "state-dir", "", "state folder")
 		fs.BoolVar(&restored, "restored", false, "start a fresh store incarnation for a restored authority key")
+		fs.BoolVar(&leaveJournal, "leave-old-journal", false, "acknowledge that the journal left in place will be unusable after restore")
 		fs.Func("label", "display label", func(value string) error {
 			label = &value
 			return instanceid.ValidateLabel(value)
@@ -44,7 +45,11 @@ func (a *app) initCmd(args []string) int {
 		fmt.Fprintln(a.stderr, "ataniqd init: --restored and --label exclude each other")
 		return leaddaemon.ExitUsage
 	}
-	id, err := a.initializeInstance(stateDir, label, restored)
+	if leaveJournal && !restored {
+		fmt.Fprintln(a.stderr, "ataniqd init: --leave-old-journal requires --restored")
+		return leaddaemon.ExitUsage
+	}
+	id, err := a.initializeInstance(stateDir, label, restored, leaveJournal)
 	if err != nil {
 		fmt.Fprintln(a.stderr, "ataniqd init:", leaddaemon.SafeText(err.Error()))
 		return leaddaemon.ExitState
@@ -56,7 +61,7 @@ func (a *app) initCmd(args []string) int {
 	return leaddaemon.ExitOK
 }
 
-func (a *app) initializeInstance(stateDir string, label *string, restored bool) (instanceid.Identity, error) {
+func (a *app) initializeInstance(stateDir string, label *string, restored, leaveJournal bool) (instanceid.Identity, error) {
 	root, err := instanceid.OpenRoot(stateDir, !restored)
 	if err != nil {
 		return instanceid.Identity{}, err
@@ -70,6 +75,9 @@ func (a *app) initializeInstance(stateDir string, label *string, restored bool) 
 		return instanceid.Identity{}, err
 	}
 	current, err := instanceid.CheckInit(root, restored)
+	if errors.Is(err, instanceid.ErrMissing) {
+		return instanceid.Identity{}, missingKeyError(stateDir, root)
+	}
 	if err != nil {
 		return instanceid.Identity{}, err
 	}
@@ -79,6 +87,17 @@ func (a *app) initializeInstance(stateDir string, label *string, restored bool) 
 			return instanceid.Identity{}, err
 		}
 		defer lock.Release()
+		header, err := leadregistry.ReadHeaderAt(root)
+		if err != nil {
+			return instanceid.Identity{}, fmt.Errorf("%s: %w", journalPath(stateDir), err)
+		}
+		if header != nil {
+			warning := fmt.Sprintf("the journal at %s will be unusable in the new incarnation", journalPath(stateDir))
+			if !leaveJournal {
+				return instanceid.Identity{}, fmt.Errorf("%s; move it offline or acknowledge with --leave-old-journal; see %s", warning, restoreGuide)
+			}
+			fmt.Fprintf(a.stderr, "ataniqd init: warning: %s; see %s\n", leaddaemon.SafeText(warning), restoreGuide)
+		}
 		return instanceid.RestoreAt(root)
 	}
 	if current.Authority != "" && label != nil {
@@ -91,7 +110,7 @@ func (a *app) initializeInstance(stateDir string, label *string, restored bool) 
 	id, err := leadregistry.InitInstanceAt(root, leaddaemon.RegistryDirName, display)
 	if err != nil {
 		if errors.Is(err, instanceid.ErrMissing) {
-			return id, fmt.Errorf("%s: bound journal requires its original key %s", journalPath(stateDir), filepath.Join(stateDir, instanceid.FileName))
+			return id, missingKeyError(stateDir, root)
 		}
 		var pe *os.PathError
 		if errors.As(err, &pe) {
@@ -113,11 +132,55 @@ func journalPath(stateDir string) string {
 	return filepath.Join(stateDir, leaddaemon.RegistryDirName, leadregistry.FileName)
 }
 
-func (a *app) requireInstance(cfg leaddaemon.Config) error {
+const restoreGuide = "docs/federation.md#restore-an-instance"
+
+func missingKeyError(state string, root *os.File) error {
+	hint := "for a new or pre-identity root use " + initHint(state) + "; for a restore see " + restoreGuide
+	if root != nil {
+		header, err := leadregistry.ReadHeaderAt(root)
+		switch {
+		case err != nil:
+			hint = fmt.Sprintf("cannot inspect %s: %v; see %s", journalPath(state), err, restoreGuide)
+		case header == nil:
+			if remaining, err := instanceid.CheckInit(root, false); err == nil && remaining.Incarnation != "" {
+				hint = "no journal confirms the missing key; follow the restore procedure in " + restoreGuide + "; if first init was interrupted, retry " + initHint(state)
+			}
+		case header.Authority != "":
+			remaining, err := instanceid.CheckInit(root, false)
+			if err == nil && remaining.Incarnation == header.Incarnation {
+				hint = fmt.Sprintf("the journal matches this store incarnation; if the root is intact, put the original key for authority %s back in place", header.Authority)
+			} else {
+				hint = "the journal belongs to another or missing incarnation; follow the restore procedure in " + restoreGuide
+			}
+		}
+	}
+	return fmt.Errorf("%s: %w; %s", filepath.Join(state, instanceid.FileName), instanceid.ErrMissing, hint)
+}
+
+func (a *app) requireInstance(cfg leaddaemon.Config, checkHeader bool) error {
 	if os.Geteuid() == 0 {
 		return &leaddaemon.StartupError{Step: leaddaemon.StepConfig, Err: errors.New("refusing to run as root")}
 	}
-	_, err := instanceid.Load(cfg.StateDir)
+	root, err := instanceid.OpenRoot(cfg.StateDir, false)
+	var id instanceid.Identity
+	if err == nil {
+		defer root.Close()
+		id, err = instanceid.LoadRoot(root)
+	}
+	if err == nil && checkHeader {
+		header, err := leadregistry.ReadHeaderAt(root)
+		if err == nil && header != nil {
+			switch {
+			case header.Authority == "":
+				err = leadregistry.ErrUnbound
+			case *header != id.Binding:
+				err = leadregistry.ErrForeignInstance
+			}
+		}
+		if err != nil {
+			return &leaddaemon.StartupError{Step: leaddaemon.StepRegistry, Err: err}
+		}
+	}
 	if err == nil {
 		return nil
 	}
@@ -127,7 +190,7 @@ func (a *app) requireInstance(cfg leaddaemon.Config) error {
 		return &leaddaemon.StartupError{Step: leaddaemon.StepConfig, Err: placeErr}
 	}
 	if errors.Is(err, instanceid.ErrMissing) {
-		err = fmt.Errorf("%s: %w; for a new or pre-identity root use %s; for key recovery follow the restore procedure", filepath.Join(cfg.StateDir, instanceid.FileName), instanceid.ErrMissing, initHint(cfg.StateDir))
+		err = missingKeyError(cfg.StateDir, root)
 	}
 	return &leaddaemon.StartupError{Step: leaddaemon.StepState, Err: err}
 }

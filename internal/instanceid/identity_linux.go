@@ -158,7 +158,12 @@ func Load(path string) (Identity, error) {
 		return Identity{}, err
 	}
 	defer root.Close()
-	return readIdentity(int(root.Fd()), path, existing)
+	return LoadRoot(root)
+}
+
+// LoadRoot reads the identity from a pinned root and names its files in errors.
+func LoadRoot(root *os.File) (Identity, error) {
+	return readIdentity(int(root.Fd()), root.Name(), existing)
 }
 
 // LoadAt reads both identity files relative to a pinned state root.

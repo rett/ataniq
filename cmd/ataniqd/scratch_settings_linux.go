@@ -540,8 +540,8 @@ func ownerSettingsRun(a *app, o *ownerFlags, cfg *leaddaemon.Config) (scratchLoa
 	case s.keysPrefix || s.sinceSet:
 		// The key list alone: neither the settings folder nor the gate is
 		// looked at.
-		if err := a.requireInstance(*cfg); err != nil {
-			fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(err.Error()))
+		if err := a.requireInstance(*cfg, true); err != nil {
+			fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(startupMessage(err, cfg.StateDir)))
 			return nil, leaddaemon.ExitCode(err)
 		}
 		return nil, a.keysCheck(s, cfg.StateDir)
@@ -675,12 +675,20 @@ func (a *app) ownerSettingsCheck(o *ownerFlags, cfg *leaddaemon.Config, p settin
 	if placeErr != nil {
 		skip("instance identity", "the scratch place is refused")
 	} else {
-		identityErr := a.requireInstance(*cfg)
+		identityErr := a.requireInstance(*cfg, true)
 		if identityErr != nil && fails == 0 {
 			exit = leaddaemon.ExitCode(identityErr)
-			fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(identityErr.Error()))
+			fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(startupMessage(identityErr, cfg.StateDir)))
 		}
-		line("instance identity", identityErr, p.state)
+		if leaddaemon.ExitCode(identityErr) == leaddaemon.ExitRegistry {
+			line("instance identity", nil, p.state)
+			line("registry header", identityErr, "")
+		} else {
+			line("instance identity", identityErr, p.state)
+			if identityErr == nil {
+				line("registry header", nil, journalPath(p.state))
+			}
+		}
 	}
 	sockErr := socketPaths(p, leads)
 	line("the socket paths", sockErr, fmt.Sprintf("the daemon's socket and every lead's holder sockets fit in a Unix socket address (%d bytes)", maxUnixSocketPath))
