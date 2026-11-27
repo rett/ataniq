@@ -251,6 +251,9 @@ session focus, shortened to its count, or left out, when it would hide the
 return hint.
 
 The list shows the waiting cards, the recent decisions and the standing rules.
+Waiting and recent card rows show a four-word binding tag when the list
+supplies the card's digest. "open for binding tag" means to open the card
+to see its tag.
 Up, Down, j and k move, Enter opens a card, `L` opens the limit's screen for
 the project under the cursor and Esc closes the view. Below 80 columns by 24
 rows a card is not offered for a decision and says so. While a field is open
@@ -260,8 +263,15 @@ list, cockpit.
 ### The card
 
 The card shows its plan, diff summary, flagged paths and evidence. Text a lead
-wrote is drawn apart, under the label "unverified lead data". The keys on the
-card are:
+wrote is drawn apart, under the label "unverified lead data".
+
+Compare the four words on the "Binding tag" line when checking the same card
+on two displays. The words are a short checksum of the card's binding SHA-256
+and help catch mix-ups. Different digests can yield the same four words.
+Decisions use the full digest. "Binding tag unavailable" means the digest
+is missing or malformed.
+
+The keys on the card are:
 
 | Key | Action |
 | --- | --- |
