@@ -251,5 +251,10 @@ observe and all three enrollment steps for this installation. Keep the ledger,
 receipt, binding, keys and marker together as evidence of the old pairing.
 
 `ataniq-home status --config FILE` still replays the ledger offline. It prints
-`retired=true` or `retired=false` and, when a completed comparison exists,
-`last_observation=agree` or `last_observation=DISAGREE` with the differences.
+`retired=true` or `retired=false` and `last_observation=none` until there is
+a recorded result. A completed comparison shows `last_observation=agree` or
+`last_observation=DISAGREE` with the differences. The suffix
+`(stale: ledger head moved)` means the recorded home head differs from local
+replay. If observe refuses a home behind, home ahead, fork or retirement, it
+records the reason in `observation.json`. Status then shows
+`last_observation=refused:` followed by that reason.

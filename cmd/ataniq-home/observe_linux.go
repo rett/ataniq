@@ -48,7 +48,8 @@ func observe(ctx context.Context, cmd command, c config, p pairing, ep *link.End
 	if err != nil {
 		return err
 	}
-	return observeStore(ctx, cmd, c, *b, p.home.key, ep, signer, out, fault)
+	err = observeStore(ctx, cmd, c, *b, p.home.key, ep, signer, out, fault)
+	return recordObserveError(c.State, err)
 }
 
 func ownerAction(err error) error {

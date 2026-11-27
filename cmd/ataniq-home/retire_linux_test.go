@@ -34,14 +34,20 @@ func TestRetireKeepsLedgerAndBlocksInstallation(t *testing.T) {
 	if got := call(t, f.path, "status"); !strings.Contains(got, "ledger_head_sequence=1\nretired=true\nlast_observation=agree\n") {
 		t.Fatal(got)
 	}
+	if !bytes.Equal(obs, read(t, filepath.Join(f.c.State, observationFile))) {
+		t.Fatal("retire changed the observation")
+	}
 	for _, args := range [][]string{{"serve"}, {"serve", "--check"}, {"observe"}, {"enroll", "prepare", "--out", f.path + ".out"}, {"enroll", "resume", "--out", f.path + ".out"}, {"enroll", "finalize", "--prepared", "none", "--receipt", "none"}} {
 		_, diag := cli(t, 1, append(args, "--config", f.path)...)
 		if !strings.Contains(diag, errRetired.Error()) {
 			t.Fatal(args, diag)
 		}
 	}
-	if !bytes.Equal(before, read(t, ledger)) || !bytes.Equal(binding, read(t, f.c.Binding)) || !bytes.Equal(obs, read(t, filepath.Join(f.c.State, observationFile))) || state != f.state(t) {
+	if !bytes.Equal(before, read(t, ledger)) || !bytes.Equal(binding, read(t, f.c.Binding)) || state != f.state(t) {
 		t.Fatal("retire changed local or witness evidence")
+	}
+	if got := call(t, f.path, "status"); !strings.Contains(got, "last_observation=refused: retired identity") {
+		t.Fatal(got)
 	}
 }
 
@@ -76,6 +82,9 @@ func TestRetirePreservesUnexpectedMarker(t *testing.T) {
 
 func TestStatusStrictObservation(t *testing.T) {
 	f := newPilot(t)
+	if got := call(t, f.path, "status"); !strings.Contains(got, "last_observation=none\n") {
+		t.Fatal(got)
+	}
 	archive := f.path + ".archive"
 	must(t, os.WriteFile(archive, []byte("sequence=0 head="+strings.Repeat("a", 64)+"\n"), 0600))
 	_, err := f.run(t, command{events: 1, archive: archive}, nil)

@@ -137,8 +137,36 @@ func compareObservation(ctx context.Context, archive string, root enrollment.Fil
 
 const observationFile = "observation.json"
 
+// A refused startup has no three-way evidence to publish.
+type refusedObservation struct {
+	Reason enrollment.Reason `json:"refusal"`
+}
+
+func (r refusedObservation) valid() bool {
+	switch r.Reason {
+	case enrollment.HomeBehind, enrollment.HomeAhead, enrollment.Fork, enrollment.Retired:
+		return true
+	}
+	return false
+}
+
+func recordObserveError(state string, err error) error {
+	var refusal refusedObservation
+	var e *enrollment.Error
+	switch {
+	case errors.Is(err, errRetired), errors.Is(err, cp.ErrRetired):
+		refusal.Reason = enrollment.Retired
+	case errors.As(err, &e):
+		refusal.Reason = e.Reason
+	}
+	if refusal.valid() {
+		return errors.Join(err, saveObservation(state, refusal))
+	}
+	return err
+}
+
 // Pin the private state directory for creation, publication and directory sync.
-func saveObservation(state string, o observation) error {
+func saveObservation(state string, o any) error {
 	raw, err := json.Marshal(o)
 	if err != nil {
 		return err

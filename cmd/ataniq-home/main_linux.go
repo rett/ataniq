@@ -138,6 +138,9 @@ func execute(cmd command, out io.Writer, uid int) error {
 			return err
 		}
 		if retired {
+			if cmd.op == "observe" {
+				return recordObserveError(c.State, errRetired)
+			}
 			return errRetired
 		}
 	}

@@ -205,7 +205,10 @@ func TestObserveRefusesRestores(t *testing.T) {
 				must(t, err)
 				must(t, os.WriteFile(path, append(header, frame...), 0600))
 			case enrollment.Retired:
-				_, err := f.w.Administration().Retire(t.Context(), cp.Retirement{Mutation: f.mutation(t), DispositionDigest: strings.Repeat("b", 64)})
+				_, err := f.run(t, command{events: 1}, nil)
+				must(t, err)
+				f.release(t)
+				_, err = f.w.Administration().Retire(t.Context(), cp.Retirement{Mutation: f.mutation(t), DispositionDigest: strings.Repeat("b", 64)})
 				must(t, err)
 			default:
 				_, err := f.run(t, command{events: 1}, nil)
@@ -234,11 +237,21 @@ func TestObserveRefusesRestores(t *testing.T) {
 					must(t, os.WriteFile(path, append(header, raw...), 0600))
 				}
 			}
+			if reason == enrollment.HomeBehind || reason == enrollment.Fork {
+				if status := call(t, f.path, "status"); !strings.Contains(status, "last_observation=agree (stale: ledger head moved)\n") {
+					t.Fatal(status)
+				}
+			}
 			before := read(t, path)
 			out, err := f.run(t, command{events: 1}, nil)
 			var e *enrollment.Error
 			if !errors.As(err, &e) || e.Reason != reason || !strings.Contains(err.Error(), "\nowner action: ") || strings.Contains(out, "observation: agree") || !bytes.Equal(before, read(t, path)) {
 				t.Fatal(err, out)
+			}
+			if reason != enrollment.Occupied {
+				if status := call(t, f.path, "status"); !strings.Contains(status, "last_observation=refused: "+string(reason)+"\n") {
+					t.Fatal(status)
+				}
 			}
 		})
 	}
