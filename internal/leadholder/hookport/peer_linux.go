@@ -1,13 +1,15 @@
 // Package hookport serves the holder's per-intent observation socket on Linux.
 // Admission checks the connecting process's uid, cgroup and liveness before
-// reading. The port refuses peers with more than 4096 threads to bound the
-// task walk per connection. Any admitted peer can forge events or pass on
-// its connection.
+// reading. It always refuses a process whose main thread has exited, even
+// when other threads remain alive. The port refuses peers with more than
+// 4096 threads to bound the task walk per connection. Any admitted peer
+// can forge events or pass on its connection.
 //
 // The holder's seccomp filter denies process_vm_readv and process_vm_writev.
 // It cannot filter the pathname /proc/<pid>/mem. The holder can still read
 // or write memory through that file where ptrace permissions, including the
-// host's Yama policy, allow it.
+// host's Yama policy, allow it. The filter also leaves perf_event_open,
+// kcmp and signals to same-uid processes subject to host access controls.
 package hookport
 
 import (
