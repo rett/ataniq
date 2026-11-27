@@ -156,7 +156,7 @@ func TestManagedDeliveryRechecks(t *testing.T) {
 				case "target revoked":
 					delete(caps, "a")
 				case "operation removed":
-					caps["a"] = nil
+					caps["a"][0] = "different.op"
 				case "principal replaced":
 					current = q
 				}
