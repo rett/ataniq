@@ -167,7 +167,7 @@ func TestRealListenAndPeerCredentials(t *testing.T) {
 }
 
 func selfGroup() (string, error) {
-	b, err := readProc("/proc/self/cgroup")
+	b, err := readProc("/proc/self/cgroup", procLimit)
 	if err != nil {
 		return "", err
 	}

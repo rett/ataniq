@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -27,6 +28,7 @@ import (
 )
 
 type fakePeers struct {
+	status                         string
 	group, info, workerGroup, stat string
 	threads                        []string
 	cgroupErr                      map[string]error
@@ -37,7 +39,7 @@ type fakePeers struct {
 }
 
 func peers(t *testing.T) *fakePeers {
-	return &fakePeers{threads: []string{"123", "124"}, stat: "123 (peer) S 1", workerGroup: "0::/unit\n", group: "0::/unit/agent\n", info: "Pid:\t123\n", uid: uint32(os.Geteuid()), alive: true, t: t}
+	return &fakePeers{threads: []string{"123", "124"}, stat: "123 (peer) S 1", status: "Threads:\t2\n", workerGroup: "0::/unit\n", group: "0::/unit/agent\n", info: "Pid:\t123\n", uid: uint32(os.Geteuid()), alive: true, t: t}
 }
 
 func (p *fakePeers) Credentials(net.Conn) (*unix.Ucred, error) {
@@ -80,6 +82,15 @@ func (p *fakePeers) Threads(pid int) ([]string, error) {
 	}
 	p.trace = append(p.trace, "threads")
 	return p.threads, nil
+}
+
+func (p *fakePeers) Status(pid int) ([]byte, error) {
+	p.held(7)
+	if pid != 123 {
+		p.t.Fatal(pid)
+	}
+	p.trace = append(p.trace, "status")
+	return []byte(p.status), nil
 }
 
 func (p *fakePeers) Cgroup(pid int, tid string) ([]byte, error) {
@@ -223,7 +234,7 @@ func TestHP4AdmissionBeforeRead(t *testing.T) {
 				t.Fatal("leaked connection or pidfd")
 			}
 			if tc.ok {
-				if !slices.Equal(peer.trace, []string{"cred", "open", "info", "stat", "threads", "group/123", "group/124", "alive", "close"}) || c.writes != 1 {
+				if !slices.Equal(peer.trace, []string{"cred", "open", "info", "stat", "group/123", "status", "threads", "group/124", "alive", "close"}) || c.writes != 1 {
 					t.Fatal(peer.trace, c.writes)
 				}
 			} else if c.reads != 0 || c.writes != 0 || p.Snapshot().Counters.Peer != 1 {
@@ -284,6 +295,57 @@ func TestVanishedTaskAdmission(t *testing.T) {
 	p.workerGroup = "0::/other\n"
 	if err := admit(nil, p, "/unit"); !errors.Is(err, errPeer) {
 		t.Fatalf("outside worker after vanished worker: %v", err)
+	}
+}
+
+func TestAdmissionWalkBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*fakePeers)
+		reads []string
+	}{
+		{"outside leader", func(p *fakePeers) { p.group = "0::/other\n" }, []string{"group/123"}},
+		{"above thread limit", func(p *fakePeers) { p.status = "Threads:\t4097\n" }, []string{"group/123", "status"}},
+		{"growth after status", func(p *fakePeers) {
+			p.threads = append(p.threads, make([]string, maxPeerThreads-1)...)
+		}, []string{"group/123", "status", "threads"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := peers(t)
+			tc.setup(p)
+			if err := admit(nil, p, "/unit"); !errors.Is(err, errPeer) {
+				t.Fatalf("expected refusal, got %v", err)
+			}
+			want := slices.Concat([]string{"cred", "open", "info", "stat"}, tc.reads, []string{"close"})
+			if !slices.Equal(p.trace, want) {
+				t.Fatalf("unexpected reads: %v, want %v", p.trace, want)
+			}
+		})
+	}
+}
+
+func TestStatusThreadCount(t *testing.T) {
+	for _, bad := range []string{"", "NotThreads: 1", "Threads:", "Threads: 0",
+		"Threads: -1", "Threads: 4097", "Threads: 1 extra", "Threads: 2\nThreads: 2"} {
+		if allowedThreadCount([]byte(bad)) {
+			t.Errorf("accepted %q", bad)
+		}
+	}
+	// A full supplementary group list precedes Threads in proc status.
+	record := "Groups:\t" + strings.Repeat("4294967294 ", 65536) + "\nThreads:\t4096\n"
+	name := filepath.Join(t.TempDir(), "status")
+	if err := os.WriteFile(name, []byte(record), 0600); err != nil {
+		t.Fatal(err)
+	}
+	b, err := readProc(name, statusLimit)
+	if err != nil || !allowedThreadCount(b) {
+		t.Fatalf("refused peer at thread limit with many groups: %v", err)
+	}
+	if err := os.Truncate(name, statusLimit+1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readProc(name, statusLimit); !errors.Is(err, errPeer) {
+		t.Fatalf("oversize status: %v", err)
 	}
 }
 

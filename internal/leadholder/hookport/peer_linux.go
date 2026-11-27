@@ -1,6 +1,8 @@
 // Package hookport serves the holder's per-intent observation socket on Linux.
 // Admission checks the connecting process's uid, cgroup and liveness before
-// reading. Any admitted peer can forge events or pass on its connection.
+// reading. The port refuses peers with more than 4096 threads to bound the
+// task walk per connection. Any admitted peer can forge events or pass on
+// its connection.
 //
 // The holder's seccomp filter denies process_vm_readv and process_vm_writev.
 // It cannot filter the pathname /proc/<pid>/mem. The holder can still read
@@ -9,6 +11,7 @@
 package hookport
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -21,7 +24,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const procLimit = 4096
+const (
+	procLimit = 4096
+	// The Groups line in status can contain 65,536 decimal gids of up to
+	// ten digits plus a separator each. Leave room for the other fields.
+	statusLimit = 1 << 20
+	// Bound the work one peer can demand on the serial observation port.
+	maxPeerThreads = 4096
+)
 
 var errPeer = errors.New("hookport: peer refused")
 var errLeaderState = fmt.Errorf("%w: leader state", errPeer)
@@ -33,6 +43,7 @@ type PeerReader interface {
 	PIDFD(net.Conn) (int, error)
 	FDInfo(fd int) ([]byte, error)
 	Stat(pid int) ([]byte, error)
+	Status(pid int) ([]byte, error)
 	Threads(pid int) ([]string, error)
 	Cgroup(pid int, tid string) ([]byte, error)
 	Alive(fd int) (bool, error)
@@ -65,25 +76,29 @@ func (KernelPeers) PIDFD(c net.Conn) (int, error) {
 	return socketOption(c, func(fd int) (int, error) { return unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_PEERPIDFD) })
 }
 
-func readProc(name string) ([]byte, error) {
+func readProc(name string, limit int) ([]byte, error) {
 	f, err := os.Open(name)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, procLimit+1))
-	if len(b) > procLimit {
+	b, err := io.ReadAll(io.LimitReader(f, int64(limit)+1))
+	if len(b) > limit {
 		return nil, errPeer
 	}
 	return b, err
 }
 
 func (KernelPeers) FDInfo(fd int) ([]byte, error) {
-	return readProc("/proc/self/fdinfo/" + strconv.Itoa(fd))
+	return readProc("/proc/self/fdinfo/"+strconv.Itoa(fd), procLimit)
 }
 
 func (KernelPeers) Stat(pid int) ([]byte, error) {
-	return readProc("/proc/" + strconv.Itoa(pid) + "/stat")
+	return readProc("/proc/"+strconv.Itoa(pid)+"/stat", procLimit)
+}
+
+func (KernelPeers) Status(pid int) ([]byte, error) {
+	return readProc("/proc/"+strconv.Itoa(pid)+"/status", statusLimit)
 }
 
 func (KernelPeers) Threads(pid int) ([]string, error) {
@@ -92,11 +107,13 @@ func (KernelPeers) Threads(pid int) ([]string, error) {
 		return nil, err
 	}
 	defer dir.Close()
-	return dir.Readdirnames(-1)
+	// Threads can be created since the status read. One extra name
+	// lets admit detect overflow without reading the rest of the list.
+	return dir.Readdirnames(maxPeerThreads + 1)
 }
 
 func (KernelPeers) Cgroup(pid int, tid string) ([]byte, error) {
-	return readProc("/proc/" + strconv.Itoa(pid) + "/task/" + tid + "/cgroup")
+	return readProc("/proc/"+strconv.Itoa(pid)+"/task/"+tid+"/cgroup", procLimit)
 }
 
 func (KernelPeers) Alive(fd int) (bool, error) {
@@ -123,6 +140,37 @@ func ControlGroup(record []byte) (string, error) {
 
 func withinGroup(ref, group string) bool {
 	return validGroup(ref) && ref != "/" && validGroup(group) && (group == ref || strings.HasPrefix(group, ref+"/"))
+}
+
+func checkTaskGroup(p PeerReader, pid int, tid, ref string) error {
+	record, err := p.Cgroup(pid, tid)
+	if err != nil {
+		return err
+	}
+	group, err := ControlGroup(record)
+	if err != nil || !withinGroup(ref, group) {
+		return errPeer
+	}
+	return nil
+}
+
+func allowedThreadCount(status []byte) bool {
+	if len(status) > statusLimit {
+		return false
+	}
+	found := false
+	for line := range bytes.SplitSeq(status, []byte{'\n'}) {
+		value, ok := bytes.CutPrefix(line, []byte("Threads:"))
+		if !ok {
+			continue
+		}
+		n, err := strconv.ParseUint(string(bytes.TrimSpace(value)), 10, 32)
+		if found || err != nil || n == 0 || n > maxPeerThreads {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 // Field 2 of proc stat is a parenthesized comm which can itself contain
@@ -188,27 +236,38 @@ func admit(c net.Conn, p PeerReader, ref string) error {
 	if !liveLeader(pid, stat) {
 		return errLeaderState
 	}
+	leader := strconv.Itoa(pid)
+	if err := checkTaskGroup(p, pid, leader, ref); err != nil {
+		return err
+	}
+	status, err := p.Status(pid)
+	if err != nil {
+		return err
+	}
+	if !allowedThreadCount(status) {
+		return errPeer
+	}
 	threads, err := p.Threads(pid)
 	if err != nil {
 		return err
 	}
-	leader := strconv.Itoa(pid)
+	if len(threads) > maxPeerThreads {
+		return errPeer
+	}
 	leaderSeen := false
 	for _, tid := range threads {
-		record, err := p.Cgroup(pid, tid)
-		if err != nil {
+		if tid == leader {
+			leaderSeen = true
+			continue
+		}
+		if err := checkTaskGroup(p, pid, tid, ref); err != nil {
 			// The task directory is scoped to this process. A worker
 			// can exit between enumeration and opening or reading cgroup.
-			if tid != leader && (errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ESRCH)) {
+			if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ESRCH) {
 				continue
 			}
 			return err
 		}
-		group, err := ControlGroup(record)
-		if err != nil || !withinGroup(ref, group) {
-			return errPeer
-		}
-		leaderSeen = leaderSeen || tid == leader
 	}
 	if !leaderSeen {
 		return errPeer
