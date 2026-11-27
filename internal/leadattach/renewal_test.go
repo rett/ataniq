@@ -117,13 +117,32 @@ func TestViewerTicketSourceRefusals(t *testing.T) {
 				t.Errorf("reason %q, want %q", st.Reason, tc.reason)
 			}
 			e.c.Close()
-			for _, hc := range e.h.all {
-				if types := hc.closed(); len(types) != 0 {
-					t.Errorf("frames after ticket refusal: %q", types)
-				}
+			if n := e.h.accepts.Load(); n != 0 {
+				t.Errorf("holder saw %d connections after ticket refusal", n)
 			}
 		})
 	}
+}
+
+func TestViewerNoTicketPollsWithoutDialing(t *testing.T) {
+	// Release the next ticket only after observing two empty polls.
+	tickets := &tickets{}
+	source := viewerTicketFunc(func(context.Context) (string, error) { return tickets.get() })
+	e := newEnv(t, setup{pipe: true, viewerTickets: source})
+	e.until("two empty polls", func(st terminalconsole.LiveStatus) bool {
+		return tickets.callCount() >= 2 && st.Conn == terminalconsole.LiveWaitingTicket
+	})
+	if n := e.h.accepts.Load(); n != 0 {
+		t.Fatalf("holder saw %d connections without a viewer ticket", n)
+	}
+	tickets.give(1)
+	hc := e.h.accept()
+	if hc.hello.Ticket != tickets.ticket(0) {
+		t.Fatal("hello did not redeem the issued ticket")
+	}
+	hc.welcome(wire.RoleViewer)
+	hc.snapshot()
+	e.untilConn(terminalconsole.LiveAttached)
 }
 
 func TestViewerTicketSourceRequired(t *testing.T) {
@@ -148,7 +167,7 @@ func TestViewerTicketSourceCanceledOnClose(t *testing.T) {
 		t.Fatal("source never asked for a ticket")
 	}
 	e.c.Close()
-	if types := e.h.all[0].closed(); len(types) != 0 {
-		t.Errorf("frames after canceled request: %q", types)
+	if n := e.h.accepts.Load(); n != 0 {
+		t.Errorf("holder saw %d connections during ticket issuance", n)
 	}
 }
