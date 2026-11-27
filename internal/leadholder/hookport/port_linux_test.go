@@ -16,6 +16,7 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+	"unsafe"
 
 	"ataniq/internal/agentsession"
 	"ataniq/internal/agentsession/hookwire"
@@ -166,6 +167,37 @@ func request(t *testing.T, row, session string, cut bool) []byte {
 }
 
 func runOne(p *Port, c net.Conn) { p.handle(context.Background(), c, p.cfg.Clock.Now()) }
+
+func TestDecoderAliasesSurviveNextConnection(t *testing.T) {
+	p := fixture(t)
+	p.cfg.Decode = func(_ pack.HookRow, r hookwire.Request, frame []byte) (agentsession.HookReport, string, error) {
+		value := r.Fields["session"]
+		i := bytes.Index(frame, []byte(value))
+		if i < 0 {
+			t.Fatal("fixture session missing from frame")
+		}
+		session := unsafe.String(&frame[i], len(value))
+		kind, _, _ := strings.Cut(session, "/")
+		return agentsession.HookReport{Kind: agentsession.HookKind(kind), Session: session}, session, nil
+	}
+	const first = "session-start/one"
+	runOne(p, mem(request(t, "start", first, false)))
+	before := p.Snapshot()
+	runOne(p, mem(request(t, "start", "config-change/two", false)))
+	after := p.Snapshot()
+	if len(before.Events) != 1 || len(after.Events) != 2 {
+		t.Fatal("expected both connections to record events", before, after)
+	}
+	for _, snapshot := range []Snapshot{before, after} {
+		ev := snapshot.Events[0]
+		if snapshot.Bound != first || ev.Report.Kind != "session-start" || ev.Report.Session != first || ev.Text != first {
+			t.Fatalf("stored report changed after buffer reuse: %+v", snapshot)
+		}
+	}
+	if after.Events[1].Class != "foreign" {
+		t.Fatal("second report used a rewritten binding", after)
+	}
+}
 
 func TestHP4AdmissionBeforeRead(t *testing.T) {
 	for _, tc := range []struct {

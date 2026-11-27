@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -263,6 +264,10 @@ func (p *Port) exchange(c net.Conn, accepted, end time.Time) string {
 		if err != nil {
 			return "row"
 		}
+		// Both the binding and the ring outlive this frame. A pack may
+		// return strings backed by the port's reusable read buffer.
+		report.Kind = agentsession.HookKind(strings.Clone(string(report.Kind)))
+		report.Session = strings.Clone(report.Session)
 		binding, err = agentsession.Bind(binding, report)
 		if err != nil {
 			return "row"
