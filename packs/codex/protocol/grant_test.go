@@ -99,9 +99,15 @@ func TestPendingServerIDs(t *testing.T) {
 	for i := 2; i < core.MaxPending; i++ {
 		observePermission(t, c, withID(fmt.Sprint(100+i)))
 	}
-	if _, err := c.Decode(withID("0")); !errors.Is(err, core.ErrPendingLimit) {
-		t.Fatal("pending limit", err)
+	wantPermissionDecline(t, c, withID("0"), "0")
+	grant := protocol.Grant{Scope: "turn", Permissions: &protocol.Permissions{}}
+	if _, err := c.EncodeGrant(withID("0"), grant); !errors.Is(err, protocol.ErrGrant) {
+		t.Fatal("overflow request admitted", err)
 	}
+	if _, err := c.EncodeGrant(withID(`"7"`), grant); err != nil {
+		t.Fatal(err)
+	}
+	observePermission(t, c, withID("0"))
 	f := frames(t, "events")
 	observe(t, c, f[4], core.Event{Kind: "state", State: "idle"})
 	observe(t, c, f[1], core.Event{Kind: "state", State: "busy"})
@@ -174,9 +180,7 @@ func TestInvalidPermissionRequest(t *testing.T) {
 		{"special member", `{"entries":[{"access":"read","path":{"type":"special","value":{"kind":"root","extra":1}}}]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if d, err := c.Decode(permissionFrame(`{"fileSystem":` + tc.filesystem + `}`)); err == nil || !reflect.DeepEqual(d, core.Decoded{}) {
-				t.Fatalf("accepted malformed request: %+v, %v", d, err)
-			}
+			wantPermissionDecline(t, c, permissionFrame(`{"fileSystem":` + tc.filesystem + `}`), "7")
 		})
 	}
 }
@@ -184,8 +188,28 @@ func TestInvalidPermissionRequest(t *testing.T) {
 func TestUnknownRequestMember(t *testing.T) {
 	c, _ := active(t)
 	req := bytes.Replace(permissionFrame(`{}`), []byte(`"permissions"`), []byte(`"extra":1,"permissions"`), 1)
-	if d, err := c.Decode(req); err == nil || !reflect.DeepEqual(d, core.Decoded{}) {
+	req = bytes.Replace(req, []byte(`"id":7`), []byte(`"id":"card"`), 1)
+	wantPermissionDecline(t, c, req, `"card"`)
+}
+
+func wantPermissionDecline(t *testing.T, c protocol.Codec, req []byte, id string) {
+	t.Helper()
+	d, err := c.Decode(req)
+	var decline *protocol.Decline
+	if !errors.As(err, &decline) || decline.Method != permissionName || !reflect.DeepEqual(d, core.Decoded{}) {
 		t.Fatal(d, err)
+	}
+	equalJSON(t, decline.Reply, `{"id":`+id+`,"result":{"permissions":{},"scope":"turn"}}`)
+}
+
+func TestUnusablePermissionID(t *testing.T) {
+	c, req := active(t)
+	for _, id := range []string{"", `"id":null,`, `"id":"",`, `"id":0.5,`} {
+		d, err := c.Decode(bytes.Replace(req, []byte(`"id":7,`), []byte(id), 1))
+		var decline *protocol.Decline
+		if err == nil || errors.As(err, &decline) || !reflect.DeepEqual(d, core.Decoded{}) {
+			t.Fatalf("unusable ID %q: %+v, %v", id, d, err)
+		}
 	}
 }
 

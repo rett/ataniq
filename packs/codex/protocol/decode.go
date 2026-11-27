@@ -25,14 +25,11 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 		}
 	}
 	if method == permissionMethod {
-		if _, err := c.permissionRequest(e); err != nil {
-			if err == ErrTurn {
-				return core.Decoded{}, decline(e)
-			}
-			return core.Decoded{}, err
+		if e.ID == nil {
+			return core.Decoded{}, ErrGrant
 		}
-		if len(c.pending) >= core.MaxPending {
-			return core.Decoded{}, core.ErrPendingLimit
+		if _, err := c.permissionRequest(e); err != nil || len(c.pending) >= core.MaxPending {
+			return core.Decoded{}, decline(e)
 		}
 		c.pending[serverID(e.ID)] = sha256.Sum256(payload)
 		return event(core.Event{Kind: "question", Text: "Permission requested"}), nil
