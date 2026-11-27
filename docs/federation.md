@@ -125,7 +125,12 @@ existing profile digest pins before the next managed start.
 Choose one home instance for the project and its long-lived branches. Its lead
 owns coordination and integration. The other instance runs offered work, such
 as member runs and suites, and returns results and patches to the home lead.
-The owner records the same designation on each participating instance.
+V1 does not detect two instances claiming the same project. The owner keeps
+one home per project by running `--home self` on exactly one instance and
+comparing the printed `home_authority` on every participating instance.
+If this registry has ever recorded the project as executor-only (a foreign
+home), claiming the local authority prints a warning and requires
+`--confirm-self`. Check the designation with the other instance first.
 The executor-only rule and its `project-home-foreign` refusal are spelled out
 in the [scratch lead instructions](../internal/leadcanary/provision/instructions.go).
 

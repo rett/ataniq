@@ -92,6 +92,7 @@ type Registry struct {
 	mu           sync.Mutex
 	f            *os.File
 	homes        map[string]ProjectAssignment
+	foreignHomes map[string]string // most recent foreign home ever recorded per project
 	roles        map[leadrole.Role]Entry
 	seq          uint64
 	prev         [sha256.Size]byte
@@ -472,7 +473,7 @@ func (r *Registry) replayLine(n int, line []byte) error {
 		if err := r.validateAssignment(rec.role, next); err != nil {
 			return &CorruptError{Line: n, Reason: err.Error()}
 		}
-		r.homes[rec.role.Project()] = *next
+		r.recordAssignment(rec.role.Project(), next)
 	case rec.kind == kindRecovered || rec.kind == kindRecoveryAck:
 		next, err := applyRecovery(r.recovery, rec)
 		if err != nil {

@@ -23,7 +23,7 @@ var version = leaddaemon.DefaultVersion
 
 var usage = baseUsage + canaryUsage
 
-const projectHomeUsage = "ataniqd project-home --state-dir DIR --home self|AUTHORITY PROJECT"
+const projectHomeUsage = "ataniqd project-home --state-dir DIR --home self|AUTHORITY [--confirm-self] PROJECT"
 
 const baseUsage = `usage: ataniqd run [--state-dir DIR] [--runtime-dir DIR]
        ataniqd init [--state-dir DIR] [--label TEXT | --restored [--leave-old-journal]]

@@ -51,6 +51,32 @@ func TestProjectHomeEnrollment(t *testing.T) {
 	}
 }
 
+func TestProjectHomeExecutorConfirmation(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	id, err := leadregistry.InitInstance(root, leadregistry.DirName, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := strings.Repeat("a", 64)
+	ta := newTestApp(t, nil)
+	enroll := func(home string, flags ...string) int {
+		ta.err.Reset()
+		args := append([]string{"project-home", "--state-dir", root, "--home", home}, flags...)
+		return ta.run(append(args, "sample"))
+	}
+	if code := enroll(peer); code != 0 {
+		t.Fatal(ta.err.String())
+	}
+	for _, home := range []string{"self", id.Authority} {
+		if code := enroll(home); code != leaddaemon.ExitState || !strings.Contains(ta.err.String(), "--confirm-self") || !strings.Contains(ta.err.String(), peer) {
+			t.Fatalf("unconfirmed claim: exit %d: %s", code, ta.err.String())
+		}
+	}
+	if code := enroll("self", "--confirm-self"); code != leaddaemon.ExitState || !strings.Contains(ta.err.String(), "different assignment") {
+		t.Fatalf("confirmation alone replaced a home: exit %d: %s", code, ta.err.String())
+	}
+}
+
 func TestProjectHomeUsage(t *testing.T) {
 	for _, args := range [][]string{
 		{}, {"--home", "self", "sample"}, {"--state-dir", "/sample", "sample"},

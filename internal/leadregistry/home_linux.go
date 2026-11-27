@@ -9,37 +9,56 @@ import (
 	"ataniq/internal/leadrole"
 )
 
+// EnrollmentOptions holds the owner acknowledgements for offline enrollment.
+type EnrollmentOptions struct {
+	ConfirmSelf bool
+}
+
+// Enrollment identifies the requested authority and any foreign home in the
+// project history that the operator must acknowledge before claiming it.
+type Enrollment struct {
+	Authority        string
+	PriorForeignHome string
+}
+
 // EnrollProjectHome records or confirms the initial assignment under the same
 // exclusive registry lock as the daemon.
-func EnrollProjectHome(state, home, project string) (authority string, retErr error) {
+func EnrollProjectHome(state, home, project string, opts EnrollmentOptions) (result Enrollment, retErr error) {
 	id, err := instanceid.Load(state)
 	if err != nil {
-		return "", err
+		return result, err
 	}
-	authority = home
+	authority := home
 	if authority == "self" {
 		authority = id.Authority
 	}
 	r, err := Open(filepath.Join(state, DirName), Options{})
 	if err != nil {
-		return "", err
+		return result, err
 	}
 	defer func() { retErr = errors.Join(retErr, r.Close()) }()
 	if id.Binding != r.binding {
-		return "", ErrForeignInstance
+		return result, ErrForeignInstance
+	}
+	result.Authority = authority
+	if authority == id.Authority {
+		result.PriorForeignHome = r.foreignHomes[project]
+		if result.PriorForeignHome != "" && !opts.ConfirmSelf {
+			return result, errors.New("verify the home on both instances and supply --confirm-self")
+		}
 	}
 	row, err := r.ProjectHome(project)
 	switch {
 	case errors.Is(err, ErrHomeMissing):
 		if err := r.SetProjectAssignment(project, authority, ProjectVersion{}, true); err != nil {
-			return "", err
+			return result, err
 		}
 	case err != nil:
-		return "", err
+		return result, err
 	case row.HomeAuthority != authority || row.Holder == nil:
-		return "", errors.New("project already enrolled with a different assignment")
+		return result, errors.New("project already enrolled with a different assignment")
 	}
-	return authority, nil
+	return result, nil
 }
 
 // validateAssignment checks the same predecessor and local occupancy for
@@ -116,8 +135,19 @@ func (r *Registry) SetProjectAssignment(project, home string, expected ProjectVe
 	if err := r.commit(rec, line, sum); err != nil {
 		return err
 	}
-	r.homes[project] = *next
+	r.recordAssignment(project, next)
 	return nil
+}
+
+// A foreign home is the v1 registry designation for an executor-only project.
+func (r *Registry) recordAssignment(project string, next *ProjectAssignment) {
+	r.homes[project] = *next
+	if next.HomeAuthority != r.binding.Authority {
+		if r.foreignHomes == nil {
+			r.foreignHomes = make(map[string]string)
+		}
+		r.foreignHomes[project] = next.HomeAuthority
+	}
 }
 
 // ProjectHome returns a snapshot independent of future assignment writes.
