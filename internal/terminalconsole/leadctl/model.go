@@ -4,7 +4,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"io"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -52,10 +54,10 @@ type Model struct {
 	cursor   int
 	top      int
 
-	// seq numbers the commands; busy holds, for each role, the number of the
-	// command whose answer is awaited.
+	// seq numbers the commands. A busy role awaits a receipt even if a
+	// listing has invalidated the original request.
 	seq  int
-	busy map[string]int
+	busy map[string]*pendingCommand
 	// status is the receipt shown on the last line, nil when there is none.
 	// note is one line of the view's own about the last key or answer, and
 	// takes the place of status while it is not empty.
@@ -81,6 +83,15 @@ type Model struct {
 	ticking bool
 }
 
+// A command can still be queued when a refreshed listing loses its target.
+// Only the command goroutine reads invalid outside the model's Update.
+type pendingCommand struct {
+	seq     int
+	epoch   uint64
+	op      Op
+	invalid atomic.Bool
+}
+
 type confirmState struct {
 	role, key string
 	epoch     uint64
@@ -96,7 +107,7 @@ type editState struct {
 // Init returns the command that reads the list.
 func New(o Options) *Model {
 	m := &Model{b: o.Backend, o: o, random: o.Random, after: o.After, poll: o.Poll,
-		busy: map[string]int{}, unconfirmed: map[string]bool{}, delivered: map[string]Delivery{}}
+		busy: map[string]*pendingCommand{}, unconfirmed: map[string]bool{}, delivered: map[string]Delivery{}}
 	if m.after == nil {
 		m.after = tea.Tick
 	}
@@ -136,9 +147,10 @@ type (
 		op    Op
 		epoch uint64
 		// writer is the attach role of a ticket.
-		writer bool
-		r      Receipt
-		err    error
+		writer  bool
+		skipped bool
+		r       Receipt
+		err     error
 	}
 	tickMsg struct{ owner *Model }
 )
@@ -233,17 +245,28 @@ func (m *Model) onListed(v listedMsg) tea.Cmd {
 		m.listErr = true
 		return nil
 	}
-	var keep string
-	if m.cursor >= 0 && m.cursor < len(m.leads) {
-		keep = m.leads[m.cursor].Role
-	}
+	keep, selected := m.under()
+	firstList := !m.have
 	m.listErr, m.have = false, true
 	m.statusListed = m.statusRole != ""
 	m.running, m.capacity = max(0, v.l.Running), max(0, v.l.MaxRunning)
 	m.leads = m.leads[:0]
 	m.leftOut = max(0, v.l.LeftOut)
+	// A role is the backend's routing key. If it names more than one row,
+	// neither row is safe to act on. Track only roles admitted to the table,
+	// including duplicates that occur beyond the display limit.
+	roles := make(map[string]int)
 	for _, l := range v.l.Leads {
-		if len(m.leads) == maxLeads || l.Role == "" || len(l.Role) > maxRole {
+		if l.Role == "" || len(l.Role) > maxRole {
+			m.leftOut++
+			continue
+		}
+		if roles[l.Role] > 0 {
+			roles[l.Role]++
+			m.leftOut++
+			continue
+		}
+		if len(m.leads) == maxLeads {
 			m.leftOut++
 			continue
 		}
@@ -257,10 +280,33 @@ func (m *Model) onListed(v listedMsg) tea.Cmd {
 			c.Last = &last
 		}
 		m.leads = append(m.leads, c)
+		roles[l.Role] = 1
 	}
-	for i, l := range m.leads {
-		if l.Role == keep && keep != "" {
-			m.cursor = i
+	listed := len(m.leads)
+	m.leads = slices.DeleteFunc(m.leads, func(l Lead) bool { return roles[l.Role] > 1 })
+	m.leftOut += listed - len(m.leads)
+	m.cursor = -1
+	if firstList && len(m.leads) > 0 {
+		m.cursor = 0
+	}
+	if selected {
+		m.cursor = m.bindingIndex(keep.Role, keep.Epoch)
+		if m.cursor < 0 {
+			m.edit, m.confirm = nil, nil
+			m.note = "Selection cleared. Choose a lead with j or k."
+		} else {
+			key := m.leads[m.cursor].Key
+			if m.edit != nil {
+				m.edit.key = key
+			}
+			if m.confirm != nil {
+				m.confirm.key = key
+			}
+		}
+	}
+	for role, pending := range m.busy {
+		if m.bindingIndex(role, pending.epoch) < 0 {
+			pending.invalid.Store(true)
 		}
 	}
 	// A pair whose epoch is no longer the lead's current one is over.
@@ -330,9 +376,20 @@ func keepWords(list *Receipt, press Receipt) {
 
 func pairKey(role string, epoch uint64) string { return role + "\x00" + itoa(epoch) }
 
+// The scratch backend routes by role within a single daemon. Its display key
+// can change independently, and a new execution of a role has a new epoch.
+func (m *Model) bindingIndex(role string, epoch uint64) int {
+	for i, l := range m.leads {
+		if l.Role == role && l.Epoch == epoch {
+			return i
+		}
+	}
+	return -1
+}
+
 // clamp keeps the cursor on a lead and the lead on the screen.
 func (m *Model) clamp() {
-	m.cursor = max(0, min(m.cursor, len(m.leads)-1))
+	m.cursor = min(m.cursor, len(m.leads)-1)
 	vh := m.tableRows()
 	if vh > 0 {
 		if m.cursor >= m.top+vh {
@@ -415,11 +472,9 @@ func (m *Model) onKey(k tea.KeyPressMsg) (tea.Cmd, Action) {
 	case "esc":
 		return nil, Action{Kind: Close}
 	case "j", "down":
-		m.cursor++
-		m.clamp()
+		m.move(1)
 	case "k", "up":
-		m.cursor--
-		m.clamp()
+		m.move(-1)
 	case "r":
 		return m.listCmd(), Action{}
 	case "d":
@@ -436,6 +491,18 @@ func (m *Model) onKey(k tea.KeyPressMsg) (tea.Cmd, Action) {
 		return m.ticket(false), Action{}
 	}
 	return nil, Action{}
+}
+
+func (m *Model) move(delta int) {
+	previous, ok := m.under()
+	before := m.cursor
+	m.cursor = max(0, m.cursor+delta)
+	m.clamp()
+	if ok && m.cursor != before {
+		if pending := m.busy[previous.Role]; pending != nil && pending.op == OpTicket {
+			pending.invalid.Store(true)
+		}
+	}
 }
 
 // admit checks what every command needs: a lead under the cursor and no
@@ -466,11 +533,17 @@ func (m *Model) simple(op Op, call func(Backend, string, uint64) (Receipt, error
 func (m *Model) command(l Lead, op Op, epoch uint64, writer bool, call func(Backend) (Receipt, error)) tea.Cmd {
 	m.seq++
 	seq, b, role, key := m.seq, m.b, l.Role, l.Key
-	m.busy[role] = seq
+	pending := &pendingCommand{seq: seq, epoch: l.Epoch, op: op}
+	m.busy[role] = pending
 	m.status, m.statusRole, m.statusListed, m.note = nil, "", false, "sending: "+opWords(op)+" for "+key
 	return func() tea.Msg {
-		r, err := call(b)
-		return doneMsg{owner: m, seq: seq, role: role, key: key, op: op, epoch: epoch, writer: writer, r: r, err: err}
+		msg := doneMsg{owner: m, seq: seq, role: role, key: key, op: op, epoch: epoch, writer: writer}
+		if pending.invalid.Load() {
+			msg.skipped = true
+			return msg
+		}
+		msg.r, msg.err = call(b)
+		return msg
 	}
 }
 
@@ -496,7 +569,7 @@ func (m *Model) confirmKey(name string) (tea.Cmd, Action) {
 		m.note = busyLine
 		return nil, Action{}
 	}
-	return m.command(Lead{Role: c.role, Key: c.key}, OpStop, c.epoch, false,
+	return m.command(Lead{Role: c.role, Key: c.key, Epoch: c.epoch}, OpStop, c.epoch, false,
 		func(b Backend) (Receipt, error) { return b.Stop(c.role, c.epoch) }), Action{}
 }
 
@@ -600,7 +673,7 @@ func (m *Model) submit() tea.Cmd {
 	// a message whose answer is lost must not read as the earlier one.
 	delete(m.delivered, pairKey(e.role, e.epoch))
 	role, epoch, body := e.role, e.epoch, e.text
-	return m.command(Lead{Role: role, Key: e.key}, OpInject, epoch, false,
+	return m.command(Lead{Role: role, Key: e.key, Epoch: epoch}, OpInject, epoch, false,
 		func(b Backend) (Receipt, error) { return b.Send(role, epoch, id, body) })
 }
 
@@ -635,10 +708,18 @@ func (m *Model) ticket(writer bool) tea.Cmd {
 
 // onDone takes in the answer to a command.
 func (m *Model) onDone(v doneMsg) (tea.Cmd, Action) {
-	if m.busy[v.role] != v.seq {
+	pending := m.busy[v.role]
+	if pending == nil || pending.seq != v.seq {
 		return nil, Action{}
 	}
 	delete(m.busy, v.role)
+	if v.skipped {
+		if v.op == OpInject {
+			delete(m.unconfirmed, pairKey(v.role, v.epoch))
+		}
+		m.note = "Selection changed before the command was sent."
+		return m.listCmd(), Action{}
+	}
 	m.note, m.status, m.statusRole, m.statusListed = "", nil, "", false
 	cmds := []tea.Cmd{m.listCmd()}
 	if v.err != nil {
@@ -655,6 +736,11 @@ func (m *Model) onDone(v doneMsg) (tea.Cmd, Action) {
 		r.Op = v.op
 	}
 	m.status, m.statusRole = &r, v.role
+	if pending.invalid.Load() {
+		// Keep the receipt of the dispatched command. Its ticket or message
+		// result cannot be used for a newly selected binding.
+		return tea.Batch(cmds...), Action{}
+	}
 	if r.Earlier {
 		// The answer to an earlier command is shown as that and settles
 		// nothing for this press: no attach with a ticket that may be
@@ -730,7 +816,7 @@ func clearOfMessage(r Receipt) bool {
 // attach makes the parent's request from a done ticket, when its folder and
 // ticket file are usable.
 func (m *Model) attach(v doneMsg, r Receipt) (Action, bool) {
-	if !usablePath(r.Folder) || !usablePath(r.TicketFile) {
+	if r.Epoch != 0 && r.Epoch != v.epoch || !usablePath(r.Folder) || !usablePath(r.TicketFile) {
 		return Action{}, false
 	}
 	return Action{Kind: Attach, Attach: AttachRequest{

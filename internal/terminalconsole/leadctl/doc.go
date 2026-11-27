@@ -30,6 +30,11 @@
 // the list again, Esc closes the view and ctrl+c quits, dropping an open
 // field first.
 //
+// A fresh listing keeps the cursor and open field on the same role and
+// execution epoch across renames and reordering. Losing that binding clears
+// the field and cursor until the operator selects a row again with j or k.
+// Changing selection while waiting for a ticket cancels its use for attach.
+//
 // While a command for a lead has no answer yet the keys that would send
 // another for it do nothing and say so. A message whose answer was lost, or
 // whose receipt is not final, is not made again for the epoch: a second
