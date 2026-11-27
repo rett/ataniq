@@ -96,6 +96,24 @@ func equalJSON(t *testing.T, b []byte, want string) {
 	}
 }
 
+const startAnswer = `{"id":"start","result":{"thread":{"id":"thread-a","status":{"type":"idle"}}}}`
+
+func acceptStart(t *testing.T, c protocol.Codec) {
+	t.Helper()
+	d, err := c.Decode([]byte(startAnswer))
+	if err != nil || d.AnswerTo == nil || *d.AnswerTo != "start" || len(d.Events) != 0 {
+		t.Fatal(d, err)
+	}
+}
+
+func startThread(t *testing.T, c protocol.Codec) {
+	t.Helper()
+	if _, err := c.StartThread("start"); err != nil {
+		t.Fatal(err)
+	}
+	acceptStart(t, c)
+}
+
 func TestConversation(t *testing.T) {
 	c, f := fresh(t), frames(t, "events")
 	id := "req"
@@ -109,12 +127,13 @@ func TestConversation(t *testing.T) {
 	}
 	send(core.Open, "", `{"method":"initialize","id":"req","params":{"clientInfo":{"name":"ataniq","version":"1"}}}`)
 	equalJSON(t, c.Initialized(), `{"method":"initialized"}`)
-	b, err := c.StartThread(id)
+	b, err := c.StartThread("start")
 	if err != nil {
 		t.Fatal(err)
 	}
-	equalJSON(t, b, `{"method":"thread/start","id":"req","params":{}}`)
+	equalJSON(t, b, `{"method":"thread/start","id":"start","params":{"approvalPolicy":"on-request","sandbox":"read-only"}}`)
 	observe(t, c, f[0])
+	acceptStart(t, c)
 	send(core.Message, "a\nb", `{"method":"turn/start","id":"req","params":{"threadId":"thread-a","input":[{"type":"text","text":"a\nb"}]}}`)
 	observe(t, c, f[1], core.Event{Kind: "state", State: "busy"})
 	b, err = c.Steer(id, "thread-a", "turn-a", "extra")
@@ -138,6 +157,7 @@ func TestStaleTurn(t *testing.T) {
 		}
 	}
 	refuse(c, "", "")
+	startThread(t, c)
 	observe(t, c, f[0])
 	observe(t, c, f[1], core.Event{Kind: "state", State: "busy"})
 	refuse(fresh(t), "thread-a", "turn-a")
@@ -170,6 +190,7 @@ func TestEncodeRefusals(t *testing.T) {
 			t.Fatal("accepted invalid id")
 		}
 	}
+	startThread(t, c)
 	observe(t, c, f[0])
 	if b, err := c.Encode("r", core.Request{Operation: core.Message, Text: "\x00"}); b != nil || err == nil {
 		t.Fatal(err)
@@ -177,6 +198,60 @@ func TestEncodeRefusals(t *testing.T) {
 	observe(t, c, f[1], core.Event{Kind: "state", State: "busy"})
 	if b, err := c.Encode("r", core.Request{Operation: core.Message, Text: "text"}); b != nil || err == nil {
 		t.Fatal("implicit steer")
+	}
+}
+
+func TestThreadStartBinding(t *testing.T) {
+	c, f := fresh(t), frames(t, "events")
+	if _, err := c.StartThread("start"); err != nil {
+		t.Fatal(err)
+	}
+	observe(t, c, bytes.ReplaceAll(f[0], []byte("thread-a"), []byte("thread-b")))
+	if _, err := c.Decode(bytes.ReplaceAll([]byte(startAnswer), []byte(`"start"`), []byte(`"unrelated"`))); err != nil {
+		t.Fatal(err)
+	}
+	message := core.Request{Operation: core.Message, Text: "hello"}
+	if b, err := c.Encode("r", message); b != nil || !errors.Is(err, protocol.ErrTurn) {
+		t.Fatal("dispatched before matching response", string(b), err)
+	}
+	if b, err := c.StartThread("other"); b != nil || err == nil {
+		t.Fatal("replaced pending start")
+	}
+	acceptStart(t, c)
+	observe(t, c, f[0])
+	observe(t, c, f[1], core.Event{Kind: "state", State: "busy"})
+	if b, err := c.Steer("r", "thread-a", "turn-a", "text"); b == nil || err != nil {
+		t.Fatal("did not bind response thread", err)
+	}
+}
+
+func TestThreadStartFailure(t *testing.T) {
+	c := fresh(t)
+	if _, err := c.StartThread("start"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Decode([]byte(`{"id":"start","result":{}}`)); !errors.Is(err, core.ErrInvalidFrame) {
+		t.Fatal("accepted missing thread", err)
+	}
+	if _, err := c.Decode([]byte(`{"id":"start","error":{"code":-1,"message":"failed"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	startThread(t, c)
+}
+
+func TestTurnStartConsumesIdle(t *testing.T) {
+	c := fresh(t)
+	startThread(t, c)
+	observe(t, c, frames(t, "events")[0])
+	message := core.Request{Operation: core.Message, Text: "hello"}
+	if b, err := c.Encode("", message); b != nil || err == nil {
+		t.Fatal("encoded invalid id")
+	}
+	if b, err := c.Encode("r", message); b == nil || err != nil {
+		t.Fatal("failed encode consumed idle", err)
+	}
+	if b, err := c.Encode("s", message); b != nil || !errors.Is(err, protocol.ErrTurn) {
+		t.Fatal("encoded a second turn/start", string(b), err)
 	}
 }
 

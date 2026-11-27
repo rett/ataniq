@@ -31,10 +31,11 @@ type Codec interface {
 }
 
 type codec struct {
-	thread string
-	turn   string
-	closed bool
-	idle   bool
+	startID string // the one thread/start whose result may establish the binding
+	thread  string
+	turn    string
+	closed  bool
+	idle    bool
 }
 
 // New requires the independently measured digest of the selected build.
@@ -52,8 +53,15 @@ func (*codec) Framing() core.Framing { return core.Lines }
 
 func (*codec) Initialized() []byte { return []byte(`{"method":"initialized"}`) }
 
-func (*codec) StartThread(id string) ([]byte, error) {
-	return request(id, "thread/start", struct{}{})
+func (c *codec) StartThread(id string) ([]byte, error) {
+	if c.startID != "" || c.thread != "" {
+		return nil, ErrTurn
+	}
+	b, err := request(id, "thread/start", map[string]string{"approvalPolicy": "on-request", "sandbox": "read-only"})
+	if err == nil {
+		c.startID = id
+	}
+	return b, err
 }
 
 func request(id, method string, params any) ([]byte, error) {
@@ -81,7 +89,11 @@ func (c *codec) Encode(id string, req core.Request) ([]byte, error) {
 		if !c.idle {
 			return nil, ErrTurn
 		}
-		return c.message(id, "turn/start", "", req.Text)
+		b, err := c.message(id, "turn/start", "", req.Text)
+		if err == nil {
+			c.idle = false
+		}
+		return b, err
 	case core.StopTurn:
 		if c.turn == "" {
 			return nil, ErrTurn

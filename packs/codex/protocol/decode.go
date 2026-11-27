@@ -15,7 +15,7 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 		return core.Decoded{}, err
 	}
 	if e.Method == nil {
-		return answer(e)
+		return c.answer(e)
 	}
 	method := e.method
 	if method == permissionMethod {
@@ -35,8 +35,7 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 	}
 	var p struct {
 		Thread struct {
-			ID     string       `json:"id"`
-			Status threadStatus `json:"status"`
+			ID string `json:"id"`
 		} `json:"thread"`
 		ThreadID string       `json:"threadId"`
 		Status   threadStatus `json:"status"`
@@ -56,12 +55,8 @@ func (c *codec) Decode(payload []byte) (core.Decoded, error) {
 		if p.Thread.ID == "" {
 			return core.Decoded{}, core.ErrInvalidFrame
 		}
-		if c.thread == "" && !c.closed {
-			if _, err := c.status(p.Thread.Status); err != nil {
-				return core.Decoded{}, err
-			}
-			c.thread = p.Thread.ID
-		}
+		// This notification may precede our answer or describe a sub-agent.
+		// Only the result of our thread/start establishes identity and status.
 		return core.Decoded{}, nil
 	}
 	if p.ThreadID == "" {
@@ -143,7 +138,7 @@ func (c *codec) status(s threadStatus) (core.Decoded, error) {
 func event(e core.Event) core.Decoded         { return core.Decoded{Events: []core.Event{e}} }
 func state(s agentsession.State) core.Decoded { return event(core.Event{Kind: "state", State: s}) }
 
-func answer(e envelope) (core.Decoded, error) {
+func (c *codec) answer(e envelope) (core.Decoded, error) {
 	var id string
 	if json.Unmarshal(e.ID, &id) != nil || id == "" {
 		return core.Decoded{}, core.ErrInvalidFrame
@@ -160,6 +155,24 @@ func answer(e envelope) (core.Decoded, error) {
 		d.Events = []core.Event{{Kind: "progress", Text: "Request failed: " + *detail.Message}}
 	} else if e.Result.Kind() != '{' {
 		return core.Decoded{}, core.ErrInvalidFrame
+	}
+	if id == c.startID {
+		if e.Error == nil {
+			var result struct {
+				Thread struct {
+					ID     string       `json:"id"`
+					Status threadStatus `json:"status"`
+				} `json:"thread"`
+			}
+			if json.Unmarshal(e.Result, &result) != nil || result.Thread.ID == "" {
+				return core.Decoded{}, core.ErrInvalidFrame
+			}
+			if _, err := c.status(result.Thread.Status); err != nil {
+				return core.Decoded{}, err
+			}
+			c.thread = result.Thread.ID
+		}
+		c.startID = ""
 	}
 	return d, nil
 }
