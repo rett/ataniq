@@ -1,0 +1,3 @@
+# Exact source file and direct import. The exception ends with the named migration.
+packs/codex/protocol/codec.go ataniq/internal/leadholder/wire # Migration: the codec validates injected text here until that validator lives in a neutral contract.
+packs/codex/protocol/codec_test.go ataniq/packs/holder # Migration: the schema pin exercises holder selection until the composition test moves to packs/all.

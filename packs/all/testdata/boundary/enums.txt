@@ -1,0 +1,13 @@
+# The old APIs still exist. Remove their entries when the registry and profile use pack names.
+internal/leadregistry ProviderClaude # Migration: the registry still has this typed provider constant until its pack-name cutover.
+internal/leadregistry ProviderCodex # Migration: the registry still has this typed provider constant until its pack-name cutover.
+internal/leadregistry DefaultCoordinatorProvider # Migration: remove with the registry's implicit provider default.
+internal/leadregistry/types.go DefaultCoordinatorProvider # Migration: remove the default's declaration and use at the registry cutover.
+internal/leadregistry/types.go DefaultCoordinatorModel # Migration: remove the default's declaration and use at the registry cutover.
+cmd/ataniqd/canary_linux_test.go DefaultCoordinatorProvider # Migration: supply a synthetic pack in the daemon test at the registry cutover.
+internal/leaddaemon/canary_helpers_linux_test.go DefaultCoordinatorProvider # Migration: supply a synthetic pack in the daemon fixture at the registry cutover.
+internal/leadsandbox/profile Claude # Migration: remove when the sandbox profile resolves its runtime from packs.
+internal/leadsandbox/profile Codex # Migration: remove when the sandbox profile resolves its runtime from packs.
+internal/leadsandbox/profile Runtimes # Migration: remove when the registry supplies the runtime list.
+internal/leadsandbox/profile Runtime.Other # Migration: remove when the sandbox consumes declared pack footprints.
+internal/leadsandbox/profile ParseRuntime # Migration: remove when pack-name parsing replaces enum parsing.
