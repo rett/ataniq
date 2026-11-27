@@ -1,0 +1,100 @@
+{
+  "source": "https://learn.chatgpt.com/docs/hooks.md",
+  "evidence": "document-derived, not verified",
+  "build": "0.172.0",
+  "cases": [
+    {
+      "row": "session-start",
+      "state": "unknown",
+      "input": {
+        "hook_event_name": "SessionStart",
+        "session_id": "sample-session",
+        "permission_mode": "sample-mode",
+        "model": "sample-model",
+        "source": "startup"
+      }
+    },
+    {
+      "row": "prompt-submit",
+      "state": "busy",
+      "input": {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "sample-session",
+        "permission_mode": "sample-mode",
+        "model": "sample-model",
+        "prompt": "discard this text"
+      }
+    },
+    {
+      "row": "pre-tool",
+      "state": "busy",
+      "input": {
+        "hook_event_name": "PreToolUse",
+        "session_id": "sample-session",
+        "permission_mode": "sample-mode",
+        "model": "sample-model",
+        "tool_name": "example",
+        "tool_input": {
+          "value": "discard this text"
+        }
+      }
+    },
+    {
+      "row": "permission-request",
+      "state": "blocked",
+      "input": {
+        "hook_event_name": "PermissionRequest",
+        "session_id": "sample-session",
+        "permission_mode": "sample-mode",
+        "model": "sample-model",
+        "tool_name": "example",
+        "tool_input": {
+          "value": "discard this text"
+        },
+        "hookSpecificOutput": {
+          "decision": {
+            "behavior": "allow"
+          }
+        }
+      }
+    },
+    {
+      "row": "post-tool",
+      "state": "busy",
+      "input": {
+        "hook_event_name": "PostToolUse",
+        "session_id": "sample-session",
+        "permission_mode": "sample-mode",
+        "model": "sample-model",
+        "tool_name": "example",
+        "tool_input": {
+          "value": "discard this text"
+        },
+        "tool_response": "discard this text"
+      }
+    },
+    {
+      "row": "stop",
+      "state": "idle",
+      "input": {
+        "hook_event_name": "Stop",
+        "session_id": "sample-session",
+        "permission_mode": "sample-mode",
+        "model": "sample-model",
+        "stop_hook_active": true,
+        "last_assistant_message": "discard this text"
+      }
+    },
+    {
+      "row": "session-end",
+      "state": "unknown",
+      "input": {
+        "hook_event_name": "SessionEnd",
+        "session_id": "sample-session",
+        "permission_mode": "sample-mode",
+        "model": "sample-model",
+        "reason": "exit"
+      }
+    }
+  ]
+}
