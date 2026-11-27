@@ -403,6 +403,14 @@ settings_json() {
 EOF
 }
 
+# Print the same enrollment commands at upgrade and at the later confirmation.
+enrollment_steps() {
+  say "     OWNER ONLY: $DAEMON project-home --state-dir $S --home self scratch-$KEY_STANDIN"
+  if [ -n "$1" ]; then
+    say "     OWNER ONLY: $DAEMON project-home --state-dir $S --home self scratch-$KEY_LIVE"
+  fi
+}
+
 # commands GATE [live] prints the owner's steps, with the values filled in.
 # Every step that starts a real process, changes a unit or defines a lead says
 # OWNER ONLY. No printed command deletes anything or moves a file. The trial's
@@ -435,9 +443,12 @@ EOF
   e. OWNER ONLY (starts pasta, bubblewrap, curl and a throwaway user unit): { sh $ROOT/netcheck.sh; echo "netcheck: exit status \$?"; } 2>&1 | tee -a $EVIDENCE/netcheck.txt
      It must say connected from this host and filtered (timed out) from the lead's network, and end "netcheck: exit status 0".
   f. $BIN/ataniq-canary scratch-init --config $CONFIG   (the root marker; it writes nothing in owner/)
-     A pre-identity trial needs a one-time upgrade before g. Stop its daemon, run:
+     Before g, stop the trial daemon and run these commands for this sitting's projects:
      OWNER ONLY: $DAEMON init --state-dir "$S"
-     Record the authority and incarnation. Restart the trial with the upgraded daemon before g.
+EOF
+  enrollment_steps "$_live"
+  cat <<EOF
+     Record the authority and incarnation. Restart the trial with the upgraded daemon before g once every enrollment succeeds.
   g. sh $PREP --status $_vals --record   (the daemon's check, which must end "check: no refusal", then the baseline: it must end "status: recorded")
      $DAEMON seat-gate pins --state-dir $S
      journalctl --user --unit "\$TRIAL_UNIT" -I | grep 'key fingerprint' | tail -n 1
@@ -446,11 +457,8 @@ Switch from the trial to the proof:
      then: systemctl --user show -p ActiveState -- "\$TRIAL_UNIT"   (inactive; nothing is masked)
      Once inactive, run each command in C and check that it succeeds:
      OWNER ONLY: $DAEMON init --state-dir $S
-     OWNER ONLY: $DAEMON project-home --state-dir $S --home self scratch-$KEY_STANDIN
 EOF
-  if [ -n "$_live" ]; then
-    say "     OWNER ONLY: $DAEMON project-home --state-dir $S --home self scratch-$KEY_LIVE"
-  fi
+  enrollment_steps "$_live"
   cat <<EOF
   2. OWNER ONLY (terminal A): sh -c 'trap : INT; "\$@" 2>&1; echo "ataniqd: exit status \$?"' sh $_run | tee -ai $EVIDENCE/daemon.log
   3. OWNER ONLY (terminal B): $BIN/ataniq-console --daemon $RUNTIME   then L
@@ -562,7 +570,15 @@ self_check() {
     case $_o in *'--status '*'systemctl --user stop'*' --owner-settings /srv/sample/proof/owner-settings'*'--status '*' --compare'*'systemctl --user start'*) ;;
       *) _fail 'the steps do not check, stop the trial, run the daemon on the settings folder, compare and start the trial, in order' ;;
     esac
-    case $_o in *'scratch-init '*"$DAEMON init --state-dir"*'--status '*) ;; *) _fail 'the steps do not make the root marker before the daemon'"'"'s check' ;; esac
+    _upgrade=${_o%%"Restart the trial"*}
+    case $_upgrade in *'scratch-init '*"$DAEMON init --state-dir"*"$DAEMON project-home --state-dir $S --home self scratch-$KEY_STANDIN"*) ;;
+      *) _fail 'step f must initialize and enroll the stand-in before the trial restarts' ;;
+    esac
+    if [ -n "$_m" ]; then
+      case $_upgrade in *"$DAEMON project-home --state-dir $S --home self scratch-$KEY_LIVE"*) ;;
+        *) _fail 'step f must enroll the live project before the trial restarts' ;;
+      esac
+    fi
     case $_o in *'systemctl --user stop'*"$DAEMON init --state-dir $S"*"$DAEMON project-home --state-dir $S --home self scratch-$KEY_STANDIN"*' run --scratch '*) ;;
       *) _fail 'initialize and enroll the project after stopping the trial and before starting the proof daemon' ;;
     esac
@@ -610,7 +626,7 @@ self_check() {
       _n=$((_n + 1))
     done
   done
-  say "$NAME self-test: $_n checks passed; nothing was read, written or run. After scratch-init and before --status, initialize a pre-identity trial with its daemon stopped: $DAEMON init --state-dir $S. After stopping the trial for the proof, run ataniqd init then ataniqd project-home for each configured project."
+  say "$NAME self-test: $_n checks passed; nothing was read, written or run. After scratch-init and before --status, with the trial stopped, run $DAEMON init --state-dir $S then ataniqd project-home for each configured project before restarting the trial. Step 1 confirms the assignments."
 }
 
 # --self-test NAME VALUE...: the test entry. It computes and prints only: it

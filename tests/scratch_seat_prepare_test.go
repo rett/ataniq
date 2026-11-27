@@ -296,7 +296,7 @@ func TestScratchSeatPrepareSelfTest(t *testing.T) {
 	out, code := k.run(t, nil, "--self-test")
 	if code != 0 || !strings.Contains(out, "checks passed; nothing was read, written or run") ||
 		!strings.Contains(out, " init --state-dir /srv/sample/trial-state") ||
-		!strings.Contains(out, "ataniqd init then ataniqd project-home for each configured project") || strings.Count(out, "\n") != 1 {
+		!strings.Contains(out, "then ataniqd project-home for each configured project before restarting the trial") || strings.Count(out, "\n") != 1 {
 		t.Fatalf("--self-test: exit %d:\n%s", code, out)
 	}
 	for _, c := range []struct {
@@ -489,7 +489,11 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root, daemon string, live
 	}
 	init := daemon + " init --state-dir " + state
 	enroll := daemon + " project-home --state-dir " + state + " --home self scratch-"
-	order := []string{"scratch-init", daemon + " init --state-dir \"" + state + "\"", "--status", " --record ", "systemctl --user stop", init, enroll + "standin-3"}
+	order := []string{"scratch-init", daemon + " init --state-dir \"" + state + "\"", enroll + "standin-3"}
+	if live {
+		order = append(order, enroll+"live-3")
+	}
+	order = append(order, "Restart the trial", "--status", " --record ", "systemctl --user stop", init, enroll+"standin-3")
 	if live {
 		order = append(order, enroll+"live-3")
 	} else if strings.Contains(out, enroll+"live-3") {
