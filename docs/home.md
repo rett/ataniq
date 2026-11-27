@@ -110,11 +110,16 @@ Keep managed admission closed throughout the pilot.
    ataniq-home enroll prepare --config /etc/ataniq-home/config.json --out prepared.json
    ```
 
-   Carry the exact JSON bytes over an authenticated channel. On the authority
-   host, compare the file's SHA-256 with the home's `prepared_sha256`. Use the
-   local owner client to call `enrollment.Submit` through the witness owner
-   socket. This checkout supplies the owner library API. Return its raw signed
-   receipt to the home. As the home account, run
+   Carry the exact JSON bytes over an authenticated channel. As local root on
+   the authority host, use the `prepared_sha256` read on the home device for
+   `HOME_DIGEST` and run
+
+   ```sh
+   ataniq-witness enroll-submit --config /etc/authority-host/witness/config.json --prepared prepared.json --receipt-out receipt.bin --expect-digest HOME_DIGEST
+   ```
+
+   Archive the printed digests, witness status line and raw signed receipt
+   off-host. Return the exact receipt to the home. As the home account, run
 
    ```sh
    ataniq-home enroll finalize --config /etc/ataniq-home/config.json --prepared prepared.json --receipt receipt.bin
@@ -123,7 +128,7 @@ Keep managed admission closed throughout the pilot.
 
    Finalization verifies the request, witness receipt and original ledger
    identity, publishes the 0600 binding, and prints `ledger_id`,
-   `enrollment_id` and `receipt_digest`. Archive the exact receipt off-host.
+   `enrollment_id` and `receipt_digest`. Compare this digest with the owner's.
    Check that witness status reports one slot, the receipt matches the request,
    signing key and epoch, and local replay agrees with a fresh signed read.
 

@@ -20,7 +20,7 @@ import (
 // Methods are the effective method sets, including promoted methods.
 var admittedSurface = map[string]string{
 	"const": "Capacity ClaimUncertain Closed Corrupt EnrollmentFailed Fork HomeAhead HomeBehind IdentityMismatch Insecure Interrupted Legacy MissingHeader Occupied Retired Truncated Unknown Unreachable",
-	"func":  "AppendAndAdvance DecodeBinding EncodeBinding ReadBinding ValidateBinding WriteBinding DecodePrepared EncodePrepared Enroll Finalize Prepare ResumePrepared Start Submit WritePrepared ReadLocalStatus ReadPendingAdvance",
+	"func":  "AppendAndAdvance DecodeBinding EncodeBinding ReadBinding ValidateBinding WriteBinding DecodePrepared EncodePrepared Enroll Finalize Prepare ResumePrepared Start Submit WritePrepared WriteReceipt ReadLocalStatus ReadPendingAdvance",
 	"type":  "AdvanceReceipt Binding Error Fault FileRoot Identity LedgerStore Prepared Reason Store",
 
 	"method *Prepared": "UnmarshalJSON",

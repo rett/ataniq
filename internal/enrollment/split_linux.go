@@ -10,6 +10,7 @@ import (
 	"os"
 	"syscall"
 
+	"ataniq/internal/checkpoint"
 	"golang.org/x/sys/unix"
 )
 
@@ -202,4 +203,17 @@ func WritePrepared(path string, p Prepared) (string, error) {
 	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+// WriteReceipt exclusively publishes the raw receipt returned by Submit and
+// returns the checkpoint receipt digest the home can compare after Finalize.
+func WriteReceipt(path string, raw []byte) (string, error) {
+	r, err := unpackReceipt(raw)
+	if err != nil {
+		return "", err
+	}
+	if err = publishDocument(path, raw); err != nil {
+		return "", err
+	}
+	return checkpoint.ReceiptDigest(r), nil
 }
