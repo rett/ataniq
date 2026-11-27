@@ -29,6 +29,9 @@ type Enrollment struct {
 // EnrollProjectHome records or confirms the initial assignment under the same
 // exclusive registry lock as the daemon.
 func EnrollProjectHome(state, home, project string, opts EnrollmentOptions) (result Enrollment, retErr error) {
+	if home != "self" && !validAuthority(home) {
+		return result, ErrInvalidHome
+	}
 	id, err := instanceid.Load(state)
 	if err != nil {
 		return result, err

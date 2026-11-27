@@ -26,7 +26,7 @@ func (a *app) projectHomeCmd(args []string) int {
 		return leaddaemon.ExitUsage
 	}
 	project := fs.Arg(0)
-	if *state == "" || *home == "" || fs.NArg() != 1 || !leadrole.ValidProject(project) {
+	if *state == "" || fs.NArg() != 1 || !leadrole.ValidProject(project) {
 		fs.Usage()
 		return leaddaemon.ExitUsage
 	}
@@ -40,6 +40,10 @@ func (a *app) projectHomeCmd(args []string) int {
 	}
 	if err != nil {
 		fmt.Fprintln(a.stderr, "ataniqd project-home:", leaddaemon.SafeText(err.Error()))
+		if errors.Is(err, leadregistry.ErrInvalidHome) {
+			fs.Usage()
+			return leaddaemon.ExitUsage
+		}
 		return leaddaemon.ExitState
 	}
 	if _, err := fmt.Fprintf(a.stdout, "project=%s home_authority=%s\n", project, result.Authority); err != nil {

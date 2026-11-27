@@ -88,6 +88,20 @@ func TestProjectHomeExecutorConfirmation(t *testing.T) {
 	}
 }
 
+func TestMalformedHomeIsUsageBeforeStateAccess(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "absent")
+	for _, bad := range []string{"", "SELF", strings.Repeat("0", 63), strings.Repeat("0", 65), strings.Repeat("F", 64), strings.Repeat("z", 64)} {
+		ta := newTestApp(t, nil)
+		code := ta.run([]string{"project-home", "--state-dir", root, "--home", bad, "sample"})
+		if code != leaddaemon.ExitUsage || !strings.Contains(ta.err.String(), "self or an authority ID of 64 lowercase hex digits") {
+			t.Errorf("%q: exit %d: %s", bad, code, ta.err.String())
+		}
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("invalid input touched the root: %v", err)
+	}
+}
+
 func TestProjectHomeUsage(t *testing.T) {
 	for _, args := range [][]string{
 		{}, {"--home", "self", "sample"}, {"--state-dir", "/sample", "sample"},

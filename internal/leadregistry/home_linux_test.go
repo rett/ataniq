@@ -5,12 +5,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"ataniq/internal/instanceid"
 	"ataniq/internal/leadrole"
-	"slices"
 )
 
 func closeHomeRegistry(t *testing.T, r *Registry) {
@@ -327,7 +327,7 @@ func TestHomeRequiredAfterMigration(t *testing.T) {
 	}
 	r := openReg(t, dir)
 	role := lead(t, "fixture-a")
-	if _, err := r.BeginLaunch(role); !errors.Is(err, ErrHomeMissing) || !strings.Contains(err.Error(), "project-home") {
+	if _, err := r.BeginLaunch(role); !errors.Is(err, ErrHomeMissing) || !strings.Contains(err.Error(), "project-home") || !strings.Contains(err.Error(), "with the daemon stopped") {
 		t.Fatalf("migrated project: %v", err)
 	}
 	if err := r.SetProjectAssignment(role.Project(), id.Authority, ProjectVersion{}, true); err != nil {

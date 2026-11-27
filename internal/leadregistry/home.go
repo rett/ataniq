@@ -1,6 +1,10 @@
 package leadregistry
 
-import "ataniq/internal/leadrole"
+import (
+	"errors"
+
+	"ataniq/internal/leadrole"
+)
 
 // LeadRef qualifies a role with the instance that owns it.
 type LeadRef struct {
@@ -36,6 +40,9 @@ type replaceHomePayload struct {
 	ProjectAssignment
 }
 
+// ErrInvalidHome identifies an invalid operator-supplied home designation.
+var ErrInvalidHome = errors.New("--home must be self or an authority ID of 64 lowercase hex digits")
+
 // HomeRefusal is the stable code of a refused project admission or assignment write.
 type HomeRefusal string
 
@@ -51,7 +58,7 @@ const (
 func (e HomeRefusal) Error() string {
 	switch e {
 	case ErrHomeMissing:
-		return "the project has no home; use ataniqd project-home to enroll it"
+		return "the project has no home; with the daemon stopped, use ataniqd project-home to enroll it"
 	case ErrOtherHome:
 		return "another instance is this project's home"
 	}
@@ -71,8 +78,11 @@ func (v ProjectVersion) compare(expected ProjectVersion) error {
 func validAuthority(id string) bool { return len(id) == hashHexLen && isLowerHex([]byte(id)) }
 
 func (a *ProjectAssignment) validate() error {
-	if !validAuthority(a.HomeAuthority) || a.HomeGeneration == 0 || a.Revision == 0 {
-		return invalid("invalid project home or version")
+	if !validAuthority(a.HomeAuthority) {
+		return invalid("home_authority must be 64 lowercase hex digits")
+	}
+	if a.HomeGeneration == 0 || a.Revision == 0 {
+		return invalid("home_generation and revision must be positive")
 	}
 	if a.Holder == nil {
 		if a.ExecutingInstance != "" {

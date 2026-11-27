@@ -146,7 +146,10 @@ ataniqd project-home --state-dir DIR --home self PROJECT
 Use the exact registry project name, for example `scratch-alpha` for the
 role `scratch-alpha/lead`. On the executor, use
 `ataniqd project-home --state-dir DIR --home AUTHORITY PROJECT`, with the
-home's full authority ID from `ataniqd init`. The subcommand takes the registry's
+home's full authority ID from `ataniqd init`. The ID is 64 lowercase hex
+digits. A malformed `--home` argument exits with status 2 before the command
+reads the state root. A conflict with the recorded state exits with status 11.
+The subcommand takes the registry's
 exclusive lock. It prints the project and recorded home. Repeating the same
 enrollment confirms it. A conflicting enrollment prints the recorded home.
 
