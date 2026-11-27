@@ -222,6 +222,7 @@ func newTwoRoles(t *testing.T, c *canaryEnv) *twoRoles {
 	}
 	t.Cleanup(func() { _ = w.mode.closeEvidence() })
 
+	enrollTestProjects(t, c.state, mustRole(t, routerRoleTwo).Project(), mustRole(t, routerRoleOther).Project())
 	reg, err := leadregistry.Open(filepath.Join(c.state, RegistryDirName), leadregistry.Options{Now: time.Now})
 	if err != nil {
 		t.Fatal(err)

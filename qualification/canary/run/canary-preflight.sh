@@ -603,6 +603,7 @@ cc_say '   no marker to find. It stays in front of that terminal until you stop 
 cc_say '   step 26, before that step'"'"'s Enter, so T2 is busy from step 10 on:'
 cc_say "   Initialize the provisioned state root first, including after every canary-reset:"
 cc_say "     $BIN/ataniqd init --state-dir \"$ROOT/state\""
+cc_say "     $BIN/ataniqd project-home --state-dir \"$ROOT/state\" --home self $CC_PROJECT"
 cc_say "     $BIN/ataniqd run --canary $CONFIG"
 cc_say
 cc_say '2. At step 14 (and again in the second epoch), in a third terminal (T3), the console, started'

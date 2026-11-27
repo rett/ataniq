@@ -3,7 +3,6 @@ Root @ROOT@
 The script answers nothing for you and starts nothing. Four terminals: T1 runs
 the script, T2 the daemon (it stays in front until Ctrl-C at step 26), T3 the
 console, T4 the second console of step 14 and the integrate command of 20.
-
 BEFORE
  1. sh @PREFLIGHT@ --root @ROOT@
     It must say READY; every FIX line gives the command to type.
@@ -16,11 +15,9 @@ BEFORE
  3. T1: read the dry run, then run:
       sh @RUN@ --pass A --config @CONFIG@ --dry
       sh @RUN@ --pass A --config @CONFIG@ --evidence @EVIDENCE@
-
 AT EACH PROMPT   Enter = go on. A word is typed by you, exactly, and Enter alone
 is refused: yes, read, clean. A path prompt shows "(Enter for: PATH)" from
 @HINTS@: Enter takes it, a path you type wins, a wrong file is asked again.
-
 STEP  WHAT YOU DO
   1   Lead: yes (no agent session was told about the slice).
   2   Paths of the unit report and the plan summary, then Enter at the rest.
@@ -30,6 +27,8 @@ STEP  WHAT YOU DO
  10   Start the daemon in T2 BEFORE pressing Enter at step 10, wait for the
       listening line, then Enter in T1:
         @BIN@/ataniqd init --state-dir "@ROOT@/state"
+        @BIN@/ataniqd project-home --state-dir "@ROOT@/state" \
+          --home self throwaway-one
         @BIN@/ataniqd run --canary @CONFIG@
       (Not before step 8: it needs its marker file. Waits a minute.) Then: yes.
  12   Lead: yes (the probe reported once, every assertion ok except 10).

@@ -538,6 +538,23 @@ large (100 by 30 or more) and do not resize it while attached.
    proof's daemon while the trial runs. Neither can serve the folder beside
    the other, and nothing needs repairing afterwards. The phone now finds no
    desk.
+
+   With the trial inactive, initialize its state root and enroll this sitting's
+   configured projects there before starting the proof daemon. Run in C and
+   continue only after each command succeeds. Repeating the same enrollment
+   confirms the existing assignment.
+
+   ```sh
+   $D init --state-dir "$S"
+   $D project-home --state-dir "$S" --home self "scratch-standin-$SITTING"
+   ```
+
+   If the scratch config also includes the live lead, enroll it now.
+
+   ```sh
+   $D project-home --state-dir "$S" --home self "scratch-live-$SITTING"
+   ```
+
 2. **OWNER ONLY (A): the daemon.**
 
    ```sh

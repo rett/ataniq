@@ -19,6 +19,7 @@ import (
 	"ataniq/internal/leadholder/canaryroot"
 	"ataniq/internal/leadholder/wire"
 	"ataniq/internal/leadlock"
+	"ataniq/internal/leadregistry"
 	"ataniq/internal/leadrole"
 	"ataniq/internal/leadunit"
 )
@@ -292,9 +293,17 @@ func TestCanaryStartRefusesWhenTheLayoutCannotBeWorkedOut(t *testing.T) {
 	if err := os.Mkdir(holderDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	state := filepath.Join(t.TempDir(), "state")
+	enrollTestProjects(t, state, role.Project())
+	reg, err := leadregistry.Open(filepath.Join(state, RegistryDirName), leadregistry.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestRegistry(t, reg)
 	var logged []string
 	x := &canaryExt{
 		// A state root that is not an absolute path: Layout refuses it.
+		reg:       reg,
 		cfg:       leadcanary.Config{Role: role, StateRoot: "relative/state"},
 		role:      role,
 		holderDir: holderDir,

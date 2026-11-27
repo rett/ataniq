@@ -176,7 +176,7 @@ func TestRunScratchEndToEnd(t *testing.T) {
 	w := newScratchWorld(t)
 	ta := scratchApp(t, w)
 	socket := filepath.Join(w.Runtime, "daemon.sock")
-	done := startApp(t, ta, []string{"--scratch", w.ConfigPath}, socket)
+	done := startApp(t, ta, []string{"--scratch", w.ConfigPath}, socket, "scratch-alpha", "scratch-beta")
 
 	ops, err := helloOperations(context.Background(), socket)
 	if err != nil {
@@ -217,6 +217,39 @@ func TestRunScratchEndToEnd(t *testing.T) {
 	ta.signals <- syscall.SIGTERM
 	if code := <-done; code != 0 {
 		t.Fatalf("exit %d: %s", code, ta.err.String())
+	}
+}
+
+func TestScratchDefineRefusesForeignProjectHome(t *testing.T) {
+	w := newScratchWorld(t)
+	peer, err := leadregistry.InitInstance(filepath.Join(t.TempDir(), "peer"), leadregistry.DirName, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	initTestState(t, w.State)
+	enrollTestProject(t, w.State, peer.Authority, "scratch-alpha")
+
+	ta := scratchApp(t, w)
+	socket := filepath.Join(w.Runtime, "daemon.sock")
+	done := startApp(t, ta, []string{"--scratch", w.ConfigPath}, socket)
+	defer func() {
+		ta.signals <- syscall.SIGTERM
+		if code := <-done; code != 0 {
+			t.Errorf("daemon exit %d: %s", code, ta.err.String())
+		}
+	}()
+	cl, err := clientapi.Dial(t.Context(), socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	var receipt leadwire.Receipt
+	params := leadwire.DefineParams{Client: "test", CommandID: "foreign-1", Role: "scratch-alpha/lead"}
+	if err := cl.Call(t.Context(), leadwire.OpDefine, params, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Status != leadwire.StatusRefused || receipt.Code != string(leadregistry.ErrOtherHome) {
+		t.Fatalf("foreign define: %+v", receipt)
 	}
 }
 

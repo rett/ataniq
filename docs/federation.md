@@ -1,6 +1,7 @@
 # Permissions-based federation
 
-Status: daemon state roots have local instance identities. Peer federation is planned.
+Daemon state roots have local instance identities and enforce project lead assignments.
+Peer federation is planned.
 
 Ataniq instances can coordinate projects, exchange tasks, and communicate in
 both directions over authenticated MCP connections. Each instance remains an
@@ -10,7 +11,11 @@ Federation does not require a central instance or a shared provider.
 ## Instance identity
 
 Before the first run, use `ataniqd init --state-dir DIR [--label TEXT]` as the
-daemon user. Omitting `--state-dir` selects the same default as `run`. The
+daemon user. Then, while the daemon is stopped, enroll each project with
+`ataniqd project-home --state-dir DIR --home self PROJECT` on its chosen home.
+Use that instance's full authority ID in place of `self` on each executor.
+
+Omitting `--state-dir` from `init` selects the same default as `run`. The
 command creates `DIR/instance.key`, a singly linked, user-owned 0600 file in
 the private state root. The authority ID is 64 lowercase hexadecimal digits
 encoding SHA-256 over the ASCII bytes of `ataniq-instance-authority/1` immediately followed by the
@@ -44,11 +49,12 @@ incarnation. It preserves the authority and draws a new incarnation each
 time. An old lead registry journal now fails its binding check. Retain it
 offline for recovery and move it out of the registry directory before
 running ordinary `ataniqd init --state-dir DIR` to bind a **new, empty**
-registry. Reconcile the old lead history before resuming work. Only the
-lead registry carries this binding today.
+registry. Reconcile the old lead history and enroll each project in the new
+registry before resuming work. Only the lead registry carries this binding today.
 
-At managed sandbox start, the holder reads the identity from that state root
-and sets `QARGI_LEAD` to `<project>-lead-<tag>`. The tag is the first 16 hex
+At managed sandbox start, the daemon reads the identity from that state root
+and passes the holder only the short tag, from which the holder sets
+`QARGI_LEAD` to `<project>-lead-<tag>`; the holder never reads the key. The tag is the first 16 hex
 digits of the authority ID. Two independently generated keys have a 1 in
 2⁶⁴ chance of sharing that prefix. The full fingerprint identifies the
 authority. For project names over 42 bytes, the holder uses the first 25
@@ -64,6 +70,46 @@ When the agent environment declares a coordinator label, the sandbox derives
 `demo-lead-<tag>@e7:coord:topic:1`. An ordinary lead has no coordinator
 label. The profile digest now includes the lead naming rule. Recompute
 existing profile digest pins before the next managed start.
+
+## Enroll a project home
+
+Choose one home instance for the project and its long-lived branches. Its lead
+owns coordination and integration. The other instance runs offered work, such
+as member runs and suites, and returns results and patches to the home lead.
+The owner records the same designation on each participating instance.
+
+For a new or existing root, run both commands as the daemon user while the
+daemon is stopped. Use the same state directory for both.
+
+```sh
+ataniqd init --state-dir DIR
+ataniqd project-home --state-dir DIR --home self PROJECT
+```
+
+Use the exact registry project name, for example `scratch-alpha` for the
+role `scratch-alpha/lead`. On the executor, use
+`ataniqd project-home --state-dir DIR --home AUTHORITY PROJECT`, with the
+home's full authority ID from `ataniqd init`. The subcommand takes the registry's
+exclusive lock. It prints the project and recorded home. Repeating the same
+enrollment confirms it. A conflicting enrollment fails.
+
+The journal records the home authority, home generation, assignment revision,
+qualified holder (authority and role), and executing instance together. At
+enrollment the generation and revision are both 1 and the home holds and
+executes its project lead. Assignment writes compare the expected generation
+and revision. Define and launch record the assignment version they admitted.
+A partial final assignment record is discarded on replay. A committed one
+survives a lost acknowledgement.
+
+Both new and migrated projects require explicit enrollment. Define, start and
+coordinator admission return `project-home-unset` when the row is missing,
+`project-home-foreign` when another authority is home, and `project-unassigned`
+when the row has no holder. Scratch clients receive a refused receipt and
+canary clients receive the code in the error reply. A mismatched generation
+or revision yields `stale-home-generation` or `stale-assignment-revision`.
+Existing launch epochs, recovery, and stop operations retain their meanings.
+This version supports initial designation. Transferring the home to another
+instance requires a future re-homing protocol.
 
 ## Peer identity and directional grants
 

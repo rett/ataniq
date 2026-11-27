@@ -555,6 +555,13 @@ func TestCanaryRunKitDryListsEveryStep(t *testing.T) {
 				}
 			}
 
+			step10 := strings.Join(first[10].lines, "\n")
+			if !strings.Contains(step10, "ataniqd init --state-dir \"/sample/canary/state\"\n"+
+				"     build/canary/ataniqd project-home --state-dir \"/sample/canary/state\" --home self throwaway-one\n"+
+				"     build/canary/ataniqd run --canary ") {
+				t.Errorf("step 10 lacks the ordered enrollment and start commands:\n%s", step10)
+			}
+
 			// Step 11 is one step: one key, before define, and none between
 			// the start and the read-back of the balanced limit.
 			b := first[11]
@@ -5662,7 +5669,9 @@ func TestCanaryRunKitPreflightReady(t *testing.T) {
 	for _, want := range []string{
 		"ok:   the binaries are newer than the newest commit that touches the code (by file time: --version names no commit;",
 		"after every canary-reset",
-		"     " + p.bin + "/ataniqd init --state-dir \"" + p.root + "/state\"\n     " + p.bin + "/ataniqd run --canary " + p.root + "/config.json",
+		"     " + p.bin + "/ataniqd init --state-dir \"" + p.root + "/state\"\n" +
+			"     " + p.bin + "/ataniqd project-home --state-dir \"" + p.root + "/state\" --home self throwaway-one\n" +
+			"     " + p.bin + "/ataniqd run --canary " + p.root + "/config.json",
 		"     " + p.bin + "/ataniq-console --attach " + p.root + "/runtime/leads/throwaway-one-lead --ticket-file " + p.root + "/runtime/leads/throwaway-one-lead/ticket",
 		"BEFORE you press Enter at step 10",
 		"The run never starts the daemon or the console for you.",
@@ -6437,6 +6446,8 @@ func TestCanaryRunKitReadmeDocumentsTheEntriesAndTheCommands(t *testing.T) {
 		"CANARY_RUN_WAIT_TRIES", "CANARY_RUN_WAIT_INTERVAL", "CANARY_RUN_STATUS_TIMEOUT", "CANARY_PREFLIGHT_PROC", "CANARY_PREFLIGHT_TIOCSTI", "CANARY_PREFLIGHT_ATANIQ",
 		"## Easier on the owner", "canary-preflight.sh", "answers.hint", "CHECKLIST.txt", "--template-review PATH", "--unit-report PATH", "--plan-summary PATH",
 		"READY", "NOT READY (n to fix)", "for the tests only",
+		"ataniqd init --state-dir \"ROOT/state\"\nbuild/canary/ataniqd project-home --state-dir \"ROOT/state\" --home self throwaway-one\n" +
+			"build/canary/ataniqd run --canary ROOT/config.json",
 	} {
 		if !strings.Contains(readme, want) {
 			t.Errorf("the README does not mention %q", want)

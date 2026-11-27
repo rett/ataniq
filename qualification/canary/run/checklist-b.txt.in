@@ -1,8 +1,7 @@
 CANARY RUN, PASS B: YOUR CHECKLIST    (written by canary-prepare.sh)
 Root @ROOT@
-Live agent, one login, one message, 30 minutes or 10 turns. The script answers
-nothing for you. T1 runs it, T2 the daemon (start it at 10, after 8 wrote its
-marker; Ctrl-C at 26), T3 the console (writer), T4 2nd console, integrate.
+Live agent, one login and message, 30 minutes or 10 turns. You answer in T1.
+T2 the daemon, T3 the console (writer), T4 second console and integrate.
 BEFORE   (prepare made the files; the steps below are yours)
  1. qualify-mirror for THIS root, as in pass A: set "i_run_this_on_purpose"
     true in @ROOT@/mirror-qual/config.json; in @REPO@:
@@ -25,6 +24,10 @@ STEP  WHAT YOU DO (the steps pass B adds)
       else no. A throwaway account is fine. Run 1 saw Unknown rows: unverified.
   6   Enter the numbers of the listeners you stop (or none); stop them yourself.
   7   The path of the real config folder of the live runtime; Enter.
+ 10   T2 after the marker at 8: @BIN@/ataniqd init --state-dir "@ROOT@/state"
+        @BIN@/ataniqd project-home --state-dir "@ROOT@/state" \
+          --home self throwaway-one
+        @BIN@/ataniqd run --canary @CONFIG@
  15   Confirm the model argument (yes; none shown: no). Log in IN THE PANE:
       leave it (Ctrl+\), drag over every URL row, paste it in the browser,
       remove the line break; paste the code back, pane in focus. Then
@@ -46,15 +49,12 @@ STEP  WHAT YOU DO (the steps pass B adds)
  26   Enter; check the listed lines, then clean; Ctrl-C the daemon (T2),
       Enter; then rm -rf -- @ROOT@/state @ROOT@/runtime, Enter; H4: done
       (or not-applicable).
-
 ADVICE
   - agent.env needs CLAUDE_CODE_NO_FLICKER=1 (fullscreen renderer; new pin).
   - Answer approval prompts with plain Yes, never "do not ask again".
   - Keep the T3 window large: 100x30 or more, and do not resize it after 16.
   - Console command (T3): @BIN@/ataniq-console --attach @HOLDER_RUN@ \
       --ticket-file @HOLDER_RUN@/ticket
-  - After step 8, in T2: @BIN@/ataniqd init --state-dir "@ROOT@/state"
-  - Daemon (T2): @BIN@/ataniqd run --canary @CONFIG@
 IF IT FAILS   Ctrl-C the daemon (T2), answer the clean-up prompts, revoke any
   login made (account page), then: sh @RESET@ --root @ROOT@  (word: reset)
   and run netcheck and preflight again. Hints for paths: @HINTS@

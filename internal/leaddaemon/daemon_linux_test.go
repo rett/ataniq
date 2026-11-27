@@ -26,6 +26,7 @@ import (
 
 func TestStartupOrderAndCleanShutdown(t *testing.T) {
 	e := newEnv(t)
+	enrollTestProjects(t, e.state, "alpha")
 	e.prepare(func(reg *leadregistry.Registry) {
 		role := lead(t, "alpha")
 		if _, err := reg.Define(role, leadregistry.ManagerAtaniq, profile()); err != nil {
@@ -137,6 +138,7 @@ func TestFailuresAreDistinctAndFailClosed(t *testing.T) {
 			}
 		}, StepLock, ExitLock, "symbolic link", []Step{StepConfig, StepState, StepLock}},
 		{"corrupt registry", func(e *env, cfg *Config) {
+			enrollTestProjects(t, e.state, "alpha")
 			e.prepare(func(reg *leadregistry.Registry) {
 				if _, err := reg.Define(lead(t, "alpha"), leadregistry.ManagerAtaniq, profile()); err != nil {
 					t.Fatal(err)

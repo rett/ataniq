@@ -111,7 +111,7 @@ func TestScratchRefusalsAtTheConfigStep(t *testing.T) {
 		}, "marker"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			l := newLeadEnv(t)
+			l := newLeadEnvWithoutHomes(t)
 			cfg := l.daemonConfig()
 			tc.change(l, &cfg)
 			err := l.runToEnd(cfg)
@@ -197,7 +197,7 @@ func TestScratchRefusesACorruptOrLockedTable(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			l := newLeadEnv(t)
+			l := newLeadEnvWithoutHomes(t)
 			setup(l)
 			err := l.runToEnd(l.daemonConfig())
 			se := mustFail(t, err, StepState, ExitState)

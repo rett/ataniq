@@ -47,7 +47,7 @@ func (c *canaryEnv) refusedBeforeListening(cfg Config, wantText string) {
 
 func TestCanaryRefusesBeforeListening(t *testing.T) {
 	t.Run("default state root", func(t *testing.T) {
-		c := newCanaryEnv(t)
+		c := newCanaryEnvWithoutHome(t)
 		xdg := filepath.Join(c.base, "xdg-state")
 		c.cfg.StateRoot = filepath.Join(xdg, "ataniq")
 		if err := os.MkdirAll(c.cfg.StateRoot, 0o700); err != nil {
@@ -67,7 +67,7 @@ func TestCanaryRefusesBeforeListening(t *testing.T) {
 		c.refusedBeforeListening(cfg, string(canaryroot.CodeDefaultRoot))
 	})
 	t.Run("default runtime root", func(t *testing.T) {
-		c := newCanaryEnv(t)
+		c := newCanaryEnvWithoutHome(t)
 		xdg := filepath.Join(c.base, "xdg-run")
 		c.cfg.RuntimeRoot = filepath.Join(xdg, "ataniq")
 		cfg := c.daemonConfig()
@@ -81,14 +81,14 @@ func TestCanaryRefusesBeforeListening(t *testing.T) {
 		c.refusedBeforeListening(cfg, string(canaryroot.CodeDefaultRoot))
 	})
 	t.Run("no marker", func(t *testing.T) {
-		c := newCanaryEnv(t)
+		c := newCanaryEnvWithoutHome(t)
 		if err := os.Remove(filepath.Join(c.state, canaryroot.MarkerName)); err != nil {
 			t.Fatal(err)
 		}
 		c.refusedBeforeListening(c.daemonConfig(), string(canaryroot.CodeNoMarker))
 	})
 	t.Run("marker of another project", func(t *testing.T) {
-		c := newCanaryEnv(t)
+		c := newCanaryEnvWithoutHome(t)
 		p := filepath.Join(c.state, canaryroot.MarkerName)
 		if err := os.Remove(p); err != nil {
 			t.Fatal(err)
@@ -99,7 +99,7 @@ func TestCanaryRefusesBeforeListening(t *testing.T) {
 		c.refusedBeforeListening(c.daemonConfig(), string(canaryroot.CodeBadMarker))
 	})
 	t.Run("a project without the prefix", func(t *testing.T) {
-		c := newCanaryEnv(t)
+		c := newCanaryEnvWithoutHome(t)
 		role, err := leadrole.Lead("sample")
 		if err != nil {
 			t.Fatal(err)
@@ -108,25 +108,25 @@ func TestCanaryRefusesBeforeListening(t *testing.T) {
 		c.refusedBeforeListening(c.daemonConfig(), "role")
 	})
 	t.Run("nested roots", func(t *testing.T) {
-		c := newCanaryEnv(t)
+		c := newCanaryEnvWithoutHome(t)
 		c.cfg.RuntimeRoot = filepath.Join(c.state, "run")
 		cfg := c.daemonConfig()
 		cfg.RuntimeDir = c.cfg.RuntimeRoot
 		c.refusedBeforeListening(cfg, string(canaryroot.CodeNestedRoot))
 	})
 	t.Run("the daemon's folders are not the config's roots", func(t *testing.T) {
-		c := newCanaryEnv(t)
+		c := newCanaryEnvWithoutHome(t)
 		cfg := c.daemonConfig()
 		cfg.StateDir = filepath.Join(c.base, "other-state")
 		c.refusedBeforeListening(cfg, "roots")
 	})
 	t.Run("limits missing", func(t *testing.T) {
-		c := newCanaryEnv(t)
+		c := newCanaryEnvWithoutHome(t)
 		c.cfg.Limits = leadcanary.Limits{}
 		c.refusedBeforeListening(c.daemonConfig(), "limits")
 	})
 	t.Run("one limit outside its bound", func(t *testing.T) {
-		c := newCanaryEnv(t)
+		c := newCanaryEnvWithoutHome(t)
 		c.cfg.Limits.TasksMax = leadcanary.MaxTasksMax + 1
 		c.refusedBeforeListening(c.daemonConfig(), "limits.tasks_max")
 	})

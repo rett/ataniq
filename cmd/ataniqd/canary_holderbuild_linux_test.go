@@ -44,7 +44,7 @@ func TestCanaryStartRefusesAHolderOfAnotherBuild(t *testing.T) {
 
 	f := newCanaryFixture(t)
 	ta := canaryApp(t)
-	startApp(t, ta, []string{"--canary", f.cfgPath}, f.socket())
+	startApp(t, ta, []string{"--canary", f.cfgPath}, f.socket(), f.cfg.Role.Project())
 	cfgArg := []string{"--config", f.cfgPath}
 	if code, _, errOut := canary(t, append([]string{"define"}, cfgArg...)...); code != 0 {
 		t.Fatalf("define: %d %q", code, errOut)

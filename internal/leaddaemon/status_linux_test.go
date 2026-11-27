@@ -47,6 +47,7 @@ func find(t *testing.T, res clientapi.StatusResult, role string) clientapi.LeadS
 // lead shown unknown and a lead the tmux-manager runs.
 func registryOfEveryKind(t *testing.T, e *env) {
 	t.Helper()
+	enrollTestProjects(t, e.state, "alpha", "gamma", "delta")
 	e.prepare(func(reg *leadregistry.Registry) {
 		alpha := lead(t, "alpha")
 		if _, err := reg.Define(alpha, leadregistry.ManagerAtaniq, profile()); err != nil {
@@ -183,6 +184,7 @@ func TestUnavailableManagerWithNothingToInspect(t *testing.T) {
 	}{
 		{"empty registry", func(t *testing.T, e *env) {}, true, false},
 		{"tmux roles only", func(t *testing.T, e *env) {
+			enrollTestProjects(t, e.state, "delta")
 			e.prepare(func(reg *leadregistry.Registry) {
 				if _, err := reg.Define(lead(t, "delta"), leadregistry.ManagerTmux, profile()); err != nil {
 					t.Fatal(err)
@@ -192,6 +194,7 @@ func TestUnavailableManagerWithNothingToInspect(t *testing.T) {
 		// The same registries with a manager that answers: completed.
 		{"empty registry, manager answers", func(t *testing.T, e *env) {}, false, true},
 		{"tmux roles only, manager answers", func(t *testing.T, e *env) {
+			enrollTestProjects(t, e.state, "delta")
 			e.prepare(func(reg *leadregistry.Registry) {
 				if _, err := reg.Define(lead(t, "delta"), leadregistry.ManagerTmux, profile()); err != nil {
 					t.Fatal(err)
@@ -495,6 +498,7 @@ func (m emptyOverride) Empty(ctx context.Context, st leadunit.State) (bool, erro
 // group empty.
 func aReadyRoleWhoseUnitIsGone(t *testing.T, e *env) {
 	t.Helper()
+	enrollTestProjects(t, e.state, "alpha")
 	e.prepare(func(reg *leadregistry.Registry) {
 		alpha := lead(t, "alpha")
 		if _, err := reg.Define(alpha, leadregistry.ManagerAtaniq, profile()); err != nil {

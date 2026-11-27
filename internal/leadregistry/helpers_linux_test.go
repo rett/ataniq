@@ -21,7 +21,7 @@ func (c *fakeClock) Now() time.Time {
 
 func testOpts(seed int64) Options {
 	c := &fakeClock{}
-	return Options{Now: c.Now, Rand: rand.New(rand.NewSource(seed))}
+	return Options{standaloneV1: true, Now: c.Now, Rand: rand.New(rand.NewSource(seed))}
 }
 
 func lead(t testing.TB, project string) leadrole.Role {

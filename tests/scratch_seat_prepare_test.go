@@ -294,7 +294,9 @@ func TestScratchSeatPrepareSelfTest(t *testing.T) {
 	k := newScratchSeatKit(t)
 	before := scratchSeatFiles(t, k.dir)
 	out, code := k.run(t, nil, "--self-test")
-	if code != 0 || !strings.Contains(out, " init --state-dir /srv/sample/trial-state") || !strings.Contains(out, "checks passed; nothing was read, written or run") || strings.Count(out, "\n") != 1 {
+	if code != 0 || !strings.Contains(out, "checks passed; nothing was read, written or run") ||
+		!strings.Contains(out, " init --state-dir /srv/sample/trial-state") ||
+		!strings.Contains(out, "ataniqd init then ataniqd project-home for each configured project") || strings.Count(out, "\n") != 1 {
 		t.Fatalf("--self-test: exit %d:\n%s", code, out)
 	}
 	for _, c := range []struct {
@@ -485,15 +487,26 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root, daemon string, live
 	if live && !strings.Contains(out, "chat set live-3 off") || !live && !strings.Contains(out, "chat set standin-3 off") {
 		t.Errorf("the off step, live %v:\n%s", live, out)
 	}
-	order := []string{"scratch-init", " init --state-dir ", "--status", " --record ", "systemctl --user stop", "--owner-settings " + root + "/owner-settings |",
-		"d on standin-3", "--compare", "key list since g", "start the trial again"}
+	init := daemon + " init --state-dir " + state
+	enroll := daemon + " project-home --state-dir " + state + " --home self scratch-"
+	order := []string{"scratch-init", daemon + " init --state-dir \"" + state + "\"", "--status", " --record ", "systemctl --user stop", init, enroll + "standin-3"}
 	if live {
-		order = append(order[:7], append([]string{"The drop rule", "d on live-3"}, order[7:]...)...)
+		order = append(order, enroll+"live-3")
+	} else if strings.Contains(out, enroll+"live-3") {
+		t.Error("the stand-in-only sitting enrolls a live project")
 	}
-	for i := 1; i < len(order); i++ {
-		if strings.Index(out, order[i-1]) > strings.Index(out, order[i]) {
-			t.Errorf("%q comes after %q:\n%s", order[i-1], order[i], out)
+	order = append(order, "--owner-settings "+root+"/owner-settings |", "d on standin-3")
+	if live {
+		order = append(order, "The drop rule", "d on live-3")
+	}
+	order = append(order, "--compare", "key list since g", "start the trial again")
+	remaining := out
+	for _, step := range order {
+		_, rest, ok := strings.Cut(remaining, step)
+		if !ok {
+			t.Fatalf("missing or out-of-order step %q", step)
 		}
+		remaining = rest
 	}
 	if strings.Contains(out, "sha256sum") || strings.Contains(out, "keys-before.log") || strings.Contains(out, "--keys-prefix") {
 		t.Errorf("a step takes a digest by hand, records the prefix apart from the baseline or copies the key list:\n%s", out)
@@ -509,7 +522,7 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root, daemon string, live
 		if strings.Contains(line, "KEY") {
 			t.Errorf("a step names a lead KEY: %q", line)
 		}
-		for _, starts := range []string{"systemctl --user stop", "systemctl --user start", "run --scratch", "ataniq-console", "--version", "d on ", "s on ", "netcheck.sh"} {
+		for _, starts := range []string{"systemctl --user stop", "systemctl --user start", "run --scratch", "ataniq-console", "--version", "d on ", "s on ", "netcheck.sh", " init --state-dir ", " project-home "} {
 			if strings.Contains(line, starts) && !strings.Contains(line, "OWNER ONLY") {
 				t.Errorf("a step starts a process, changes a unit or defines a lead and is not marked OWNER ONLY: %q", line)
 			}
@@ -1444,6 +1457,8 @@ func TestScratchSeatProofRunbookShellIsSafe(t *testing.T) {
 	}
 	flat := strings.Join(strings.Fields(text), " ")
 	for _, want := range []string{
+		`$D init --state-dir "$S" $D project-home --state-dir "$S" --home self "scratch-standin-$SITTING"`,
+		`$D project-home --state-dir "$S" --home self "scratch-live-$SITTING"`,
 		"**OWNER ONLY (B): define it;", "**OWNER ONLY (B):** `d` on `live-N`", "**OWNER ONLY (C): stop the trial**, by your own command; nothing is masked or moved",
 		"**OWNER ONLY (C): start the trial again**, by your own command", "A full quarantine ends the sitting",
 		"the state folder's lock refuses whichever daemon comes second (exit 12)", "A transient trial does not come back after a reboot", "never archive the state folder",

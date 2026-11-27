@@ -23,8 +23,11 @@ var version = leaddaemon.DefaultVersion
 
 var usage = baseUsage + canaryUsage
 
+const projectHomeUsage = "ataniqd project-home --state-dir DIR --home self|AUTHORITY PROJECT"
+
 const baseUsage = `usage: ataniqd run [--state-dir DIR] [--runtime-dir DIR]
        ataniqd init [--state-dir DIR] [--label TEXT | --restored]
+       ` + projectHomeUsage + `
        ataniqd status [--socket PATH] [--json]
        ataniqd version
 
@@ -34,6 +37,8 @@ stops and manages no unit and defines no lead, and no flag changes that.
   init     initialize the state root and bind its registry to this instance
            --label TEXT       optional display label on first initialization
            --restored         give a restored key a new store incarnation
+  project-home   enroll a project once, with the daemon stopped
+                 --home self uses this root's authority ID
   run      take the daemon lock and the runtime folder lock, open the
            registry, reconcile once and serve until SIGTERM or SIGINT
            --state-dir DIR    default $XDG_STATE_HOME/ataniq, else
@@ -113,6 +118,8 @@ func (a *app) run(args []string) int {
 	switch args[0] {
 	case "init":
 		return a.initCmd(args[1:])
+	case "project-home":
+		return a.projectHomeCmd(args[1:])
 	case "run":
 		return a.runCmd(args[1:])
 	case "status":

@@ -232,3 +232,24 @@ func TestDocumentationSourceContainment(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectHomeOperatorSteps(t *testing.T) {
+	for _, example := range []struct{ guide, state, project string }{
+		{"scratch-leads.md", "STATE", "scratch-KEY"},
+		{"canary-slice.md", "STATE", "PROJECT"},
+		{"runbooks.md", "<state root>", "scratch-<key>"},
+		{"lead-daemon.md", "DIR", "PROJECT"},
+		{"federation.md", "DIR", "PROJECT"},
+	} {
+		data, err := os.ReadFile(filepath.Join(root(t), "docs", example.guide))
+		if err != nil {
+			t.Fatal(err)
+		}
+		init := "ataniqd init --state-dir " + example.state
+		enroll := "ataniqd project-home --state-dir " + example.state + " --home self " + example.project
+		_, after, ok := strings.Cut(string(data), init)
+		if !ok || !strings.Contains(after, enroll) {
+			t.Errorf("%s must show %q followed by %q", example.guide, init, enroll)
+		}
+	}
+}
