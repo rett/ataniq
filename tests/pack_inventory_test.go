@@ -76,7 +76,6 @@ const (
 	holderWire  = "internal/leadholder/wire"
 	hookWire    = "internal/agentsession/hookwire"
 	capHandlers = "internal/leadcaps"
-	sessionPkg  = "internal/agentsession"
 	ownerWire   = "internal/approval/ownerwire"
 )
 
