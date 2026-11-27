@@ -158,6 +158,35 @@ func sendMessage(t *testing.T, c protocol.Codec, id string) {
 	}
 }
 
+func TestLongCodexThread(t *testing.T) {
+	c, f := fresh(t), frames(t, "events")
+	startThread(t, c)
+	for round := 1; round <= 200; round++ {
+		id := fmt.Sprintf("request-%d", round)
+		turn := fmt.Sprintf("turn-%d", round)
+		sendMessage(t, c, id)
+		answer := fmt.Appendf(nil, `{"id":%q,"result":{"turn":{"id":%q}}}`, id, turn)
+		if d, err := c.Decode(answer); err != nil || d.AnswerTo == nil || *d.AnswerTo != id {
+			t.Fatalf("round %d: start answer %+v, %v", round, d, err)
+		}
+		observe(t, c, bytes.ReplaceAll(f[1], []byte("turn-a"), []byte(turn)), core.Event{Kind: "state", State: "busy"})
+		if _, err := c.Encode("extra", core.Request{Operation: core.Message, Text: "hello"}); !errors.Is(err, protocol.ErrTurn) {
+			t.Fatalf("round %d: extra message: %v", round, err)
+		}
+		if _, err := c.Steer(fmt.Sprintf("steer-%d", round), "thread-a", turn, "extra"); err != nil {
+			t.Fatalf("round %d: steer: %v", round, err)
+		}
+		stopID := fmt.Sprintf("stop-%d", round)
+		frame, err := c.Encode(stopID, core.Request{Operation: core.StopTurn})
+		if err != nil {
+			t.Fatalf("round %d: stop: %v", round, err)
+		}
+		equalJSON(t, frame, fmt.Sprintf(`{"id":%q,"method":"turn/interrupt","params":{"threadId":"thread-a","turnId":%q}}`, stopID, turn))
+		observe(t, c, bytes.ReplaceAll(f[4], []byte("turn-a"), []byte(turn)), core.Event{Kind: "state", State: "idle"})
+	}
+	sendMessage(t, c, "next")
+}
+
 func TestStaleTurn(t *testing.T) {
 	c, f := fresh(t), frames(t, "events")
 	refuse := func(c protocol.Codec, thread, turn string) {
