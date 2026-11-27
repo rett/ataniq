@@ -32,15 +32,14 @@ import (
 
 const canaryRunScript = "qualification/canary/run/canary-run.sh"
 
-// canaryRunBinaries are the commands the run script uses, and so the ones
-// make canary-build builds, and no more.
+// canaryRunBinaries are the commands the run script uses.
 var canaryRunBinaries = []string{
 	"ataniqd", "ataniq-holder", "ataniq-canary", "ataniq-canary-standin",
 	"ataniq-console", "ataniq-intake", "ataniq-probe",
 }
 
-// canaryStaticBinaries are built without cgo: both run inside the sandbox.
-var canaryStaticBinaries = []string{"ataniq-canary-standin", "ataniq-probe"}
+// canaryStaticBinaries are built without cgo for use inside the sandbox.
+var canaryStaticBinaries = []string{"ataniq-canary-standin", "ataniq-probe", "ataniq-hook"}
 
 // canaryStep is one row of the plan's table of steps (section 6), written
 // from the plan and not from the script: the gates the step serves ("none"
@@ -283,14 +282,14 @@ func TestCanaryRunKitMakefileTarget(t *testing.T) {
 		}
 		built = append(built, m[2])
 	}
-	want := slices.Clone(canaryRunBinaries)
+	want := append(slices.Clone(canaryRunBinaries), "ataniq-hook")
 	sort.Strings(want)
 	sort.Strings(built)
 	if !slices.Equal(built, want) {
 		t.Errorf("canary-build builds %v, want %v", built, want)
 	}
 
-	// The script uses each of them, from build/canary and from nowhere else.
+	// The script takes its commands from build/canary.
 	script, err := os.ReadFile(filepath.Join(root(t), canaryRunScript))
 	if err != nil {
 		t.Fatal(err)

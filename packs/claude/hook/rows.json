@@ -1,0 +1,129 @@
+{
+  "schema": "ataniq.pack-declaration/1",
+  "builds": {
+    "2.1.332": [
+      {
+        "id": "claude.session-start",
+        "event": "SessionStart",
+        "fields": [
+          {"name": "hook_event_name", "pointer": "/hook_event_name"},
+          {"name": "session_id", "pointer": "/session_id"},
+          {"name": "permission_mode", "pointer": "/permission_mode"},
+          {"name": "source", "pointer": "/source"},
+          {"name": "model", "pointer": "/model"}
+        ],
+        "output": "none",
+        "async": true,
+        "timeout_ms": 5000
+      },
+      {
+        "id": "claude.prompt-submit",
+        "event": "UserPromptSubmit",
+        "fields": [
+          {"name": "hook_event_name", "pointer": "/hook_event_name"},
+          {"name": "session_id", "pointer": "/session_id"},
+          {"name": "permission_mode", "pointer": "/permission_mode"}
+        ],
+        "output": "none",
+        "async": true,
+        "timeout_ms": 5000
+      },
+      {
+        "id": "claude.pre-tool-use",
+        "event": "PreToolUse",
+        "fields": [
+          {"name": "hook_event_name", "pointer": "/hook_event_name"},
+          {"name": "session_id", "pointer": "/session_id"},
+          {"name": "permission_mode", "pointer": "/permission_mode"},
+          {"name": "tool_name", "pointer": "/tool_name"}
+        ],
+        "digests": [
+          {"name": "tool_input", "pointer": "/tool_input"}
+        ],
+        "output": "none",
+        "async": true,
+        "timeout_ms": 5000
+      },
+      {
+        "id": "claude.permission-request",
+        "event": "PermissionRequest",
+        "fields": [
+          {"name": "hook_event_name", "pointer": "/hook_event_name"},
+          {"name": "session_id", "pointer": "/session_id"},
+          {"name": "permission_mode", "pointer": "/permission_mode"},
+          {"name": "tool_name", "pointer": "/tool_name"}
+        ],
+        "digests": [
+          {"name": "tool_input", "pointer": "/tool_input"}
+        ],
+        "output": "none",
+        "async": true,
+        "timeout_ms": 5000
+      },
+      {
+        "id": "claude.notification",
+        "event": "Notification",
+        "fields": [
+          {"name": "hook_event_name", "pointer": "/hook_event_name"},
+          {"name": "session_id", "pointer": "/session_id"},
+          {"name": "permission_mode", "pointer": "/permission_mode"},
+          {"name": "notification_type", "pointer": "/notification_type"}
+        ],
+        "output": "none",
+        "async": true,
+        "timeout_ms": 5000
+      },
+      {
+        "id": "claude.stop",
+        "event": "Stop",
+        "fields": [
+          {"name": "hook_event_name", "pointer": "/hook_event_name"},
+          {"name": "session_id", "pointer": "/session_id"},
+          {"name": "permission_mode", "pointer": "/permission_mode"},
+          {"name": "stop_hook_active", "pointer": "/stop_hook_active"}
+        ],
+        "output": "none",
+        "async": true,
+        "timeout_ms": 5000
+      },
+      {
+        "id": "claude.stop-failure",
+        "event": "StopFailure",
+        "fields": [
+          {"name": "hook_event_name", "pointer": "/hook_event_name"},
+          {"name": "session_id", "pointer": "/session_id"},
+          {"name": "permission_mode", "pointer": "/permission_mode"}
+        ],
+        "output": "none",
+        "async": true,
+        "timeout_ms": 5000
+      },
+      {
+        "id": "claude.session-end",
+        "event": "SessionEnd",
+        "fields": [
+          {"name": "hook_event_name", "pointer": "/hook_event_name"},
+          {"name": "session_id", "pointer": "/session_id"},
+          {"name": "permission_mode", "pointer": "/permission_mode"},
+          {"name": "reason", "pointer": "/reason"}
+        ],
+        "output": "none",
+        "async": true,
+        "timeout_ms": 5000
+      },
+      {
+        "id": "claude.config-change",
+        "event": "ConfigChange",
+        "fields": [
+          {"name": "hook_event_name", "pointer": "/hook_event_name"},
+          {"name": "session_id", "pointer": "/session_id"},
+          {"name": "permission_mode", "pointer": "/permission_mode"},
+          {"name": "source", "pointer": "/source"}
+        ],
+        "output": "deny-from-table",
+        "async": false,
+        "timeout_ms": 5000
+      }
+    ]
+  }
+}

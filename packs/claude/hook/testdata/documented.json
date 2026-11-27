@@ -1,0 +1,17 @@
+{
+  "source": "https://code.claude.com/docs/en/hooks",
+  "status": "not verified",
+  "verified_on": "",
+  "build": "2.1.332",
+  "inputs": [
+    {"hook_event_name":"SessionStart","session_id":"a0000000-0000-4000-8000-000000000001","permission_mode":"default","source":"startup","model":"sample-model"},
+    {"hook_event_name":"UserPromptSubmit","session_id":"a0000000-0000-4000-8000-000000000001","permission_mode":"default","prompt":"sample prompt body"},
+    {"hook_event_name":"PreToolUse","session_id":"a0000000-0000-4000-8000-000000000001","permission_mode":"default","tool_name":"Read","tool_input":{"file_path":"sample.txt"}},
+    {"hook_event_name":"PermissionRequest","session_id":"a0000000-0000-4000-8000-000000000001","permission_mode":"default","tool_name":"Read","tool_input":{"file_path":"sample.txt"},"permission_suggestions":[]},
+    {"hook_event_name":"Notification","session_id":"a0000000-0000-4000-8000-000000000001","permission_mode":"default","notification_type":"permission_prompt","message":"sample prompt message"},
+    {"hook_event_name":"Stop","session_id":"a0000000-0000-4000-8000-000000000001","permission_mode":"default","stop_hook_active":false,"last_assistant_message":"sample reply body"},
+    {"hook_event_name":"StopFailure","session_id":"a0000000-0000-4000-8000-000000000001","permission_mode":"default"},
+    {"hook_event_name":"SessionEnd","session_id":"a0000000-0000-4000-8000-000000000001","permission_mode":"default","reason":"logout"},
+    {"hook_event_name":"ConfigChange","session_id":"a0000000-0000-4000-8000-000000000001","permission_mode":"default","source":"project_settings","file_path":"sample-settings.json"}
+  ]
+}
