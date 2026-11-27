@@ -394,15 +394,16 @@ on the holder's word, and in no other way:
   observer is writing the registry (about one write) is refused `role-busy` and
   may be tried again. An observer that waits for the holder never holds up a
   stop.
-- **What `ready` means here.** The holder is up, and the agent was started in
-  the lead's sandbox. The agent's login is **not** observed, nothing was read
-  from its screen, and nothing says the agent works or will answer. `ready` is
-  not a claim that the lead is usable: it replaces "nothing says anything" with
-  "the holder said it is up", and no more. A lead that is `ready` stays so until
-  a stop, with one exception, below. This build adds no other way from `ready`
-  back to `starting` or to `degraded`: a holder that goes away after it said it
-  was up is not noticed by this observer, and a unit that ends is found by the
-  next reconcile when the daemon starts.
+- **Health after readiness.** `ready` means the holder answered and the agent
+  started in its sandbox. The daemon checks neither login nor responsiveness.
+  Every 30 seconds it asks the holder for status. If the holder reports that
+  the agent exited or its process tree is gone, the desk shows `degraded` with
+  reason `lead-exited`. If contact fails or the holder returns no usable
+  status, the reason is `holder-unreachable`. For these two reasons the phone
+  overrides its usual `degraded` mapping and shows `unknown`. Polling resumes
+  after daemon restart. A fresh status from the matching build, role and epoch
+  that reports the agent still running restores `ready`. A late reply cannot
+  change a stopped lead or its next launch.
 - **A lead an earlier daemon showed `ready`.** `ready` was that daemon's word,
   for its own build. Before a daemon serves anything, it reads again the
   `holder.json` of every lead it adopted shown `ready`. A file of the epoch

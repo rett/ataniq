@@ -59,7 +59,8 @@ type chatState struct {
 }
 
 // chatStateOf maps the registry's entry of a role to the seat's words:
-// ready and degraded are running; desired and starting, starting; stopping,
+// ready and degraded are running, except that health degradation is unknown.
+// Desired and starting map to starting; stopping,
 // stopped, ended and a role the registry does not know, stopped; stalled,
 // unknown and a registry that cannot be read, unknown.
 func chatStateOf(e leadregistry.Entry, err error) chatState {
@@ -70,6 +71,10 @@ func chatStateOf(e leadregistry.Entry, err error) chatState {
 		return chatState{word: ownerwire.ChatLeadUnknown}
 	}
 	st := chatState{epoch: e.Epoch}
+	if healthDegraded(e) {
+		st.word = ownerwire.ChatLeadUnknown
+		return st
+	}
 	switch e.Shown.State {
 	case leadregistry.StateReady, leadregistry.StateDegraded:
 		st.word = ownerwire.ChatLeadRunning

@@ -327,6 +327,13 @@ func TestChatStateWords(t *testing.T) {
 	if got := chatStateOf(leadregistry.Entry{}, leadregistry.ErrNoRole); got.word != "stopped" || got.epoch != 0 {
 		t.Errorf("not defined: %+v", got)
 	}
+	for reason, want := range map[string]string{"holder-unreachable": "unknown", "lead-exited": "unknown", "holder-version-skew": "running"} {
+		e := leadregistry.Entry{Epoch: 7}
+		e.Shown.State, e.Shown.Reason.Code = leadregistry.StateDegraded, reason
+		if got := chatStateOf(e, nil); got.word != want || got.epoch != 7 {
+			t.Errorf("degraded (%s): %+v, want %s for epoch 7", reason, got, want)
+		}
+	}
 	if got := chatStateOf(leadregistry.Entry{}, errors.New("broken")); got.word != "unknown" {
 		t.Errorf("a registry that cannot be read: %+v", got)
 	}
