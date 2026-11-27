@@ -256,6 +256,8 @@ func TestEventControlEscapes(t *testing.T) {
 	for _, tc := range []struct{ text, want string }{
 		{"α\n\tβ", "α\n\tβ"},
 		{"\x00\x1f\x7f\u009b\u202e", `\x00\x1f\x7f\u009b\u202e`},
+		{`\x1b` + "\x1b", `\\x1b\x1b`},
+		{prefix + "z", prefix + "z"},
 		{prefix + "\x1b", prefix},
 	} {
 		c.decoded.Events = []protocol.Event{{Kind: "progress", Text: tc.text}}

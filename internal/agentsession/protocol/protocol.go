@@ -52,7 +52,7 @@ type Request struct {
 
 // Event is an untrusted transport observation. The holder supplies the
 // sequence and time. Only a state event has a State. Session.Decode escapes
-// non-printable runes in Text except for newline and tab.
+// backslashes and non-printable runes in Text except for newline and tab.
 type Event struct {
 	Kind  string
 	State agentsession.State
@@ -219,7 +219,7 @@ func boundedEventText(text string) string {
 	b.Grow(min(len(text), MaxEventBytes))
 	for i, r := range text {
 		unit := text[i : i+utf8.RuneLen(r)]
-		if r != '\n' && r != '\t' && !unicode.IsPrint(r) {
+		if r == '\\' || (r != '\n' && r != '\t' && !unicode.IsPrint(r)) {
 			quoted := strconv.QuoteRune(r)
 			unit = quoted[1 : len(quoted)-1]
 		}
