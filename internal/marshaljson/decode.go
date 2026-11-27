@@ -160,16 +160,23 @@ func DecodeResult(expected Kind, exit int, stdout, stderr []byte) (Document, err
 		return Document{}, errors.New("unexpected verb result kind")
 	}
 	var refusal []byte
+	var warning bool
 	for line := range bytes.SplitSeq(stderr, []byte{'\n'}) {
 		if bytes.HasPrefix(line, []byte("qargi-refusal/")) {
 			if refusal != nil || exit == 0 {
 				return Document{}, errors.New("ambiguous verb output")
 			}
 			refusal = line
+		} else if len(line) > 0 {
+			warning = true
 		}
 	}
 	if exit == 0 {
-		return Decode(expected, stdout)
+		d, err := Decode(expected, stdout)
+		if err == nil && warning {
+			d.incomplete = true
+		}
+		return d, err
 	}
 	if refusal == nil || len(stdout) != 0 {
 		return Document{}, errors.New("failed verb without an unambiguous refusal")

@@ -226,7 +226,7 @@ func TestVerbResult(t *testing.T) {
 		stderr, reason string
 		wantError      bool
 	}{
-		{"success", 0, ok, "warning only", "", false},
+		{"success", 0, ok, "", "", false},
 		{"held", 1, nil, "warning\n" + line + "human block\n", "conflict", false},
 		{"unknown feature", 1, nil, strings.Replace(line, "marshal-feature-held", "marshal-feature-unknown", 1), "not-found", false},
 		{"unreachable", 3, nil, remote, "remote-unreachable", false},
@@ -291,5 +291,30 @@ func TestHandBuiltDocument(t *testing.T) {
 	view["project"] = "elsewhere"
 	if !d.AllowsRevision("app", "r1", rev) || d.AllowsRevision("elsewhere", "other", rev) {
 		t.Fatal("editing displayed fields changed the decoded evidence")
+	}
+}
+
+func TestSuccessfulResultWithStderr(t *testing.T) {
+	files := archive(t, "cases.zip")
+	for _, kind := range []Kind{Status, Handoff, Check} {
+		var f map[string]any
+		name := "valid-refs"
+		if kind == Check {
+			name = "valid-refs-name"
+		}
+		if err := json.Unmarshal(fixture(t, files, kind, name), &f); err != nil {
+			t.Fatal(err)
+		}
+		if kind == Handoff {
+			f["backend"], f["remote"] = "local", "none"
+		}
+		body := mustJSON(t, f)
+		for _, stderr := range []string{"", "\n", "qargi: warning: damaged record\n", "diagnostic"} {
+			d, err := DecodeResult(kind, 0, body, []byte(stderr))
+			warned := len(strings.Trim(stderr, "\n")) != 0
+			if err != nil || d.Incomplete() != warned || d.ActionsAllowed() == warned || d.RefusalReason() != "" {
+				t.Fatalf("%s stderr %q: incomplete=%v err=%v", kind, stderr, d.Incomplete(), err)
+			}
+		}
 	}
 }
