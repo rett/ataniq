@@ -234,7 +234,7 @@ func (a *app) runCmd(args []string) int {
 	if code := a.ownerRun(&owner, &cfg); code >= 0 {
 		return code
 	}
-	err := a.requireInstance(cfg, false)
+	err := a.requireInstance(cfg, nil)
 	if err == nil {
 		err = leaddaemon.Run(context.Background(), cfg)
 	}

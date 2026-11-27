@@ -165,7 +165,7 @@ func missingKeyError(state string, root *os.File) error {
 	return fmt.Errorf("%s: %w; %s", filepath.Join(state, instanceid.FileName), instanceid.ErrMissing, hint)
 }
 
-func (a *app) requireInstance(cfg leaddaemon.Config, checkHeader bool) error {
+func (a *app) requireInstance(cfg leaddaemon.Config, inspect func(*os.File, instanceid.Binding) error) error {
 	if os.Geteuid() == 0 {
 		return &leaddaemon.StartupError{Step: leaddaemon.StepConfig, Err: errors.New("refusing to run as root")}
 	}
@@ -175,17 +175,8 @@ func (a *app) requireInstance(cfg leaddaemon.Config, checkHeader bool) error {
 		defer root.Close()
 		id, err = instanceid.LoadRoot(root)
 	}
-	if err == nil && checkHeader {
-		header, err := leadregistry.ReadHeaderAt(root)
-		if err == nil && header != nil {
-			switch {
-			case header.Authority == "":
-				err = leadregistry.ErrUnbound
-			case *header != id.Binding:
-				err = leadregistry.ErrForeignInstance
-			}
-		}
-		if err != nil {
+	if err == nil && inspect != nil {
+		if err := inspect(root, id.Binding); err != nil {
 			return &leaddaemon.StartupError{Step: leaddaemon.StepRegistry, Err: err}
 		}
 	}
@@ -201,4 +192,17 @@ func (a *app) requireInstance(cfg leaddaemon.Config, checkHeader bool) error {
 		err = missingKeyError(cfg.StateDir, root)
 	}
 	return &leaddaemon.StartupError{Step: leaddaemon.StepState, Err: err}
+}
+
+func checkRegistryHeader(root *os.File, binding instanceid.Binding) error {
+	header, err := leadregistry.ReadHeaderAt(root)
+	if err == nil && header != nil {
+		switch {
+		case header.Authority == "":
+			err = leadregistry.ErrUnbound
+		case *header != binding:
+			err = leadregistry.ErrForeignInstance
+		}
+	}
+	return err
 }

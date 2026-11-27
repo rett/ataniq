@@ -3,8 +3,11 @@ package leadregistry
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"ataniq/internal/instanceid"
 	"ataniq/internal/leadrole"
@@ -274,4 +277,24 @@ func (r *Registry) checkRecordedAdmission(rec record) error {
 	}
 	_, err := r.checkProjectHome(rec.role, expected)
 	return err
+}
+
+// MissingHomeWarnings names each unenrolled project and its blocked roles.
+func (r *Registry) MissingHomeWarnings(configured []leadrole.Role) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	byProject := make(map[string][]string)
+	for _, role := range append(slices.Collect(maps.Keys(r.roles)), configured...) {
+		project := role.Project()
+		if _, enrolled := r.homes[project]; project != "" && !enrolled {
+			byProject[project] = append(byProject[project], role.String())
+		}
+	}
+	var warnings []string
+	for _, project := range slices.Sorted(maps.Keys(byProject)) {
+		roles := byProject[project]
+		slices.Sort(roles)
+		warnings = append(warnings, fmt.Sprintf("project %s has no home, blocking define and start for %s", project, strings.Join(slices.Compact(roles), ", ")))
+	}
+	return warnings
 }

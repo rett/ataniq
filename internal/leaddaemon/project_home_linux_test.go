@@ -75,6 +75,9 @@ func TestProjectHomeScratchSocket(t *testing.T) {
 	l := newLeadEnvWithoutHomes(t)
 	foreignProject(t, l.state, l.cfgOf("alpha").Role.Project())
 	l.start()
+	if logs := l.log.String(); !strings.Contains(logs, "project scratch-beta has no home, blocking define and start for scratch-beta/lead") || strings.Contains(logs, "project scratch-alpha has no home") {
+		t.Fatalf("startup enrollment warnings: %s", logs)
+	}
 	path := filepath.Join(l.state, RegistryDirName, leadregistry.FileName)
 	before, err := os.ReadFile(path)
 	if err != nil {
@@ -94,6 +97,14 @@ func TestProjectHomeScratchSocket(t *testing.T) {
 	after, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(before, after) || l.gate.starts.Load() != 0 {
 		t.Fatal("refusal changed journal or started a unit")
+	}
+}
+
+func TestCanaryMissingHomeStartupSocket(t *testing.T) {
+	c := newCanaryEnvWithoutHome(t)
+	c.start()
+	if logs := c.log.String(); !strings.Contains(logs, "project throwaway-one has no home, blocking define and start for throwaway-one/lead") {
+		t.Fatal(logs)
 	}
 }
 

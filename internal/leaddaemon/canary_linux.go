@@ -16,6 +16,7 @@ import (
 	"ataniq/internal/leadlifecycle"
 	"ataniq/internal/leadlock"
 	"ataniq/internal/leadregistry"
+	"ataniq/internal/leadrole"
 	sbprofile "ataniq/internal/leadsandbox/profile"
 )
 
@@ -165,6 +166,13 @@ func (d *daemon) canarySetup() (*canaryMode, error) {
 		m.dialFor = DefaultDialTimeout
 	}
 	return m, nil
+}
+
+func (m *canaryMode) configuredRoles() []leadrole.Role {
+	if m == nil {
+		return nil
+	}
+	return m.router.order
 }
 
 // openState derives the holder launch tag under the daemon lock, then opens

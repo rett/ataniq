@@ -8,7 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"ataniq/internal/instanceid"
 	"ataniq/internal/leadrole"
+	"slices"
 )
 
 func closeHomeRegistry(t *testing.T, r *Registry) {
@@ -269,6 +271,46 @@ func TestReplacementReplayChecksOldHome(t *testing.T) {
 	closeHomeRegistry(t, r)
 	if _, err := Open(dir, Options{}); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("replayed correction against the wrong predecessor: %v", err)
+	}
+}
+
+func TestReadMissingHomesWithWriterAndIncompleteTail(t *testing.T) {
+	data, _ := readV1Base(t)
+	copyDir := writeJournal(t, data)
+	state := filepath.Dir(copyDir)
+	dir := filepath.Join(state, DirName)
+	if err := os.Rename(copyDir, dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(state, 0700); err != nil {
+		t.Fatal(err)
+	}
+	id, err := InitInstance(state, filepath.Base(dir), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := openReg(t, dir)
+	if err := r.SetProjectAssignment("local", id.Authority, ProjectVersion{}, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.f.WriteString("torn"); err != nil {
+		t.Fatal(err)
+	}
+	size := journalSize(t, dir)
+	root, err := instanceid.OpenRoot(state, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	roles := []leadrole.Role{lead(t, "local"), lead(t, "new"), lead(t, "fixture-a")}
+	want := []string{
+		"project fixture-a has no home, blocking define and start for fixture-a/coord/feat-one, fixture-a/lead",
+		"project fixture-b has no home, blocking define and start for fixture-b/lead",
+		"project new has no home, blocking define and start for new/lead",
+	}
+	got, err := ReadMissingHomesAt(root, id.Binding, roles)
+	if err != nil || !slices.Equal(got, want) || size != journalSize(t, dir) {
+		t.Fatalf("read-only enrollment snapshot %v: %v", got, err)
 	}
 }
 

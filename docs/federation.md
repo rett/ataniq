@@ -165,6 +165,11 @@ and revision. Define and launch record the assignment version they admitted.
 A partial final assignment record is discarded on replay. A committed one
 survives a lost acknowledgement.
 
+Daemon startup and scratch-seat `run --check` list each configured or recorded
+project missing a home and the roles whose definition or start it blocks. An
+empty enrollment list still permits daemon startup. The check reads complete
+journal records without taking the registry lock or repairing a partial tail.
+
 Both new and migrated projects require explicit enrollment. Define, start and
 coordinator admission return `project-home-unset` when the row is missing,
 `project-home-foreign` when another authority is home, and `project-unassigned`

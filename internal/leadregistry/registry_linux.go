@@ -360,31 +360,9 @@ func checkJournalFile(dirFD, fd int, path string) error {
 // start replays the journal, cuts an unfinished tail and writes the header of
 // an empty journal.
 func (r *Registry) start(dirFD int, syncFile func(int) error) error {
-	rd := bufio.NewReaderSize(r.f, MaxLineBytes+1)
-	var offset int64
-	var tail int
-	lines := 0
-	for {
-		line, err := rd.ReadSlice('\n')
-		if err == nil {
-			lines++
-			if err := r.replayLine(lines, line[:len(line)-1]); err != nil {
-				return err
-			}
-			offset += int64(len(line))
-			continue
-		}
-		if err == io.EOF {
-			tail = len(line)
-			break
-		}
-		if err == bufio.ErrBufferFull {
-			return &CorruptError{Line: lines + 1, Reason: fmt.Sprintf("line longer than %d bytes", MaxLineBytes)}
-		}
-		return fmt.Errorf("leadregistry: read journal: %w", err)
-	}
-	if tail > 0 && lines == 0 && r.binding.Authority != "" {
-		return &CorruptError{Line: 1, Reason: "unfinished instance header"}
+	offset, tail, lines, err := r.readRecords(r.f)
+	if err != nil {
+		return err
 	}
 	if tail > 0 {
 		if err := r.f.Truncate(offset); err != nil {
@@ -419,6 +397,34 @@ func (r *Registry) start(dirFD int, syncFile func(int) error) error {
 		return fmt.Errorf("leadregistry: sync folder: %w", err)
 	}
 	return nil
+}
+
+// readRecords replays complete lines and reports the uncommitted suffix.
+func (r *Registry) readRecords(input io.Reader) (offset int64, tail, lines int, readErr error) {
+	rd := bufio.NewReaderSize(input, MaxLineBytes+1)
+	for {
+		line, err := rd.ReadSlice('\n')
+		if err == nil {
+			lines++
+			if err := r.replayLine(lines, line[:len(line)-1]); err != nil {
+				return 0, 0, 0, err
+			}
+			offset += int64(len(line))
+			continue
+		}
+		if err == io.EOF {
+			tail = len(line)
+			break
+		}
+		if err == bufio.ErrBufferFull {
+			return 0, 0, 0, &CorruptError{Line: lines + 1, Reason: fmt.Sprintf("line longer than %d bytes", MaxLineBytes)}
+		}
+		return 0, 0, 0, fmt.Errorf("leadregistry: read journal: %w", err)
+	}
+	if tail > 0 && lines == 0 && r.binding.Authority != "" {
+		return 0, 0, 0, &CorruptError{Line: 1, Reason: "unfinished instance header"}
+	}
+	return offset, tail, lines, nil
 }
 
 // commitRecovered appends the record of a cut to the file, without a sync,

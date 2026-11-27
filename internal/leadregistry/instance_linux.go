@@ -49,6 +49,21 @@ func (h *headerPayload) match(b instanceid.Binding) error {
 // ReadHeaderAt reads the existing registry header without locking or repairing
 // the journal. A missing or empty journal has no header. V1 has a zero binding.
 func ReadHeaderAt(root *os.File) (*instanceid.Binding, error) {
+	f, err := openJournalReadOnly(root)
+	if err != nil || f == nil {
+		return nil, err
+	}
+	defer f.Close()
+	header, _, size, err := readInitHeader(bufio.NewReaderSize(f, MaxLineBytes+1))
+	if err != nil || size == 0 {
+		return nil, err
+	}
+	h := header.payload.(*headerPayload)
+	return &instanceid.Binding{Authority: h.Authority, Incarnation: h.Incarnation}, nil
+}
+
+// openJournalReadOnly returns nil for an absent journal.
+func openJournalReadOnly(root *os.File) (*os.File, error) {
 	dir, err := unix.Openat(int(root.Fd()), DirName, unix.O_RDONLY|dirFlags|unix.O_NOFOLLOW, 0)
 	if err == unix.ENOENT {
 		return nil, nil
@@ -69,16 +84,34 @@ func ReadHeaderAt(root *os.File) (*instanceid.Binding, error) {
 		return nil, err
 	}
 	f := os.NewFile(uintptr(fd), filepath.Join(path, FileName))
-	defer f.Close()
 	if err := checkJournalFile(dir, fd, f.Name()); err != nil {
+		f.Close()
 		return nil, err
 	}
-	header, _, size, err := readInitHeader(bufio.NewReaderSize(f, MaxLineBytes+1))
-	if err != nil || size == 0 {
+	return f, nil
+}
+
+// ReadMissingHomesAt reports the configured and recorded roles blocked by
+// missing enrollment. Replay only the complete records in a bounded snapshot
+// of the pinned file. A concurrent append and an unfinished tail need no lock
+// or repair.
+func ReadMissingHomesAt(root *os.File, binding instanceid.Binding, configured []leadrole.Role) ([]string, error) {
+	r := &Registry{binding: binding, homes: make(map[string]ProjectAssignment), roles: make(map[leadrole.Role]Entry)}
+	f, err := openJournalReadOnly(root)
+	if err != nil {
 		return nil, err
 	}
-	h := header.payload.(*headerPayload)
-	return &instanceid.Binding{Authority: h.Authority, Incarnation: h.Incarnation}, nil
+	if f != nil {
+		defer f.Close()
+		st, err := f.Stat()
+		if err != nil {
+			return nil, err
+		}
+		if _, _, _, err := r.readRecords(io.NewSectionReader(f, 0, st.Size())); err != nil {
+			return nil, err
+		}
+	}
+	return r.MissingHomeWarnings(configured), nil
 }
 
 // A zero record denotes an empty file. The length includes the newline so
