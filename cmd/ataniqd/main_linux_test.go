@@ -774,3 +774,40 @@ func TestMissingKeyRecoveryPaths(t *testing.T) {
 	}
 	refusal("no journal confirms the missing key; follow the restore procedure in " + restoreGuide)
 }
+
+func TestRepairDamagedStoreIncarnation(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state")
+	initTestState(t, state)
+	original, err := instanceid.Load(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inc := filepath.Join(state, instanceid.IncarnationFile)
+	if err := os.WriteFile(inc, []byte("damaged"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"init", "--state-dir", state, "--restored"}
+	ta := newTestApp(t, nil)
+	if code := ta.run(args); code != leaddaemon.ExitState || !strings.Contains(ta.err.String(), "delete the damaged store.incarnation, then run init --restored") {
+		t.Fatalf("repair guidance: %d %s", code, ta.err.String())
+	}
+	if err := os.Rename(journalPath(state), filepath.Join(t.TempDir(), "old.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(inc); err != nil {
+		t.Fatal(err)
+	}
+	if code := ta.run(args); code != 0 {
+		t.Fatalf("restore: %d %s", code, ta.err.String())
+	}
+	initTestState(t, state)
+	got, err := instanceid.Load(state)
+	if err != nil || got.Authority != original.Authority || got.Incarnation == original.Incarnation {
+		t.Fatalf("repaired identity: %+v %v", got, err)
+	}
+	reg, err := leadregistry.Open(filepath.Dir(journalPath(state)), leadregistry.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.Close()
+}

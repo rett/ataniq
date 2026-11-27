@@ -196,6 +196,9 @@ func readIdentity(root int, dir string, mode readMode) (Identity, error) {
 		return Identity{}, &os.PathError{Op: "load", Path: filepath.Join(dir, FileName), Err: err}
 	}
 	id.Incarnation, err = loadIncarnation(root)
+	if errors.Is(err, ErrInvalid) {
+		err = fmt.Errorf("%w; delete the damaged %s, then run init --restored with the original key", err, IncarnationFile)
+	}
 	if errors.Is(err, ErrMissing) {
 		if id.Authority == "" || mode == restore {
 			return id, nil

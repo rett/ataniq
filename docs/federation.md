@@ -50,6 +50,10 @@ surviving incarnation against the journal header and names the authority
 whose key is needed. A backup restore needs a fresh incarnation even when it
 includes all the files.
 
+If the daemon reports a damaged `store.incarnation`, stop the daemon, retain
+the old journal offline, delete the damaged `store.incarnation` and follow
+the restore steps below with the original key.
+
 To restore, stop the daemon and keep the old root and journal offline. In a
 private 0700 state directory, restore the original `instance.key` as a
 singly linked 0600 file owned by the daemon user. Run
