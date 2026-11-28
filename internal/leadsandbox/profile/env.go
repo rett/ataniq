@@ -33,6 +33,7 @@ const (
 	EnvGoCache    = "GOCACHE"
 	EnvGoModCache = "GOMODCACHE"
 	EnvQargiLead  = "QARGI_LEAD"
+	EnvQargiActor = "QARGI_ACTOR"
 )
 
 const maxEnvNameLen = 64
@@ -221,23 +222,25 @@ func checkPathList(list string) error {
 	return nil
 }
 
-// LeadIdentityValue is the value of QARGI_LEAD: the given lead identity, else
-// the role.
-func (in Inputs) LeadIdentityValue() string {
-	if in.LeadIdentity != "" {
-		return in.LeadIdentity
-	}
-	return in.Role
-}
-
 // Environment validates the inputs and returns the allowlist with its values,
 // sorted by name. COLORTERM, LANG and TZ are present only when the inputs give
-// them. Nothing is read from the environment of the calling process.
+// them. QARGI_LEAD is present only for a supplied identity. Nothing is read
+// from the environment of the calling process.
 func (in Inputs) Environment() ([]EnvVar, error) {
 	if err := in.Validate(); err != nil {
 		return nil, err
 	}
-	return in.environment(), nil
+	env := in.environment()
+	for i, e := range env {
+		if e.Name == EnvQargiActor && e.Value != "" {
+			actor, err := in.coordinatorActor(e.Value)
+			if err != nil {
+				return nil, err
+			}
+			env[i].Value = actor
+		}
+	}
+	return env, nil
 }
 
 func (in Inputs) environment() []EnvVar {
@@ -269,9 +272,8 @@ func (in Inputs) environment() []EnvVar {
 		{EnvGitConfig, GitIdentityInside},
 		{EnvGoCache, GoCacheInside},
 		{EnvGoModCache, GoModCacheInside},
-		{EnvQargiLead, in.LeadIdentityValue()},
 	}
-	for _, o := range []EnvVar{{EnvColorTerm, in.ColorTerm}, {EnvLang, in.Lang}, {EnvTZ, in.TZ}} {
+	for _, o := range []EnvVar{{EnvColorTerm, in.ColorTerm}, {EnvLang, in.Lang}, {EnvTZ, in.TZ}, {EnvQargiLead, in.LeadIdentity}} {
 		if o.Value != "" {
 			env = append(env, o)
 		}
@@ -299,13 +301,16 @@ func (in Inputs) EnvNames() []string {
 // profile defines, sorted by name: the fixed values, PATH, SHELL, the config
 // variable, the git and Go variables, USER and LOGNAME in root mode, and
 // every extra variable. It leaves out what the host terminal or the lead
-// gives: TERM, COLORTERM, LANG, TZ, QARGI_LEAD, and USER and LOGNAME in owner
-// mode. The digest encodes these values; the others it encodes by name only.
+// gives: TERM, COLORTERM, LANG, TZ, and USER and LOGNAME in owner mode.
+// QARGI_LEAD is represented by its naming rule.
 func (in Inputs) profileEnvValues() []EnvVar {
+	// Record the managed identity rule even during offline profile planning.
+	// The project and the authority themselves are local to the launch.
+	in.LeadIdentity = fmt.Sprintf("%s-lead-<authority-prefix-%dhex>", projectToken, authorityTagLen)
 	var out []EnvVar
 	for _, e := range in.environment() {
 		switch e.Name {
-		case EnvTerm, EnvColorTerm, EnvLang, EnvTZ, EnvQargiLead:
+		case EnvTerm, EnvColorTerm, EnvLang, EnvTZ:
 			continue
 		case EnvUser, EnvLogname:
 			if in.Identity == IdentityOwner {

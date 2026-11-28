@@ -303,9 +303,10 @@ func TestHeaderProblems(t *testing.T) {
 		return line
 	}
 	for name, p := range map[string]*headerPayload{
-		"future version": {Format: formatName, Version: 2},
-		"version zero":   {Format: formatName, Version: 0},
-		"other format":   {Format: "something-else", Version: 1},
+		"future version":  {Format: formatName, Version: boundFormatVersion + 1},
+		"missing binding": {Format: formatName, Version: boundFormatVersion},
+		"version zero":    {Format: formatName, Version: 0},
+		"other format":    {Format: "something-else", Version: 1},
 	} {
 		err := openErr(t, mk(p))
 		var ce *CorruptError

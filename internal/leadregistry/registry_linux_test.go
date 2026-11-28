@@ -668,7 +668,7 @@ func TestSecondOpenIsRefused(t *testing.T) {
 func TestIntentIDsAreRandomAndFailureWritesNothing(t *testing.T) {
 	ok := okf(t)
 	dir := regDir(t)
-	r, err := Open(dir, Options{Rand: strings.NewReader("short")})
+	r, err := Open(dir, Options{standaloneV1: true, Rand: strings.NewReader("short")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -683,7 +683,7 @@ func TestIntentIDsAreRandomAndFailureWritesNothing(t *testing.T) {
 		t.Fatal("wrote after a randomness failure")
 	}
 	// The default source gives distinct 128-bit ids.
-	r2, err := Open(regDir(t), Options{})
+	r2, err := Open(regDir(t), Options{standaloneV1: true})
 	if err != nil {
 		t.Fatal(err)
 	}

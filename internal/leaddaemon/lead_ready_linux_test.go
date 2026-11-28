@@ -180,7 +180,7 @@ func TestLeadReadyPromotedAfterStart(t *testing.T) {
 	if len(reqs) == 0 || reqs[0].Epoch != 1 || reqs[0].CommandID == "" || !strings.HasPrefix(reqs[0].CommandID, "lead-status-1-") {
 		t.Fatalf("the status requests: %+v", reqs)
 	}
-	// Ready stays: no question after it changes the state, and a stop works.
+	// A healthy lead stays ready until stopped.
 	l.stays("alpha", "ready", 150*time.Millisecond)
 	want(t, l.stopLead("alpha", 1), leadwire.StatusDone, "")
 	if state, _, _, _ := l.shown("alpha"); state != "stopped" {
@@ -222,9 +222,9 @@ func TestLeadReadyPromotedAtStartupForAnAdoptedLead(t *testing.T) {
 	}
 }
 
-// A lead that is ready before a restart stays ready after it, and a lead that
-// is stopped is never observed.
-func TestLeadReadyNotObservedWhenNotStarting(t *testing.T) {
+// The new daemon polls an adopted ready lead, resumes polling one it adopts
+// degraded, and never asks the holder of a stopped lead.
+func TestLeadHealthPollAfterAdoption(t *testing.T) {
 	l := newLeadEnv(t)
 	l.readyBounds(10 * time.Second)
 	l.start()
@@ -239,18 +239,182 @@ func TestLeadReadyNotObservedWhenNotStarting(t *testing.T) {
 	want(t, l.startLead("beta"), leadwire.StatusDone, "")
 	l.waitState("beta", "ready")
 	want(t, l.stopLead("beta", 1), leadwire.StatusDone, "")
-	before := len(l.holders["alpha"].requests(wire.OpStatus))
 	bBefore := len(l.holders["beta"].requests(wire.OpStatus))
+	l.holders["alpha"].close()
+	l.scratch.HealthEvery = 10 * time.Millisecond
 	l.restart()
-	l.stays("alpha", "ready", 200*time.Millisecond)
+	l.waitState("alpha", "degraded")
+	if _, code, _, _ := l.shown("alpha"); code != "holder-unreachable" {
+		t.Fatalf("lost contact: %q", code)
+	}
+	l.restart()
+	l.holder("alpha", h.answer)
+	l.waitState("alpha", "ready")
 	if state, _, _, _ := l.shown("beta"); state != "stopped" {
 		t.Fatalf("beta: %q", state)
 	}
-	if n := len(l.holders["alpha"].requests(wire.OpStatus)); n != before {
-		t.Fatalf("a ready lead was asked again: %d requests, had %d", n, before)
-	}
 	if n := len(l.holders["beta"].requests(wire.OpStatus)); n != bBefore {
 		t.Fatalf("a stopped lead was asked: %d requests, had %d", n, bBefore)
+	}
+}
+
+func TestLeadHealthPollAfterReady(t *testing.T) {
+	l := newLeadEnv(t)
+	l.scratch.HealthEvery = 10 * time.Millisecond
+	l.start()
+	h := newReadyHolder(roleOf("alpha"))
+	h.epoch.Store(1)
+	l.upWith("alpha", h)
+	l.waitState("alpha", "ready")
+	l.holders["alpha"].close()
+	l.waitState("alpha", "degraded")
+	if row := l.row("alpha"); row.StateReason != "holder-unreachable" || row.Epoch != 1 {
+		t.Fatalf("lost contact: %+v", row)
+	}
+	l.holder("alpha", h.answer)
+	l.waitState("alpha", "ready")
+}
+
+func TestLeadHealthObserverWithoutAHolder(t *testing.T) {
+	m, lr, epoch := barePromote(t)
+	m.promote(lr, epoch)
+	lr.in.setHolderCommand(&seamHolder{})
+	m.healthEvery = 5 * time.Millisecond
+	m.startObservers(t.Context())
+	defer m.joinObservers(5 * time.Second)
+	deadline := time.After(5 * time.Second)
+	for {
+		e, err := m.reg.Get(lr.role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e.Shown.State == leadregistry.StateDegraded && e.Shown.Reason.Code == "holder-unreachable" {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("no degradation after a failed status call: %+v", e.Shown)
+		case <-time.After(m.healthEvery):
+		}
+	}
+}
+
+func TestLeadHealthObservations(t *testing.T) {
+	m, lr, epoch := barePromote(t)
+	m.promote(lr, epoch)
+	observer := &readyObserver{epoch: epoch}
+	healthy := wire.Status{Lead: lr.role.String(), Epoch: epoch, Facts: wire.Facts{TUIExited: wire.FactNo}}
+	exited := healthy
+	exited.Facts.TUIExited = wire.FactYes
+	treeGone := healthy
+	treeGone.Facts.TreeGone = wire.FactYes
+	wrongEpoch := healthy
+	wrongEpoch.Epoch++
+	wrongLead := healthy
+	wrongLead.Lead = roleOf("beta")
+	unknown := healthy
+	unknown.Facts.TUIExited = wire.FactUnknown
+	check := func(s *wire.Status, state leadregistry.State, reason string) {
+		t.Helper()
+		m.recordHealth(t.Context(), lr, observer, s)
+		e, err := m.reg.Get(lr.role)
+		if err != nil || e.Shown.State != state || e.Shown.Reason.Code != reason || e.Shown.Evidence != leadregistry.EvidenceObservation {
+			t.Fatalf("after status %+v: %+v, %v", s, e.Shown, err)
+		}
+	}
+	check(nil, leadregistry.StateReady, "holder-ready")
+	check(&healthy, leadregistry.StateReady, "holder-ready")
+	check(nil, leadregistry.StateReady, "holder-ready")
+	check(&wrongEpoch, leadregistry.StateReady, "holder-ready")
+	check(nil, leadregistry.StateReady, "holder-ready")
+	check(nil, leadregistry.StateDegraded, "holder-unreachable")
+	check(&healthy, leadregistry.StateReady, "holder-ready")
+	check(&exited, leadregistry.StateDegraded, "lead-exited")
+	check(&unknown, leadregistry.StateDegraded, "lead-exited")
+	check(nil, leadregistry.StateDegraded, "lead-exited")
+	check(nil, leadregistry.StateDegraded, "holder-unreachable")
+	prev, _ := m.reg.Get(lr.role)
+	check(nil, leadregistry.StateDegraded, "holder-unreachable")
+	if next, _ := m.reg.Get(lr.role); next.Shown != prev.Shown {
+		t.Fatal("a repeated failure wrote another observation")
+	}
+	check(&wrongEpoch, leadregistry.StateDegraded, "holder-unreachable")
+	check(&wrongLead, leadregistry.StateDegraded, "holder-unreachable")
+	check(&healthy, leadregistry.StateReady, "holder-ready")
+	check(&treeGone, leadregistry.StateDegraded, "lead-exited")
+	check(&healthy, leadregistry.StateReady, "holder-ready")
+	// Build skew remains a refusal even if the holder answers successfully.
+	if err := m.showSkewed(lr, epoch, &opFail{msg: "another build"}); err != nil {
+		t.Fatal(err)
+	}
+	check(&healthy, leadregistry.StateDegraded, "holder-version-skew")
+}
+
+func TestLeadHealthPollRacingStopAndNewEpoch(t *testing.T) {
+	m, lr, epoch := barePromote(t)
+	m.promote(lr, epoch)
+	observer := &readyObserver{epoch: epoch}
+	m.recordHealth(t.Context(), lr, observer, nil)
+	m.recordHealth(t.Context(), lr, observer, nil)
+	// A recovery reply is in flight when stop takes the role lock.
+	reply := &wire.Status{Lead: lr.role.String(), Epoch: epoch, Facts: wire.Facts{TUIExited: wire.FactNo}}
+	build := lr.in.ext.build
+	read := build.Record
+	checking, resume := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(resume) })
+	defer unblock()
+	build.Record = func(dir string, epoch uint64) (buildid.Record, error) {
+		close(checking)
+		<-resume
+		return read(dir, epoch)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.recordHealth(t.Context(), lr, observer, reply)
+	}()
+	select {
+	case <-checking:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the poll did not check the build before recovery")
+	}
+	if !lr.tryLock() {
+		t.Fatal("role busy before stop")
+	}
+	_, err := m.reg.SetState(lr.role, leadregistry.StateChange{Epoch: epoch, State: leadregistry.StateStopped,
+		Evidence: leadregistry.EvidenceObservation, Reason: leadregistry.Reason{Code: "test-stop"}, Proof: "stopped"})
+	lr.unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unblock()
+	<-done
+	build.Record = read
+	if e, _ := m.reg.Get(lr.role); e.Shown.State != leadregistry.StateStopped {
+		t.Fatalf("recovery after stop: %+v", e.Shown)
+	}
+	next, err := m.reg.BeginLaunchWith(lr.role, leadregistry.LaunchOptions{BootIdentity: "boot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.reg.RecordOutcome(lr.role, next.ID, next.Epoch, leadregistry.OutcomeLaunched,
+		leadregistry.UnitEvidence{InvocationID: "next", ControlGroupPath: "/cg/alpha", ControlGroupID: "2", BootID: "boot"}); err != nil {
+		t.Fatal(err)
+	}
+	m.promote(lr, next.Epoch)
+	m.recordHealth(t.Context(), lr, observer, nil) // an earlier poll lost contact
+	if e, _ := m.reg.Get(lr.role); e.Shown.State != leadregistry.StateReady || e.Epoch != next.Epoch {
+		t.Fatalf("old failure after restart: %+v", e)
+	}
+	nextObserver := &readyObserver{epoch: next.Epoch}
+	m.recordHealth(t.Context(), lr, nextObserver, nil)
+	if e, _ := m.reg.Get(lr.role); e.Shown.State != leadregistry.StateReady {
+		t.Fatalf("first missed poll of new epoch: %+v", e)
+	}
+	m.recordHealth(t.Context(), lr, nextObserver, nil)
+	m.recordHealth(t.Context(), lr, observer, reply)
+	if e, _ := m.reg.Get(lr.role); e.Shown.State != leadregistry.StateDegraded || e.Epoch != next.Epoch {
+		t.Fatalf("old recovery after restart: %+v", e)
 	}
 }
 

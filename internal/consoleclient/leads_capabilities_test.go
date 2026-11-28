@@ -246,13 +246,111 @@ func TestCapabilitiesOnReconnect(t *testing.T) {
 
 func TestCapabilitiesPerLeadMessageSwitch(t *testing.T) {
 	res := leadwire.ListResult{Leads: []leadwire.Lead{{Role: "alpha", Inject: true}, {Role: "beta"}}}
-	rows, ok := buildListing(res, LeadCapabilities{Directory: true, Conversation: true, Inject: true})
+	raw, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, ok := buildListing(raw, LeadCapabilities{Directory: true, Conversation: true, Inject: true})
 	if !ok || len(rows.Leads) != 2 {
 		t.Fatal(rows)
 	}
 	for _, row := range rows.Leads {
 		if row.Capabilities.Inject != (row.Role == "alpha") || row.Inject != row.Capabilities.Inject || !row.Capabilities.Conversation {
 			t.Errorf("row = %+v", row)
+		}
+	}
+}
+
+func TestDecodedLeadCannotCarryAnUnreadableReason(t *testing.T) {
+	row := listingRow(json.RawMessage(`{"role":"alpha","state":"degraded","state_reason":"client/invalid-row"}`), LeadCapabilities{Stop: true}, 1)
+	if row.State != "degraded" || row.StateReason != "unrecognised" || !row.Capabilities.Stop {
+		t.Fatalf("decoded row = %+v", row)
+	}
+}
+
+// The first and last leads remain usable, including across a second read on
+// the same connection. Only a validated receipt can settle the kept command.
+func TestListDegradesOnlyTheMalformedRow(t *testing.T) {
+	const receipt = `"command_id":"c1","op":"lead.start","role":"beta","status":"done"`
+	for _, tc := range []struct{ name, row, key, reason string }{
+		{"display field", `{"unit":{},"key":"beta","role":"beta"}`, "beta", "invalid-row"},
+		{"non-object", `false`, "row-2", "invalid-row"},
+		{"inject type", `{"role":"beta","inject":"true"}`, "beta", "invalid-row"},
+		{"inject null", `{"role":"beta","inject":null}`, "beta", "invalid-row"},
+		{"inject duplicate", `{"role":"beta","inject":false,"inject":true}`, "beta", "invalid-row"},
+		{"inject case", `{"role":"beta","INJECT":true}`, "beta", "invalid-row"},
+		{"spent missing", `{"role":"beta","inject":true}`, "beta", "invalid-row"},
+		{"spent null", `{"role":"beta","inject":true,"message_spent":null}`, "beta", "invalid-row"},
+		{"last type", `{"role":"beta","last":17}`, "beta", "invalid-last-receipt"},
+		{"unknown receipt field", `{"role":"beta","last":{` + receipt + `,"extra":1}}`, "beta", "invalid-last-receipt"},
+		{"duplicate status", `{"role":"beta","last":{"status":"in-progress",` + receipt + `}}`, "beta", "invalid-last-receipt"},
+		{"another role", `{"role":"beta","last":{` + strings.Replace(receipt, "beta", "alpha", 1) + `}}`, "beta", "invalid-last-receipt"},
+		{"list receipt", `{"role":"beta","last":{` + strings.Replace(receipt, "lead.start", "lead.list", 1) + `}}`, "beta", "invalid-last-receipt"},
+		{"missing operation", `{"role":"beta","last":{` + strings.Replace(receipt, "lead.start", "", 1) + `}}`, "beta", "invalid-last-receipt"},
+		{"invalid id", `{"role":"beta","last":{` + strings.Replace(receipt, "c1", "c 1", 1) + `}}`, "beta", "invalid-last-receipt"},
+		{"missing id", `{"role":"beta","last":{` + strings.Replace(receipt, "c1", "", 1) + `}}`, "beta", "invalid-last-receipt"},
+		{"unknown status", `{"role":"beta","last":{` + strings.Replace(receipt, "done", "nearly", 1) + `}}`, "beta", "invalid-last-receipt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := leadsWithOffers(t, func(dial int, req clientapi.Request) any {
+				if dial != 1 {
+					t.Fatal("a bad row closed the connection")
+				}
+				switch req.Op {
+				case clientapi.OpHello:
+					return clientapi.HelloResult{Protocols: clientapi.SupportedProtocols(), Operations: leadwire.Operations()}
+				case leadwire.OpList:
+					return json.RawMessage(`{"future":1,"running":2,"max_running":3,"leads":[
+						{"role":"alpha","state":"ready","epoch":1,"inject":true,"message_spent":false,"future":{"inject":false},
+						 "last":{"command_id":"c2","op":"lead.start","role":"alpha","status":"done"}},
+						` + tc.row + `,{"role":"gamma","message_result":{"outcome":"submitted","future":1},
+						 "last":{"command_id":"c1","op":"lead.start","role":"gamma","status":"done"}}]}`)
+				}
+				t.Fatalf("unexpected call %s", req.Op)
+				return nil
+			})
+			key := leadKey{role: "beta", op: leadwire.OpStart}
+			l.pending[key] = "c1"
+			l.pending[leadKey{role: "alpha", op: leadwire.OpStart}] = "c2"
+			for range 2 {
+				list, err := l.List()
+				if err != nil || len(list.Leads) != 3 || list.Running != 2 || list.MaxRunning != 3 || list.LeftOut != 0 {
+					t.Fatalf("list = %+v, %v", list, err)
+				}
+				a, b, g := list.Leads[0], list.Leads[1], list.Leads[2]
+				if a.Role != "alpha" || a.State != "ready" || !a.Capabilities.Inject || !a.MessagesEnabled ||
+					g.Role != "gamma" || g.MessageResult.Outcome != "submitted" || !g.Capabilities.Start {
+					t.Fatalf("healthy rows = %+v, %+v", a, g)
+				}
+				if b.Key != tc.key || b.State != "degraded" || b.StateReason != "client/"+tc.reason || b.Last != nil ||
+					b.Capabilities != (LeadCapabilities{}) || b.MessagesEnabled || b.Inject || l.pending[key] != "c1" || len(l.pending) != 1 {
+					t.Fatalf("bad row = %+v, pending = %v", b, l.pending)
+				}
+				if err := b.Capabilities.CheckCommand(LeadOpInject, false); !errors.Is(err, ErrLeadCapability) {
+					t.Fatalf("message gate on degraded row = %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestListRediscoversAfterMalformedEnvelope(t *testing.T) {
+	for _, bad := range []string{`[]`, `null`, `{}`, `{"leads":{}}`, `{"running":"two"}`, `{"leads":[],"leads":[]}`} {
+		l := leadsWithOffers(t, func(dial int, req clientapi.Request) any {
+			if req.Op == clientapi.OpHello {
+				return clientapi.HelloResult{Protocols: clientapi.SupportedProtocols(), Operations: []string{leadwire.OpList}}
+			}
+			if dial == 1 {
+				return json.RawMessage(bad)
+			}
+			return json.RawMessage(`{"leads":[{"role":"alpha"}]}`)
+		})
+		var u *Unavailable
+		if _, err := l.List(); !errors.As(err, &u) || u.State != StateBadAnswer || l.conn != nil {
+			t.Fatalf("%s: error %v, connection kept %t", bad, err, l.conn != nil)
+		}
+		if list, err := l.List(); err != nil || len(list.Leads) != 1 || list.Leads[0].Role != "alpha" {
+			t.Fatalf("after %s: %+v, %v", bad, list, err)
 		}
 	}
 }

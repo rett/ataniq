@@ -130,7 +130,7 @@ they show:
   written, not even the runtime root.
 - **With `--owner-settings "$SETTINGS"` the trial's settings are not read.**
   While the trial runs, `--check` fails the missing root marker alone and
-  binds, locks and makes nothing; after `scratch-init` it passes every line,
+  binds, locks and makes nothing; after `scratch-init` on an initialized trial root it passes every line,
   with the trial still running. The daemon itself refuses for the missing
   marker (`no marker <state>/scratch-root.json`, exit 10, before any lock),
   and with the marker the state folder's daemon lock refuses it while the
@@ -430,6 +430,23 @@ version, and e runs pasta, bubblewrap, ip, curl and a throwaway user unit.
    file` when run again). It writes nothing in `owner/`, and the trial daemon
    serves as before with the marker there. It refuses a state folder that is a
    default one or carries the canary's marker.
+   Before g, stop the trial daemon and back up its private state folder.
+   With the daemon stopped, initialize the root and enroll the stand-in:
+
+   ```sh
+   $D init --state-dir "$S"
+   $D project-home --state-dir "$S" --home self "scratch-standin-$SITTING"
+   ```
+
+   If the sitting includes the live lead, enroll its project now:
+
+   ```sh
+   $D project-home --state-dir "$S" --home self "scratch-live-$SITTING"
+   ```
+
+   Record the authority and incarnation. After every enrollment succeeds,
+   restart the trial with the upgraded daemon before g. The older binary
+   cannot open the initialized journal.
 - **g. The daemon's check, and the baseline of the trial's files (C)**,
    while the trial runs, nothing more:
 
@@ -466,7 +483,7 @@ version, and e runs pasta, bubblewrap, ip, curl and a throwaway user unit.
    outside the checks, which guard against mistakes, not attackers); the settings file is a
    private regular file with one name and the proof's settings; the folder
    is not, lies not in and holds not the drop folder, the mirror, the work
-   folder or the sandbox template the settings name; the scratch roots and the suite; the root marker (step f); the gate's address, key
+   folder or the sandbox template the settings name; the scratch roots and the suite; the root marker, instance identity (step f) and registry header; the gate's address, key
    fingerprint and pins; and the socket paths of the daemon and of every
    lead's holder. It then lists what the daemon will read (the settings
    file, the gate's key, certificate and pins, read only; the key list; the
@@ -474,13 +491,14 @@ version, and e runs pasta, bubblewrap, ip, curl and a throwaway user unit.
    `check: no refusal`; any refusal ends `check: N refusal(s): the sitting
    failed preflight` and names the start that would fail (the daemon's, or,
    when a holder's socket path is the one refusal, the later start of that
-   lead's holder), and `--status` says the sitting failed preflight. The daemon makes these checks at its start too and
-   refuses (exit 10) with the same reasons, before any lock, with one
-   exception: the socket paths of the leads' holders are checked only here,
-   before the sitting, since the daemon's start does not look at them (a
-   holder meets that limit only when it starts, during the sitting). The
-   locks and the gate's port, which the check does not take, are left to the
-   start.
+   lead's holder), and `--status` says the sitting failed preflight.
+   Config refusals exit 10, identity refusals exit 11 and registry header
+   refusals exit 14. Preflight reads the header without locking or repairing
+   the journal. At startup the daemon checks the registry when it takes the
+   exclusive journal lock. During preflight the socket paths of the leads'
+   holders are checked only here, before the sitting, since the daemon's start
+   does not look at them. A holder meets that limit when it starts. The daemon locks
+   and the gate's port are checked at startup.
    With `--record`, once the check found no refusal, `--status` takes the
    baseline that step 13 compares with: the SHA-256 digests of the trial's
    gate key, certificate, pins and settings, then the key list's from the
@@ -533,6 +551,23 @@ large (100 by 30 or more) and do not resize it while attached.
    proof's daemon while the trial runs. Neither can serve the folder beside
    the other, and nothing needs repairing afterwards. The phone now finds no
    desk.
+
+   With the trial inactive, confirm step f's initialization and project homes
+   before starting the proof daemon. Run in C and
+   continue only after each command succeeds. Repeating the same enrollment
+   confirms the existing assignment.
+
+   ```sh
+   $D init --state-dir "$S"
+   $D project-home --state-dir "$S" --home self "scratch-standin-$SITTING"
+   ```
+
+   If the scratch config also includes the live lead, confirm its home too.
+
+   ```sh
+   $D project-home --state-dir "$S" --home self "scratch-live-$SITTING"
+   ```
+
 2. **OWNER ONLY (A): the daemon.**
 
    ```sh

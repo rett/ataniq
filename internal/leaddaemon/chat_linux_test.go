@@ -27,6 +27,21 @@ import (
 	"ataniq/internal/leadwire"
 )
 
+// The missing-home tests exercise the report at the seat's wire limit.
+const seatKeyBytesForTest = ownerwire.MaxChatKeyBytes
+
+func TestHomeAndChatSeatKeyMatchesWire(t *testing.T) {
+	for _, key := range []string{
+		"", "0", "a-9", "-a", "a-", "A", "a:b", "a\n", "é",
+		strings.Repeat("a", seatKeyBytesForTest), strings.Repeat("a", seatKeyBytesForTest+1),
+	} {
+		want := ownerwire.ValidChatLead(ownerwire.ChatKindDaemon + ":" + key)
+		if got := seatLeadKey.MatchString(key); got != want {
+			t.Errorf("seat key %q: got %t, wire accepts %t", key, got, want)
+		}
+	}
+}
+
 // ---- the port alone ---------------------------------------------------------
 
 // fakeSource is a chat source that counts its calls, answers fixed rows and
@@ -326,6 +341,13 @@ func TestChatStateWords(t *testing.T) {
 	}
 	if got := chatStateOf(leadregistry.Entry{}, leadregistry.ErrNoRole); got.word != "stopped" || got.epoch != 0 {
 		t.Errorf("not defined: %+v", got)
+	}
+	for reason, want := range map[string]string{"holder-unreachable": "unknown", "lead-exited": "unknown", "holder-version-skew": "running"} {
+		e := leadregistry.Entry{Epoch: 7}
+		e.Shown.State, e.Shown.Reason.Code = leadregistry.StateDegraded, reason
+		if got := chatStateOf(e, nil); got.word != want || got.epoch != 7 {
+			t.Errorf("degraded (%s): %+v, want %s for epoch 7", reason, got, want)
+		}
 	}
 	if got := chatStateOf(leadregistry.Entry{}, errors.New("broken")); got.word != "unknown" {
 		t.Errorf("a registry that cannot be read: %+v", got)

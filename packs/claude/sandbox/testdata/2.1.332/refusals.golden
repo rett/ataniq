@@ -1,0 +1,27 @@
+shipped: launch refused [pack-launch-policy-unrecorded] stage=0 at=policy
+sample/lead acceptEdits render: launch refused [pack-launch-selection-lead-flag] stage=0 at=policy
+sample/lead acceptEdits expanded: launch refused [pack-launch-mode-class-refused] stage=2 at=argv[1] value="acceptEdits"
+sample/coord/f1 acceptEdits render: launch refused [pack-launch-mode-class-refused] stage=2 at=argv[1] value="acceptEdits"
+sample/coord/f1 acceptEdits expanded: launch refused [pack-launch-mode-class-refused] stage=2 at=argv[1] value="acceptEdits"
+sample/lead auto render: launch refused [pack-launch-selection-lead-flag] stage=0 at=policy
+sample/lead auto expanded: launch refused [pack-launch-mode-class-refused] stage=2 at=argv[1] value="auto"
+sample/coord/f1 auto render: launch refused [pack-launch-mode-class-refused] stage=2 at=argv[1] value="auto"
+sample/coord/f1 auto expanded: launch refused [pack-launch-mode-class-refused] stage=2 at=argv[1] value="auto"
+sample/lead bypassPermissions render: launch refused [pack-launch-selection-lead-flag] stage=0 at=policy
+sample/lead bypassPermissions expanded: launch refused [pack-launch-mode-class-refused] stage=2 at=argv[1] value="bypassPermissions"
+sample/coord/f1 bypassPermissions render: launch refused [pack-launch-mode-class-refused] stage=2 at=argv[1] value="bypassPermissions"
+sample/coord/f1 bypassPermissions expanded: launch refused [pack-launch-mode-class-refused] stage=2 at=argv[1] value="bypassPermissions"
+sample/lead dontAsk render: launch refused [pack-launch-selection-lead-flag] stage=0 at=policy
+sample/lead dontAsk expanded: launch refused [pack-launch-mode-class-refused] stage=2 at=argv[1] value="dontAsk"
+sample/coord/f1 dontAsk render: launch refused [pack-launch-mode-class-refused] stage=2 at=argv[1] value="dontAsk"
+sample/coord/f1 dontAsk expanded: launch refused [pack-launch-mode-class-refused] stage=2 at=argv[1] value="dontAsk"
+sample/lead manual render: launch refused [pack-launch-selection-lead-flag] stage=0 at=policy
+sample/lead manual expanded: launch refused [pack-launch-mode-class-refused] stage=2 at=argv[1] value="manual"
+sample/coord/f1 manual render: launch refused [pack-launch-mode-class-refused] stage=2 at=argv[1] value="manual"
+sample/coord/f1 manual expanded: launch refused [pack-launch-mode-class-refused] stage=2 at=argv[1] value="manual"
+sample/lead plan render: launch refused [pack-launch-selection-lead-flag] stage=0 at=policy
+sample/lead plan expanded: launch refused [pack-launch-mode-class-refused] stage=2 at=argv[1] value="plan"
+sample/coord/f1 plan render: launch refused [pack-launch-mode-class-refused] stage=2 at=argv[1] value="plan"
+sample/coord/f1 plan expanded: launch refused [pack-launch-mode-class-refused] stage=2 at=argv[1] value="plan"
+candidate files: launch refused [pack-launch-file-refused] stage=2 at=file[#0]
+isolated file /etc/claude-code/managed-settings.json: launch refused [pack-launch-file-refused] stage=2 at=file[#0]

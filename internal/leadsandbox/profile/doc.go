@@ -137,7 +137,8 @@
 //     order of their targets;
 //   - every environment name, and the value of every variable whose value the
 //     profile defines: the fixed values, PATH, SHELL, the config variable, the
-//     git and Go variables and every extra variable;
+//     git and Go variables, the managed QARGI_LEAD naming rule and every
+//     extra variable as declared;
 //   - the SHA-256 of the seccomp file (or "none"), as the caller gives it;
 //   - the SHA-256 of the managed-settings file, as the caller gives it;
 //   - the argument vector of sandboxnet.PastaArgs, the network boundary.

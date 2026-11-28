@@ -1,0 +1,19 @@
+{
+  "tag": "0.3.5",
+  "tag_object": "642d3ccd982bcbad22b0de0ce51acfe44585d449",
+  "commit": "09467e1207b5437838fb163a068d83502912a52d",
+  "blobs": {
+    "claude-code": {
+      "source": "lib/providers/claude-code.json",
+      "sha256": "0ac6e6797873a136474b4251893178e3ee5d9a13025cd7fd943f606490c51275"
+    },
+    "claude-platform": {
+      "source": "lib/providers/claude-platform.json",
+      "sha256": "a29d85b74106d5f2d0e4d960de9e1a1d38ddd238284809c1f830ccf94f600209"
+    },
+    "codex": {
+      "source": "lib/providers/codex.json",
+      "sha256": "3a5bdccd3a96998f19580d3422513da801f4ef7ecd7d636d9bccfb21ed41c690"
+    }
+  }
+}

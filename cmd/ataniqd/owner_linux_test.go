@@ -267,6 +267,7 @@ func TestOwnerRunWhenTheBuilderFails(t *testing.T) {
 	t.Cleanup(func() { ownerServiceBuilder = old })
 	state, runtime := ownerCmdDirs(t)
 	ta := newTestApp(t, nil)
+	initTestState(t, state)
 	code := ta.run([]string{"run", "--state-dir", state, "--runtime-dir", runtime, "--owner-channel"})
 	if code != leaddaemon.ExitServe || !strings.Contains(ta.err.String(), "the journal is locked") {
 		t.Fatalf("exit %d: %q", code, ta.err.String())

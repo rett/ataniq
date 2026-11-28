@@ -116,9 +116,16 @@ In order, by the owner's hand. The daemon never runs `ataniq-canary`.
    that carries the canary's marker, or a marker that is not the one this
    command writes, is refused. It makes no lead folder, no mirror and no runtime
    root. Exit status: 0 done, 1 failed, 2 usage.
-4. Start `ataniqd run --scratch CONFIG`. The daemon makes the runtime folder
+4. With the daemon stopped, run `ataniqd init --state-dir STATE` once,
+   using the config's `state_root`. Record the authority and incarnation.
+   Then run
+   `ataniqd project-home --state-dir STATE --home self scratch-KEY` once for
+   each lead key in the config. For example, key `alpha` gives the registry
+   project `scratch-alpha`. Existing roots need the same enrollment. Both
+   commands are available in every daemon build.
+5. Start `ataniqd run --scratch CONFIG`. The daemon makes the runtime folder
    itself, like the skeleton does.
-5. Drive the leads from the console ([the console guide](terminal-console.md)),
+6. Drive the leads from the console ([the console guide](terminal-console.md)),
    which defines, starts, stops, messages and attaches.
 
 To read the leads' replies on the phone as well, run the daemon of the build
@@ -310,6 +317,9 @@ What each does:
   stopped is asked about too. Where a stop could not be proven (a unit that may
   be loaded, a state that is unknown) the answer stays `uncertain` with the code
   `stop-unproven`; `uncertain` means that what the stop did is not known.
+  When the daemon reports a degraded lead, select its row to read the reason.
+  Press `x` and confirm with `y` to stop that epoch. A row the console could
+  not decode shows the data error and offers no commands.
 - **`lead.ticket`** asks the holder for a ticket for the epoch and writes it to
   the lead's ticket file. An `epoch` of 0, or one that is not the lead's current
   one, is refused `stale-epoch`.
@@ -394,15 +404,19 @@ on the holder's word, and in no other way:
   observer is writing the registry (about one write) is refused `role-busy` and
   may be tried again. An observer that waits for the holder never holds up a
   stop.
-- **What `ready` means here.** The holder is up, and the agent was started in
-  the lead's sandbox. The agent's login is **not** observed, nothing was read
-  from its screen, and nothing says the agent works or will answer. `ready` is
-  not a claim that the lead is usable: it replaces "nothing says anything" with
-  "the holder said it is up", and no more. A lead that is `ready` stays so until
-  a stop, with one exception, below. This build adds no other way from `ready`
-  back to `starting` or to `degraded`: a holder that goes away after it said it
-  was up is not noticed by this observer, and a unit that ends is found by the
-  next reconcile when the daemon starts.
+- **Health after readiness.** `ready` means the holder answered and the agent
+  started in its sandbox. The daemon checks neither login nor responsiveness.
+  Every 30 seconds it asks the holder for status. If the holder reports that
+  the agent exited or its process tree is gone, the desk shows `degraded` with
+  reason `lead-exited` on that poll. The daemon shows `holder-unreachable`
+  after two consecutive polls in the same epoch fail to obtain a status.
+  A status for another lead or epoch breaks the streak and cannot change
+  the lead's state. Successful status polls add no command lines to the
+  holder's event log. For these two degraded reasons the phone
+  overrides its usual `degraded` mapping and shows `unknown`. Polling resumes
+  after daemon restart. A fresh status from the matching build, role and epoch
+  that reports the agent still running restores `ready`. A late reply cannot
+  change a stopped lead or its next launch.
 - **A lead an earlier daemon showed `ready`.** `ready` was that daemon's word,
   for its own build. Before a daemon serves anything, it reads again the
   `holder.json` of every lead it adopted shown `ready`. A file of the epoch
@@ -471,6 +485,10 @@ operation; every code is a word of lower-case letters, digits and dashes.
 | `lead.stop` | `role-busy`, `stale-epoch`, `role-not-defined`, `not-managed` | `intent-pending`, `failed` | `stop-unproven`, `daemon-stopping`, `registry-broken`, `failed` |
 | `lead.ticket` | `stale-epoch`, `not-running`, `holder-version-skew`, `ticket-refused` | `holder-unreachable`, `ticket-failed`, `ticket-lost`, `ticket-file` | |
 | `lead.inject` | `stale-epoch`, `inject-off`, `not-running`, `holder-version-skew`, `second-message`, `message-in-flight`, and the admission codes of the canary slice (`bad-id`, `body-too-long`, `empty-body` and the like) | `holder-unreachable`, and `holder-` with the holder's refusal (`disabled`, `busy`, `bad-request`; the epoch's message stays free after `disabled` and `bad-request`, and stays spent after `busy`) | |
+
+Both `lead.define` and `lead.start` can also return a refused receipt for a
+missing, foreign or unassigned project home, or a stale assignment version.
+See [project home refusal codes](federation.md#enroll-a-project-home).
 
 `holder-version-skew` refuses a holder that is not the daemon's own build,
 before anything changes: `lead.start` reads the build of the holder executable
@@ -1266,9 +1284,9 @@ keeps its sample leads.
 **What the owner prepares**, on the daemon's host, before the first start:
 
 1. The scratch roots and the config, as in [the owner's steps](#the-owners-steps)
-   1 to 3: private roots that are not the account's defaults, the config of
-   mode 0600 outside both roots, the holder and sandbox inputs, and local
-   throwaway source repositories. `ataniq-canary scratch-init --config CONFIG`
+   1 to 4, including enrollment of each local project. Use private roots outside
+   the account's defaults, a mode 0600 config outside both roots, the holder
+   and sandbox inputs, and local throwaway source repositories. `ataniq-canary scratch-init --config CONFIG`
    writes only the root marker: it provisions no lead and does not set up the
    owner channel.
 2. The owner channel's **non-trial** scratch settings, `owner/scratch.json` in
@@ -1385,20 +1403,24 @@ when it builds the service, and each read is checked again.
 `--check` with the same flags makes every check the daemon makes before it
 takes a lock and prints one line each, `pass` with what holds or `FAIL` with
 why: the folder and its four rules, the settings file and the settings, the
-folders the settings name, the scratch roots, the suite, the root marker, the
-gate's address, key and pins, and the socket paths of the daemon and of every
+folders the settings name, the scratch roots, the suite, the root marker,
+the instance identity, the registry header, the gate's address, key and pins, and the socket paths of the daemon and of every
 lead's holder. The last of these is one the daemon's start does not make: a
 holder meets the limit of a socket address only when it starts, so the check
 is the place to find a runtime root too long for a holder. Then it lists
 what the daemon would read and open, says that `owner/scratch.json` is not
 read, and ends `check: no refusal` (exit 0) or `check: N refusal(s): the
-sitting failed preflight` (exit 10), which then names the start that would
+sitting failed preflight` (exit 10 for config, 11 for identity, 14 for the
+registry header), which then names the start that would
 fail: the daemon's, or, when a holder's socket path is the one refusal, the
 later start of that lead's holder (the daemon would start). It binds, locks, makes and starts nothing; the locks and the gate's port,
 which it does not take, are the start's own refusals (exit 12, 17 and 18).
 
-`--check --keys-prefix` and `--check --keys-since LEN:SHA256` check the key
-list of the state root alone (`owner/keys.log` and its head
+Preflight reads the registry header without locking or repairing the journal.
+For a foreign journal, follow the [restore procedure](federation.md#restore-an-instance).
+
+After checking the instance identity and registry header, `--check --keys-prefix`
+and `--check --keys-since LEN:SHA256` check the key list of the state root (`owner/keys.log` and its head
 `owner/keys.head`), with the journal's own checks read only
 (`ownerjournal.VerifyKeys`), on the files themselves: the folder and both
 files opened without following a link and held to the ownership, mode and

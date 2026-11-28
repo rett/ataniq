@@ -19,6 +19,9 @@ import (
 	"ataniq/internal/leadsandbox/profile"
 )
 
+// AuthorityTagEnv is the public authority tag in the holder unit's launch environment.
+const AuthorityTagEnv = "ATANIQ_AUTHORITY_TAG"
+
 // InputsVersion is the version of the inputs file's format.
 const InputsVersion = 1
 
@@ -31,19 +34,18 @@ const (
 	MaxTimeLimitSeconds = 3600
 )
 
-// Inputs is everything the start sequence needs as values. It is one JSON file,
-// read by ReadInputs, and nothing in it is discovered or defaulted from the
-// environment or from the home folder of the caller: every path is the file's
-// own. The file is the caller's own (owned by the user who runs the holder,
-// mode 0600, at most MaxInputsBytes), unknown keys, keys in another case, a key
-// written twice and trailing data are refused, and every path is absolute and
-// clean. Other tasks write this file (the canary configuration, provisioning,
+// Inputs combines the sandbox configuration read by ReadInputs with the
+// launch values the holder supplies. The file belongs to the user running the
+// holder, has mode 0600 and is at most MaxInputsBytes. ReadInputs requires
+// absolute clean paths and rejects unknown, mis-cased or duplicate keys and
+// trailing data. Other tasks write this file (the canary configuration, provisioning,
 // the run kit); this comment is their specification, key by key.
 //
 // The file holds no argument vector and no environment of the agent. They come
 // on the holder's command line and reach Run in the last fields of the struct,
 // which no file can set (their tag is "-"): the holder fills them before it
-// calls Run. Two statements about the start itself, NoLeadHasRun and
+// calls Run. The holder also supplies AuthorityTag from its unit environment.
+// Two statements about the start itself, NoLeadHasRun and
 // PreviousInstanceStopped, are such fields too: the file is written once, and
 // they are true or false per epoch, so they are not keys, and ReadInputs
 // refuses a file that names either.
@@ -164,6 +166,8 @@ type Inputs struct {
 	Terminal         Terminal `json:"terminal"`
 	TimeLimitSeconds int      `json:"time_limit_seconds"`
 
+	// AuthorityTag comes from the daemon through the holder unit environment.
+	AuthorityTag string `json:"-"`
 	// AgentArgv is the agent's command line as seen inside: the first element
 	// is an absolute path. The holder fills it from the words after "--" on its
 	// own command line. It is not a key of the file.

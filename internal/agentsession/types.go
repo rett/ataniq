@@ -2,11 +2,6 @@ package agentsession
 
 import "time"
 
-// SessionRef carries the pack and project context for this slice.
-type SessionRef struct {
-	Project    string `json:"project"`
-	PackDigest string `json:"pack_digest"`
-}
 type Claim struct {
 	State  State
 	Basis  Basis

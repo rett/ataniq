@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -152,7 +153,9 @@ type LeadDelivery struct {
 }
 
 // LeadRow is one lead of a [LeadListing]. Role is exactly as the daemon sent
-// it, because every command is sent with it; the other strings are cleaned.
+// it, because every command is sent with it. An unreadable row has no capabilities
+// and an empty role if the address could not be read. Its key and state
+// reason are safe to show.
 type LeadRow struct {
 	Capabilities LeadCapabilities
 	Key          string
@@ -162,7 +165,7 @@ type LeadRow struct {
 	State        string
 	// StateReason is the reason code the registry shows with State, a word of
 	// the closed grammar, empty with none. A row of a daemon built before the
-	// member has none.
+	// member has none. On unreadable rows the client sets a "client/" reason.
 	StateReason string
 	Epoch       uint64
 	Unit        string
@@ -187,8 +190,7 @@ type LeadRow struct {
 type LeadListing struct {
 	MaxRunning, Running int
 	Leads               []LeadRow
-	// LeftOut counts the rows not returned: over [leadwire.MaxLeads], or
-	// with a role that is not one the client can send.
+	// LeftOut counts rows beyond [leadwire.MaxLeads].
 	LeftOut int
 }
 
@@ -567,12 +569,7 @@ func (l *Leads) List() (LeadListing, error) {
 			}
 			return LeadListing{}, &Unavailable{State: callState(err)}
 		}
-		var res leadwire.ListResult
-		if err := decodeLeadJSON(raw, &res); err != nil {
-			l.drop(c)
-			return LeadListing{}, &Unavailable{State: StateBadAnswer}
-		}
-		out, ok := buildListing(res, c.caps)
+		out, ok := buildListing(raw, c.caps)
 		if !ok {
 			l.drop(c)
 			return LeadListing{}, &Unavailable{State: StateBadAnswer}
@@ -684,15 +681,15 @@ func (l *Leads) reconcile(lst LeadListing) {
 	if len(l.pending) == 0 {
 		return
 	}
-	final := map[string]bool{}
-	for _, r := range lst.Leads {
-		if r.Last != nil && r.Last.Status != LeadInProgress {
-			final[r.Last.CommandID] = true
+	for _, row := range lst.Leads {
+		r := row.Last
+		if r == nil || r.Status == LeadInProgress {
+			continue
 		}
-	}
-	for k, id := range l.pending {
-		if final[id] {
-			delete(l.pending, k)
+		for k, id := range l.pending {
+			if id == r.CommandID && k.role == r.Role && k.op == "lead."+string(r.Op) {
+				delete(l.pending, k)
+			}
 		}
 	}
 }
@@ -854,54 +851,129 @@ func fillResult(out *LeadReceipt, k leadKey, raw json.RawMessage) bool {
 	return true
 }
 
-// buildListing turns the result of lead.list into a listing. It says false
-// for an answer that is not valid: a last receipt that is not one of a
-// lead's commands.
-func buildListing(res leadwire.ListResult, caps LeadCapabilities) (LeadListing, bool) {
-	out := LeadListing{MaxRunning: nonNegative(res.MaxRunning), Running: nonNegative(res.Running)}
-	for i := range res.Leads {
-		w := &res.Leads[i]
-		if len(out.Leads) >= leadwire.MaxLeads || !validLeadRole(w.Role) {
-			out.LeftOut++
+// listingFields decodes only the named members of one object. Inspect the
+// keys before decoding their values: a repeated or case-folded role, epoch
+// or message switch must never change which commands a row can send.
+// Keep nested values raw until their own boundary (listing, row, receipt).
+func listingFields(raw json.RawMessage, fields map[string]any) bool {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return false
+	}
+	for dec.More() {
+		tok, err := dec.Token()
+		key, ok := tok.(string)
+		if err != nil || !ok {
+			return false
+		}
+		var value json.RawMessage
+		if dec.Decode(&value) != nil {
+			return false
+		}
+		dst, known := fields[key]
+		if !known {
+			for name := range fields {
+				if strings.EqualFold(key, name) {
+					return false
+				}
+			}
 			continue
 		}
-		rowCaps := caps
-		rowCaps.Inject = caps.Inject && w.Inject
-		row := LeadRow{
-			Capabilities:    rowCaps,
-			Key:             clean(w.Key),
-			Role:            w.Role,
-			Defined:         w.Defined,
-			Provision:       leadWord(w.Provision),
-			State:           clean(w.State),
-			StateReason:     leadWord(w.StateReason),
-			Epoch:           w.Epoch,
-			Unit:            clean(w.Unit),
-			Inject:          rowCaps.Inject,
-			MessagesEnabled: w.Inject,
-			MessageSpent:    w.MessageSpent,
-			MessageResult: LeadDelivery{
-				Outcome: leadWord(w.MessageResult.Outcome),
-				Reason:  leadWord(w.MessageResult.Reason),
-				Written: leadWord(w.MessageResult.Written),
-			},
+		if dst == nil || (string(value) == "null" && key != "last" && key != "leads") || json.Unmarshal(value, dst) != nil {
+			return false
 		}
-		if w.Last != nil {
-			r := w.Last
-			if !validCommandID(r.CommandID) || !leadwire.Mutating(r.Op) || r.Role != w.Role || !knownStatus(r.Status) {
-				return LeadListing{}, false
-			}
-			row.Last = &LeadReceipt{
-				CommandID: r.CommandID,
-				Op:        LeadOp(strings.TrimPrefix(r.Op, "lead.")),
-				Role:      r.Role,
-				Status:    LeadStatus(r.Status),
-				Code:      leadWord(r.Code),
-			}
+		fields[key] = nil // refuse another occurrence
+	}
+	_, err := dec.Token()
+	return err == nil && dec.Decode(new(json.RawMessage)) == io.EOF
+}
+
+func buildListing(raw json.RawMessage, caps LeadCapabilities) (LeadListing, bool) {
+	var out LeadListing
+	var rows []json.RawMessage
+	fields := map[string]any{"max_running": &out.MaxRunning, "running": &out.Running, "leads": &rows}
+	if !listingFields(raw, fields) || fields["leads"] != nil {
+		return LeadListing{}, false
+	}
+	out.Running, out.MaxRunning = nonNegative(out.Running), nonNegative(out.MaxRunning)
+	for i, rawRow := range rows {
+		if i == leadwire.MaxLeads {
+			out.LeftOut = len(rows) - i
+			break
 		}
-		out.Leads = append(out.Leads, row)
+		out.Leads = append(out.Leads, listingRow(rawRow, caps, i+1))
 	}
 	return out, true
+}
+
+func listingRow(raw json.RawMessage, caps LeadCapabilities, number int) LeadRow {
+	var w leadwire.Lead
+	var last json.RawMessage
+	fields := map[string]any{
+		"key": &w.Key, "role": &w.Role, "defined": &w.Defined, "provision": &w.Provision,
+		"state": &w.State, "state_reason": &w.StateReason, "epoch": &w.Epoch, "unit": &w.Unit,
+		"inject": &w.Inject, "message_spent": &w.MessageSpent, "message_result": &w.MessageResult,
+		"last": &last,
+	}
+	if !listingFields(raw, fields) || !validLeadRole(w.Role) || (w.Inject && fields["message_spent"] != nil) {
+		// Recover only an unambiguous label and role, even when the bad
+		// member appeared first. The degraded row carries no capabilities.
+		var key, role string
+		if !listingFields(raw, map[string]any{"key": &key, "role": &role}) {
+			role = ""
+		}
+		return degradedLead(key, role, number, "invalid-row")
+	}
+	caps.Inject = caps.Inject && w.Inject
+	row := LeadRow{
+		Capabilities:    caps,
+		Key:             clean(w.Key),
+		Role:            w.Role,
+		Defined:         w.Defined,
+		Provision:       leadWord(w.Provision),
+		State:           clean(w.State),
+		StateReason:     leadWord(w.StateReason),
+		Epoch:           w.Epoch,
+		Unit:            clean(w.Unit),
+		Inject:          caps.Inject,
+		MessagesEnabled: w.Inject,
+		MessageSpent:    w.MessageSpent,
+		MessageResult: LeadDelivery{
+			Outcome: leadWord(w.MessageResult.Outcome),
+			Reason:  leadWord(w.MessageResult.Reason),
+			Written: leadWord(w.MessageResult.Written),
+		},
+	}
+	if len(last) > 0 && string(last) != "null" {
+		// This summary can settle a pending command. Require an exact,
+		// unambiguous receipt even though its enclosing row is extensible.
+		var r leadwire.Receipt
+		if jsonv2.Unmarshal(last, &r, jsonv2.RejectUnknownMembers(true)) != nil ||
+			!validCommandID(r.CommandID) || !leadwire.Mutating(r.Op) || r.Role != w.Role || !knownStatus(r.Status) {
+			return degradedLead(w.Key, w.Role, number, "invalid-last-receipt")
+		}
+		row.Last = &LeadReceipt{
+			CommandID: r.CommandID, Op: LeadOp(strings.TrimPrefix(r.Op, "lead.")),
+			Role: r.Role, Status: LeadStatus(r.Status), Code: leadWord(r.Code),
+		}
+	}
+	return row
+}
+
+func degradedLead(key, role string, number int, reason string) LeadRow {
+	if !validLeadRole(role) {
+		role = ""
+	}
+	key = clean(key)
+	if key == "" {
+		key = role
+	}
+	if key == "" {
+		key = fmt.Sprintf("row-%d", number)
+	}
+	// The slash is outside leadWord's grammar, so a decoded daemon reason
+	// cannot be mistaken for a client-side failure by the leads view.
+	return LeadRow{Key: key, Role: role, State: "degraded", StateReason: "client/" + reason}
 }
 
 func nonNegative(n int) int {

@@ -3,6 +3,7 @@
 package serve
 
 import (
+	"errors"
 	"net"
 	"time"
 
@@ -11,8 +12,8 @@ import (
 	"ataniq/internal/leadholder/wire"
 )
 
-// handleControl is one control connection: one request, one response, within
-// the deadline.
+// handleControl admits one daemon connection for a legacy command or a
+// pre-start exchange. Both consume the same bounded control slots.
 func (s *Server) handleControl(conn *net.UnixConn) {
 	cred, err := s.cfg.PeerCred(conn)
 	if err != nil || cred.UID != s.uid {
@@ -42,26 +43,46 @@ func (s *Server) handleControl(conn *net.UnixConn) {
 		s.controlBusy--
 		s.mu.Unlock()
 	}()
+	s.controlExchange(conn)
+}
+
+func (s *Server) controlExchange(conn net.Conn) {
 	_ = conn.SetDeadline(time.Now().Add(s.cfg.HandshakeTimeout))
-	f, err := wire.NewReader(conn, wire.ControlRequests).Next()
+	reader := wire.NewReader(conn, wire.ControlRequests)
+	f, err := reader.Next()
 	if err != nil {
 		s.count(cntControlOther)
 		s.emit(eventlog.EventRefusal, eventlog.Fields{Reason: "control-bad-frame"})
 		return
 	}
-	req, err := wire.DecodeRequest(f.Payload)
+	req, offer, err := wire.DecodeControlOpening(f.Payload)
 	if err != nil {
-		s.count(cntControlOther)
-		s.emit(eventlog.EventRefusal, eventlog.Fields{Reason: "control-bad-request"})
-		s.respond(conn, refusal(wire.CodeBadRequest, "the request is not valid"))
+		s.controlRefusal(conn, err)
+		return
+	}
+	if offer != nil {
+		s.preStart(conn, reader, *offer)
 		return
 	}
 	s.respond(conn, s.dispatch(req))
 }
 
+func (s *Server) controlRefusal(conn net.Conn, err error) {
+	resp := refusal(wire.CodeBadRequest, "the request is not valid")
+	reason := "control-bad-request"
+	var r wire.NegotiationRefusal
+	if errors.As(err, &r) {
+		resp = wire.Response{Code: string(r)}
+		reason = string(r)
+	}
+	s.count(cntControlOther)
+	s.emit(eventlog.EventRefusal, eventlog.Fields{Reason: reason})
+	s.respond(conn, resp)
+}
+
 func refusal(code, text string) wire.Response { return wire.Response{Code: code, Text: text} }
 
-func (s *Server) respond(conn *net.UnixConn, r wire.Response) {
+func (s *Server) respond(conn net.Conn, r wire.Response) {
 	p, err := wire.EncodeResponse(r)
 	if err != nil {
 		p, err = wire.EncodeResponse(refusal(wire.CodeBadRequest, "the answer could not be made"))
@@ -83,6 +104,10 @@ func (s *Server) dispatch(req wire.Request) wire.Response {
 		return refusal(wire.CodeWrongEpoch, "the request is for another epoch")
 	}
 	resp := s.execute(req)
+	// Status only reads the session. Its transitions have their own events.
+	if req.Op == wire.OpStatus && resp.OK {
+		return resp
+	}
 	outcome := "ok"
 	if !resp.OK {
 		outcome = resp.Code

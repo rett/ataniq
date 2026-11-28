@@ -123,6 +123,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/eventlog"
 	"ataniq/internal/leadholder/session"
 	"ataniq/internal/leadholder/wire"
@@ -196,6 +197,18 @@ type Config struct {
 	// accepts the process whose pid it holds while it is locked.
 	DaemonLock string
 
+	// Launch holds the independent expectations from this holder's launch
+	// intent. With no spec digest its control hello is display-only.
+	Launch wire.LaunchRequirements
+
+	// PackIdentities returns the packs carried by the command for this build.
+	// The first pre-start hello reads them once. A nil function advertises no packs.
+	PackIdentities func(buildid.Identity) ([]wire.PackIdentity, error)
+
+	// holderHello supplies the compiled build, packs and capabilities.
+	// Tests can substitute a different build or protocol range.
+	holderHello func() (wire.ControlHello, error)
+
 	// InjectConfig is the injection's seam: empty in a release build, and in
 	// a build with the ataniq_canary tag the deliverer that opens the gate.
 	InjectConfig
@@ -240,6 +253,9 @@ type Config struct {
 }
 
 func (c *Config) withDefaults() {
+	if c.holderHello == nil {
+		c.holderHello = sync.OnceValues(c.localHolderHello)
+	}
 	for _, d := range []struct {
 		p *time.Duration
 		v time.Duration

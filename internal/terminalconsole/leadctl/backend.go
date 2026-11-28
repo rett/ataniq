@@ -159,7 +159,8 @@ type Lead struct {
 	// State is the lead's state in the registry, such as "ready".
 	State string
 	// StateReason is the reason code the registry shows with the state, such
-	// as "holder-ready" with "ready". Empty with none. It is never drawn as
+	// as "holder-ready" with "ready", or a "client/" reason for an unreadable
+	// scratch row. Empty with none. It is never drawn as
 	// text: the view has words for the pairs it knows.
 	StateReason string
 	// Epoch is the current epoch, 0 with none.

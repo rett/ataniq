@@ -139,7 +139,8 @@ type Inputs struct {
 	// Environment inputs. Term is required; ColorTerm, Lang and TZ are left
 	// empty when the host terminal has none, and then the variable is not set.
 	// Path and Shell override the profile's defaults. LeadIdentity is the
-	// value of QARGI_LEAD and defaults to Role. ExtraEnv is what a profile
+	// value of QARGI_LEAD. Managed starts set it from the instance authority.
+	// Offline and qualification profiles can omit it. ExtraEnv is what a profile
 	// adds to the allowlist.
 	Term         string
 	ColorTerm    string

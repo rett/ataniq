@@ -14,7 +14,8 @@ with the `ataniq_canary` tag, under `--canary`, these joins exist:
 
 1. The owner provisions the folders of one throwaway lead with
    `ataniq-canary provision`.
-2. The owner starts `ataniqd run --canary CONFIG` by hand. The daemon defines
+2. The owner initializes the config's state root and enrolls the project
+   with [the commands below](#ataniqd-run---canary), then starts `ataniqd run --canary CONFIG` by hand. The daemon defines
    the role and starts it in a transient user unit, with memory, swap and task
    limits.
 3. The unit runs the holder, `ataniq-holder --canary`. The holder runs the
@@ -218,7 +219,12 @@ what to remove.
 
 ### `ataniqd run --canary`
 
+After provisioning, initialize the config's state root and enroll the project
+from its role (for example, `throwaway-one` for `throwaway-one/lead`).
+
 ```text
+ataniqd init --state-dir STATE
+ataniqd project-home --state-dir STATE --home self PROJECT
 ataniqd run --canary CONFIG
 ataniqd --version
 ```

@@ -1,0 +1,192 @@
+# Current file and words, followed by the reason and removal point.
+cmd/ah-noaicheck/main_test.go anthropic claude codex openai # Migration: D36 authority-host prefix-list release: convert the command output fixtures and expected hits to names from the shipped list.
+cmd/ataniq-canary/show_test.go claude # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+cmd/ataniq-console/pairing_test.go fable # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+cmd/ataniq-intake/flow_test.go claude # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+cmd/ataniq-intake/hostile_test.go claude # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+cmd/ataniq-intake/paths_test.go claude # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+cmd/ataniq-probe/helpers_linux_test.go claude # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+cmd/ataniq-probe/plan_linux_test.go claude codex # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+cmd/ataniqd/scratch_seat_proof_linux_test.go claude codex # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+internal/authorityhost/noaicheck/binaries_test.go claude codex # Migration: D36 authority-host prefix-list release: use synthetic binary names in the executable search and symlink cases.
+internal/authorityhost/noaicheck/bounds_test.go openai # Migration: D36 authority-host prefix-list release: derive the environment name in the nesting-limit case from the shipped prefix list.
+internal/authorityhost/noaicheck/caddyimport_test.go codex openai # Migration: D36 authority-host prefix-list release: use a listed prefix in imported Caddy environment references and expected hits.
+internal/authorityhost/noaicheck/credentials.go claude # Migration: D36 authority-host prefix-list release: replace the credential-folder examples in the lookup comment with neutral examples.
+internal/authorityhost/noaicheck/env.go anthropic claude codex openai # Migration: D36 authority-host prefix-list release: read the environment prefixes from release data and update the matching comment.
+internal/authorityhost/noaicheck/env_test.go anthropic claude codex openai # Migration: D36 authority-host prefix-list release: build the environment name cases from the shipped prefixes.
+internal/authorityhost/noaicheck/helpers_test.go claude codex # Migration: D36 authority-host prefix-list release: seed the shared binary and home-path fixture lists with synthetic names.
+internal/authorityhost/noaicheck/lists.go claude # Migration: D36 authority-host prefix-list release: replace the vendor home-path example in the list field comment.
+internal/authorityhost/noaicheck/lists_test.go claude codex # Migration: D36 authority-host prefix-list release: use synthetic entries in the malformed-list cases.
+internal/authorityhost/noaicheck/notify_test.go anthropic claude openai # Migration: D36 authority-host prefix-list release: derive the notifier environment fixture and its expected hit from the shipped list.
+internal/authorityhost/noaicheck/procs_test.go claude codex # Migration: D36 authority-host prefix-list release: use synthetic executable names for the process command and symlink cases.
+internal/authorityhost/noaicheck/release_test.go anthropic claude codex openai # Migration: D36 authority-host prefix-list release: generate release tree inputs and expected findings from the shipped lists.
+internal/authorityhost/noaicheck/run_test.go claude codex openai # Migration: D36 authority-host prefix-list release: build the end-to-end checker tree and expected hits from the fixture lists.
+internal/authorityhost/noaicheck/seat_test.go openai # Migration: D36 authority-host prefix-list release: derive the seat environment and Caddy examples from the shipped prefix list.
+internal/authorityhost/noaicheck/tree_test.go claude # Migration: D36 authority-host prefix-list release: use synthetic binary and credential paths in the read-only tree fixture.
+internal/authorityhost/noaicheck/units_test.go anthropic codex openai # Migration: D36 authority-host prefix-list release: generate unit environment assignments and expected hits from the shipped prefixes.
+internal/authorityhost/noaicheck/witness_test.go openai # Migration: D36 authority-host prefix-list release: derive the continued assignment and its witness from the shipped prefix list.
+internal/authorityhost/release/noai_test.go anthropic claude # Migration: D36 authority-host prefix-list release: use synthetic checker findings and a listed prefix for the environment isolation case.
+internal/clientapi/server_linux_test.go claude fable # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+internal/genesis/brief/secrets_test.go openai # Migration: Replace provider and model examples in the genesis fixtures at cutover.
+internal/genesis/handoff/handoff_test.go claude codex # Migration: Replace provider and model examples in the genesis fixtures at cutover.
+internal/genesis/plan/codec_test.go opus # Migration: Replace provider and model examples in the genesis fixtures at cutover.
+internal/genesis/plan/template_test.go opus # Migration: Replace provider and model examples in the genesis fixtures at cutover.
+internal/inject/doc.go claude # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/e2e_test.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/fake_test.go claude codex gpt haiku openai # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/fence.go claude # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/fence_test.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/idle/doc.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/idle/fixture_test.go claude # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/idle/idle.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/idle/idle_test.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/idle/property_test.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/idle/replay_test.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/idle/versions_test.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/layout_test.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/osc7501/doc.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/osc7501/emulator_test.go codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/osc7501/osc7501.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/osc7501/osc7501_test.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/osc7501/tracker_test.go codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/reading.go claude # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/reading_test.go claude # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/screen/built_test.go claude codex gpt # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/screen/claude.go claude # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/screen/codex.go codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/screen/doc.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/screen/replay_test.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/screen/screen.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/screen/versions_test.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/session.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/title/doc.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/title/title.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/title/title_test.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/title/versions_test.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/versions/versions.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/inject/versions/versions_test.go claude codex # Migration: Move the runtime-specific terminal readings and their examples into the packs at cutover.
+internal/intake/alias.go claude # Migration: Move provider-specific execution-config rules and examples to the packs at cutover.
+internal/intake/alias_test.go claude codex # Migration: Move provider-specific execution-config rules and examples to the packs at cutover.
+internal/intake/execconfig/doc.go claude # Migration: Move provider-specific execution-config rules and examples to the packs at cutover.
+internal/intake/execconfig/execconfig_test.go claude codex # Migration: Move provider-specific execution-config rules and examples to the packs at cutover.
+internal/intake/execconfig/rules.go claude codex # Migration: Move provider-specific execution-config rules and examples to the packs at cutover.
+internal/intake/flags_test.go claude codex # Migration: Move provider-specific execution-config rules and examples to the packs at cutover.
+internal/intake/gitcmd_test.go claude # Migration: Move provider-specific execution-config rules and examples to the packs at cutover.
+internal/intake/history_test.go claude # Migration: Move provider-specific execution-config rules and examples to the packs at cutover.
+internal/intake/hostile_test.go claude # Migration: Move provider-specific execution-config rules and examples to the packs at cutover.
+internal/intake/integrate_test.go claude # Migration: Move provider-specific execution-config rules and examples to the packs at cutover.
+internal/intake/oddpath_test.go claude # Migration: Move provider-specific execution-config rules and examples to the packs at cutover.
+internal/intake/signoff_test.go claude codex # Migration: Move provider-specific execution-config rules and examples to the packs at cutover.
+internal/launchpolicy/boundary_test.go claude codex # Migration: Move real policy samples and provider-word assertions into pack conformance at cutover.
+internal/launchpolicy/match_test.go gpt # Migration: Move real policy samples and provider-word assertions into pack conformance at cutover.
+internal/leadattach/client_test.go claude # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+internal/leadattach/harness_test.go claude codex # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+internal/leadcanary/config.go claude # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+internal/leadcanary/config_test.go claude # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+internal/leadcanary/evidence_test.go claude # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+internal/leadcanary/holder_test.go claude # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+internal/leadcanary/provision/inputs.go claude # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+internal/leadcanary/provision/inputs_test.go claude # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+internal/leadcanary/provision/instructions.go claude codex # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+internal/leadcanary/provision/provisiontest/world.go claude # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+internal/leadcanary/scratchconfig.go claude # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+internal/leadcanary/scratchconfig_test.go claude # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+internal/leaddaemon/helpers_linux_test.go claude # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+internal/leaddaemon/status_linux_test.go claude fable # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+internal/leadholder/screenrec/recorder_test.go claude # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+internal/leadholder/wire/codec_test.go claude codex # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+internal/leadholder/wire/version_test.go claude # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+internal/leadlifecycle/controller_linux.go codex # Migration: Make the preflight comment provider-neutral at cutover.
+internal/leadlifecycle/helpers_linux_test.go claude # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+internal/leadregistry/coordinator_linux_test.go claude codex fable gpt # Migration: Remove the legacy registry provider defaults and use synthetic names in their tests at cutover.
+internal/leadregistry/doc.go claude fable # Migration: Remove the legacy registry provider defaults and use synthetic names in their tests at cutover.
+internal/leadregistry/fixture_linux_test.go claude codex # Migration: Remove the legacy registry provider defaults and use synthetic names in their tests at cutover.
+internal/leadregistry/helpers_linux_test.go claude # Migration: Remove the legacy registry provider defaults and use synthetic names in their tests at cutover.
+internal/leadregistry/newer_linux_test.go claude codex fable # Migration: Remove the legacy registry provider defaults and use synthetic names in their tests at cutover.
+internal/leadregistry/pack_linux_test.go claude # Migration: Remove the legacy registry provider defaults and use synthetic names in their tests at cutover.
+internal/leadregistry/registry_linux_test.go codex gpt # Migration: Remove the legacy registry provider defaults and use synthetic names in their tests at cutover.
+internal/leadregistry/types.go claude codex fable # Migration: Remove the legacy registry provider defaults and use synthetic names in their tests at cutover.
+internal/leadsandbox/assert/canary_linux_test.go claude # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/assert/helpers_test.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/assert/identity_test.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/assert/inside_test.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/assert/mountinfo_test.go claude # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/assert/newspec.go claude # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/assert/outside_test.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/assert/parentfolders_test.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/assert/probeline_test.go claude # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/assert/report_test.go claude # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/assert/spec.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/assert/spec_test.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/assert/system_linux_test.go claude # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/assert/table.go claude # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/mountpoints/bindsources_linux_test.go claude # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/mountpoints/bindwalk_linux_test.go claude # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/mountpoints/check_linux.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/mountpoints/doc.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/mountpoints/g1_linux_test.go claude # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/mountpoints/gitconfig_linux_test.go claude # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/mountpoints/gitmeta_linux_test.go claude # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/mountpoints/handles_linux_test.go claude # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/mountpoints/helpers_linux_test.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/mountpoints/mountpoints_linux_test.go claude # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/mountpoints/ownclone_linux_test.go claude # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/mountpoints/resolve_linux_test.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/mountpoints/sourcewalk_linux_test.go claude # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/mountpoints/startwalk_linux_test.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/plan/bindfd_test.go claude # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/plan/helpers_test.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/plan/hostsources_test.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/plan/plan_test.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/plan/verify_test.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/profile/binds_test.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/profile/digest_test.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/profile/doc.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/profile/env.go anthropic openai # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/profile/env_test.go anthropic claude codex openai # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/profile/foundation_test.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/profile/helpers_test.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/profile/inputs.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/profile/inputs_test.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/profile/inside.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/profile/layout.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/profile/nevermounted_test.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/leadsandbox/profile/runtime.go claude codex # Migration: Replace the sandbox enum, paths and fixtures with declared pack inputs at cutover.
+internal/terminalconsole/live_test.go claude # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+internal/terminalconsole/panels.go codex # Migration: Use provider-neutral console help at cutover.
+qualification/codex/catalog_test.go codex # Migration: Move this runtime qualification case into the pack at cutover.
+qualification/codex/command_test.go codex # Migration: Move this runtime qualification case into the pack at cutover.
+qualification/codex/external_test.go codex gpt openai # Migration: Move this runtime qualification case into the pack at cutover.
+qualification/codex/gate_test.go codex # Migration: Move this runtime qualification case into the pack at cutover.
+qualification/codex/receipt_test.go codex # Migration: Move this runtime qualification case into the pack at cutover.
+qualification/host/internal/qualification/probe_linux.go anthropic openai # Migration: Move the probe's vendor credential variable names into pack data at cutover.
+qualification/leadmirror/case_review.go claude codex # Migration: Move provider-specific execution-config rules and examples to the packs at cutover.
+qualification/leadmirror/run_test.go claude codex # Migration: Move provider-specific execution-config rules and examples to the packs at cutover.
+qualification/leadsandbox/cmd/qualify/main_linux_test.go claude # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+qualification/leadsandbox/internal/harness/bindfd_test.go claude # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+qualification/leadsandbox/internal/harness/config.go claude codex # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+qualification/leadsandbox/internal/harness/config_test.go claude codex # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+qualification/leadsandbox/internal/harness/evidence_test.go claude # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+qualification/leadsandbox/internal/harness/g1_test.go claude codex # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+qualification/leadsandbox/internal/harness/helpers_test.go claude # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+qualification/leadsandbox/internal/harness/hostcheck_fd_test.go claude # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+qualification/leadsandbox/internal/harness/internal_test.go claude # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+qualification/leadsandbox/internal/harness/probe_words_test.go claude # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+qualification/leadsandbox/internal/harness/run_test.go claude # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+qualification/leadsandbox/internal/harness/s21_test.go claude # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+qualification/leadsandbox/internal/harness/walkseam_test.go claude # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+qualification/leadsandbox/internal/harnesstest/fixture_linux_amd64.go claude codex # Migration: Replace legacy runtime-specific provisioning and qualification inputs at cutover.
+tests/ai_host_ap14_agents_test.go claude # Migration: Remove the literal repository instruction filename from this tooling check at cutover.
+tests/canary_runkit_passb_fixes2_test.go claude # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+tests/canary_runkit_passb_fixes_test.go claude # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+tests/canary_runkit_passb_prepare_test.go anthropic claude codex # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+tests/canary_runkit_passb_test.go claude # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+tests/canary_runkit_real_test.go claude # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+tests/canary_runkit_test.go anthropic claude codex # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+tests/canary_runkit_version_test.go claude codex # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+tests/console_first_boundary_test.go anthropic claude codex fable gpt haiku openai opus sonnet # Migration: Move the guard's vendor vocabulary into pack-owned test data at cutover.
+tests/ownerchannel_tag_test.go claude # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+tests/patched_ansi_input_test.go claude # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+tests/scratch_seat_netcheck_test.go claude # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+tests/scratch_seat_prepare_test.go claude codex # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
+tests/tooling_test.go claude # Migration: Remove the literal repository instruction filename from this tooling check at cutover.

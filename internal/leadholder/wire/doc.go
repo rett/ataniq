@@ -85,18 +85,27 @@
 // from 1 ([ControlVersion]): a request or a response carries its version in
 // the member "version", and one without it is version 1. A version 1 frame is
 // written without the member, so it is the bytes every earlier build wrote
-// and reads. There is no negotiation yet: the daemon and the holder are
-// expected to come from one build, which the daemon and ataniq-scratch check
+// and reads. The running daemon and holder are expected to come from one
+// build, which the daemon and ataniq-scratch check
 // against the holder's build identity before they launch or attach
 // (internal/leadholder/buildid, the refusal holder-version-skew); a frame of a
-// later version is for a peer that has said it reads it, and this package
-// refuses one. A holder that cannot
+// later version is refused by the v1 codec. A holder that cannot
 // decode a request answers [CodeBadRequest], so a request with fields or a
 // version it does not know writes nothing. Because the decoders are strict, a peer of
 // another version may fail to decode; [HelloVersion] and [WelcomeVersion]
 // read only the version from a payload that may have unknown fields, so that a
 // holder can answer a newer client with a refused-version notice and a client
 // can report a newer holder.
+//
+// The pre-start exchange has separate payload codecs on the same control
+// frame types. [ControlOffer] and [ControlHello] exchange protocol ranges
+// and select the highest common version. For a known v1 peer, display uses
+// the legacy Status request and response. [NegotiateLaunch] requires a v2
+// agreement and compares the build, pack, required capabilities and exact
+// [LaunchSpec] digest. The holder accepts an optional spec as the second
+// request on the same connection as the hello. It answers with a [Response],
+// carrying the [NegotiationRefusal] code on a negotiation failure. An OK
+// acknowledges agreement on the spec bytes. Starting the agent is separate.
 //
 // # Epochs
 //

@@ -87,8 +87,8 @@ type Request struct {
 // version 1 frame is written without the member, so it is byte for byte what
 // those builds write, and their decoders, which refuse a member they do not
 // know, read it as before. A frame of a later version is written only to a
-// peer that has said it reads that version (the holder's control hello, which
-// does not exist yet); this package reads version 1 only and refuses a frame
+// peer that has said it reads that version. The ordinary request/response
+// codec reads version 1 only and refuses a frame
 // of any other version, an explicit 0 or null included, as it refuses any
 // frame it cannot read.
 const ControlVersion = 1

@@ -17,12 +17,16 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ataniq/internal/instanceid"
 	"ataniq/internal/leadrole"
 )
 
 // Options tunes a Registry. The zero value is what production uses; the fields
 // exist so tests can fix the clock and the randomness.
 type Options struct {
+	// standaloneV1 preserves standalone v1 writes for format compatibility.
+	// Only in-package fixtures use it. Bound registries always check the home.
+	standaloneV1 bool
 	// Now returns the time stamped on a record. Default: time.Now.
 	Now func() time.Time
 	// Rand supplies the random bits of intent ids. Default: crypto/rand.
@@ -83,16 +87,20 @@ func (e *CorruptError) Is(target error) bool { return target == ErrCorrupt }
 // Registry is the open, locked registry. Its methods are safe for concurrent
 // use. It is not safe to use after Close.
 type Registry struct {
-	mu       sync.Mutex
-	f        *os.File
-	roles    map[leadrole.Role]Entry
-	seq      uint64
-	prev     [sha256.Size]byte
-	recovery Recovery
-	now      func() time.Time
-	rand     io.Reader
-	closed   bool
-	broken   error
+	standaloneV1 bool
+	binding      instanceid.Binding
+	mu           sync.Mutex
+	f            *os.File
+	homes        map[string]ProjectAssignment
+	foreignHomes map[string]string // most recent foreign home ever recorded per project
+	roles        map[leadrole.Role]Entry
+	seq          uint64
+	prev         [sha256.Size]byte
+	recovery     Recovery
+	now          func() time.Time
+	rand         io.Reader
+	closed       bool
+	broken       error
 }
 
 // Open opens the registry in dir, creating dir (mode 0700) and the journal
@@ -107,7 +115,7 @@ func Open(dir string, opts Options) (*Registry, error) {
 }
 
 func open(dir string, opts Options, syncFile func(int) error) (*Registry, error) {
-	r := &Registry{roles: map[leadrole.Role]Entry{}, now: opts.Now, rand: opts.Rand}
+	r := &Registry{homes: make(map[string]ProjectAssignment), roles: map[leadrole.Role]Entry{}, now: opts.Now, rand: opts.Rand}
 	if r.now == nil {
 		r.now = time.Now
 	}
@@ -124,6 +132,21 @@ func open(dir string, opts Options, syncFile func(int) error) (*Registry, error)
 		return nil, err
 	}
 	r.f = f
+	// Resolve the state root from the locked journal's directory. A standalone
+	// registry with no instance key retains its v1 format.
+	parent, err := unix.Openat(dirFD, "..", unix.O_PATH|dirFlags, 0)
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	id, err := instanceid.LoadAt(parent)
+	unix.Close(parent)
+	if err != nil && !errors.Is(err, instanceid.ErrMissing) {
+		f.Close()
+		return nil, err
+	}
+	r.binding = id.Binding
+	r.standaloneV1 = opts.standaloneV1 && id.Authority == ""
 	if err := r.start(dirFD, syncFile); err != nil {
 		f.Close()
 		return nil, err
@@ -178,20 +201,25 @@ func openDir(dir string, syncFile func(int) error) (int, error) {
 		}
 		fd = next
 	}
-	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil {
-		unix.Close(fd)
-		return -1, fmt.Errorf("leadregistry: stat folder: %w", err)
-	}
-	if err := checkOwner(&st, dir); err != nil {
+	if err := checkDir(fd, dir); err != nil {
 		unix.Close(fd)
 		return -1, err
 	}
-	if st.Mode&0o077 != 0 {
-		unix.Close(fd)
-		return -1, fmt.Errorf("%w: folder %s has group or other permission bits (want 0700)", ErrInsecure, dir)
-	}
 	return fd, nil
+}
+
+func checkDir(fd int, dir string) error {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return fmt.Errorf("leadregistry: stat folder: %w", err)
+	}
+	if err := checkOwner(&st, dir); err != nil {
+		return err
+	}
+	if st.Mode&0o077 != 0 {
+		return fmt.Errorf("%w: folder %s has group or other permission bits (want 0700)", ErrInsecure, dir)
+	}
+	return nil
 }
 
 // Each creator confirms a directory's entry before adding the next path
@@ -220,7 +248,7 @@ func openSyncedChild(parent int, name, nextName string, flags int, syncFile func
 			return -1, fmt.Errorf("leadregistry: create folder %s: %w", name, err)
 		}
 		if created {
-			flags = flags &^ unix.O_PATH | unix.O_RDONLY
+			flags = flags&^unix.O_PATH | unix.O_RDONLY
 		}
 		fd, err = unix.Openat(parent, name, flags, 0)
 	}
@@ -267,7 +295,7 @@ func syncDirectoryAt(parent int, syncFile func(int) error) error {
 
 func openFile(dirFD int, path string) (*os.File, error) {
 	name := FileName
-	base := unix.O_RDWR | unix.O_APPEND | unix.O_NOFOLLOW | unix.O_CLOEXEC
+	base := unix.O_NONBLOCK | unix.O_RDWR | unix.O_APPEND | unix.O_NOFOLLOW | unix.O_CLOEXEC
 	created := true
 	fd, err := unix.Openat(dirFD, name, base|unix.O_CREAT|unix.O_EXCL, 0o600)
 	if err == unix.EEXIST {
@@ -302,47 +330,39 @@ func openFile(dirFD int, path string) (*os.File, error) {
 			return fail(fmt.Errorf("leadregistry: chmod journal: %w", err))
 		}
 	}
-	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil {
-		return fail(fmt.Errorf("leadregistry: stat journal: %w", err))
-	}
-	if st.Mode&unix.S_IFMT != unix.S_IFREG {
-		return fail(fmt.Errorf("%w: %s is not a regular file", ErrInsecure, path))
-	}
-	if err := checkOwner(&st, path); err != nil {
+	if err := checkJournalFile(dirFD, fd, path); err != nil {
 		return fail(err)
 	}
-	if st.Mode&0o177 != 0 {
-		return fail(fmt.Errorf("%w: %s has permission bits wider than 0600", ErrInsecure, path))
-	}
 	return f, nil
+}
+
+func checkJournalFile(dirFD, fd int, path string) error {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return fmt.Errorf("leadregistry: stat journal: %w", err)
+	}
+	var named unix.Stat_t
+	if err := unix.Fstatat(dirFD, filepath.Base(path), &named, unix.AT_SYMLINK_NOFOLLOW); err != nil || st.Dev != named.Dev || st.Ino != named.Ino || st.Nlink != 1 {
+		return fmt.Errorf("%w: journal replaced or linked", ErrInsecure)
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFREG {
+		return fmt.Errorf("%w: %s is not a regular file", ErrInsecure, path)
+	}
+	if err := checkOwner(&st, path); err != nil {
+		return err
+	}
+	if st.Mode&0o177 != 0 {
+		return fmt.Errorf("%w: %s has permission bits wider than 0600", ErrInsecure, path)
+	}
+	return nil
 }
 
 // start replays the journal, cuts an unfinished tail and writes the header of
 // an empty journal.
 func (r *Registry) start(dirFD int, syncFile func(int) error) error {
-	rd := bufio.NewReaderSize(r.f, MaxLineBytes+1)
-	var offset int64
-	var tail int
-	lines := 0
-	for {
-		line, err := rd.ReadSlice('\n')
-		if err == nil {
-			lines++
-			if err := r.replayLine(lines, line[:len(line)-1]); err != nil {
-				return err
-			}
-			offset += int64(len(line))
-			continue
-		}
-		if err == io.EOF {
-			tail = len(line)
-			break
-		}
-		if err == bufio.ErrBufferFull {
-			return &CorruptError{Line: lines + 1, Reason: fmt.Sprintf("line longer than %d bytes", MaxLineBytes)}
-		}
-		return fmt.Errorf("leadregistry: read journal: %w", err)
+	offset, tail, lines, err := r.readRecords(r.f)
+	if err != nil {
+		return err
 	}
 	if tail > 0 {
 		if err := r.f.Truncate(offset); err != nil {
@@ -351,7 +371,7 @@ func (r *Registry) start(dirFD int, syncFile func(int) error) error {
 	}
 	if lines == 0 {
 		line, sum, err := encodeLine(genesis, 0, r.now(), kindHeader, leadrole.Role{},
-			&headerPayload{Format: formatName, Version: formatVersion})
+			journalHeader(r.binding))
 		if err != nil {
 			return err
 		}
@@ -377,6 +397,34 @@ func (r *Registry) start(dirFD int, syncFile func(int) error) error {
 		return fmt.Errorf("leadregistry: sync folder: %w", err)
 	}
 	return nil
+}
+
+// readRecords replays complete lines and reports the uncommitted suffix.
+func (r *Registry) readRecords(input io.Reader) (offset int64, tail, lines int, readErr error) {
+	rd := bufio.NewReaderSize(input, MaxLineBytes+1)
+	for {
+		line, err := rd.ReadSlice('\n')
+		if err == nil {
+			lines++
+			if err := r.replayLine(lines, line[:len(line)-1]); err != nil {
+				return 0, 0, 0, err
+			}
+			offset += int64(len(line))
+			continue
+		}
+		if err == io.EOF {
+			tail = len(line)
+			break
+		}
+		if err == bufio.ErrBufferFull {
+			return 0, 0, 0, &CorruptError{Line: lines + 1, Reason: fmt.Sprintf("line longer than %d bytes", MaxLineBytes)}
+		}
+		return 0, 0, 0, fmt.Errorf("leadregistry: read journal: %w", err)
+	}
+	if tail > 0 && lines == 0 && r.binding.Authority != "" {
+		return 0, 0, 0, &CorruptError{Line: 1, Reason: "unfinished instance header"}
+	}
+	return offset, tail, lines, nil
 }
 
 // commitRecovered appends the record of a cut to the file, without a sync,
@@ -422,13 +470,32 @@ func (r *Registry) replayLine(n int, line []byte) error {
 		return &CorruptError{Line: n, Reason: "header line missing or repeated"}
 	}
 	switch {
+	case rec.kind == kindHeader:
+		if err := rec.payload.(*headerPayload).match(r.binding); err != nil {
+			return err
+		}
+	case rec.kind == kindProjectHome:
+		next := rec.payload.(*ProjectAssignment)
+		if err := r.validateAssignment(rec.role, next); err != nil {
+			return &CorruptError{Line: n, Reason: err.Error()}
+		}
+		r.recordAssignment(rec.role.Project(), next)
+	case rec.kind == kindReplaceHome:
+		p := rec.payload.(*replaceHomePayload)
+		if err := r.validateReplacement(rec.role, p); err != nil {
+			return &CorruptError{Line: n, Reason: err.Error()}
+		}
+		r.recordAssignment(rec.role.Project(), &p.ProjectAssignment)
 	case rec.kind == kindRecovered || rec.kind == kindRecoveryAck:
 		next, err := applyRecovery(r.recovery, rec)
 		if err != nil {
 			return &CorruptError{Line: n, Reason: err.Error()}
 		}
 		r.recovery = next
-	case rec.kind != kindHeader:
+	default:
+		if err := r.checkRecordedAdmission(rec); err != nil {
+			return &CorruptError{Line: n, Reason: err.Error()}
+		}
 		cur, ok := r.roles[rec.role]
 		next, err := reduce(cur, ok, r.roles, rec)
 		if err != nil {
@@ -606,15 +673,29 @@ func (r *Registry) existing(role leadrole.Role) (Entry, error) {
 // provider packs are not wired in this build. (A define record that a later
 // build wrote with a pack replays; see BeginLaunch.)
 func (r *Registry) Define(role leadrole.Role, manager Manager, requested Requested) (Entry, error) {
+	return r.define(role, manager, requested, nil)
+}
+
+// DefineAt compares the project version observed before provisioning with
+// the current row under the same lock that commits the definition.
+func (r *Registry) DefineAt(role leadrole.Role, manager Manager, requested Requested, expected ProjectVersion) (Entry, error) {
+	return r.define(role, manager, requested, &expected)
+}
+
+func (r *Registry) define(role leadrole.Role, manager Manager, requested Requested, expected *ProjectVersion) (Entry, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	version, err := r.checkProjectHome(role, expected)
+	if err != nil {
+		return Entry{}, err
+	}
 	if !requested.Pack.IsZero() {
 		return Entry{}, invalid("a pack reference in the requested profile: provider packs are not wired in this build")
 	}
 	if role.Kind() == leadrole.KindCoordinator {
 		requested = requested.withCoordinatorDefaults()
 	}
-	return r.mutate(kindDefine, role, &definePayload{Manager: manager, Requested: requested})
+	return r.mutate(kindDefine, role, &definePayload{Manager: manager, Requested: requested, Assignment: version.recorded()})
 }
 
 // SetDesired sets the desired state of a role. It does not change the shown
@@ -657,6 +738,8 @@ func (r *Registry) BeginLaunch(role leadrole.Role) (Intent, error) {
 // LaunchOptions are the optional inputs of BeginLaunchWith. The zero value
 // is what BeginLaunch uses.
 type LaunchOptions struct {
+	// Project is the assignment version observed at admission, when supplied.
+	Project *ProjectVersion
 	// BootIdentity is the identity of the boot the launch is made in, as the
 	// caller knows it: at most MaxBootIdentityBytes bytes of valid UTF-8
 	// without a control character. It is journaled in the launch intent and
@@ -672,7 +755,8 @@ type LaunchOptions struct {
 func (r *Registry) BeginLaunchWith(role leadrole.Role, opts LaunchOptions) (Intent, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := r.usable(); err != nil {
+	version, err := r.checkProjectHome(role, opts.Project)
+	if err != nil {
 		return Intent{}, err
 	}
 	if err := validText("boot identity", opts.BootIdentity, MaxBootIdentityBytes, false); err != nil {
@@ -704,6 +788,7 @@ func (r *Registry) BeginLaunchWith(role leadrole.Role, opts LaunchOptions) (Inte
 		return Intent{}, fmt.Errorf("leadregistry: random intent id: %w", err)
 	}
 	next, err := r.mutate(kindLaunchBegin, role, &beginPayload{
+		Assignment:    version.recorded(),
 		IntentID:      hex.EncodeToString(id[:]),
 		Epoch:         e.Epoch + 1,
 		UnitName:      role.UnitName(),

@@ -15,19 +15,25 @@ import (
 )
 
 const (
+	// DirName is the registry folder inside an initialized daemon state root.
+	DirName = "registry"
+
 	// FileName is the name of the journal file inside the registry folder.
 	FileName = "registry.jsonl"
 
-	formatName    = "ataniq-lead-registry"
-	formatVersion = 1
-	timeLayout    = "2006-01-02T15:04:05.000000000Z"
-	hashHexLen    = 2 * sha256.Size
-	hashSuffixLen = len(`,"hash":"`) + hashHexLen + len(`"}`)
+	formatName         = "ataniq-lead-registry"
+	formatVersion      = 1 // standalone and legacy journals
+	boundFormatVersion = 2
+	timeLayout         = "2006-01-02T15:04:05.000000000Z"
+	hashHexLen         = 2 * sha256.Size
+	hashSuffixLen      = len(`,"hash":"`) + hashHexLen + len(`"}`)
 )
 
 // Record kinds. Each is one journal line.
 const (
 	kindHeader        = "header"
+	kindProjectHome   = "project-home"
+	kindReplaceHome   = "project-home-replaced"
 	kindDefine        = "define"
 	kindDesired       = "desired"
 	kindLaunchBegin   = "launch-begin"
@@ -55,8 +61,10 @@ type envelope struct {
 }
 
 type headerPayload struct {
-	Format  string `json:"format"`
-	Version int    `json:"version"`
+	Format      string `json:"format"`
+	Version     int    `json:"version"`
+	Authority   string `json:"authority,omitempty"`
+	Incarnation string `json:"incarnation,omitempty"`
 }
 
 // recoveredPayload says what Open cut off the end of the journal.
@@ -72,8 +80,9 @@ type ackPayload struct {
 }
 
 type definePayload struct {
-	Manager   Manager   `json:"manager"`
-	Requested Requested `json:"requested"`
+	Assignment *ProjectVersion `json:"assignment,omitempty"`
+	Manager    Manager         `json:"manager"`
+	Requested  Requested       `json:"requested"`
 
 	// The identity of the requested profile, taken from the stored bytes of
 	// the record by decodeLine and never encoded: digest is the profile
@@ -90,10 +99,11 @@ type desiredPayload struct {
 }
 
 type beginPayload struct {
-	IntentID      string `json:"intent"`
-	Epoch         uint64 `json:"epoch"`
-	UnitName      string `json:"unit"`
-	ProfileDigest string `json:"profile_digest"`
+	Assignment    *ProjectVersion `json:"assignment,omitempty"`
+	IntentID      string          `json:"intent"`
+	Epoch         uint64          `json:"epoch"`
+	UnitName      string          `json:"unit"`
+	ProfileDigest string          `json:"profile_digest"`
 	// ParentEpoch and Identity are set for a coordinator and only then.
 	ParentEpoch uint64 `json:"parent_epoch,omitempty"`
 	Identity    string `json:"identity,omitempty"`
@@ -148,7 +158,17 @@ func (h *headerPayload) validate() error {
 	if h.Format != formatName {
 		return fmt.Errorf("not a lead registry (format %q)", h.Format)
 	}
-	if h.Version != formatVersion {
+	switch h.Version {
+	case formatVersion:
+		if h.Authority != "" || h.Incarnation != "" {
+			return fmt.Errorf("instance fields in a legacy header")
+		}
+	case boundFormatVersion:
+		if !validAuthority(h.Authority) ||
+			len(h.Incarnation) != 32 || !isLowerHex([]byte(h.Incarnation)) {
+			return fmt.Errorf("invalid instance binding")
+		}
+	default:
 		return fmt.Errorf("unsupported format version %d", h.Version)
 	}
 	return nil
@@ -249,6 +269,12 @@ func encodeLine(prev [sha256.Size]byte, seq uint64, at time.Time, kind string, r
 	if err != nil {
 		return nil, prev, fmt.Errorf("leadregistry: encode line: %w", err)
 	}
+	return sealLine(prev, content)
+}
+
+// sealLine appends the chain hash to a complete JSON object. Migration uses
+// the stored object bytes so profiles and unknown fields keep their encoding.
+func sealLine(prev [sha256.Size]byte, content []byte) ([]byte, [sha256.Size]byte, error) {
 	sum := chain(prev, content)
 	line := make([]byte, 0, len(content)+hashSuffixLen+1)
 	line = append(line, content[:len(content)-1]...) // drop the closing brace
@@ -440,6 +466,10 @@ func decodeLine(prev [sha256.Size]byte, wantSeq uint64, line []byte) (record, [s
 	switch env.Kind {
 	case kindHeader:
 		p = &headerPayload{}
+	case kindProjectHome:
+		p = &ProjectAssignment{}
+	case kindReplaceHome:
+		p = &replaceHomePayload{}
 	case kindDefine:
 		p = &definePayload{}
 	case kindDesired:
@@ -463,6 +493,11 @@ func decodeLine(prev [sha256.Size]byte, wantSeq uint64, line []byte) (record, [s
 	}
 	if err := decodeRecord(env.Payload, p); err != nil {
 		return record{}, zero, fmt.Errorf("bad %s payload: %v", env.Kind, err)
+	}
+	if env.Kind == kindHeader || env.Kind == kindProjectHome || env.Kind == kindReplaceHome {
+		if repeated, err := repeatsMember(line); repeated || err != nil {
+			return record{}, zero, fmt.Errorf("ambiguous %s", env.Kind)
+		}
 	}
 	if d, ok := p.(*definePayload); ok {
 		var stored struct {

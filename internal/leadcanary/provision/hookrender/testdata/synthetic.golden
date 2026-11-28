@@ -1,0 +1,32 @@
+Synthetic packtest launches only. These fixtures provide no evidence about a real build.
+=== alpha sample/coord/f1 ===
+{"Role":"sample/coord/f1","Transport":"terminal","Argv":["alpha-cli","--mode=m-plan","--model=m-x","--agent=reviewer"],"Env":{"ALPHA_OPT":"1"},"ProfileDigest":"4917727c01c32abd9a00c65ac9f909821c1c53f580cc14a845113200cd975577"}
+class plan
+agent /config/agents/reviewer.md
+---
+"name": "reviewer"
+---
+Review.
+settings /etc/example/settings.json
+{
+  "items": {
+    "0": true
+  }
+}
+=== alpha sample/lead ===
+{"Role":"sample/lead","Transport":"terminal","Argv":["alpha-cli","--mode=m-plan","--model=m-x","--agent=reviewer"],"Env":{"ALPHA_OPT":"1"},"ProfileDigest":"4917727c01c32abd9a00c65ac9f909821c1c53f580cc14a845113200cd975577"}
+class plan
+agent /config/agents/reviewer.md
+---
+"name": "reviewer"
+---
+Review.
+settings /etc/example/settings.json
+{
+  "items": {
+    "0": true
+  }
+}
+=== beta sample/coord/f1 ===
+{"Role":"sample/coord/f1","Transport":"protocol","Argv":["beta-cli","--mode=q-quiet","--","m-x"],"Env":null,"ProfileDigest":"d1"}
+class no-prompt

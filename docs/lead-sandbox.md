@@ -178,7 +178,7 @@ optional host row present). Its command, with invented paths, is:
     --setenv LANG C.UTF-8 \
     --setenv LOGNAME root \
     --setenv PATH /ataniq/qargi/bin:/ataniq/agent/bin:/usr/local/bin:/usr/bin:/bin:/home/lead/.local/bin \
-    --setenv QARGI_LEAD arc-lead \
+    --setenv QARGI_LEAD demo-lead-0123456789abcdef \
     --setenv SHELL /bin/bash \
     --setenv TERM xterm-256color \
     --setenv TMPDIR /tmp \
@@ -758,9 +758,18 @@ Names, with their values where the profile fixes them:
 | `PATH` | the inputs' value, else `/ataniq/qargi/bin:/ataniq/agent/bin:/usr/local/bin:/usr/bin:/bin:/home/lead/.local/bin` |
 | `SHELL` | the inputs' value, else `/bin/bash` |
 | `USER`, `LOGNAME` | `root` in the default mode, the owner's login name in the owner mode |
-| `QARGI_LEAD` | the lead identity the inputs give, else the role |
+| `QARGI_LEAD` | `<project>-lead-<tag>` for a managed lead, where the tag is the first 16 hex digits of the instance authority |
+| `QARGI_ACTOR` | when a coordinator label is declared, its parent is the qualified `QARGI_LEAD`, followed by the declared epoch (if present), feature and instance suffix |
 | `TERM` | the host terminal's value (required) |
 | `COLORTERM`, `LANG`, `TZ` | the host's values, set only when the inputs give them |
+
+At startup the daemon loads the instance identity from its state root. A
+missing, damaged or unsafe identity refuses daemon startup. At launch the
+daemon passes only the public tag to the holder in `ATANIQ_AUTHORITY_TAG`.
+The holder uses the tag to construct `QARGI_LEAD`.
+Offline and qualification profiles that omit the identity leave `QARGI_LEAD`
+unset. The [instance identity guide](federation.md#instance-identity) gives the
+shortening rule for long project names and an example coordinator label.
 
 A profile may add names (`ExtraEnv`). **`PWD`** is not in the allowlist and a
 profile that lists it is refused: bubblewrap keeps and sets `PWD` under
@@ -1101,10 +1110,14 @@ role); every environment name and the value of every variable whose value the
 profile defines; the SHA-256 of the seccomp file (or "none") and of the
 managed-settings file, as the caller gives them; and the pasta arguments.
 
+The digest includes the managed `QARGI_LEAD` naming rule. The concrete lead
+name is supplied at launch. Recompute existing profile digest pins before
+the next managed start.
+
 It does not cover host paths (the state root, every bind source, the paths of the
 seccomp and managed-settings files), the role and the project, the owner's ids and
 login name, the values the host terminal or the lead gives (`TERM`, `COLORTERM`,
-`LANG`, `TZ`, `QARGI_LEAD`, and `USER` and `LOGNAME` in the owner mode), or the
+`LANG`, `TZ`, and `USER` and `LOGNAME` in the owner mode), or the
 content of the folders and files bound from the host except the two whose
 SHA-256 the caller gives (the lead skills, the instruction file, the agent and
 Qargi installs, the probe, the spec, the git identity file, the derived

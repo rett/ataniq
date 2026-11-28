@@ -394,6 +394,14 @@ func checkKeys(path string, t reflect.Type, node any) error {
 			}
 		}
 	case reflect.Slice, reflect.Array:
+		// encoding/json would also read a []byte from an array of numbers.
+		// The launch spec's byte fields have one wire type: a base64 string.
+		if t == reflect.TypeFor[[]byte]() {
+			if _, ok := node.(string); !ok {
+				return invalidf("expected base64 string%s", atPath(path))
+			}
+			return nil
+		}
 		arr, _ := node.([]any)
 		for _, v := range arr {
 			if err := checkKeys(path+"[]", t.Elem(), v); err != nil {

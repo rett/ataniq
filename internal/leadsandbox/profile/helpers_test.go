@@ -13,6 +13,7 @@ func fixture(rt Runtime) Inputs {
 	in := Inputs{
 		StateRoot:             "/srv/state",
 		Role:                  "arc-lead",
+		LeadIdentity:          "ataniq-lead-0123456789abcdef",
 		Project:               "ataniq",
 		Runtime:               rt,
 		RuntimeVersion:        "2.1.0",
