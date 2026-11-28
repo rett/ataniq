@@ -130,6 +130,28 @@ func readRegular(d *os.File, name string, limit int64, private bool) ([]byte, er
 	return b, nil
 }
 
+// DecodeStrict groups unknown keys and invalid field values into one refusal.
+// Diagnose a rejected file using only fixed reasons and schema field names.
+func configDecodeError(data []byte) error {
+	var object json.RawMessage
+	if err := seatgate.DecodeStrict(data, &object); err != nil {
+		return fmt.Errorf("%w: %v", errConfig, err) // Structural violations contain no input.
+	}
+	// Unmarshal ignores unknown keys and accepts case variants. If it can
+	// read this strict object, the exact key check is what failed.
+	var known config
+	if err := json.Unmarshal(data, &known); err != nil {
+		var field *json.UnmarshalTypeError
+		if errors.As(err, &field) && field.Field != "" {
+			return fmt.Errorf("%w: invalid value for %s", errConfig, field.Field)
+		}
+		// The epoch is the one field with a ,string tag. Its decoder can
+		// return an untyped error containing the supplied string.
+		return fmt.Errorf("%w: identity.epoch must be an unsigned decimal string", errConfig)
+	}
+	return fmt.Errorf("%w: unknown key", errConfig)
+}
+
 func loadConfig(path string) (config, durable.Config, error) {
 	var c config
 	var store durable.Config
@@ -137,61 +159,83 @@ func loadConfig(path string) (config, durable.Config, error) {
 	if err != nil {
 		return c, store, err
 	}
-	if !utf8.Valid(b) || seatgate.DecodeStrict(b, &c) != nil {
-		return c, store, errConfig
+	if !utf8.Valid(b) {
+		return c, store, fmt.Errorf("%w: invalid UTF-8", errConfig)
+	}
+	b = bytes.TrimRight(b, " \t\n\v\f\r")
+	if len(b) == 0 {
+		return c, store, fmt.Errorf("%w: expected a JSON object", errConfig)
+	}
+	if err := seatgate.DecodeStrict(b, &c); err != nil {
+		return c, store, configDecodeError(b)
 	}
 	if c.ObsoleteGuard != nil {
 		return c, store, fmt.Errorf("%w: remove the obsolete guard key", errConfig)
 	}
-	for _, p := range []string{c.State, c.Seed, c.ServiceTLS, c.OwnerTLS, c.Socket} {
-		if !absolute(p) {
-			return c, store, errConfig
-		}
-	}
-	for _, v := range []string{c.Identity.Witness, c.Identity.Store, c.Identity.Incarnation, c.Slot.Authority, c.Slot.Store} {
-		if len(v) == 0 || len(v) > assignment.MaxReferenceBytes {
-			return c, store, errConfig
-		}
-		for _, ch := range v {
-			if ch < ' ' || ch > '~' {
-				return c, store, errConfig
-			}
-		}
+	type field struct{ name, value string }
+	if !absolute(c.Socket) {
+		return c, store, fmt.Errorf("%w: socket: expected a clean absolute path", errConfig)
 	}
 	// Each storage, key, guard and runtime location has a separate owner or lifecycle.
-	paths := []string{c.State, c.Seed, guardDirectory, filepath.Dir(c.Socket), c.ServiceTLS, c.OwnerTLS}
+	paths := []field{
+		{"state", c.State}, {"seed", c.Seed}, {"guard directory", guardDirectory},
+		{"socket parent", filepath.Dir(c.Socket)}, {"service_tls", c.ServiceTLS}, {"owner_tls", c.OwnerTLS},
+	}
 	for i, p := range paths {
-		if p == "/" {
-			return c, store, errConfig
+		if !absolute(p.value) {
+			return c, store, fmt.Errorf("%w: %s: expected a clean absolute path below root", errConfig, p.name)
 		}
 		for _, other := range paths[:i] {
-			if p == other || strings.HasPrefix(other, p+"/") || strings.HasPrefix(p, other+"/") {
-				return c, store, errConfig
+			if p.value == other.value || strings.HasPrefix(other.value, p.value+"/") || strings.HasPrefix(p.value, other.value+"/") {
+				return c, store, fmt.Errorf("%w: %s overlaps %s", errConfig, p.name, other.name)
 			}
 		}
 	}
-	if c.Slot.Witness != c.Identity.Witness || c.Identity.Epoch == 0 {
-		return c, store, errConfig
-	}
-	for _, p := range []string{c.ServicePin, c.OwnerPin, c.HomePin, c.SigningKey, c.HomeKey} {
-		if !seatgate.ValidFingerprint(p) || p == strings.Repeat("0", 64) {
-			return c, store, errConfig
+	for _, f := range []field{
+		{"identity.witness", c.Identity.Witness}, {"identity.store", c.Identity.Store},
+		{"identity.incarnation", c.Identity.Incarnation}, {"slot.authority", c.Slot.Authority}, {"slot.store", c.Slot.Store},
+	} {
+		if len(f.value) == 0 || len(f.value) > assignment.MaxReferenceBytes {
+			return c, store, fmt.Errorf("%w: invalid length for %s", errConfig, f.name)
+		}
+		for _, ch := range f.value {
+			if ch < ' ' || ch > '~' {
+				return c, store, fmt.Errorf("%w: %s must be printable ASCII", errConfig, f.name)
+			}
 		}
 	}
-	if c.ServicePin == c.OwnerPin || c.HomePin == c.OwnerPin || c.ServicePin == c.HomePin || c.SigningKey == c.HomeKey {
-		return c, store, errConfig
+	if c.Slot.Witness != c.Identity.Witness {
+		return c, store, fmt.Errorf("%w: slot.witness must match identity.witness", errConfig)
+	}
+	if c.Identity.Epoch == 0 {
+		return c, store, fmt.Errorf("%w: identity.epoch must be nonzero", errConfig)
+	}
+	for _, f := range []field{
+		{"service_tls_pin", c.ServicePin}, {"owner_tls_pin", c.OwnerPin}, {"home_tls_pin", c.HomePin},
+		{"signing_public_key", c.SigningKey}, {"home_public_key", c.HomeKey},
+	} {
+		if !seatgate.ValidFingerprint(f.value) || f.value == strings.Repeat("0", 64) {
+			return c, store, fmt.Errorf("%w: %s must be 64 lowercase hex digits and nonzero", errConfig, f.name)
+		}
+	}
+	if c.ServicePin == c.OwnerPin || c.HomePin == c.OwnerPin || c.ServicePin == c.HomePin {
+		return c, store, fmt.Errorf("%w: TLS pins must be distinct", errConfig)
+	}
+	if c.SigningKey == c.HomeKey {
+		return c, store, fmt.Errorf("%w: signing_public_key and home_public_key must be distinct", errConfig)
 	}
 	// Use the same single numeric destination as the account's firewall rule.
 	if _, ok := noaicheck.WitnessHomeAddress(c.Home); !ok {
-		return c, store, errConfig
+		return c, store, fmt.Errorf("%w: invalid home_endpoint", errConfig)
 	}
 	store = durable.Config{Identity: c.Identity, Directory: c.State, KeyPath: c.Seed}
 	store.Pin, _ = hex.DecodeString(c.SigningKey)
 	store.HomePin, _ = hex.DecodeString(c.HomeKey)
-	for _, pub := range []ed25519.PublicKey{store.Pin, store.HomePin} {
-		if _, err := cp.KeyID(pub); err != nil {
-			return c, store, errConfig
-		}
+	if _, err := cp.KeyID(store.Pin); err != nil {
+		return c, store, fmt.Errorf("%w: invalid signing_public_key", errConfig)
+	}
+	if _, err := cp.KeyID(store.HomePin); err != nil {
+		return c, store, fmt.Errorf("%w: invalid home_public_key", errConfig)
 	}
 	return c, store, nil
 }
