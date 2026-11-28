@@ -77,6 +77,9 @@ type PendingItem struct {
 	// ID is the pending record's id, and SHA256 the digest of its bytes.
 	ID     string `json:"id"`
 	SHA256 string `json:"sha256"`
+	// BindingSHA256 is the binding digest for the row's four-word tag.
+	// A listing may omit it.
+	BindingSHA256 string `json:"binding_sha256,omitempty"`
 	// Project is the project the request belongs to.
 	Project string `json:"project"`
 	// Verb is the verb asked for, one of the record package's two.

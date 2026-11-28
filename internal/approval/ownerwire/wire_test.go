@@ -651,6 +651,39 @@ func itoa(i int) string {
 	return string([]byte{digits[i/1000%10], digits[i/100%10], digits[i/10%10], digits[i%10]})
 }
 
+func TestCF07BindingTagWire(t *testing.T) {
+	l := sampleListing()
+	digest := record.Digest([]byte("the pending binding"))
+	l.Pending[0].BindingSHA256 = digest
+	raw, err := EncodeListing(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const key = `"binding_sha256"`
+	field := key + `:"` + digest + `"`
+	if !bytes.Contains(raw, []byte(field)) || bytes.Count(raw, []byte(key)) != 1 {
+		t.Fatalf("expected only the first pending row to carry the binding digest: %s", raw)
+	}
+	got, err := DecodeListing(raw)
+	if err != nil || !reflect.DeepEqual(got, l) {
+		t.Fatalf("listing round trip = %+v, %v; want %+v", got, err, l)
+	}
+
+	for name, value := range map[string]string{
+		"empty":     "",
+		"short":     digest[:63],
+		"long":      digest + "0",
+		"nonhex":    digest[:63] + "g",
+		"uppercase": strings.ToUpper(digest),
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := bytes.Replace(raw, []byte(field), []byte(key+`:"`+value+`"`), 1)
+			_, err := DecodeListing(bad)
+			refused(t, err, record.CodeRecordInvalid, "malformed binding digest")
+		})
+	}
+}
+
 func TestListingContent(t *testing.T) {
 	change := func(edit func(*Listing)) Listing {
 		l := sampleListing()
