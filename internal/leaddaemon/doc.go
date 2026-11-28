@@ -156,17 +156,24 @@
 //
 // Every operation takes strict params with the role, which must be the
 // config's. The errors add two codes to the protocol's, [CodeRefused] and
-// [CodeUnavailable]. A message is sent once per epoch: once the request frame
-// is written to the holder's control socket the message is spent, and an answer
-// that is lost is the uncertain result, not an error. A spent message stays
-// spent when the daemon is restarted inside the epoch: when canary mode starts
-// it reads back the inject-sent lines of the evidence, and an evidence file
-// that it cannot read back line by line refuses the start, at [StepState]. The
-// inject-sent line is written as soon as the frame is, before the wait for the
-// holder's answer, so a daemon killed while it waits leaves the epoch spent. A
-// line that cannot be written then is tried again after the wait; the message
-// counts as sent either way, and the log says so when the evidence does not
-// hold it. The ticket is written to the role's runtime folder for the console
+// [CodeUnavailable]. A message is sent once per epoch: once it is recorded (the
+// inject-sent line) the message is spent, and an answer that is lost is the
+// uncertain result, not an error. A spent message stays spent when the daemon
+// is restarted inside the epoch: when canary mode starts it reads back the
+// inject-sent lines of the evidence, and an evidence file that it cannot read
+// back line by line refuses the start, at [StepState]. The inject-sent line is
+// written before the request frame is, and no frame is written when the line
+// cannot be (the inject is then refused as failed, with the evidence line
+// evidence-unwritable, and spends nothing), so a daemon killed at any point
+// after the line leaves the epoch spent and a message the holder delivers is
+// always one the evidence knows. The line carries the effect id, the command
+// id of the frame, whose counter continues from the largest one the evidence
+// holds, so that a restarted daemon never repeats an id. A lead of scratch
+// mode whose socket could not be dialled writes an inject-refused line with
+// the code unsent, which frees the message again; the canary's message stays
+// spent.
+//
+// The ticket is written to the role's runtime folder for the console
 // and is in no answer and no evidence line. No file of the package imports the
 // injection tree.
 //

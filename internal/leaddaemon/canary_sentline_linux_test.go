@@ -4,8 +4,10 @@ package leaddaemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -76,8 +78,14 @@ func TestCanarySentLineIsWrittenWhileTheHolderWorks(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if l := c.lastEvidence(); l["event"] != "inject-sent" || l["message_id"] != "msg-one" || l["epoch"] != float64(started.Epoch) {
+	l := c.lastEvidence()
+	if l["event"] != "inject-sent" || l["message_id"] != "msg-one" || l["epoch"] != float64(started.Epoch) {
 		t.Fatalf("the last line while the holder works is %v", l)
+	}
+	// The line carries the id of the frame the holder has.
+	reqs := c.holder.requests(wire.OpInject)
+	if len(reqs) != 1 || l["effect_id"] == "" || l["effect_id"] != reqs[0].CommandID {
+		t.Fatalf("effect id %v, requests %+v", l["effect_id"], reqs)
 	}
 	select {
 	case a := <-done:
@@ -110,17 +118,20 @@ func TestCanarySentLineIsWrittenWhileTheHolderWorks(t *testing.T) {
 	}
 }
 
-// TestCallHolderThenCallsWrittenAfterTheFrame: written runs once, when the
-// holder has the whole frame and before the answer is read, and not at all
-// when nothing reached the holder.
+// TestCallHolderThenCallsWrittenAfterTheFrame: the record callback runs once,
+// before the socket is dialled and so before the holder has any frame, and the
+// frame follows it; when the callback fails nothing is dialled or written, and
+// when nothing can be dialled the callback has run and the stage says that
+// nothing was sent. (The name is the gate's from the time the line was written
+// after the frame.)
 func TestCallHolderThenCallsWrittenAfterTheFrame(t *testing.T) {
 	c := newCanaryEnv(t)
 	req := wire.Request{Op: wire.OpInject, Epoch: 1, MessageID: "msg-one", Text: "body text\n", CommandID: "sample-1"}
 
 	calls := 0
-	_, wrote, err := callHolderThen(context.Background(), c.holderDir, req, time.Second, time.Second, func() { calls++ })
-	if wrote || err == nil || calls != 0 {
-		t.Fatalf("no holder: wrote %v, err %v, %d calls", wrote, err, calls)
+	_, st, err := callHolderThen(context.Background(), c.holderDir, req, time.Second, time.Second, func() error { calls++; return nil })
+	if st != sendUnsent || err == nil || calls != 1 {
+		t.Fatalf("no holder: stage %v, err %v, %d calls", st, err, calls)
 	}
 
 	release := make(chan struct{})
@@ -131,31 +142,51 @@ func TestCallHolderThenCallsWrittenAfterTheFrame(t *testing.T) {
 	var once sync.Once
 	letGo := func() { once.Do(func() { close(release) }) }
 	t.Cleanup(letGo)
+
+	// A record that fails: no frame reaches the holder, and the holder is not
+	// dialled at all.
+	calls = 0
+	boom := errors.New("the evidence takes no line")
+	_, st, err = callHolderThen(context.Background(), c.holderDir, req, time.Second, time.Second, func() error { calls++; return boom })
+	if st != sendNotRecorded || !errors.Is(err, boom) || calls != 1 {
+		t.Fatalf("failed record: stage %v, err %v, %d calls", st, err, calls)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := len(holder.requests(wire.OpInject)); n != 0 {
+		t.Fatalf("%d frames reached the holder after a record that failed", n)
+	}
+
+	// A record that works runs while the holder has no frame, and the frame
+	// follows; the holder answers once the record is done.
+	calls = 0
 	seen := -1
-	resp, wrote, err := callHolderThen(context.Background(), c.holderDir, req, 2*time.Second, 10*time.Second, func() {
-		calls++
-		// The holder reads the frame the daemon has written; it has not
-		// answered, since its answer waits for the line below.
+	go func() {
+		// Lets the holder answer once the frame has reached it.
 		deadline := time.Now().Add(5 * time.Second)
 		for len(holder.requests(wire.OpInject)) == 0 && time.Now().Before(deadline) {
 			time.Sleep(time.Millisecond)
 		}
-		seen = len(holder.requests(wire.OpInject))
 		letGo()
+	}()
+	resp, st, err := callHolderThen(context.Background(), c.holderDir, req, 2*time.Second, 10*time.Second, func() error {
+		calls++
+		seen = len(holder.requests(wire.OpInject))
+		return nil
 	})
-	if err != nil || !wrote || !resp.OK || resp.Inject == nil {
-		t.Fatalf("%+v wrote %v err %v", resp, wrote, err)
+	if err != nil || st != sendWritten || !resp.OK || resp.Inject == nil {
+		t.Fatalf("%+v stage %v err %v", resp, st, err)
 	}
-	if calls != 1 || seen != 1 {
-		t.Fatalf("%d calls, %d requests at the holder when written ran", calls, seen)
+	if calls != 1 || seen != 0 {
+		t.Fatalf("%d calls, %d requests at the holder when the record ran", calls, seen)
+	}
+	if n := len(holder.requests(wire.OpInject)); n != 1 {
+		t.Fatalf("%d frames reached the holder", n)
 	}
 }
 
-// TestCanarySentLineThatCannotBeWritten: when the evidence takes no line the
-// message is still a sent one. The line is tried again, and when that fails
-// too the log says that the epoch is spent in this daemon unless the holder
-// answers that nothing was written (a lead of scratch mode frees it then), and
-// does not say "only", which a later answer of the holder would make untrue.
+// TestCanarySentLineThatCannotBeWritten: appendSent reports a closed file's
+// refusal, logs it and writes nothing; on a file that takes lines it writes the
+// inject-sent line with the effect id.
 func TestCanarySentLineThatCannotBeWritten(t *testing.T) {
 	c := newCanaryEnv(t)
 	open := func() *leadcanary.Evidence {
@@ -171,40 +202,36 @@ func TestCanarySentLineThatCannotBeWritten(t *testing.T) {
 		log.Reset()
 		return &canaryExt{ev: ev, logf: func(format string, a ...any) { fmt.Fprintf(&log, format+"\n", a...) }}
 	}
-	const lost = "the message of epoch 3 is sent and the evidence has no inject-sent line for it"
 
-	// A closed file takes no line: neither try writes one.
+	// A closed file takes no line.
 	closed := open()
 	if err := closed.Close(); err != nil {
 		t.Fatal(err)
 	}
 	x := ext(closed)
-	if x.recordSent("msg-one", 3) {
+	if err := x.appendSent("msg-one", 3, "lead-inject-3-aabbcc-1"); err == nil {
 		t.Fatal("a line was written to a closed file")
 	}
-	if !strings.Contains(log.String(), "canary evidence: inject-sent: ") || strings.Contains(log.String(), lost) {
-		t.Fatalf("log after the first try:\n%s", log.String())
-	}
-	x.sentUnrecorded("msg-one", 3)
-	if !strings.Contains(log.String(), lost) || !strings.Contains(log.String(), "stop the role before the daemon is restarted") ||
-		!strings.Contains(log.String(), "spent in this daemon unless the holder answers that nothing was written") ||
-		strings.Contains(log.String(), "this daemon only") {
-		t.Fatalf("the log does not say what is lost:\n%s", log.String())
+	if !strings.Contains(log.String(), "canary evidence: inject-sent: ") {
+		t.Fatalf("log:\n%s", log.String())
 	}
 	if spent, err := spentEpochs(c.cfg.EvidencePath(), canaryRoleText); err != nil || len(spent) != 0 {
 		t.Fatalf("spent %v, err %v", spent, err)
 	}
 
-	// The second try succeeds: the line is there and nothing is lost.
+	// An open file takes it, with the effect id.
 	ev := open()
 	defer ev.Close()
 	x = ext(ev)
-	x.sentUnrecorded("msg-one", 3)
-	if log.Len() != 0 {
-		t.Fatalf("log:\n%s", log.String())
+	if err := x.appendSent("msg-one", 3, "lead-inject-3-aabbcc-1"); err != nil || log.Len() != 0 {
+		t.Fatalf("err %v, log:\n%s", err, log.String())
 	}
 	spent, err := spentEpochs(c.cfg.EvidencePath(), canaryRoleText)
 	if err != nil || len(spent) != 1 || !spent[3] {
 		t.Fatalf("spent %v, err %v", spent, err)
+	}
+	data, err := os.ReadFile(c.cfg.EvidencePath())
+	if err != nil || !strings.Contains(string(data), `"effect_id":"lead-inject-3-aabbcc-1"`) {
+		t.Fatalf("err %v, evidence:\n%s", err, data)
 	}
 }

@@ -40,58 +40,80 @@ const (
 // was no usable answer (no answer in time, a closed connection, a frame that
 // does not decode); the caller must treat the request as delivered.
 func callHolder(ctx context.Context, dir string, req wire.Request, dial, wait time.Duration) (resp wire.Response, wrote bool, err error) {
-	return callHolderThen(ctx, dir, req, dial, wait, nil)
+	resp, st, err := callHolderThen(ctx, dir, req, dial, wait, nil)
+	return resp, st == sendWritten, err
 }
 
-// callHolderThen is callHolder that calls written, when it is not nil, as soon
-// as the request frame is written and before the wait for the answer starts:
-// the place for what must be on record whatever becomes of the answer. It
-// calls written at most once, on the caller's goroutine, and only when wrote
-// is true. The time written takes is not part of wait.
-func callHolderThen(ctx context.Context, dir string, req wire.Request, dial, wait time.Duration, written func()) (resp wire.Response, wrote bool, err error) {
+// callHolderThen is callHolder for a request that spends something: it calls
+// record, when it is not nil, first, before the socket is dialled and so
+// before any frame is written, and writes nothing to the holder when record
+// fails (see [runSend] for the order). The time record takes is not part of
+// dial or wait: the dial deadline starts after it.
+//
+// The stage says how far the call got (see [sendStage]); only sendWritten has
+// a frame at the holder, and then err is not nil when there was no usable
+// answer. At sendFrameFailed a part of the frame may have left, so the request
+// is to be treated as delivered. record is called at most once, on the
+// caller's goroutine.
+func callHolderThen(ctx context.Context, dir string, req wire.Request, dial, wait time.Duration, record func() error) (resp wire.Response, st sendStage, err error) {
 	payload, err := wire.EncodeRequest(req)
 	if err != nil {
-		return wire.Response{}, false, err
+		return wire.Response{}, sendNotStarted, err
 	}
-	dctx, cancel := context.WithTimeout(ctx, dial)
-	defer cancel()
-	conn, err := (&net.Dialer{}).DialContext(dctx, "unix", path.Join(dir, controlSocketName))
+	var (
+		conn   net.Conn
+		cancel = func() {}
+		stop   = func() bool { return false }
+	)
+	defer func() {
+		stop()
+		cancel()
+		if conn != nil {
+			conn.Close()
+		}
+	}()
+	st, err = runSend(sendSteps{
+		record: record,
+		connect: func() error {
+			var dctx context.Context
+			dctx, cancel = context.WithTimeout(ctx, dial)
+			c, err := (&net.Dialer{}).DialContext(dctx, "unix", path.Join(dir, controlSocketName))
+			if err != nil {
+				return err
+			}
+			conn = c
+			// A context that ends (the daemon is stopping) ends the exchange.
+			stop = context.AfterFunc(ctx, func() { c.SetDeadline(time.Unix(1, 0)) })
+			// The write shares the deadline of the dial: a context made by
+			// WithTimeout always has one, and it is the earlier of dial and
+			// the caller's own.
+			until, _ := dctx.Deadline()
+			return c.SetWriteDeadline(until)
+		},
+		frame: func() error {
+			return wire.NewWriter(conn, wire.ControlRequests).WriteFrame(wire.TypeRequest, payload)
+		},
+		await: func() error {
+			if err := conn.SetReadDeadline(time.Now().Add(wait)); err != nil {
+				return err
+			}
+			// A context that ended before this point had its past deadline
+			// overwritten by the ones set above: end the read now.
+			if ctx.Err() != nil {
+				conn.SetDeadline(time.Unix(1, 0))
+			}
+			fr, err := wire.NewReader(conn, wire.ControlResponses).Next()
+			if err != nil {
+				return err
+			}
+			resp, err = wire.DecodeResponse(fr.Payload)
+			return err
+		},
+	})
 	if err != nil {
-		return wire.Response{}, false, err
+		return wire.Response{}, st, err
 	}
-	defer conn.Close()
-	// A context that ends (the daemon is stopping) ends the exchange.
-	stop := context.AfterFunc(ctx, func() { conn.SetDeadline(time.Unix(1, 0)) })
-	defer stop()
-	// The write shares the deadline of the dial: a context made by WithTimeout
-	// always has one, and it is the earlier of dial and the caller's own.
-	until, _ := dctx.Deadline()
-	if err := conn.SetWriteDeadline(until); err != nil {
-		return wire.Response{}, false, err
-	}
-	if err := wire.NewWriter(conn, wire.ControlRequests).WriteFrame(wire.TypeRequest, payload); err != nil {
-		return wire.Response{}, false, err
-	}
-	if written != nil {
-		written()
-	}
-	if err := conn.SetReadDeadline(time.Now().Add(wait)); err != nil {
-		return wire.Response{}, true, err
-	}
-	// A context that ended before this point had its past deadline
-	// overwritten by the ones set above: end the read now.
-	if ctx.Err() != nil {
-		conn.SetDeadline(time.Unix(1, 0))
-	}
-	fr, err := wire.NewReader(conn, wire.ControlResponses).Next()
-	if err != nil {
-		return wire.Response{}, true, err
-	}
-	resp, err = wire.DecodeResponse(fr.Payload)
-	if err != nil {
-		return wire.Response{}, true, err
-	}
-	return resp, true, nil
+	return resp, st, nil
 }
 
 // openPrivateDir opens a folder by its handle, without following a link at its

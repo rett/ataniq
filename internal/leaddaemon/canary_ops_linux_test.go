@@ -584,7 +584,10 @@ func TestCanaryLostAnswersAreTheUncertainResult(t *testing.T) {
 	}
 }
 
-func TestCanaryNothingReachedTheHolderIsUnavailableAndKeepsTheMessage(t *testing.T) {
+// A socket that cannot be dialled is unavailable, with the sent line written
+// before the dial and the unsent line after it; the canary's message is spent
+// all the same.
+func TestCanaryNothingReachedTheHolderIsUnavailableAndSpendsTheMessage(t *testing.T) {
 	c := newCanaryEnv(t)
 	c.start()
 	c.define()
@@ -593,19 +596,22 @@ func TestCanaryNothingReachedTheHolderIsUnavailableAndKeepsTheMessage(t *testing
 	_, err := c.inject("m-1", "body text\n")
 	wantCode(t, err, CodeUnavailable)
 	lines := c.evidence()
-	if l := lines[len(lines)-1]; l["event"] != "inject-refused" || l["code"] != "holder-unreachable" {
-		t.Fatalf("line %v", l)
+	n := len(lines)
+	sent, unsent := lines[n-2], lines[n-1]
+	if sent["event"] != "inject-sent" || sent["message_id"] != "m-1" || sent["effect_id"] == "" {
+		t.Fatalf("line %v", sent)
 	}
-	for _, l := range lines {
-		if l["event"] == "inject-sent" {
-			t.Fatal("inject-sent was written for a frame that was not")
-		}
+	if unsent["event"] != "inject-refused" || unsent["code"] != "unsent" || unsent["message_id"] != "m-1" || unsent["effect_id"] != sent["effect_id"] {
+		t.Fatalf("line %v", unsent)
 	}
-	// The holder comes up: the same epoch takes its one message.
+	// The holder comes up: the canary's epoch takes no message.
 	c.holder = newFakeHolder(t, c.holderDir, submitted)
-	got, err := c.inject("m-1", "body text\n")
-	if err != nil || got.Result.Outcome != wire.InjectOutcomeSubmitted {
-		t.Fatalf("%+v %v", got, err)
+	_, err = c.inject("m-2", "body text\n")
+	if ce := wantCode(t, err, CodeRefused); ce.Message != msgSecond {
+		t.Fatalf("message %q", ce.Message)
+	}
+	if n := len(c.holder.requests(wire.OpInject)); n != 0 {
+		t.Fatalf("%d inject requests", n)
 	}
 }
 
