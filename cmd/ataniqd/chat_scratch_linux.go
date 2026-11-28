@@ -91,7 +91,8 @@ with the seat gate together:
                     settings, the roots, instance identity, the root marker, the gate's address,
                     key and pins, the daemon's socket path), read the registry
                     without repair, list the projects and leads awaiting
-                    home enrollment, and check one more path that
+                    home enrollment (counting leads whose keys are too long
+                    for the seat to show), and check one more path that
                     the start does not make, the socket paths of every lead's
                     holder (a holder meets that limit only when it starts);
                     print one line each, "pass" or "FAIL" with the reason,

@@ -272,7 +272,8 @@ func Run(ctx context.Context, cfg Config) error {
 		return nil
 	}
 
-	for _, warning := range reg.MissingHomeWarnings(canary.configuredRoles()) {
+	roles := canary.configuredRoles()
+	for _, warning := range visibleHomeWarnings(reg.MissingHomeWarnings(roles), roles) {
 		d.logf("warning: %s", warning)
 	}
 

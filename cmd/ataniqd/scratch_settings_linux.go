@@ -22,7 +22,6 @@ import (
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leaddaemon"
 	"ataniq/internal/leadholder/canaryroot"
-	"ataniq/internal/leadregistry"
 	"ataniq/internal/leadrole"
 )
 
@@ -683,7 +682,7 @@ func (a *app) ownerSettingsCheck(o *ownerFlags, cfg *leaddaemon.Config, p settin
 			for _, lead := range leads {
 				roles = append(roles, lead.Role)
 			}
-			warnings, err := leadregistry.ReadMissingHomesAt(root, binding, roles)
+			warnings, err := leaddaemon.ReadHomeWarningsAt(root, binding, roles)
 			for _, warning := range warnings {
 				fmt.Fprintf(w, "warning: %s\n", warning)
 			}
