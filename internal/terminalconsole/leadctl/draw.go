@@ -41,8 +41,7 @@ func cellWidth(r rune) int {
 }
 
 // The fixed rows of the view: three at the top and, when the window is tall
-// enough, five at the bottom (the rule, two rows of key hints, the prompt and
-// the receipt).
+// enough, at least five at the bottom (the rule, key hints, prompt and receipt).
 const (
 	headRows  = 4
 	footRows  = 5
@@ -54,7 +53,7 @@ func (m *Model) tableRows() int {
 	if m.h < minFooter {
 		return max(0, m.h-headRows-1)
 	}
-	return m.h - headRows - footRows
+	return m.h - headRows - footRows - (len(m.hintLines(m.w, m.h)) - 1)
 }
 
 // drawer writes cells of the view's region, by their place in the region,
@@ -278,6 +277,47 @@ func lastStyle(s Status) style {
 	return sText
 }
 
+// hintLines keeps each action with its refusal, wrapping between actions when
+// possible. Leave room for the cursor even in a short window.
+func (m *Model) hintLines(w, h int) []string {
+	if m.edit != nil {
+		return []string{strconv.Itoa(len(m.edit.text)) + " of " + strconv.Itoa(maxBody) + " bytes"}
+	}
+	l, ok := m.under()
+	if !ok || m.confirm != nil || l.Offline || l.unreadable() || l.HomeID != "" {
+		return []string{""}
+	}
+	lines := []string{""}
+	for _, hint := range [...]struct {
+		control Control
+		label   string
+	}{
+		{Control{Op: OpDefine}, "[d] define"}, {Control{Op: OpStart}, "[s] start"},
+		{Control{Op: OpStop}, "[x] stop"}, {Control{Op: OpInject}, "[m] message"},
+		{Control{Op: OpTicket, Writer: true}, "[w] attach as writer"}, {Control{Op: OpTicket}, "[v] attach as viewer"},
+	} {
+		label := hint.label
+		if a := l.availability(hint.control); !a.Offered {
+			if a.Reason == ReasonWriterOff {
+				// The key is off, not unoffered: the hint is the way to turn it on.
+				label = reasonText(a.Reason)
+			} else {
+				label += " (" + reasonText(a.Reason) + ")"
+			}
+		}
+		last := len(lines) - 1
+		if lines[last] != "" {
+			if len(lines[last])+2+len(label) > w-1 && len(lines) < h-headRows-footRows {
+				lines = append(lines, label)
+				continue
+			}
+			lines[last] += "  "
+		}
+		lines[last] += label
+	}
+	return lines
+}
+
 func (m *Model) drawFooter(d *drawer, w, h int) {
 	prompt, pst := m.promptLine()
 	if h < minFooter {
@@ -295,19 +335,20 @@ func (m *Model) drawFooter(d *drawer, w, h int) {
 		}
 		return
 	}
-	d.rule(h - 5)
-	hint1, hint2 := "[j/k] move  [r] read again  [esc] back", "[d] define  [s] start  [x] stop  [m] message  [w] attach as writer  [v] attach as viewer"
-	if l, ok := m.under(); !ok || l.Offline || l.unreadable() || l.HomeID != "" {
-		hint2 = ""
-	}
+	hints := m.hintLines(w, h)
+	rule := h - 4 - len(hints)
+	d.rule(rule)
+	navigation := "[j/k] move  [r] read again  [esc] back"
 	switch {
 	case m.edit != nil:
-		hint1, hint2 = "[enter] send once  [esc] drop it  [ctrl+u] clear", strconv.Itoa(len(m.edit.text))+" of "+strconv.Itoa(maxBody)+" bytes"
+		navigation = "[enter] send once  [esc] drop it  [ctrl+u] clear"
 	case m.confirm != nil:
-		hint1, hint2 = "[y] stop the lead  [any other key] keep it running", ""
+		navigation = "[y] stop the lead  [any other key] keep it running"
 	}
-	d.put(1, h-4, w-1, hint1, d.style(sDim))
-	d.put(1, h-3, w-1, hint2, d.style(sDim))
+	d.put(1, rule+1, w-1, navigation, d.style(sDim))
+	for i, line := range hints {
+		d.put(1, rule+2+i, w-1, line, d.style(sDim))
+	}
 	last, lst := m.receiptText(), sText
 	if m.status != nil {
 		lst = lastStyle(m.status.Status)

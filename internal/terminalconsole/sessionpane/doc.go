@@ -11,7 +11,12 @@
 // them: the screen is at most [MaxCols] by [MaxRows], and scrollback is
 // disabled by default. With [Options.RecentOutput] the main screen keeps
 // [RecentRowLimit] scrolled rows and paging can hold one such window while
-// new rows arrive. The alternate screen keeps none. A frame held for synchronized
+// new rows arrive. The alternate screen keeps none. With [Options.RecentRows]
+// (the holder's pane) the pane instead keeps a ring of scrolled main-screen
+// rows for the whole epoch, bounded in rows and bytes and stored encoded
+// ([EncodeRecentRow]); [Pane.SetSensitive] makes the rows that scroll while
+// it is on an omitted interval with no content, and [Pane.Recent] copies the
+// ring (see recentring.go). A frame held for synchronized
 // output is one copy of the screen, and the title is at most [MaxTitle]
 // bytes. The patched x/vt bounds
 // the rest: a cell keeps at most 64 bytes of a grapheme cluster, only a fixed

@@ -11,12 +11,27 @@ import (
 	"testing"
 	"time"
 
+	"ataniq/internal/approval/card"
 	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/approval/record"
 	"ataniq/internal/approval/webauthntest"
 	"ataniq/internal/seatapp"
 	"ataniq/internal/seatgate"
 )
+
+func TestCF07SeatTagView(t *testing.T) {
+	const digest = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+	for _, tc := range []struct{ digest, tag string }{
+		{digest, "marsh candle koala lotus"},
+		{digest[:63] + "g", ""},
+		{"", ""},
+	} {
+		v := viewOf(card.Card{BindingSHA256: tc.digest})
+		if v.BindingSHA256 != tc.digest || v.BindingTag != tc.tag {
+			t.Errorf("viewOf(%q) gave digest %q and tag %q, want tag %q", tc.digest, v.BindingSHA256, v.BindingTag, tc.tag)
+		}
+	}
+}
 
 // hostileNote is a lead's note made to break a page or a terminal: markup, a
 // link, terminal controls and a direction override.

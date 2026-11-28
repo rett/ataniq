@@ -25,7 +25,8 @@
 // one-line editor for a message to the lead, for the epoch the row shows;
 // Enter sends it once, Esc drops it, and every printable key, q and j
 // included, is text. w and v ask for an attach ticket as a writer or as a
-// viewer, and when the receipt is done the view asks the parent to attach
+// viewer (a backend that offers no writer says so by Availability, and the
+// hint then says why instead of showing the key), and when the receipt is done the view asks the parent to attach
 // (Action.Attach: the folder and ticket file the receipt carries). r reads
 // the list again, Esc closes the view and ctrl+c quits, dropping an open
 // field first.

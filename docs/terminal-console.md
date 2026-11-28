@@ -415,8 +415,22 @@ needs its own offer. For `d`, `s`, `x` and `m` these are `lead.define`,
 `lead.start`, `lead.stop` and `lead.inject`, respectively. Both `w` (writer)
 and `v` (viewer) need `lead.ticket`. When the hello includes `ticket_roles`,
 it names the roles available. Without that field, `lead.ticket` suffices for
-a viewer ticket. A writer ticket also needs `lead.list`, `lead.define`,
-`lead.start`, `lead.stop` and `lead.inject`.
+a viewer ticket.
+
+The leads view is viewer-only unless the console was started with
+`--scratch-writer`. Without the flag the hint has no `[w]`: it says "writer
+off: start with --scratch-writer" in its place, `w` shows the same words and
+sends nothing, and the console never asks the daemon for a writer ticket,
+whatever the daemon offers. With the flag, `w` is offered for a scratch lead
+(a row of the daemon's own scratch directory, never a row of a managed
+directory, which takes no commands) when the daemon offers the writer role:
+`ticket_roles` lists `writer`, or, with no `ticket_roles`, the hello lists the
+whole legacy scratch interface (`lead.list`, `lead.define`, `lead.start`,
+`lead.stop`, `lead.inject` and `lead.ticket`). A hello without `ticket_roles`
+never offers a writer by itself. A writer attach made this way is a viewer
+for good once it loses the writer role (the holder released it or dropped it):
+it reconnects with viewer tickets that the console asks the daemon for, and
+never asks for the writer again; ask again with `w`.
 
 If the connection lacks the operation or ticket role for a new command,
 the client sends nothing. The receipt line names the action, for example
@@ -502,7 +516,7 @@ error is never drawn.
 | s | Start it. |
 | x | Ask "Stop KEY (epoch N)?"; only y stops it, any other key keeps it running. |
 | m | Open a one-line editor for a message to the lead, for the epoch the row shows. Enter sends it once, Esc drops it, Ctrl+U clears it, and every printable key, q and j included, is text. It holds at most 2048 bytes, the daemon's limit, and stops taking text there. |
-| w, v | Ask for an attach ticket as a writer or as a viewer (below). |
+| w, v | Ask for an attach ticket as a writer or as a viewer (below). `w` works only with `--scratch-writer`; without it the key only says "writer off: start with --scratch-writer". |
 | r | Read the list again now. The view also reads it every two seconds by itself while a receipt is in progress and while a lead is `starting` or `stopping`, so a started lead turns `ready` without this key, and stops reading when none is. A lead that is `unknown` is not read by a timer: press this key to see a launch that the daemon has settled since. |
 | Esc | Close the view. |
 | Ctrl+C | Quit, dropping an open field first. |
@@ -755,7 +769,7 @@ See `internal/terminalconsole/pairview`.
 ```
 ataniq-console --demo [--theme dark|light] [--return-key ctrl+KEY] [--recording NAME] [--linger DURATION] [--no-bell]
 ataniq-console --attach DIR --ticket-file FILE [--viewer] [--shift-enter esc-cr|lf|csi-u|backslash-cr] [--theme dark|light] [--return-key ctrl+KEY]
-ataniq-console --daemon DIR [--theme dark|light] [--no-bell]
+ataniq-console --daemon DIR [--scratch-writer] [--theme dark|light] [--no-bell]
 ```
 
 - `--demo` starts the cockpit with sample cards that change nothing. Without it, `--attach` or `--daemon` the
@@ -782,6 +796,9 @@ ataniq-console --daemon DIR [--theme dark|light] [--no-bell]
   holds the daemon's socket. It cannot be combined with `--demo`, `--attach`,
   `--recording`, `--linger`, `--return-key`, `--ticket-file`, `--viewer` or
   `--shift-enter`. See [The daemon view](#the-daemon-view).
+- `--scratch-writer` needs `--daemon`. It lets the leads view offer the writer
+  attach (`w`) for scratch leads. Without it the leads view is viewer-only. See
+  [Lead control](#lead-control-scratch-daemon-only).
 - `--no-bell` does not ring the terminal's bell when a card arrives while
   you are away. It needs `--demo` or `--daemon`.
 - `--theme dark|light` chooses the appearance. The default is dark.

@@ -169,6 +169,7 @@ func sampleCard() Card {
 		ID: testCardID, Project: "ataniq", Role: "lead", Verb: "feature finish", Feature: "seat-glue",
 		Target: "develop", Class: "ref-move", Asked: at, Expires: at.Add(4 * time.Hour),
 		BindingSHA256: strings.Repeat("ab", 32),
+		BindingTag:    "silver lotus river aurora",
 		Plan:          []Lead{NewLead("Merge the seat glue."), NewLead("Then run the suite.")},
 		Refs:          []Ref{{Kind: "update", Ref: NewLead("refs/heads/develop"), Old: strings.Repeat("1", 40), New: strings.Repeat("2", 40)}},
 		Diff: &Diff{Files: 2, Added: 10, Removed: 3, Truncated: true, Rows: []PathRow{

@@ -45,6 +45,19 @@
 // the digest of a Check) is required: a payload that lacks it, or has it
 // null, is refused, not decoded as zero.
 //
+// # History
+//
+// A History frame ([TypeHistory], holder to client) carries the rows that
+// scrolled off the holder's main screen, for a console that attaches after a
+// drop: a version byte, the output position at which the ring was read, the
+// number of the oldest row, and entries that are encoded rows (opaque here)
+// or omitted intervals with no content ([History], [EncodeHistory],
+// [DecodeHistory]). Its decoder is strict and bounded ([MaxHistoryPayload],
+// [MaxHistoryRows], [MaxHistoryRowBytes]) and another version is
+// [ErrHistoryVersion]; [History.Fit] cuts a ring that is over the caps from
+// its oldest end and says so in the oldest number. The holder does not send
+// the frame yet, and a client treats one as out of order.
+//
 // # Protocol errors
 //
 // A frame that breaks the protocol (a type its direction lacks, a length over

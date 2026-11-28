@@ -189,6 +189,15 @@ type Config struct {
 	// 12 queries; nil entries are neutral. See Session.SetColours.
 	Colours sessionpane.Colours
 
+	// RecentRows is the bound, in rows, of the ring of recent output that the
+	// holder's pane keeps for a console that attaches later (see
+	// sessionpane.Options.RecentRows). Zero, the default, keeps no ring:
+	// nothing serves it yet, and it costs memory and changes the pane's
+	// slicing of output. A positive number enables it with that bound;
+	// sessionpane.DefaultRecentRows is the provisional value for a caller that
+	// opts in.
+	RecentRows int
+
 	// RoleLock is the path of the role's lock file. Unless HeldRoleLock is
 	// given, Start takes an exclusive non-blocking flock on it (creating it
 	// with mode 0600) before the PTY is opened, and holds it until Close.
@@ -384,8 +393,9 @@ func Start(cfg Config) (_ *Session, err error) {
 	s.replies.init()
 	s.replies.owner = s
 	s.pane = sessionpane.New(cols, rows, sessionpane.Options{
-		Replies: s.replies.push,
-		Colours: cfg.Colours,
+		Replies:    s.replies.push,
+		Colours:    cfg.Colours,
+		RecentRows: max(cfg.RecentRows, 0),
 	})
 	// The handlers are set before the agent starts, so that no output reaches
 	// the pane without them.

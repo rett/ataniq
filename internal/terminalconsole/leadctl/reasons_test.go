@@ -221,6 +221,7 @@ func TestNoWordsForACodeNothingSends(t *testing.T) {
 		"not-listed": true, "conflict": true, "invalid-request": true,
 		"define-not-offered": true, "start-not-offered": true, "stop-not-offered": true,
 		"inject-not-offered": true, "viewer-ticket-not-offered": true, "writer-ticket-not-offered": true,
+		"messages-off": true, "offline": true, ReasonWriterOff: true,
 	}
 	for _, c := range daemonCodes(t) {
 		sent[c] = true
