@@ -193,14 +193,55 @@ func (d Desired) validate() error {
 	return nil
 }
 
-// StaleStateError reports the same-epoch state mismatch that refused a write.
+// Expectation is what a caller observed of a role's shown value before it
+// decided on a write in the same epoch. The registry compares it under the
+// write lock that commits the record, so a decision made from an old
+// observation cannot overwrite a newer one. Name it in every call: use
+// ExpectShown with the entry the decision was made from, or NoExpectation
+// when no state the registry can change is part of the decision. The zero
+// value is NoExpectation.
+//
+// The whole Shown value is compared, not the state alone: the state, the
+// reason code and detail, the time it was set, the evidence kind and the
+// proof. A caller that publishes a reason for the state it observed (the
+// health poll's degraded with its reason) must see a same-state rewrite
+// with another reason as a newer decision, and the time set stands in for a
+// per-role revision without a new journal field: every write of the shown
+// value stamps it.
+type Expectation struct {
+	shown Shown
+	set   bool
+}
+
+// ExpectShown expects the shown value of the current epoch to be shown.
+func ExpectShown(shown Shown) Expectation { return Expectation{shown: shown, set: true} }
+
+// NoExpectation states that the write decides from nothing the registry can
+// have changed since the caller looked, and compares nothing.
+func NoExpectation() Expectation { return Expectation{} }
+
+func (x Expectation) validate() error {
+	if !x.set {
+		return nil
+	}
+	return x.shown.State.validate()
+}
+
+func (s Shown) equal(o Shown) bool {
+	return s.State == o.State && s.Reason == o.Reason && s.At.Equal(o.At) &&
+		s.Evidence == o.Evidence && s.Proof == o.Proof
+}
+
+// StaleStateError reports the same-epoch mismatch of the shown value that
+// refused a write.
 type StaleStateError struct {
-	Expected State
-	Current  State
+	Expected Shown
+	Current  Shown
 }
 
 func (e *StaleStateError) Error() string {
-	return fmt.Sprintf("%v: expected %s, current %s", ErrStaleState, e.Expected, e.Current)
+	return fmt.Sprintf("%v: expected %s (%s), current %s (%s)", ErrStaleState,
+		e.Expected.State, e.Expected.Reason.Code, e.Current.State, e.Current.Reason.Code)
 }
 
 func (e *StaleStateError) Unwrap() error { return ErrStaleState }
