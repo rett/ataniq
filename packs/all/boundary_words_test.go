@@ -43,7 +43,7 @@ func boundaryWords(t *testing.T) []pack.Word {
 		words = append(words, m.Words...)
 	}
 	for _, model := range strings.Fields(boundaryData(t, "model-words.txt")) {
-		words = append(words, pack.Word{Text: model, Match: "token"})
+		words = append(words, pack.Word{Text: model, Match: "model"})
 	}
 	return words
 }
@@ -97,12 +97,13 @@ func TestBoundaryWordsD36Retirement(t *testing.T) {
 
 // A token is a run of letters and digits, split at a lower-to-upper case
 // transition. Keep the original case until those boundaries are known.
-func wordTokens(src string) map[string]bool {
+// Model names have numeric versions, so a digit also ends a model token.
+func wordTokens(src string, includeDigits bool) map[string]bool {
 	tokens := map[string]bool{}
 	var prev rune
 	start := -1
 	for i, r := range src {
-		word := unicode.IsLetter(r) || unicode.IsDigit(r)
+		word := unicode.IsLetter(r) || (includeDigits && unicode.IsDigit(r))
 		if start >= 0 && (!word || (unicode.IsLower(prev) && unicode.IsUpper(r))) {
 			tokens[strings.ToLower(src[start:i])] = true
 			start = -1
@@ -140,7 +141,8 @@ func findBoundaryWords(repo fs.FS, words []pack.Word, allow map[wordHit]bool) ([
 			return err
 		}
 		src := string(b)
-		lower, tokens := strings.ToLower(src), wordTokens(src)
+		lower, tokens := strings.ToLower(src), wordTokens(src, true)
+		models := wordTokens(src, false)
 		for _, w := range words {
 			var match bool
 			switch w.Match {
@@ -150,6 +152,8 @@ func findBoundaryWords(repo fs.FS, words []pack.Word, allow map[wordHit]bool) ([
 				match = strings.Contains(src, w.Text)
 			case "token":
 				match = tokens[strings.ToLower(w.Text)]
+			case "model":
+				match = models[strings.ToLower(w.Text)]
 			default:
 				return fmt.Errorf("unknown match mode %q for %q", w.Match, w.Text)
 			}
@@ -212,5 +216,20 @@ func TestBoundaryWordsUnusedAllow(t *testing.T) {
 	_, err := findBoundaryWords(repo, words, allow)
 	if err == nil || err.Error() != "unused allow.txt entries: core/gone.go amp, core/live.go codex" {
 		t.Fatalf("stale allowances: %v", err)
+	}
+}
+
+func TestBoundaryWordsModelVersions(t *testing.T) {
+	words := []pack.Word{{Text: "gpt", Match: "model"}, {Text: "fable", Match: "model"}, {Text: "amp", Match: "token"}}
+	repo := fstest.MapFS{
+		"a.go": {Data: []byte("gpt5")},
+		"b.go": {Data: []byte("GPT4o")},
+		"c.go": {Data: []byte("myFable5Client")},
+		"d.go": {Data: []byte("amp2 lamp2 mygpt5")},
+	}
+	got, err := findBoundaryWords(repo, words, nil)
+	want := []wordHit{{"a.go", "gpt"}, {"b.go", "gpt"}, {"c.go", "fable"}}
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("model version hits = %v, %v; want %v", got, err, want)
 	}
 }
