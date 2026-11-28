@@ -198,10 +198,17 @@ const (
 	colLast  = 28
 )
 
+func (l Lead) label() string {
+	if l.HomeID != "" {
+		return safeID(l.HomeID, maxRole) + "/" + l.Key
+	}
+	return l.Key
+}
+
 func (m *Model) drawTable(d *drawer, w, h int) {
 	keyW := 4
 	for _, l := range m.leads {
-		keyW = max(keyW, len(l.Key))
+		keyW = max(keyW, len(l.label()))
 	}
 	keyW = min(keyW, 24)
 	hdr := pad("KEY", keyW+2) + pad("STATE", colState) + pad("EPOCH", colEpoch) + pad("MSG", colMsg) + pad("LAST RECEIPT", colLast) + "UNIT"
@@ -225,12 +232,22 @@ func (m *Model) drawTable(d *drawer, w, h int) {
 		if state == "" {
 			state = "-"
 		}
-		if _, busy := m.busy[l.Role]; busy {
+		if l.Offline {
+			state = "stale"
+		} else if _, busy := m.busy[l.Role]; busy && l.HomeID == "" {
 			state += "*"
 		}
 		x := 3
-		x += d.put(x, row, w-x, pad(l.Key, keyW)+"  ", d.style(sText))
+		x += d.put(x, row, w-x, pad(l.label(), keyW)+"  ", d.style(sText))
 		x += d.put(x, row, w-x, pad(state, colState), d.style(sText))
+		if l.unreadable() {
+			reason := "invalid lead data"
+			if l.StateReason == "client/invalid-last-receipt" {
+				reason = "invalid last receipt"
+			}
+			d.put(x, row, w-x, reason, d.style(sWarn))
+			continue
+		}
 		x += d.put(x, row, w-x, pad(epoch, colEpoch), d.style(sText))
 		x += d.put(x, row, w-x, pad(msgWord(l, m.deliveryOf(l)), colMsg), d.style(sText))
 		last, st := "-", sDim
@@ -280,6 +297,9 @@ func (m *Model) drawFooter(d *drawer, w, h int) {
 	}
 	d.rule(h - 5)
 	hint1, hint2 := "[j/k] move  [r] read again  [esc] back", "[d] define  [s] start  [x] stop  [m] message  [w] attach as writer  [v] attach as viewer"
+	if l, ok := m.under(); !ok || l.Offline || l.unreadable() || l.HomeID != "" {
+		hint2 = ""
+	}
 	switch {
 	case m.edit != nil:
 		hint1, hint2 = "[enter] send once  [esc] drop it  [ctrl+u] clear", strconv.Itoa(len(m.edit.text))+" of "+strconv.Itoa(maxBody)+" bytes"
@@ -309,11 +329,11 @@ func (m *Model) drawFooter(d *drawer, w, h int) {
 func (m *Model) promptLine() (string, style) {
 	switch {
 	case m.confirm != nil:
-		which := "epoch " + itoa(m.confirm.epoch)
-		if m.confirm.epoch == 0 {
+		which := "epoch " + itoa(m.confirm.Epoch)
+		if m.confirm.Epoch == 0 {
 			which = "the current epoch"
 		}
-		return "Stop " + m.confirm.key + " (" + which + ")?", sWarn
+		return "Stop " + m.confirm.Key + " (" + which + ")?", sWarn
 	case m.note != "":
 		return m.note, sWarn
 	}
@@ -374,11 +394,13 @@ func (m *Model) unknownLeads() unknownKind {
 // none takes the row's). A row at another epoch than the receipt's, or with
 // none, says nothing of the receipt's message: the lead has moved on.
 func (m *Model) heldFor(r Receipt) held {
-	if !m.statusListed || m.statusRole == "" {
+	if !m.statusListed {
 		return heldUnknown
 	}
 	for _, l := range m.leads {
-		if l.Role != m.statusRole {
+		id := l.identity()
+		id.Epoch = m.statusTarget.Epoch
+		if l.Offline || id != m.statusTarget {
 			continue
 		}
 		switch {
@@ -398,7 +420,7 @@ func (m *Model) heldFor(r Receipt) held {
 // with a mark where the next character goes.
 func (m *Model) drawEditor(d *drawer, y, w int) {
 	e := m.edit
-	label := "message to " + e.key + " (epoch " + itoa(e.epoch) + ")> "
+	label := "message to " + e.Key + " (epoch " + itoa(e.Epoch) + ")> "
 	x := 1 + d.put(1, y, w-1, label, d.style(sAccent))
 	room := w - x - 1
 	if room <= 0 {

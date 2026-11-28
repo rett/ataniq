@@ -19,7 +19,9 @@
 // same in both builds: it waives nothing and gives the service no deliverer.
 //
 // The state folder. The holder writes holder.json (its pid and start ticks, the
-// epoch and launch intent it was given) before the agent starts, and
+// epoch and launch intent it was given, and its own build identity, read from
+// /proc/<pid>/exe and never from argv[0]; see internal/leadholder/buildid)
+// before the agent starts, and
 // session.Start's final record final.json when the session is over. Before it
 // writes holder.json for a new epoch it renames a final.json that an earlier
 // epoch left to final.json.previous, replacing an older one, so that final.json
@@ -56,6 +58,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/eventlog"
 	"ataniq/internal/leadholder/ptyhost"
 	"ataniq/internal/leadholder/serve"
@@ -131,6 +134,9 @@ type deps struct {
 	// it keeps for the end. It is for tests, which start a second holder
 	// there.
 	beforeLockRelease func()
+	// build reads the holder's own build identity; nil reads it from the
+	// executable this process runs, /proc/<pid>/exe (buildid.OfProcess).
+	build func() (buildid.Identity, error)
 	// canary holds the seams of canary mode. It is empty in a build without
 	// the ataniq_canary tag.
 	canary canaryDeps
@@ -321,6 +327,17 @@ func run(args []string, d deps) int {
 	if err != nil {
 		return refuse("cannot read this process's start time: %v", err)
 	}
+	// The build of the executable that runs, never of the path argv[0]
+	// names: holder.json and the event log's start event record it, and a
+	// launcher compares it with the build it expects.
+	readBuild := d.build
+	if readBuild == nil {
+		readBuild = func() (buildid.Identity, error) { return buildid.OfProcess(os.Getpid()) }
+	}
+	build, err := readBuild()
+	if err != nil {
+		return refuse("cannot read this holder's own build identity: %v", err)
+	}
 
 	// The refusals of the mode that write nothing (canary mode reads its
 	// inputs and looks at the roots and paths) come before the role lock is
@@ -402,7 +419,7 @@ func run(args []string, d deps) int {
 		Version: stateFileVersion, Role: cfg.role, Epoch: cfg.epoch, LaunchIntent: cfg.launchIntent,
 		Runtime: cfg.runtime, RuntimeVersion: cfg.runtimeVersion, ProfileDigest: cfg.profileDigest,
 		Tree: cfg.tree, Pid: os.Getpid(), PidStartTicks: ticks, Started: d.now().UTC(),
-		Cols: cfg.cols, Rows: cfg.rows, Agent: cfg.argv[0],
+		Cols: cfg.cols, Rows: cfg.rows, Agent: cfg.argv[0], Build: build,
 	}
 	mode.state(&st)
 	if err := writeStateFile(cfg.stateDir, st); err != nil {
@@ -410,7 +427,7 @@ func run(args []string, d deps) int {
 	}
 
 	scfg := session.Config{
-		Role: cfg.role, Epoch: strconv.FormatUint(cfg.epoch, 10),
+		Role: cfg.role, Epoch: strconv.FormatUint(cfg.epoch, 10), Build: build.Token(),
 		Argv: cfg.argv, Env: cfg.env, Dir: cfg.tree, Cols: cfg.cols, Rows: cfg.rows,
 		RoleLock: cfg.roleLock, HeldRoleLock: lock, StateDir: cfg.stateDir, Log: log,
 	}
@@ -443,7 +460,7 @@ func run(args []string, d deps) int {
 	vcfg := serve.Config{
 		Session: sess, Dir: cfg.runtimeDir, Lead: cfg.role, Epoch: cfg.epoch,
 		Runtime: cfg.runtime, RuntimeVersion: cfg.runtimeVersion, Log: log, DaemonLock: cfg.daemonLock,
-		Now: d.now,
+		Now: d.now, PackIdentities: registeredIdentities,
 	}
 	mode.serve(sess, &vcfg)
 	if d.tweakServe != nil {

@@ -21,7 +21,10 @@ import (
 	"ataniq/internal/terminalconsole/sessionpane"
 )
 
-const wait = 5 * time.Second
+// wait bounds how long a test waits for something it expects to happen. It
+// is a liveness bound, not a timing assertion: a passing run never waits it
+// out, so it is generous for a host under load.
+const wait = 30 * time.Second
 
 // ---------------------------------------------------------------------------
 // The scripted holder: the holder's side of the attach protocol, written from
@@ -105,11 +108,24 @@ func (h *holder) dial(ctx context.Context, path string) (net.Conn, error) {
 		return d.DialContext(ctx, "unix", path)
 	}
 	a, b := net.Pipe()
-	h.adopt(b)
-	return a, nil
+	hc := h.adopt(b)
+	return &countedConn{Conn: a, writes: &hc.writes}, nil
 }
 
-func (h *holder) adopt(nc net.Conn) {
+// countedConn is the client's end of a pipe, counting the writes that have
+// begun: a write that blocks on a holder that does not read has begun, so the
+// count says the sender is stuck in it.
+type countedConn struct {
+	net.Conn
+	writes *atomic.Int64
+}
+
+func (c *countedConn) Write(b []byte) (int, error) {
+	c.writes.Add(1)
+	return c.Conn.Write(b)
+}
+
+func (h *holder) adopt(nc net.Conn) *hconn {
 	h.accepts.Add(1)
 	hc := &hconn{t: h.t, nc: nc, frames: make(chan hframe, 256)}
 	h.mu.Lock()
@@ -131,6 +147,7 @@ func (h *holder) adopt(nc net.Conn) {
 		h.conns <- hc
 	}
 	go hc.readLoop()
+	return hc
 }
 
 // accept returns the next connection the client made, with its Hello read.
@@ -172,6 +189,8 @@ type hframe struct {
 
 type hconn struct {
 	gate   atomic.Pointer[chan struct{}]
+	park   atomic.Pointer[parkAfter]
+	writes atomic.Int64 // writes the client began on a pipe (see countedConn)
 	t      *testing.T
 	nc     net.Conn
 	pane   *sessionpane.Pane
@@ -193,6 +212,44 @@ func (hc *hconn) resume() {
 	if p := hc.gate.Swap(nil); p != nil {
 		close(*p)
 	}
+	if p := hc.park.Swap(nil); p != nil {
+		p.once.Do(func() { close(p.release) })
+	}
+}
+
+// parkAfter is a hold on the reader that takes effect at a known frame: the
+// reader parks right after it has delivered the first frame of the type, and
+// not before. pause cannot say that: it holds the reader at its next look at
+// the gate, which may be before or after it has read one more frame.
+type parkAfter struct {
+	typ     byte
+	parked  chan struct{} // closed when the reader has delivered the frame and stopped
+	release chan struct{}
+	once    sync.Once
+	fired   atomic.Bool
+}
+
+// holdAfter arms the hold before the client sends a frame of type typ. The
+// returned channel is closed once the holder has read that frame, delivered
+// it to next, and stopped reading: the frame is acknowledged and the client's
+// next write blocks on a pipe. resume lets the reader go.
+func (hc *hconn) holdAfter(typ byte) <-chan struct{} {
+	p := &parkAfter{typ: typ, parked: make(chan struct{}), release: make(chan struct{})}
+	hc.park.Store(p)
+	return p.parked
+}
+
+// untilWrites waits until the client has begun n writes on the connection,
+// the Hello among them.
+func (hc *hconn) untilWrites(n int64) {
+	hc.t.Helper()
+	deadline := time.Now().Add(wait)
+	for hc.writes.Load() < n {
+		if time.Now().After(deadline) {
+			hc.t.Fatalf("the client began %d writes, want %d", hc.writes.Load(), n)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func (hc *hconn) readLoop() {
@@ -211,6 +268,10 @@ func (hc *hconn) readLoop() {
 		if first {
 			first = false
 			hc.publish()
+		}
+		if p := hc.park.Load(); p != nil && p.typ == f.Type && p.fired.CompareAndSwap(false, true) {
+			close(p.parked)
+			<-p.release
 		}
 	}
 }
@@ -416,14 +477,15 @@ type env struct {
 }
 
 type setup struct {
-	mode       leadattach.Mode
-	pipe       bool
-	shiftEnter leadattach.ShiftEnter
-	write      time.Duration
-	handshake  time.Duration
-	noStart    bool
-	tickets    int
-	mutate     func(*leadattach.Config)
+	mode          leadattach.Mode
+	pipe          bool
+	viewerTickets leadattach.TicketSource
+	shiftEnter    leadattach.ShiftEnter
+	write         time.Duration
+	handshake     time.Duration
+	noStart       bool
+	tickets       int
+	mutate        func(*leadattach.Config)
 }
 
 func newEnv(t *testing.T, s setup) *env {
@@ -443,7 +505,11 @@ func newEnv(t *testing.T, s setup) *env {
 	if s.mutate != nil {
 		s.mutate(&cfg)
 	}
-	e.c = leadattach.New(cfg)
+	if s.viewerTickets != nil {
+		e.c = leadattach.NewViewer(cfg, s.viewerTickets)
+	} else {
+		e.c = leadattach.New(cfg)
+	}
 	t.Cleanup(e.c.Close)
 	e.tickets.give(s.tickets)
 	if s.noStart {

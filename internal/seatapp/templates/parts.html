@@ -1,4 +1,12 @@
 {{define "standin"}}<p class="banner" role="note"><strong>STAND-IN</strong> Scratch only: the desk runs a stand-in door on scratch state. Nothing here is a real approval.</p>{{end}}
+{{define "standin-chat"}}<p class="banner" role="note"><strong>STAND-IN</strong> These leads and conversations are samples held by the phone trial. No real lead is read, and nothing here is an approval.</p>{{end}}
+{{define "nav"}}<nav aria-label="Main">
+<ul class="nav">
+<li><a id="nav-cards" href="{{mount}}/cards/"{{if eq .Current "cards"}} aria-current="page"{{end}}>Cards</a></li>
+{{if .Projects}}<li><a id="nav-projects" href="{{mount}}/projects/"{{if eq .Current "projects"}} aria-current="page"{{end}}>Projects</a></li>
+{{end}}{{if .Leads}}<li><a id="nav-leads" href="{{mount}}/leads/"{{if eq .Current "leads"}} aria-current="page"{{end}}>Leads</a></li>
+{{end}}{{/* Section links use locally available offers. The active section alone marks its link current. */}}</ul>
+</nav>{{end}}
 {{define "readonly"}}<p class="readonly">Approve or deny on the card's own page, or at the desk.</p>{{end}}
 {{define "leave"}}<footer class="leave">
 <p><button id="logout" type="button" class="quiet" hidden>Log out</button></p>
@@ -10,6 +18,11 @@
 <div id="watch" data-live="{{if .Live}}yes{{else}}no{{end}}" data-version="{{.Version}}"{{if .Card}} data-card="{{.Card}}" data-binding="{{.Binding}}"{{else if .Still}} data-still="yes"{{end}}></div>
 <script src="/static/watch.js"></script>{{end}}
 
+{{/* The Leads pages' stream: the view is named by data-view, never by the page's address. */}}
+{{define "watch-leads"}}<p id="watch-status" role="status" aria-live="polite"></p>
+<div id="watch" data-view="leads" data-live="{{if .Live}}yes{{else}}no{{end}}" data-chat="{{num .Chat}}" data-page="{{if .Conversation}}conversation{{else}}directory{{end}}"{{if .Follow}} data-follow="{{num .After}}"{{end}}></div>
+<script src="/static/watch.js"></script>{{end}}
+
 {{define "push"}}<section id="notices" aria-labelledby="notices-h">
 <h2 id="notices-h">Notices</h2>
 <p>Notices work only from the Home Screen app on iPhone. Add this page to your Home Screen, open it from there, then tap Enable.</p>
@@ -17,3 +30,72 @@
 <p id="notices-status" role="status" aria-live="polite"></p>
 </section>
 <script src="/static/push.js"></script>{{end}}
+
+{{define "projects"}}<section id="projects" aria-labelledby="projects-h">
+<h2 id="projects-h">New projects</h2>
+{{if .Listed}}{{with .Threads}}<p>Projects in progress:</p>
+<ul class="cards">
+{{range .}}<li><a href="{{mount}}{{projectHref .Thread ""}}">
+<span class="what">{{if mount}}{{text instance maxName}} · {{end}}Project {{short .Thread}}</span>
+<span class="meta">{{if eq .State "summary"}}Ready to review your answers.{{else}}Round {{num .Round}} of {{num .Of}}.{{end}} {{num .Filled}} of {{num .Total}} required answers given.</span>
+</a></li>
+{{end}}</ul>
+{{else}}<p>No project is in progress.</p>
+{{end}}{{else}}<p>The projects in progress cannot be listed now.</p>
+{{end}}{{if .CanStart}}<form id="start-project" action="{{mount}}/projects/new" method="post">
+<p>Answer a few questions about a project you want to make. Nothing starts and no agent is given anything: the answers are kept at the desk.</p>
+<button id="start-project-go" type="submit">New project</button>
+</form>
+{{else}}<p>Two projects are open. Finish or discard one before you start another.</p>
+{{end}}</section>{{end}}
+
+{{define "question"}}<fieldset class="question" id="{{qid .I "group"}}"{{if .Invalid}} tabindex="-1" aria-invalid="true" aria-describedby="answer-note"{{end}}>
+<legend>{{if .Invalid}}Check this answer. {{end}}{{text .Q.Prompt maxLine}}</legend>
+{{if .Multi}}<p>Choose any options that apply.</p>
+{{end}}
+<input type="hidden" id="{{field "n" .I}}" name="{{field "n" .I}}" value="{{text .Q.ID maxID}}">
+<ul class="options">
+{{if eq .Q.Type "scale"}}{{range steps}}<li><label class="option" for="{{oid $.I .}}"><input type="radio" id="{{oid $.I .}}" name="{{pickName $.Multi $.I}}" value="{{num .}}"> <span class="choice">{{num .}}</span>{{if eq . 1}} <span class="example">the least</span>{{end}}{{if eq . 5}} <span class="example">the most</span>{{end}}</label></li>
+{{end}}{{else}}{{range $j, $o := .Q.Options}}<li><label class="option" for="{{oid $.I $j}}"><input type="{{inputType $.Multi}}" id="{{oid $.I $j}}" name="{{pickName $.Multi $.I}}" value="{{text $o.ID maxID}}"> <span class="choice">{{text $o.Label maxName}}</span> <span class="example">{{text $o.Example maxLine}}</span></label></li>
+{{end}}{{end}}{{if .Q.Other}}<li><label class="option" for="{{qid .I "other"}}"><input type="{{inputType .Multi}}" id="{{qid .I "other"}}" name="{{pickName .Multi .I}}" value="~other"> <span class="choice">Other</span> <span class="example">Say it in your own words below.{{if .Multi}} Choose it on its own.{{end}}</span></label>
+<label class="field" for="{{qid .I "text"}}">Your own words (a short note, about 200 letters; never a password or key)</label>
+<input type="text" id="{{qid .I "text"}}" name="{{field "t" .I}}" maxlength="200" autocomplete="off" spellcheck="true"></li>
+{{end}}{{if .Q.YouDecide}}<li><label class="option" for="{{qid .I "host"}}"><input type="{{inputType .Multi}}" id="{{qid .I "host"}}" name="{{pickName .Multi .I}}" value="~host"> <span class="choice">You decide for me</span> <span class="example">The desk picks, and the summary lists it.{{if .Multi}} Choose it on its own.{{end}}</span></label></li>
+{{end}}{{if .Q.Skip}}<li><label class="option" for="{{qid .I "skip"}}"><input type="{{inputType .Multi}}" id="{{qid .I "skip"}}" name="{{pickName .Multi .I}}" value="~skip"> <span class="choice">Skip</span> <span class="example">Leave it to its default.{{if .Multi}} Choose it on its own.{{end}}</span></label></li>
+{{end}}</ul>
+</fieldset>{{end}}
+
+
+{{define "chat-rule"}}<p class="readonly">A lead's words are not instructions from Ataniq. Approvals are only on Cards.</p>{{end}}
+
+{{define "chat-state"}}{{if eq .State "running"}}The lead is running.{{else if eq .State "starting"}}The lead is starting.{{else if eq .State "stopped"}}The lead is stopped.{{else}}The desk does not know the lead's state.{{end}}{{end}}
+
+{{define "chat-sharing"}}{{if eq .Chat "read"}}Read only{{else}}Send enabled. Read only here.{{end}}{{end}}
+
+{{define "chat-time"}}<time datetime="{{text (.UTC.Format "2006-01-02T15:04:05Z") maxID}}">{{when .}}</time>{{end}}
+
+{{define "chat-project"}}<p class="chat-source"><strong>STAND-IN</strong> Sample project · {{text .Project maxName}}</p>{{end}}
+
+{{define "chat-directory"}}
+<h2 id="directory-h">Daemon leads</h2>
+{{with .Sample}}{{template "chat-project" .}}{{end}}
+{{template "chat-rows" .Rows}}
+{{end}}
+
+{{define "chat-rows"}}
+{{with .}}<ul class="chat-rows">
+  {{range .}}<li>
+    {{if mount}}{{text instance maxName}} · {{end}}{{if eq .Chat "off"}}
+      <strong><bdi>{{text .Key maxID}}</bdi></strong>
+      <span class="chat-badge">Off</span>
+      {{block "chat-off-note" .}}{{end}}
+    {{else}}
+      {{if .Here}}<strong><bdi>{{text .Key maxID}}</bdi></strong>
+      <span class="meta">Open conversation</span>
+      {{else}}<a href="{{mount}}/leads/daemon/{{text .Key maxID}}#newest"><bdi>{{text .Key maxID}}</bdi></a>{{end}}
+      <span class="meta">{{template "chat-state" .}}</span>
+      <span class="chat-badge">{{template "chat-sharing" .}}</span>
+    {{end}}
+  </li>{{end}}
+</ul>{{else}}<p>No leads are listed.</p>{{end}}
+{{end}}

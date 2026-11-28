@@ -127,9 +127,10 @@ slice only:
 
 --canary starts the agent in the lead sandbox, through the start sequence, and
 waives assertion 10 (no qualification record). It needs --sandbox-inputs, the
-inputs file of the start sequence, and refuses --scratch. The project must be a
-throwaway project (the state root carries the canary marker) or a scratch
-project (it carries the scratch root marker, and no canary marker), and the
+inputs file of the start sequence, and refuses --scratch. The daemon supplies
+the 16-character public tag in the unit environment as ATANIQ_AUTHORITY_TAG.
+The project must be a throwaway project (the state root carries the canary
+marker) or a scratch project (it carries the scratch root marker, and no canary marker), and the
 roots must not be the default ones. --inject opens
 injection through the control socket; --expected-mode is the permission mode the
 agent's footer must show for a delivery; --inject needs a non-empty one.
@@ -582,6 +583,7 @@ func (m *canaryMode) start(sc startContext) (*session.Session, int) {
 	in := m.in
 	in.AgentArgv = append([]string(nil), cfg.argv...)
 	in.AgentEnv = sandboxstart.AgentEnvOf(cfg.env)
+	in.AuthorityTag = os.Getenv(sandboxstart.AuthorityTagEnv)
 	in.ExpectedDigest = cfg.profileDigest
 	in.HolderPaths = []string{
 		filepath.Join(cfg.runtimeDir, serve.AttachSocket),

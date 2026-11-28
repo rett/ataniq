@@ -26,9 +26,13 @@ type fakeWaitClock struct {
 	mu     sync.Mutex
 	timers []*fakeWaitTimer
 	asked  []time.Duration
+	// ops logs every timer made and every Stop, with its time from mark.
+	ops  []string
+	mark time.Time
 }
 
 type fakeWaitTimer struct {
+	id      int
 	at      time.Time
 	ch      chan time.Time
 	stopped bool
@@ -41,8 +45,10 @@ func (f *fakeWaitClock) Now() time.Time { return f.clock.Now() }
 func (f *fakeWaitClock) NewTimer(d time.Duration) waitTimer {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	t := &fakeWaitTimer{at: f.clock.Now().Add(d), ch: make(chan time.Time, 1), owner: f}
+	now := f.clock.Now()
+	t := &fakeWaitTimer{id: len(f.asked), at: now.Add(d), ch: make(chan time.Time, 1), owner: f}
 	f.asked = append(f.asked, d)
+	f.ops = append(f.ops, fmt.Sprintf("timer %d for %s at %s", t.id, d, now.Sub(f.mark)))
 	if d <= 0 {
 		t.fired = true
 		t.ch <- t.at
@@ -59,20 +65,39 @@ func (t *fakeWaitTimer) Stop() bool {
 	defer t.owner.mu.Unlock()
 	was := !t.stopped && !t.fired
 	t.stopped = true
+	t.owner.ops = append(t.owner.ops, fmt.Sprintf("stop %d (%v) at %s", t.id, was, t.owner.clock.Now().Sub(t.owner.mark)))
 	return was
 }
 
-// Advance moves the clock and fires the timers that are due.
-func (f *fakeWaitClock) Advance(d time.Duration) {
+// Advance moves the clock and fires the timers that are due, and answers
+// how many it fired.
+func (f *fakeWaitClock) Advance(d time.Duration) int {
 	now := f.clock.Advance(d)
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	n := 0
 	for _, t := range f.timers {
 		if !t.stopped && !t.fired && !t.at.After(now) {
 			t.fired = true
 			t.ch <- now
+			n++
 		}
 	}
+	return n
+}
+
+// record starts the log of ops afresh, its times from now.
+func (f *fakeWaitClock) record() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ops, f.mark = nil, f.clock.Now()
+}
+
+// opLog returns the ops since record.
+func (f *fakeWaitClock) opLog() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.ops...)
 }
 
 // active is how many timers are set and neither fired nor stopped.

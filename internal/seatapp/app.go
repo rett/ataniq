@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"html/template"
 	"io"
 	"mime"
 	"net/http"
@@ -218,18 +219,50 @@ func canonicalOrigin(o string, insecureLoopback bool) (origin, host string, err 
 
 // app is the handler's state.
 type app struct {
-	cfg   Config
-	pair  *pairing
-	login *logins
-	sess  *sessions
+	cfg                 Config
+	pages               map[string]*template.Template
+	mount, cookieSuffix string
+	pair                *pairing
+	login               *logins
+	sess                *sessions
 	// reads bounds the reads of each credential's sessions, and decides
 	// their decision challenges.
 	reads   *limiter
 	decides *limiter
+	// geneses bounds the project pages and posts of each credential's
+	// sessions (see genesis.go).
+	geneses *limiter
+	chats   *limiter
+	// glog is the rate limit of the journal line for that limit (see
+	// genesisAllow).
+	glog struct {
+		mu   sync.Mutex
+		last time.Time
+		held int
+	}
 	// watches bounds the watch polls of each credential's sessions, apart
-	// from the reads; watchHold is how long a poll is held.
-	watches   *limiter
-	watchHold time.Duration
+	// from the reads; watchHold is how long a poll is held. watchTimer is
+	// the timer of the hold; the real one when nil. For tests.
+	watches    *limiter
+	watchHold  time.Duration
+	watchTimer noticeTimer
+	// streams are the open hint streams (watchstream.go), streamOpens
+	// bounds how often each credential's sessions open one, and the
+	// durations are the stream's limits, which tests shorten. streamTimer
+	// is the stream's timer; the real one when nil. For tests.
+	streams                                        *streamSlots
+	streamOpens                                    *limiter
+	streamLife, streamBeat, streamGap, streamWrite time.Duration
+	streamTimer                                    noticeTimer
+	// streamNow is the clock of the stream's write deadlines; time.Now
+	// when nil. For tests.
+	streamNow func() time.Time
+	// fg are the streams' foreground leases, which hold the notices back.
+	fg *foreground
+	// projectsOffered is what the card list last learnt of the new-project
+	// interview: offered or not. The Card page and the path pages show the
+	// main navigation's "Projects" link by it, without a call of their own.
+	projectsOffered atomic.Bool
 	// lastPoll is the time, in Unix nanoseconds, of the last accepted poll,
 	// 0 before the first; the notices stay quiet while it is recent.
 	lastPoll atomic.Int64
@@ -288,14 +321,16 @@ func newApp(cfg Config) (*app, http.Handler, error) {
 	a := &app{cfg: cfg, pair: newPairing(cfg), login: newLogins(cfg), sess: newSessions(cfg.Now),
 		reads: newLimiter(readRequests, readWindow), decides: newLimiter(decideRequests, decideWindow),
 		watches: newLimiter(watchRequests, watchWindow), watchHold: watchHold, host: hostHeader,
-		pushes: newLimiter(pushRequests, pushWindow)}
+		pushes: newLimiter(pushRequests, pushWindow), chats: newLimiter(30, time.Minute), geneses: newLimiter(genesisRequests, genesisWindow),
+		streams: newStreamSlots(), fg: newForeground(), streamOpens: newLimiter(streamOpens, streamOpenWindow),
+		streamLife: streamLife, streamBeat: streamBeat, streamGap: streamGap, streamWrite: streamWrite}
 	a.push, _ = cfg.Notifier.(PushPort)
 
 	mux := http.NewServeMux()
 	for _, rt := range a.routes() {
 		mux.HandleFunc(rt.pattern, rt.handler)
 	}
-	return a, a.guard(mux), nil
+	return a, &appHandler{Handler: a.guard(mux), a: a}, nil
 }
 
 // route is one entry of the app's route table.
@@ -336,6 +371,10 @@ func (a *app) routes() []route {
 		{"POST /api/decide", a.post(a.decidePost)},
 		{"GET /static/watch.js", a.asset("assets/watch.js", "text/javascript; charset=utf-8")},
 		{"POST /api/watch", a.post(a.watchPost)},
+		// The hint stream (watchstream.go) of the card list, with the poll
+		// above as its fallback, and of the Leads pages (watchleads.go),
+		// with their Refresh links as theirs: one route, two views.
+		{"POST " + streamPath, a.post(a.watchStream)},
 		// The phone's side of the notices: all of them answer 404 unless
 		// Config.Notifier is also a PushPort (see push.go).
 		{"GET /manifest.webmanifest", a.pushOnly(a.asset("assets/manifest.webmanifest", "application/manifest+json"))},
@@ -347,6 +386,24 @@ func (a *app) routes() []route {
 		{"POST /api/push/info", a.pushOnly(a.post(a.pushInfo))},
 		{"POST /api/push/subscribe", a.pushOnly(a.post(a.pushSubscribe))},
 		{"POST /api/push/unsubscribe", a.pushOnly(a.post(a.pushUnsubscribe))},
+		// The guided new-project interview (see genesis.go): pages made on
+		// the server and plain forms, each post answered with a redirect.
+		// Without a Genesis port, or with one that is not offered, the pages
+		// answer "not offered" and the posts go to the project list.
+		{"GET /leads", a.redirect("/leads/")},
+		{"GET /leads/{$}", a.authed(a.chatPage)},
+		{"GET /leads/{kind}/{key}", a.authed(a.chatPage)},
+		{"GET /projects/{$}", a.authed(a.projectList)},
+		{"GET /projects", a.redirect(projectsPath)},
+		{"POST /projects/new", a.form(a.projectStart)},
+		{"GET /projects/{thread}", a.authed(a.projectPage)},
+		{"GET /projects/{thread}/change/{node}", a.authed(a.changePage)},
+		{"GET /projects/{thread}/discard", a.authed(a.discardPage)},
+		{"GET /projects/{thread}/plan", a.authed(a.planPage)},
+		{"POST /projects/{thread}/answer", a.form(a.projectAnswer)},
+		{"POST /projects/{thread}/change", a.form(a.projectChange)},
+		{"POST /projects/{thread}/finish", a.form(a.projectFinish)},
+		{"POST /projects/{thread}/discard", a.form(a.projectDiscard)},
 	}
 }
 
@@ -362,15 +419,17 @@ const pairPath = "/pair/"
 // the one it has.
 func (a *app) redirect(to string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Location", to)
+		w.Header().Set("Location", a.mount+to)
 		writeText(w, http.StatusPermanentRedirect, "moved\n")
 	}
 }
 
 // Server returns an http.Server for h with the header, read, write and idle
-// limits of the app. The caller sets Addr or serves a listener.
+// limits of the app. The caller sets Addr or serves a listener. When h is the
+// handler of [New] or [Open], the server's Shutdown also ends the app's open
+// hint streams, which would otherwise hold it until their life ended.
 func Server(h http.Handler) *http.Server {
-	return &http.Server{
+	srv := &http.Server{
 		Handler:           h,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -378,6 +437,10 @@ func Server(h http.Handler) *http.Server {
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    maxHeaderBytes,
 	}
+	if e, ok := h.(streamEnder); ok {
+		srv.RegisterOnShutdown(e.endStreams)
+	}
+	return srv
 }
 
 // securityHeaders are on every response, an error included.
@@ -392,11 +455,21 @@ func Server(h http.Handler) *http.Server {
 // the trusted-types directive names it, seat-sw, and nothing else (no
 // allow-duplicates, no default), so a script that runs on the origin cannot
 // make a policy of its own to reach a sink.
+//
+// The referrer policy is same-origin: a request to another origin carries no
+// Referer header, so no address of the app leaves it, and a request to the
+// app's own origin keeps its Origin header. That second half is what the
+// project pages' plain HTML forms need. A browser sends a form's post with
+// the policy of the page that holds the form, and under no-referrer it sends
+// "Origin: null" (Fetch Standard, "serializing a request origin"), which the
+// app refuses (formOrigin): every form would answer 403. The scripts set
+// their own policy on each fetch (strict-origin) and do not depend on this
+// one. A test of the page inventory holds every page with a form to it.
 var securityHeaders = [][2]string{
 	{"Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types seat-sw"},
 	{"Strict-Transport-Security", "max-age=63072000"},
 	{"X-Content-Type-Options", "nosniff"},
-	{"Referrer-Policy", "no-referrer"},
+	{"Referrer-Policy", "same-origin"},
 	{"X-Frame-Options", "DENY"},
 	{"Cache-Control", "no-store"},
 	{"Cross-Origin-Opener-Policy", "same-origin"},
@@ -413,8 +486,8 @@ func permissionsPolicy(get string) string {
 		", camera=(), microphone=(), geolocation=(), payment=(), usb=(), bluetooth=(), serial=(), hid=(), clipboard-read=(), clipboard-write=()"
 }
 
-// guard sets the headers and cuts every request body at MaxBody.
-func (a *app) guard(next http.Handler) http.Handler {
+// protect sets the headers and cuts every request body at MaxBody.
+func protect(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		for _, kv := range securityHeaders {
@@ -431,31 +504,50 @@ func (a *app) guard(next http.Handler) http.Handler {
 	})
 }
 
+func (a *app) guard(next http.Handler) http.Handler {
+	return protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// ServeMux redirects unclean paths before matching a handler. A
+		// malformed chat path must never become a link copied from the URL.
+		if strings.HasPrefix(r.URL.Path, "/leads/") && r.URL.Path != "/leads/" &&
+			(!strings.HasPrefix(r.URL.EscapedPath(), "/leads/daemon/") || !chatKey.MatchString(strings.TrimPrefix(r.URL.EscapedPath(), "/leads/daemon/"))) {
+			a.authed(func(w http.ResponseWriter, r *http.Request, _ Session) { a.problem(w, r, problemNotFound) })(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
+}
+
 // post wraps a POST handler with the checks every changing request passes:
-// the Origin header equals the app's origin, Sec-Fetch-Site (when the browser
-// sends it) says same-origin, and the body is declared JSON.
+// the Origin header equals the app's origin, the Host header its host,
+// Sec-Fetch-Site says same-origin (sameOrigin), and the body is declared
+// JSON. A plain HTML form's post passes the same checks, but that a browser
+// may leave its Origin header out when its Sec-Fetch-Site says same-origin
+// (formOrigin), with the form's content type (form, in genesis.go).
 func (a *app) post(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Origin") != a.cfg.Origin {
-			writeText(w, http.StatusForbidden, "forbidden\n")
+		if !a.sameOrigin(w, r) {
 			return
 		}
-		if r.Host != a.host {
-			writeText(w, http.StatusForbidden, "forbidden\n")
-			return
-		}
-		site := r.Header.Get("Sec-Fetch-Site")
-		if site != "same-origin" {
-			writeText(w, http.StatusForbidden, "forbidden\n")
-			return
-		}
-		mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		if err != nil || mt != "application/json" {
+		ct, one := oneHeader(r, "Content-Type")
+		mt, _, err := mime.ParseMediaType(ct)
+		if !one || err != nil || mt != "application/json" {
 			writeText(w, http.StatusUnsupportedMediaType, "unsupported media type\n")
 			return
 		}
 		h(w, r)
 	}
+}
+
+// oneHeader returns the value of a header that a request carries exactly
+// once. A header the checks rest on (Sec-Fetch-Site, Content-Type) that
+// comes twice is ambiguous, whatever its first value says, and is taken as
+// absent.
+func oneHeader(r *http.Request, name string) (string, bool) {
+	v := r.Header.Values(name)
+	if len(v) != 1 {
+		return "", false
+	}
+	return v[0], true
 }
 
 // writeText writes a fixed plain-text body.

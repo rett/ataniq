@@ -1073,6 +1073,7 @@ func TestStartAndStopFailureStatuses(t *testing.T) {
 		"limits":                            {leadunit.ErrInvalidSpec, leadcontrol.StatusRefused, codeLimits},
 		"launch refused":                    {fmt.Errorf("%w (shown state is ready)", leadregistry.ErrLaunchState), leadcontrol.StatusRefused, codeLaunchRefused},
 		"launch pending":                    {leadregistry.ErrLaunchPending, leadcontrol.StatusRefused, codeLaunchRefused},
+		"profile not launchable":            {fmt.Errorf("sample: %w", leadregistry.ErrLaunchProfile), leadcontrol.StatusRefused, codeProfileNotLaunchable},
 		"epoch exhausted":                   {leadregistry.ErrEpochExhausted, leadcontrol.StatusRefused, codeEpochExhausted},
 		"no proof":                          {fmt.Errorf("%w: %w", leadlifecycle.ErrNoProof, cause), leadcontrol.StatusUnavailable, codeNoProof},
 		"anything else":                     {cause, leadcontrol.StatusUncertain, codeFailed},

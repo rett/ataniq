@@ -3,6 +3,7 @@
 // with textContent, never as markup.
 "use strict";
 (function () {
+  var mount = document.documentElement.dataset.mount || "";
   var root = document.getElementById("pair");
   var statusEl = document.getElementById("status");
   var button = document.getElementById("start");
@@ -73,14 +74,16 @@
     return a;
   }
 
-  // The one fetch helper. The page's own Referrer-Policy header would make the
-  // default policy of a request one that sends "Origin: null" on a same-origin
-  // POST, which the seat refuses, so the policy is set here: strict-origin
-  // keeps the Origin header, and the empty referrer sends no Referer.
+  // The one fetch helper. The policy is set here rather than taken from the
+  // page's own Referrer-Policy header, so that this POST keeps its Origin
+  // header whatever that header says (under a policy that sends no referrer
+  // at all, a same-origin POST sends "Origin: null", which the seat
+  // refuses): strict-origin keeps the Origin header, and the empty referrer
+  // sends no Referer.
   async function post(path, body) {
     var resp;
     try {
-      resp = await fetch(path, {
+      resp = await fetch(mount + path, {
         method: "POST", credentials: "omit", cache: "no-store", referrer: "", referrerPolicy: "strict-origin",
         headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
       });

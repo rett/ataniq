@@ -1,0 +1,45 @@
+{
+  "/etc/claude-code/managed-settings.json": {
+    "role": "provider-policy",
+    "format": "json",
+    "values": {
+      "allowManagedHooksOnly": true,
+      "allowManagedPermissionRulesOnly": true,
+      "allowManagedMcpServersOnly": true,
+      "enableAllProjectMcpServers": false,
+      "disableSideloadFlags": true,
+      "disableRemoteControl": {{.RemoteControlDisabled}},
+      "permissions": {
+        "defaultMode": "default",
+        "disableAutoMode": "disable",
+        "disableBypassPermissionsMode": "disable"
+      },
+      "env": {"LD_PRELOAD": "", "LD_LIBRARY_PATH": "", "BASH_ENV": "", "ENV": ""},
+      "hooks": {
+        {{range $i, $row := .Rows}}{{if $i}},{{end}}
+        {{quote .Event}}: [{
+          {{if eq .Output "deny-from-table"}}"matcher": "user_settings|project_settings|local_settings",{{end}}
+          "hooks": [{
+            "type": "command",
+            "command": "/ataniq/hook/ataniq-hook",
+            "args": [{{quote .ID}}],
+            "timeout": {{seconds .TimeoutMS}},
+            "async": {{.Async}}{{if eq .Output "deny-from-table"}},
+            "onFailure": "block"{{end}}
+          }]
+        }]{{end}}
+      }
+    }
+  },
+  "/home/lead/.claude/settings.json": {"role":"user-settings","format":"json","values":{}},
+  "/home/lead/.claude/settings.local.json": {"role":"local-settings","format":"json","values":{}},
+  "/home/lead/.claude/agents/reviewer.md": {
+    "role":"agent","format":"frontmatter",
+    "values":{"name":"reviewer","description":"Review the assigned changes."},
+    "body":"Review the assigned changes and report findings.\n"
+  },
+  "/home/lead/.claude/.claude.json": {
+    "role":"trust-entry","format":"json",
+    "values":{"hasCompletedOnboarding":true,"projects":{ {{quote .Tree}}:{"hasTrustDialogAccepted":true} }}
+  }
+}

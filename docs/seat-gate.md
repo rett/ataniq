@@ -16,7 +16,7 @@ address or key belongs in a file of this repository.
 
 | Where | What | Build |
 | --- | --- | --- |
-| Lead host (the host of the daemon) | `ataniqd run --owner-channel --seat-gate ADDR`: the daemon with the owner channel and the gate, a TCP listener on one address of this host. | Tag `ataniq_ownerchannel`: `make ownerchannel-build` builds `build/owner/ataniqd`. A build without the tag has no gate and no `seat-gate` command. |
+| Lead host (the host of the daemon) | `ataniqd run --owner-channel --seat-gate ADDR`: the daemon with the owner channel and the gate, a TCP listener on one address of this host. | Tag `ataniq_ownerchannel`: `make ownerchannel-build` builds `build/owner/ataniqd`, the one build with that tag alone. For real scratch leads behind the gate, `make scratch-seat-build` builds `build/scratch-seat/ataniqd`, the one build with both tags, `ataniq_ownerchannel` and `ataniq_canary` (see [Builds with a tag](#builds-with-a-tag)). A build without the tag has no gate and no `seat-gate` command. |
 | Lead host | `ataniq-console --daemon DIR`: the desk. It starts a pairing and confirms it; it holds the decider's place. | Untagged. |
 | Authority host (the seat host) | `ataniq-seat`: the seat web app, which links to the gate. It listens on a Unix socket or a loopback address only. | Untagged, and static for a release: see [Deploying the seat app](../deploy/authority-host/DEPLOY.md#deploying-the-seat-app) (`CGO_ENABLED=0 sh scripts/go-tool.sh build -trimpath -o build/authority-host/ataniq-seat ./cmd/ataniq-seat`). No Makefile target builds it. |
 | Authority host | `ataniq-seat-notify`, the notifier (optional): the one unit that sends the phone a push notice that cards wait. The seat tells it how many cards wait over a Unix socket. | Untagged, static, built with the seat's release: see [the README](../deploy/authority-host/README.md#the-notifier) and [Notices](#notices). |
@@ -24,12 +24,12 @@ address or key belongs in a file of this repository.
 | The owner's network | A front proxy that owns port 443 and the TLS for the seat origin and forwards plain HTTP to port 80 of the authority host. | The owner's own; none is shipped. |
 | The owner's phone | A browser with a passkey. It talks to the seat origin only, never to the gate. | |
 
-The seat dials the gate; the gate never dials out. The link is TLS 1.3 with a
-key pinned at each end: the gate holds a list of seat key fingerprints, the seat
-holds one gate key fingerprint. The owner carries each fingerprint by hand from
+The seat dials each configured gate. Each TLS 1.3 link pins both keys.
+The gate holds a list of seat key fingerprints, and the seat holds one
+fingerprint per gate. The owner carries each fingerprint by hand from
 one host to the other. A seat whose key is not pinned is refused in the
-handshake and never reaches the service. The seat reaches no other network
-address than the gate's. With notices on it also dials the notifier's local
+handshake and never reaches the service. The seat's only network destinations
+are the gates. With notices on it also dials the notifier's local
 Unix socket, which is not a network address; the push to the phone, through
 Apple's push service, is the notifier's, a separate unit (see
 [Notices](#notices)).
@@ -177,8 +177,13 @@ together:
 - **Pass `Sec-Fetch-Site` and `Origin` through untouched.** Every POST needs
   `Origin` equal to the seat origin and `Sec-Fetch-Site: same-origin`, as a
   browser sends them; a POST without them is answered 403, and no option lets
-  one through. A proxy that removes or rewrites either breaks pairing, login and
-  decisions.
+  one through. The one difference is a plain form's post of the project pages,
+  which may also come with no `Origin` header at all when `Sec-Fetch-Site`
+  says `same-origin`; `Origin: null` is refused there too. A proxy that removes
+  or rewrites either breaks pairing, login, decisions and the project pages.
+  A proxy must not add a second `Sec-Fetch-Site` or `Content-Type` header
+  either, nor a second `__Host-seat` cookie: a request with two of any of
+  them is refused, whatever the first one says.
 - **Overwrite the client-address header on every request.** `--socket` needs
   `--client-addr-header NAME`, the header the proxy sets to the client's address,
   because a Unix peer has no address and every client would share one limit. The
@@ -189,8 +194,12 @@ together:
   With `--listen` the option is not required; give it only when the proxy
   overwrites the header on every request.
 - **No caching.** Every response carries `Cache-Control: no-store`, and the
-  security headers (content security policy, HSTS, `Permissions-Policy`) that
-  the passkey calls rely on. Do not cache and do not remove or change them. The
+  security headers (content security policy, HSTS, `Permissions-Policy`,
+  `Referrer-Policy: same-origin`) that the passkey calls and the forms rely
+  on. Do not cache and do not remove or change them. The referrer policy in
+  particular must stay `same-origin`: under `no-referrer` a browser posts the
+  project pages' forms with `Origin: null`, which the seat refuses, so a proxy
+  that sets its own `Referrer-Policy` on the seat's site breaks every form. The
   one exception is the notices' service worker, `/sw.js`, which the seat serves
   with `Cache-Control: no-cache` so that the phone checks it for a change; the
   shipped Caddy sets `no-store` on it as on everything else, which does no harm.
@@ -208,6 +217,21 @@ together:
   proxy that cuts the request earlier makes every page poll again and again,
   each time answered by an error that the page waits out with a growing
   pause, so the page lags without saying why.
+- **Pass the card list's stream on at once.** The card list reads
+  `POST /api/watch/stream`, a response of type `text/event-stream` that the
+  seat keeps open for up to 25 seconds and writes a few bytes to at a time
+  (a heartbeat once in 10 seconds, and a hint when the cards change). Every
+  proxy on the way must hand each write to the phone as it comes: no
+  buffering, no compression, and the same read timeout above 30 seconds as
+  for `/api/watch`. The seat sends `X-Accel-Buffering: no` and no
+  `Content-Encoding`. The shipped Caddyfile has no `encode` and Caddy's
+  `reverse_proxy` flushes a `text/event-stream` response as it comes, so it
+  needs no change; whether both hops (the owner's front proxy and Caddy) pass
+  a hint on at once is not yet qualified (see
+  [the design](design/seat-gate.md#the-card-lists-hint-stream)). A proxy that
+  holds the stream back costs nothing but time: the page does not get the
+  stream's opening heartbeat within 8 seconds, closes the stream and falls
+  back to the poll above until it is shown again.
 - **No redirects.** Serve the paths as asked, with no change of host, scheme or
   path. The pairing QR carries its one-time code in the address fragment, which
   must reach the app as the desk drew it. (The app itself answers `/pair`,
@@ -248,13 +272,16 @@ it serves, never a pin (the origin file is read at start too, and a missing or
 unusable one only narrows what the gate serves):
 
 ```text
-ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>, seat origin https://seat.example; it serves pair, read, login, decide and watch
-ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>; it serves pair, read and watch only: no seat origin is configured (the owner-local seat-origin file is missing or empty)
+ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>, seat origin https://seat.example; it serves pair, read, login, decide, watch and genesis
+ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>; it serves pair, read, watch and genesis only: no seat origin is configured (the owner-local seat-origin file is missing or empty)
 ```
 
 The first line is the one to look for. `watch` is the live refresh (see
 [Live refresh](#live-refresh)); a daemon whose service cannot wait would leave
-it out ("login and decide", "pair and read only"). Compare the printed fingerprint with the
+it out. `genesis` is the guided new-project interview, whose threads the daemon
+keeps in `owner/genesis/` of the state folder (see
+[the design](design/seat-gate.md#guided-new-project)); the line lists the
+capabilities of the gate's hello, in words. Compare the printed fingerprint with the
 one `seat-gate init` gave and with the seat's pin file.
 
 On the authority host:
@@ -265,16 +292,20 @@ ataniq-seat --origin-file PATH --socket PATH --client-addr-header NAME \
   --decision-guard DIR
 ```
 
-`--gate`, `--gate-pin-file` and `--identity` go together; without them the seat
-runs unlinked, pairing and login answer `daemon_unavailable` and no card offers a
-decision.
+For one or more named gates, use the [gate directory](#gate-directory).
+The single-gate form with notices takes `--gate`, `--gate-pin-file` and
+`--identity` together. With no gate
+configured the seat runs unlinked, pairing and login answer
+`daemon_unavailable` and no card offers a decision.
 
-`--notify-socket PATH`, an absolute path, is optional and needs the gate link:
+`--notify-socket PATH`, an absolute path, is optional and requires the single
+`--gate` form:
 it names the Unix socket of the notifier, and turns notices on (see
 [Notices](#notices)). Without it the seat tells no one anything, the card list
 shows nothing about notices and the notices' routes answer 404. On the authority
-host the flag is `SEAT_NOTIFY_ARGS=--notify-socket /run/seat-notify/notify.sock`
-in the owner's `seat.env`.
+host, single-gate notices require the `--gate` form in `SEAT_GATE_ARGS`
+and `SEAT_NOTIFY_ARGS=--notify-socket /run/seat-notify/notify.sock` in
+the owner's `seat.env`.
 
 `--decision-guard DIR` (default `/var/lib/authority-host`) is the folder the
 seat asks, with `decisionguard.Check`, before it relays any decision's challenge
@@ -290,12 +321,46 @@ closed there, so no decision is ever relayed.
 The seat prints `ataniq-seat: linking to the seat gate at ADDR`,
 `ataniq-seat: decisions follow the guard in DIR` and
 `ataniq-seat: serving on ADDR` to standard error. It keeps the link up in the
-background and redials when it drops. Restarting the seat ends every session of
-the phone.
+background and redials when it drops. Each time the link comes up it prints
+what the gate's hello listed, and whether the phone then offers "New project":
+`ataniq-seat: the seat gate offers pair, read, login, decide, watch and
+genesis; the phone offers New project` (without `genesis`, `the phone offers no
+New project`). A gate offering `chat` adds `the phone offers read-only Leads`
+to this line. Restarting the seat ends every session of the phone.
 
 On the authority host the seat is not started by hand: its unit is started by
 the switch's reload list (see [the README](../deploy/authority-host/README.md#enabling-it)).
 The daemon on the lead host has no unit; it is started by hand.
+
+### Gate directory
+
+To serve several gates at one seat, give one `--identity DIR` and repeat
+`--gate-entry NAME,HOST:PORT,PIN_FILE` for each gate. Each entry supplies
+its own address and pin file. The pin file follows the same rules as
+`--gate-pin-file`. Give each gate a unique name of up to 32 lowercase
+letters, digits or hyphens, starting with a letter or digit.
+
+The authority-host unit reads `SEAT_GATE_ARGS` from the owner's
+`/etc/authority-host/seat/seat.env`. For a single directory entry:
+
+```ini
+SEAT_GATE_ARGS="--gate-entry first,203.0.113.20:GATEPORT,/etc/authority-host/seat/gate.pin"
+```
+
+Append a space and another complete `--gate-entry NAME,ADDR:PORT,PIN_FILE`
+inside the same quotes for each additional gate. Seat notices are off while
+more than one gate is served. Leave `SEAT_NOTIFY_ARGS` empty or absent
+with **any** entry, including a single entry, or the seat refuses to start.
+The owner sets each gate's address in the unit's `IPAddressAllow=` drop-in
+and allows its TCP port in the host firewall before switching the release.
+See [the deployment template](../deploy/authority-host/seat.env.example).
+
+Open `/` for the directory and log in to each instance separately. Cards,
+projects and leads link to their own gate under `/g/FINGERPRINT/`, where
+`FINGERPRINT` identifies the pinned gate. When one gate goes offline, its
+last rows for this session stay visible as stale, with their links disabled.
+The other gates remain usable. When pairing from `/pair/`, choose the gate
+that issued the code.
 
 ## Pairing
 
@@ -336,6 +401,26 @@ minutes idle, 12 hours at most, at logout, or when the seat restarts.
 card's page. Each page carries the STAND-IN banner. The card list and the Card page update
 by themselves, see [Live refresh](#live-refresh).
 
+**Moving between pages.** Every page behind the login has a short row of links
+at the top: "Cards", and "Projects" when the desk runs new projects (see
+[New projects](#new-projects)). When the connected desk offers chat, "Leads"
+appears after the other links. The link of the part you are in is bold, has a
+bar under it and is announced as the current page. With a keyboard, the first
+Tab reaches "Skip to content", which jumps past the links to the page. The
+status, pairing, login and error pages have no such row. The row has no Log
+out: Log out stays at the foot of the pages that had it (the plan page has
+none, as before). A card's page and its path pages show "Projects" by what the
+card list last learnt, so the link may be missing for a moment after the desk
+starts offering new projects; open the card list once and it is there.
+
+**On a computer.** In a browser window at least about 960 pixels wide (60rem at
+the default text size), the row of links becomes a column on the left that
+stays in place while the page scrolls, and the page sits beside it in a
+column narrow enough to read comfortably (wider for the card list and the
+project list). Only the layout changes: every page shows and does the same as
+on the phone. Make the window narrower, or zoom in, and the phone layout comes
+back.
+
 **Approve and deny.** A decision is made only on a card's own page, with a fresh
 passkey every time: one tap on Approve or Deny names the action and the card,
 and a second tap on the confirm button asks the phone for one assertion (face,
@@ -362,13 +447,27 @@ up without a reload, and a card that was decided, withdrawn or replaced
 
 - **The card list** reloads itself when the set of waiting cards changed, at
   most once every 20 seconds, and never while a field on it holds typed text.
+  It hears of the change over a stream that the seat holds open (it says only
+  that the cards moved, never which or how many). The poll that the Card
+  page uses already answers as soon as the seat learns of a change, so the
+  stream is not faster: what it changes is that the list holds no poll of
+  the session's (the three held polls below are left to the Card pages and
+  to lists that fell back), and that each hint names its kind, which later
+  stages can add to. When the stream cannot be used (an older browser, a
+  proxy that holds it back, a refusal, an error) the list falls back to that
+  poll until the page is shown again; you see no difference, and the
+  notices behave the same way with either. The stream is closed while the page is hidden or the phone is
+  locked, and opened again a second or two after the page is shown. A hidden
+  list never reloads: a change it heard of before it was hidden waits, and
+  the list reloads once for it when it is shown again.
   A new card that came in through the daemon's door is seen within about 30
   seconds, the interval at which the daemon looks at the door; a decision made
   at the desk or on the phone is seen within a few seconds, and a page that
   just reloaded waits until it is 20 seconds old before it reloads again.
-  Every reload is a read of the desk, and the seat's reads share 20 calls in 80
-  seconds (see below). With several card lists open at once, in a busy period,
-  the reloads can use most of those 20, and a tap of yours on a card may then be
+  Every reload is a read of the desk, and the seat's reads share 12 calls in 80
+  seconds (see below); the Leads pages have a room of their own and take none
+  of them. With several card lists open at once, in a busy period, the reloads
+  can use all 12, and a tap of yours on a card may then be
   answered "The desk is busy" for a moment: close the lists you are not looking at.
 - **A Card page** never reloads by itself, since you may be ticking boxes.
   When its card was decided elsewhere or changed, the page says "This card
@@ -384,21 +483,61 @@ up without a reload, and a card that was decided, withdrawn or replaced
   gate is down or the gate does not answer (the page asks again every 30
   seconds), and "Session
   ended. Log in again." when the session is gone.
-- A tab that is hidden asks nothing, and asks at once when it is shown again.
-- Up to three tabs of one session are kept live at once. A fourth takes the
-  place of the oldest, whose page then waits 25 seconds before it asks again;
-  with more than four tabs open the pages cannot all stay live (see
-  "Troubleshooting").
+- A tab that is hidden asks nothing, and asks at once when it is shown again
+  (the card list a second or two later, at a random moment, so that the
+  tabs and phones that come back together do not ask together).
+- Two limits keep the open tabs live, one for each way of asking. Up to
+  three streams of one passkey are open at once, across its sessions, card
+  lists and Leads pages together: a fourth is refused (a card list falls
+  back to the poll, a Leads page keeps to its Refresh link), and the first
+  three keep their streams. Up to three polls of one session are held at once (Card
+  pages, and lists that fell back): a fourth takes the place of the oldest,
+  whose page then waits 25 seconds before it asks again; with more than four
+  polling tabs open the pages cannot all stay live (see "Troubleshooting").
 
 What it costs. The seat keeps one long call at the gate for the whole seat,
 whatever the number of pages and phones open: a held request that the gate
 answers when the set of cards changes or after 25 seconds. The pages ask the
 seat, not the gate. The gate takes 60 requests a minute on the seat's one link,
 and the seat keeps a room for each kind of call within every 80 seconds: pings
-6, decisions 16, pairing and login (anyone's) 12, reads 20 and waits 6, 60 in
-all. An idle seat sends one wait about every 25 seconds. A page's poll is not
-a request that keeps the session alive: a session still ends 30 minutes after
-the last page you loaded or tap you made, however long a page stays open.
+6, decisions 8, pairing and login (anyone's) 12, reads 12, the Leads pages 5,
+waits 5 and the new-project pages 12, 60 in all. The Leads pages' 5 hold your
+ordinary path within 80 seconds, with no call to spare: the Leads page (1
+call), a lead's conversation (2: the list again and the page) and one refresh
+of it (2). They were first 2, taken from the reads, which had 14 and shared
+them with the Leads pages, and the first lead you selected said the desk was
+busy; the 3 more came from the decisions, which are rare, and from the waits.
+Pairing and login keep their 12: with fewer, pairing a phone and then logging
+in on it met a busy desk. A Leads page past its room says the desk is busy
+without taking a card list's read. Measured with three card lists open and
+reloading every 20 seconds, no reload of the lists is "busy",
+with a conversation refreshed once in 10 seconds or once in 30 seconds or
+without one (while the Leads pages shared the reads, a conversation refreshed
+once in 10 seconds left almost half of them "busy"); the conversation's own
+refreshes are "busy" instead, about three in four when refreshed that often,
+and about one in three once in 30 seconds. Opening Leads, selecting a lead
+and refreshing it once is never "busy" when you do it once in 80 seconds. An
+idle seat sends one wait about every 25 seconds, 4 in 80 seconds, and the
+waits' fifth call is for a reconnect: the seat's link lost and back at once
+costs one more wait and no refusal. The card list's stream asks the gate
+nothing either: it is fed by the same one wait. A page's poll, and the card
+list's stream and its heartbeats, are not requests that keep the session
+alive: a session still ends 30 minutes after the last page you loaded or tap
+you made, however long a page stays open, and the stream ends with it. An
+automatic refresh of a visible card list is the same as you reloading it:
+it counts as activity, since it shows you the new cards. A hidden page does
+not refresh, so a list left in a background tab or on a locked phone does
+not keep the session alive.
+
+The stream's limits, which count the card lists' and the Leads pages'
+streams together: at most 3 streams open at once for one passkey, across
+its sessions (one for each of three tabs), 12 opened a minute for one
+passkey, and 32 open in all; and, while a stream is being opened, at most 3
+openings of one passkey in progress and 8 in all. A stream past them is
+refused with a `Retry-After`, and that page falls back to the poll (a Leads
+page to its Refresh link). A
+stream's response lasts 25 seconds at most from its request, its opening
+included.
 
 A stale offer is never what decides. Live refresh only withdraws an offer
 sooner; a tap on an old page is refused by the seat or the daemon as before
@@ -406,9 +545,9 @@ sooner; a tap on an old page is refused by the seat or the daemon as before
 
 How to tell it works.
 
-1. Start the daemon and read its start line: it ends in "decide and watch", or
-   "pair, read and watch only" without a seat origin. A line without `watch`
-   means no live refresh (the daemon's service cannot wait).
+1. Start the daemon and read its start line: it ends in "decide, watch and
+   genesis", or "pair, read, watch and genesis only" without a seat origin. A
+   line without `watch` means no live refresh (the daemon's service cannot wait).
 2. Open `/cards/` on the phone. The status line is empty. A line "Not live"
    means the gate does not list `watch` or the link was down when the page was
    made.
@@ -424,10 +563,216 @@ How to tell it works.
    seat key from somewhere else, such as a second `ataniq-seat` using the same
    identity: stop the extra one.
 
-Behind a proxy. A held request lasts up to 25 seconds, so the front proxy's
-read timeout for the seat must be above 30 seconds and its buffering of
-`/api/watch` must be off, so that the answer reaches the phone when the seat
-writes it (see [The reverse proxy](#the-reverse-proxy)).
+Behind a proxy. A held request, and a stream, last up to 25 seconds, so the
+front proxy's read timeout for the seat must be above 30 seconds and its
+buffering of `/api/watch` and `/api/watch/stream` must be off, so that the
+answer, and each hint, reaches the phone when the seat writes it (see
+[The reverse proxy](#the-reverse-proxy)). To see that the stream works, open
+the card list in a desktop browser's network tools: `/api/watch/stream`
+stays open and is opened again about every 25 seconds, and `/api/watch` is
+not asked. A `/api/watch` every 25 seconds or so instead means the list fell
+back to the poll.
+
+## Leads
+
+Select **Leads** after login to see which conversations the desk shares.
+In the phone trial the Leads pages carry the banner "**STAND-IN** These leads
+and conversations are samples held by the phone trial. No real lead is read,
+and nothing here is an approval." Every sample conversation entry begins
+"Sample:". Opening the directory reads only the list of leads. Open
+`alpha` or `bravo` to read its conversation. The directory lists `charlie`
+with its key and **Off**; on the Leads page itself it adds "Chat is off for
+this lead. Turn it on at the desk."
+
+On a wide screen **Context** and the directory sit beside the conversation.
+Context shows the selected key, sharing mode, state and epoch. **Evidence &
+approvals** links to **Open Cards**; it takes a third column on a wide enough
+window and otherwise sits under the conversation. The **Timeline** runs below
+the panes. On a phone the page opens on the lead's name and the conversation,
+then Context, the directory, Evidence and Timeline. In the trial, the project grouping, gate and dated events are labelled
+**STAND-IN** samples. With daemon chat the timeline shows the system entries
+on the conversation page being read. On a phone, use **Conversation**,
+**Evidence** and **Timeline** to jump between sections, or **Back to Leads**
+to return to the directory.
+
+The conversation opens on its most recent messages, up to 16, and ends at the
+latest one: when long messages do not all fit on one page, or replies arrived
+while it was read, the page reads on toward the latest message, up to twice
+more. **Show earlier** goes back 16 messages and **Show later** goes on from
+the page's last message, through the retained history. **Jump to newest**
+opens the conversation again at its latest message. **Refresh** asks for the
+recent window again. Each Leads page is one or two calls of the desk (up to
+four when the conversation reads on toward its latest message), and they have a room of their own, 5 calls in 80
+seconds, apart from the card lists' reads (see [What it costs](#live-refresh)):
+opening Leads, selecting a lead and one refresh, with no call to spare. Past it
+the page says "The desk is busy. Try
+again in a minute.", and the card lists lose nothing to it. The seat reuses only the trial's sample
+data, which never changes: its directory for 20 seconds and a transcript page
+for 10 seconds. A real lead's directory and transcript are read again for
+every page, so a lead the desk turns off shows as off on the next page. A separate
+notice says "This page starts again from the oldest kept message." when the
+place you asked for is no longer kept (older messages expired, or the page's
+place is past the conversation the desk holds now), and another when the lead
+changed epochs. The restart notice is not shown across a reset, a change of
+the lead's chat setting or a fall of its epoch, where the lead may be another
+under the same name.
+
+With real leads, the daemon of `make scratch-seat-build` run as
+`build/scratch-seat/ataniqd run --scratch CONFIG --owner-channel --seat-gate
+IP:PORT`, the Leads pages show the replies the scratch leads wrote to their
+reply folders, read only, for each lead whose chat the desk turned on with
+`ataniqd chat set KEY read --config CONFIG`; every lead is off whenever the
+daemon starts, and a lead turned off is refused at once. The gate's start line
+is then followed by `ataniqd: seat gate: chat: replies the scratch leads wrote
+to their outboxes; read only`. That daemon refuses `--trial`, so it never
+serves the samples. What the owner prepares is in
+[the scratch leads guide](scratch-leads.md#running-real-leads-with-the-seat).
+
+Lead and System labels come from the seat. Links and markup in a reply appear
+as text. Approvals are only on Cards. Sending is not built, including for a
+lead whose desk setting allows sending.
+
+### New replies without refreshing
+
+With the conversation open at its newest message, a new reply of a lead
+whose chat is on appears by itself: the page reads the conversation again,
+at most once every 40 seconds, and opens at the newest message: the page
+then starts with the first message after the last one you saw (**Show
+earlier** goes back to those), and more new replies than fit on one page
+leave **Show later**. The hint does not say which lead replied, so a
+reply of another lead also reads the page again: with nothing new for this
+lead, the page shows the conversation's newest messages again, as its own
+address does, and keeps following. When you have scrolled away from the newest
+message, or you are reading older messages, the page does not move: the
+status line says "New replies." with a link **Show newest**, which loads
+the page that holds the newest message, at that message. The
+Leads page says "Leads changed." with a link **Refresh** when what it lists
+may have changed. Nothing takes the focus, and a page never reads again
+by itself while it is hidden, while a field holds typed text, while a dialog
+is open or while a link or another control has the focus (after a tap on
+**Conversation**, for example): it says "New replies." with **Show newest**
+instead. A page shown again catches up once.
+
+The seat learns that the chat moved from the one wait it already holds at
+the gate (the gate's hello lists `wait-chat`), as a number that says only
+that something it may read moved: never which lead, how much or what. A lead
+whose chat is off never makes the page move, and the seat never learns of
+its activity. Each read is the page's ordinary read, so the desk authorizes
+it as when you tap Refresh. It costs no call of the gate beyond that read:
+the directory and the page, 2 of the Leads pages' 5 calls in 80 seconds
+(the 40 seconds between two reads keep one open conversation inside them),
+and none of the card lists'. One following conversation fits; a refresh by
+hand beside it, a second tab following a conversation, or a conversation
+that read on toward its latest message can meet "The desk is busy". When a
+read the page makes by itself meets it, the busy page replaces the
+conversation and the page follows no more: tap **Try this page again** a
+minute later. A read that the page makes by itself counts as
+activity for the session, like a reload you make; a hidden page reads
+nothing, so it does not keep the session alive.
+
+The status line says "Not live" when the page cannot be told (the gate does
+not list `wait-chat`, the link is down, the seat refused the page's stream,
+for example a fourth open stream of your passkey, or the browser cannot read
+the stream): use **Refresh**. A page that says it is not live moves no
+more, even for a reply heard of before. When its stream failed, it tries
+again when the page is shown again (switch away and back) or reloaded; a
+page that was not live when it was made says so from the start and needs a
+reload (**Refresh**). In the phone trial the samples never change, so the
+pages are live and never move.
+
+## New projects
+
+When the daemon's gate lists `genesis` (its start line ends in `... watch and
+genesis`), the card list on the phone has a "New project" button and lists the
+projects in progress. Open "Projects" for the project list. If a page says
+the desk is busy or unreachable, "Try this page again" reads the same page.
+When a Card's decision is still on its way or its outcome is unknown, "Look
+again" reads that Card. Nothing is configured for it on either host.
+
+What "New project" does. It starts a short interview: a few rounds of one to
+three multiple-choice questions about a project you want to make (what kind,
+what it is for, who it is for, how it is built or published, by when). The
+questions are the desk's own, from its fixed catalog, and so is the order they
+come in. Each question offers its options, each with a one-line example, and,
+where the question allows them, "Other" (your own words, a short note of
+about 200 letters: the cap is 200 bytes, so accents and emoji take more room),
+"You decide for me" and "Skip". On a question that accepts several choices,
+use each of those three options on its own. If the phone rejects a particular
+answer, it returns to that question and marks it "Check this answer."
+"You decide for me" leaves the answer to the desk. On most questions it takes the question's default; on the language, the
+sign-in and where a web app runs, the desk picks a value for you, shown under
+"What was decided for you" on the summary. Such an answer counts as given, so
+a draft plan can be drawn from it, and the plan says "Some answers were
+decided for you; you can change them from the summary." (the stored plan of a
+finished brief, which cannot be changed, says "Some answers were decided for
+you, and finishing accepted them."). Finishing accepts
+them as your answers; the summary says so above the finish button. After the
+last round you read the
+summary: what you chose, what was decided for you and what was left to its
+default; "Change" on a row asks that question again (a change clears the later
+answers that depended on it, the page says how many, and their questions are
+asked again, after the last round too, as round 6 of 6), "Looks right:
+finish" saves the answers as the project's brief. You cannot edit them
+afterwards. If required answers are missing, finishing also leaves the
+project without a plan. "Discard this project"
+(after a second page) drops it with all its answers. At most two projects are
+open at once; a third "New project" says so. An open project you leave for 14
+days is discarded. The card list and `/projects/` list the open ones, so after
+a restart of the seat you find them again.
+
+The plan. When every required answer is given and the desk has a plan template
+for the kind of project (a web app or a one-page tool, a newsletter or an
+article, a podcast or a book), the summary has "See the draft plan"; otherwise
+it says how many answers are filled in, or that there is no template for this
+kind yet. The plan page (`/projects/<id>/plan`) shows, in this order: "Draft
+plan" (or, once finished, "Plan, revision 1"), with the project's title and
+the first six digits of its id, and the lines "This plan gives no permission to
+do the work. Viewing it starts nothing." and, for a draft, "This is a draft;
+finishing the interview keeps it as revision 1. You can change the draft by
+editing your answers.";
+the first demo; what waits for you (the review points you chose, and always "Publishing, releases,
+pushing code, credentials and raising any limit always wait for you, whatever
+the plan says."); the outside services the work would use; where the files
+live; the suggested monthly budget, which the desk does not enforce; the estimate (an
+estimate, not a promise); the plan's warnings; the milestones, each a section
+you open, with its tasks, their kind and size and what each waits for; your
+own notes, each quoted and marked as your words, never given to a tool, with
+the question it answers above it ("Do you prefer a programming language?", or
+"A note" for a note of your own); and "What a charter would cover", a draft of
+words only ("Draft. Not signed. It allows nothing. ..."). Open "Read the
+proposed limits on the work" for the work areas, the outside services, where
+it would stop for you and the line "Always
+stopping for you before publishing, releases, pushing code, credentials and
+raising any limit." The suggested monthly budget follows that list. To tune the
+plan, go back to the summary and change an answer:
+the draft is drawn again from the answers. "Looks right: finish" keeps the
+brief and its plan, revision 1, which never changes afterwards; the finished
+page then has "See the plan" and points you to the desk for the next step.
+If there is no plan, the finished page says why: required answers were
+missing, or the desk has no template for that kind of project. The short digest under the
+heading ("Plan 3c3c3c3c3c3c") is the same for the draft and the kept plan of
+the same answers, so you can tell they match; when some answers were decided
+for you, finishing accepts them, which changes the brief, so the kept plan
+has the draft's content under another digest.
+
+What it does not do. Nothing starts: no agent is run and no agent is given the
+answers, the brief or the plan, and nothing is built or published. An answer
+only describes the project; it never approves anything, and the project pages
+hold no approve or deny control. The plan page uses links and native disclosures. It has no button,
+form or script; nothing is signed, allowed or started from it, and it is
+never a card, on the card list or in a notice. The answers are kept on the desk, by the
+daemon, in `owner/genesis/` of its state folder (one file per project, mode
+0600), and are sent nowhere else. Never type a password, a key or a token: say
+that a credential is needed instead. Text that looks like one is refused ("That
+looks like a password or key. ..."), and the page never shows it back.
+
+What it costs. The pages are plain pages with forms, and each answer is one call
+of the gate. The seat keeps 12 calls in 80 seconds of the gate's rate for them;
+answering a round every 5 seconds stays inside it, because an answer and the
+page after it are one call. Opening the plan page is one call (two when no plan can be drawn yet, since the
+thread's round is read too); reopening a draft within 10 seconds, or the kept
+plan within 5 minutes, is none. Past it the page says
+"The desk is busy. Try again in a minute." and nothing is sent.
 
 ## Notices
 
@@ -463,7 +808,16 @@ the notifier, unless:
   visible is one you are looking at; a hidden tab or a phone that has put the
   page to sleep asks nothing, so close the pages and wait a minute when you
   test). The cards that page found waiting count as seen: closing the page does
-  not bring a notice for them, only a card that comes after its last poll does;
+  not bring a notice for them, only a card that comes after its last poll does.
+  The card list's stream holds notices back too: each time the list opens
+  its stream, which it does only while it is shown and again about every 25
+  seconds, it holds them back for 30 seconds, and the cards it shows count
+  as seen, so the list open in front of you brings no notice and closing it
+  brings none for cards it showed. What the seat writes on the stream does
+  not count, since a phone put to sleep can leave the stream open: a card
+  that comes while the list is open but that the list has not shown yet
+  (the phone locked before it reloaded) brings its notice about 30 seconds
+  later;
 - the count came back up after a dip, to no more than what was last told, and
   fewer than 2 minutes have passed since the last notice (a card decided and
   another asked is not a new notice at once): so with the count not rising,
@@ -585,8 +939,9 @@ taken-over seat. See [the scratch settings](lead-daemon.md#the-scratch-settings)
 
 ## Rotation
 
-The gate holds a list of seat pins (at most 4) and the seat holds one gate pin,
-so no code change is needed. Do the steps in this order.
+Each gate holds a list of seat pins (at most 4), and the seat holds one pin
+for each gate. When rotating the seat's key, perform each lead-host step on
+every configured gate before proceeding.
 
 **A seat key.**
 
@@ -624,6 +979,25 @@ console and the seat.
 operation of the owner connection (`owner.key-revoke`; `owner.keys-off` revokes
 every credential); no console view or command of this tree calls it yet. To cut
 a seat's reads at once, remove its pin and restart the daemon.
+
+## Builds with a tag
+
+Three Makefile targets build with a tag, each the one target for its tags, and
+none is used by a release or a CI job; each runs `make doctor` first and starts
+nothing:
+
+- `make ownerchannel-build` builds the daemon with `ataniq_ownerchannel` alone
+  into `build/owner/`: the owner channel and the gate, with the phone trial.
+- `make scratch-seat-build` builds the daemon with both tags,
+  `ataniq_ownerchannel` and `ataniq_canary`, into `build/scratch-seat/`: the
+  owner channel and the gate with scratch mode (see
+  [the scratch leads guide](scratch-leads.md)), for the owner's own trial of
+  real scratch leads with the seat gate.
+- `make canary-build` builds the binaries of the attended canary run with
+  `ataniq_canary` alone into `build/canary/`.
+
+All three folders are ignored by git. Each build is provisional and
+unqualified, and [Scratch only](#scratch-only) holds for the two with the gate.
 
 ## Scratch only
 
@@ -718,6 +1092,35 @@ with the list closed and notices on, a notice says that cards wait
 - The journal, `owner/journal.db` of the state folder, keeps each decision with
   the evidence of its assertion, and each outcome with the trial's line.
 
+With `--seat-gate` the trial's gate, and no other, also serves the seat's lead
+pages from STAND-IN samples (a scratch daemon's gate serves real leads'
+replies instead, see [Leads](#leads)): the capability `chat` (read only, see
+[the design](design/seat-gate.md#chat)). The gate's start line then ends
+`... watch, genesis, chat and wait-chat` and is followed by
+
+```text
+ataniqd: seat gate: chat: STAND-IN sample leads and conversations of the phone trial, held in memory; no lead is read or reached
+```
+
+The samples are three leads held in memory: `daemon:alpha` (running, a short
+conversation with a long reply marked cut, replies of several lines, a reply
+that looks like markup, which a page shows as text, and restart lines),
+`daemon:bravo` (stopped) and `daemon:charlie`, whose chat is off and which
+shows its key and **Off**. Every lead reply and every system line begins
+"Sample:" (`Sample: lead restarted, epoch 3`), and every result is marked as a
+sample, so the seat shows a banner. No lead, conversation file or
+other part of the daemon is read or reached, nothing is written, and nothing
+can be sent: there is no way to send a message from the seat yet. Open **Leads** after login to read the samples.
+
+`wait-chat` says the gate also offers the seat's live wait a chat cursor, a
+number that changes when what the seat may read of the leads' chat changes
+(see [the design](design/seat-gate.md#chat-hints-on-the-wait)). It carries no
+text of a lead, and a lead whose chat is off never moves it. It is keyed by a
+secret the daemon makes at each start and never sends, so its value means
+nothing across a restart, and it only says that something may have changed: it
+never allows a read, which the gate authorizes on every `seat.chat` call. The
+samples never change, so the trial's cursor never moves while the trial runs.
+
 `--trial` needs `--owner-channel` (exit 2 without it). The daemon refuses the
 trial's settings without `--trial`, and other settings with it (exit 10), and a
 state folder or a runtime folder that is, lies inside or contains the account's
@@ -773,7 +1176,8 @@ At the daemon's start:
 | `the gate's key in ... cannot be used` (exit 10) | No key, or the folder or files are not safe. | `ataniqd seat-gate init`; the folder must not be writable by group or other. |
 | `... pins no seat key, so no seat could connect`, or a message about the pin file naming a line (exit 10) | No pin, no file, a link, a mode wider than 0600, another owner, more than 4 pins, a repeat or a line that is not a fingerprint. | Fix `seat-pins`; `ataniqd seat-gate pins` shows what is read. |
 | `seat gate: cannot listen on ...` (exit 18) | The port is taken or the address is not the host's. | Free the port or change ADDR. |
-| Start line says `it serves pair and read only`, or `pair, read and watch only` | No usable origin file (missing, empty, refused or not canonical), or a service that cannot decide. | Fix the origin file and restart; the phone says the desk does not take phone logins until then. |
+| `seat gate: the guided interview is not served: its thread store did not open (REASON); ...` (the daemon runs on) | The folder `owner/genesis/` of the state folder could not be used, as REASON says: `folder-link` (a link), `folder-owner` (not the daemon user's), `folder-mode` (writable by group or other), `too-many-files` (more than 64 entries), `folder-not-folder`, `folder-make`, `folder-read`, `folder-open` or `folder-replaced` (cannot be made, read or opened, or was replaced while it was opened), `file-remove` or `file-write` (an old or expired thread file cannot be removed or written), `catalog` (the build's question catalog does not load). The gate starts without the interview: its start line has no `genesis` and the phone shows no "New project"; pairing, reads, logins and decisions are served as before. | Fix or move the folder by hand, then restart the daemon; it never repairs the folder and never reads or writes in it while it is in doubt. |
+| Start line says `it serves pair, read, watch and genesis only` (before the thread store, `pair, read and watch only`) | No usable origin file (missing, empty, refused or not canonical), or a service that cannot decide. | Fix the origin file and restart; the phone says the desk does not take phone logins until then. |
 
 At the seat's start (exit 2 with a message on standard error): `--gate-pin-file:`
 followed by "cannot be read, or is a link", "is writable by group or other" or "does
@@ -790,6 +1194,10 @@ What the phone shows, by the code the seat's API answers:
 | "Too many tries. Wait a while..." | `rate_limited` | The pairing or login limits of the seat. | Wait; the limits age out. |
 | "Decisions are paused on this host." (on the card page, in place of the Approve and Deny buttons) or "Decisions are paused on this host. Nothing was sent." (after a tap) | `decisions_inhibited` | The authority host's decision inhibit is there (a switch under way, a boot not yet requalified, a failure), or the `--decision-guard` folder is missing, a link or not readable. The seat logs the guard's code (`decision-guard-...`). | On the authority host, `ah-switch status` says why. On another host, check `--decision-guard`. Tap again once decisions are taken. |
 | "The desk is busy. Try again in a minute." | `desk_busy` | The seat's room at the gate, or the gate's rate, is used up. | Wait a few minutes. |
+| "The desk is busy. Try again in a minute." on the project pages, or on any page, and the page does not say which limit refused | `desk_busy` | One of the seat's own limits refused the call, and the seat's log (standard error; the journal of its unit) has the line that says which. `ataniq-seat: the link has no room for a call of kind KIND (USED of ROOM in the last 80 seconds); the page says the desk is busy`: the link's room at the gate for that kind of call (KIND is `public`, `read`, `chat`, `decide` or `genesis`; the card lists' reads have 12 calls in 80 seconds, the Leads pages' calls are `chat`, with 5 calls in 80 seconds of their own; the interview's is 12 calls in 80 seconds) is spent, and nothing was sent. `ataniq-seat: the project pages' limit of 30 requests a minute was reached for one credential`: the phone's pages of the projects were asked for more than 30 times in a minute, which is the app's limit for one passkey, apart from the link's room. Either line is written once in 30 seconds for what it names, and the next one ends `N more since the last line` for the refusals held back in between; no line holds a project, a card, a passkey or an answer. If neither line is in the log, the gate refused (see the daemon's log). At most every 10 minutes, after a period in which the link refused a call, it also writes `ataniq-seat: calls of the link in the last N minutes, taken/refused by kind: public T/R, read T/R, chat T/R, decide T/R, genesis T/R, wait T/R`, the calls of each kind it sent and refused in that period. | Wait a minute and tap again; the rooms come back as the 80 seconds pass. If it repeats with no one tapping fast, tell the lead, with the lines and their times. |
+| No "Leads" in the menu, or "The desk does not offer lead chat." | (a page) | The connected daemon's gate does not list `chat`: only the phone trial's gate and the gate of a scratch daemon of `make scratch-seat-build` (`run --scratch CONFIG --owner-channel`) serve it (the seat's log line of the gate's offer does not end `the phone offers read-only Leads`). While the seat cannot reach the gate, a Leads page says "The desk cannot be reached. Try again in a moment." instead, with a link to try again. | Run the phone trial's gate or the scratch daemon with the gate, or use the desk; for the second page, wait and try again. |
+| No "New project" on the card list, or "New projects are not offered" | (a page) | The daemon's gate does not list `genesis` (the seat's log says `the phone offers no New project`), or the seat runs without `--gate`. | Check the daemon's start line; restart the daemon with its gate. |
+| "That project is not open. ..." or "No such project" | (a page) | The project was finished, discarded, or left for 14 days, or the address is not one of the seat's. | Start a new one from the card list. |
 | "The desk does not take phone logins now." | `login_unavailable` | The gate is read-only: no usable origin file at the daemon. | Fix the origin file, restart the daemon. |
 | "No passkey is paired with the desk yet." | `not_paired` | The key list holds no usable credential. | Pair the phone at the desk. |
 | "The desk did not take this passkey." | `login_refused` | Not paired, revoked, a kind the daemon does not know, or an assertion that did not verify (often a wrong origin on one host). | Pair again at the desk; check the origin on both hosts. |
@@ -801,7 +1209,7 @@ What the phone shows, by the code the seat's API answers:
 | "The card's time ran out." | `card_expired` | The card expired; a new challenge cannot renew it. | Nothing to do on the phone; see the card at the desk. |
 | "The card cannot be decided now. Look at it again." | `cannot_decide` | Already decided, void or in another state. | Reload the card. |
 | "The phone's answer was not accepted. If this repeats, check the seat at the desk." | `assertion_refused` | The assertion did not verify. | Check the origin on both hosts and the gate key the seat has pinned. |
-| "This phone's passkey is no longer paired. Pair it again at the desk." | `key_revoked` | The key was revoked or is not on the list. The session ends. | Pair again at the desk. |
+| "This phone's passkey is no longer paired. Pair it again at the desk." | `key_revoked` | The key was revoked or is not on the list. Every session logged in with that passkey ends, on every tab and phone. | Pair again at the desk. |
 | "This project does not take decisions from this kind of passkey." | `kind_refused` | The `"kinds"` policy excludes the credential's claimed kind. | Change the policy or pair another credential. |
 | "Decision sent. Outcome unknown." | `outcome_unknown` | The answer was lost after the decision was sent. | Tap "Look again" and read the card; never retry blindly. |
 | "The session ended. Log in again." | `session_ended` | Idle 30 minutes, 12 hours, a seat restart, or a logout. | Log in. |
@@ -810,6 +1218,8 @@ What the phone shows, by the code the seat's API answers:
 | Status line "Not live: the desk is out of reach" | `offline` (answer of `POST /api/watch`) | The seat's link to the gate is down, or a wait got no answer from the gate (it timed out). The watcher retries after 1 second, doubling to 30, and any answer of the gate, even a refusal, lifts it at once. The page asks again every 30 seconds. | Check the daemon, the firewall and both pins as for `daemon_unavailable`. It clears by itself once the link is back. |
 | Status line "Session ended. Log in again." | `ended` (answer of `POST /api/watch`) | Idle 30 minutes without a page load or tap (a poll does not count), 12 hours, a seat restart, a logout, or a revoked key. | Log in. |
 | Nothing visible, but `POST /api/watch` answers 429 in the proxy's log or the browser's tools | `rate_limited` | More than 12 polls a minute from one passkey's sessions, as more than four tabs open at once make. The page waits 60 seconds and asks again. | Close the extra tabs. |
+| Nothing visible, but `POST /api/watch/stream` answers 403, 429 or 503 in the proxy's log, followed by `POST /api/watch` | (the stream's refusal: `session ended`, `too many streams`, `busy`, `not live` or `shutting down`) | The card list's stream was refused: no live session, a fourth card list of one passkey or more than 12 opens in a minute, 32 streams open on the seat, the desk out of reach, or the seat stopping. The list fell back to the poll, which says what it is on the status line. | Nothing; close the extra tabs if there are many. The list tries the stream again when it is shown again. |
+| The card list updates only after about 25 seconds, and the browser's tools show `/api/watch/stream` closed by the page after about 8 seconds with nothing in it, followed by `/api/watch` | (none) | A proxy on the way buffers or compresses the stream, so the stream's opening heartbeat does not reach the page within 8 seconds and the page falls back to the poll. | Turn buffering and compression off for `/api/watch/stream` on the front proxy (see [The reverse proxy](#the-reverse-proxy)). |
 | "This card changed or was decided elsewhere. Look again." | `changed` or `gone` (the card's state in the poll's answer) | The card, which was waiting when the page was read, was decided on another page or phone or at the desk, replaced, expired or withdrawn since. Not shown for a card that was already decided, ended or expired when the page was read, nor on the page whose own confirm sent the decision. | Reload, or go back to the cards. |
 | A line `seat.wait refused wait-full (peer ...)` in the daemon's log | `wait-full` | The gate already holds two waits for that seat key (or the daemon's eight). Normal for a moment when the seat reconnects. Not counted against the seat. | Nothing if it stops. If it repeats every minute, look for a second `ataniq-seat` with the same identity. |
 
@@ -821,7 +1231,7 @@ trying again later`.
 
 | What you see | Cause | What to do |
 | --- | --- | --- |
-| The card list has no Notices section, and `/sw.js` answers 404 | No notifier is configured for the seat: it was started without `--notify-socket` (on the authority host, no `SEAT_NOTIFY_ARGS` line in `seat.env`, or the release has no notifier). | Set the notifier up ([the README](../deploy/authority-host/README.md#the-notifier)), add the line to `seat.env`, and switch or restart the seat. |
+| The card list has no Notices section, and `/sw.js` answers 404 | This is expected with any named gate entry or when the seat starts without `--notify-socket`. | For notices with one gate, configure the single `--gate` form and the notifier, then switch or restart the seat. See [the README](../deploy/authority-host/README.md#the-notifier). |
 | The section is there with no button, and says "Open this page from the Home Screen app to turn on notices." | The page is open in Safari, not from the Home Screen. | Add it to the Home Screen and open it from there. |
 | "Notices need your permission. Change it in the phone's settings." | The prompt was refused or dismissed, or notifications are off for the Seat app. The phone asks once. | Allow notifications for the Seat app in the phone's settings, then tap Enable notices again. |
 | "Could not turn on notices. Try again later." | The seat could not reach the notifier (`unavailable`, 503 in the browser's tools), the notifier refused the subscription (`endpoint_refused`, 422: the phone's push service is not on the notifier's host list; `bad_subscription`, 400), the notifier answered with a code the seat does not know (`notifier_error`, 502), or the phone refused to register the service worker or to subscribe. | Check `systemctl status ataniq-seat-notify.service`, that `/run/seat-notify/notify.sock` is there (`seat-notify:seat-notify`, 0660). Read the notifier's journal. |

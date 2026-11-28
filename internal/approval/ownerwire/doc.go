@@ -36,10 +36,11 @@
 // function named after it; "none" and "nothing" are an empty object, read
 // by [DecodeNothing].
 //
-// Five more operations are the seat gate's alone, a login and a decision
-// from the owner's phone and the long wait that tells the seat when the
-// pending cards changed; the daemon's Unix socket neither serves nor
-// announces them, and [GateOperations] lists them apart:
+// Seven more operations are the seat gate's alone, a login and a decision
+// from the owner's phone, the long wait that tells the seat when the
+// pending cards changed, the guided new-project interview and the read-only
+// view of the leads' conversations; the daemon's Unix socket neither serves
+// nor announces them, and [GateOperations] lists them apart:
 //
 //	operation             params               result
 //	seat.login-challenge  none                 SeatLoginChallengeResult
@@ -47,6 +48,8 @@
 //	seat.challenge        SeatChallengeParams  SeatChallengeResult
 //	seat.decide           SeatDecideParams     DecideResult
 //	seat.wait             SeatWaitParams       SeatWaitResult
+//	seat.genesis          SeatGenesisParams    SeatGenesisResult
+//	seat.chat             SeatChatParams       SeatChatResult
 //
 // # Strict decoding
 //
@@ -98,6 +101,60 @@
 // the whole set, independent of its order, so the same set has the same version
 // after a restart. The gate answers [CodeWaitFull] when it already holds as many
 // waits for a seat as it allows.
+//
+// # The guided new project
+//
+// seat.genesis (the capability "genesis") is the owner's interview for a new
+// project, asked on the phone: a thread of at most [MaxGenesisRounds] rounds of
+// one to [MaxGenesisNodes] questions, which fill a project brief. It is one
+// operation whose params are a union tagged by "verb" ([SeatGenesisParams]):
+// start opens a thread (the host holds at most [MaxGenesisThreads] open ones
+// and answers [CodeGenesisBusy] to a third), round reads where a thread
+// stands, answer gives the answers of a round, change replaces an earlier
+// answer (the result's reset says how many later answers it cleared),
+// summary reads the brief grouped by who chose each field, finish freezes
+// the brief and gives its digest, discard drops the thread, list reads the
+// open threads, and plan reads the project plan a complete brief gives: a
+// preview compiled for the read on an open thread, the plan stored at finish
+// on a finished one. The result is a union tagged by "state"
+// ([SeatGenesisResult]): question, summary, finished, discarded, threads or
+// plan. The decoders hold exactly the members each verb and each state takes,
+// the grammars of ids and the caps (three questions, eight options, the
+// catalog's text caps, 64 summary rows, a plan of 12 KiB, 16 KiB the result).
+// A plan ([GenesisPlan]) is the plan record of the host, member by member:
+// the wire writes it to the record's own canonical bytes, and the result
+// carries their digest, which the decoder holds to them.
+//
+// Every text in a result is plain text the host owns: the catalog's, or the
+// owner's own "other" text in a row or a plan's note marked untrusted, which
+// a surface escapes and an agent never obeys. An answer writes a brief field
+// and nothing else, and a plan is a proposal: no member of these forms is, or
+// leads to, a decision, a contract or an approval. The thread ids, the
+// questions, the brief and the plan are the host's; this package holds only
+// the words, and the gate codes [CodeGenesisBusy], [CodeGenesisUnknownThread],
+// [CodeGenesisBadAnswer], [CodeGenesisOverCap], [CodeGenesisSecretShaped],
+// [CodeGenesisDone], [CodeGenesisStaleRound], [CodeGenesisNotReady] and
+// [CodeGenesisNoTemplate].
+//
+// # The leads' conversations
+//
+// seat.chat (the capability "chat") lets the seat look at the leads'
+// conversations, and only look. Its params are a union tagged by "verb"
+// ([SeatChatParams]): leads lists the leads, at most [MaxChatLeads], each with
+// its chat switch (off, read or send), and read reads one page of one lead's
+// retained conversation after a sequence number. There is no verb that sends.
+// A lead is named "kind:key" ([ValidChatLead]), and the one kind is daemon. The
+// result is a union tagged by "state" ([SeatChatResult]): leads or read. A row
+// whose switch is off carries the lead and the switch and nothing else, and the
+// decoder refuses a state, an epoch or a head on it. A page holds at most
+// [MaxChatReadLimit] entries and is paged by its encoded bytes, within
+// [MaxSeatChatResultBytes] ([FillSeatChatRead] fills one): more says the seat
+// reads on after the page's last entry, and reset says the cursor was before
+// what the host retains, so the page starts again at its start. A result of a
+// stand-in host is marked stand_in. The text of an entry is plain text of at
+// most [MaxChatText] bytes ([ValidChatText]): a lead's text is untrusted, shown
+// to the owner only and never obeyed. The gate codes are [CodeChatOff],
+// [CodeChatUnknownLead] and [CodeChatBusy].
 //
 // # Records travel as bytes
 //
@@ -159,7 +216,9 @@
 // Every refusal is a [*record.Error] with one of the record package's
 // codes; this package declares no refusal of its own. It names the words the
 // seat gate answers its operations with when the daemon refuses one
-// ([CodeChallengeStale] and the others), which no decoder here answers with. A decision frame that is wrong is
+// ([CodeChallengeStale], [CodeWaitFull], [CodeGenesisBusy], [CodeChatOff]
+// and the others),
+// which no decoder here answers with. A decision frame that is wrong is
 // decision-invalid, any other payload record-invalid, a payload over its
 // cap record-too-large, and a record whose digest is not its bytes' own
 // binding-mismatch. The detail of an error is written here and never holds

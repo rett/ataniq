@@ -1,0 +1,29 @@
+== sudo -n -l -U agent (exit 0)
+  | Matching Defaults entries for agent on aihost:
+  |     env_reset, timestamp_timeout=0
+  | 
+  | User agent may run the following commands on aihost:
+  |     (ALL : ALL) ALL
+  |     (root) NOPASSWD: /usr/bin/systemctl restart web.service
+  |     (root) /usr/bin/journalctl, /usr/bin/dmesg,
+  |         NOPASSWD: /usr/bin/true
+  |     (ALL) NOPASSWD: ALL
+finding: nopasswd: sudo runs this for agent without a password: (root) NOPASSWD: /usr/bin/systemctl restart web.service
+finding: nopasswd: sudo runs this for agent without a password: (root) /usr/bin/journalctl, /usr/bin/dmesg, NOPASSWD: /usr/bin/true
+finding: nopasswd: sudo runs this for agent without a password: (ALL) NOPASSWD: ALL
+check: timestamp_timeout=0 is listed for agent, and no other value
+check: no default makes sudo ask for another account's password, or for none (targetpw, rootpw, runaspw, !authenticate, exempt_group)
+== register /etc/ataniq/grants
+  | d 0 755 /
+  | d 0 755 /etc
+  | d 0 755 /etc/ataniq
+  | d 0 755 /etc/ataniq/grants
+  | f 0 644 /etc/ataniq/grants/README
+  | f 0 644 /etc/ataniq/grants/backup-unit
+check: /etc/ataniq/grants and every folder above it are root's and not writable by group or others; its 2 entries are regular files of root's, not writable by group or others
+== by hand, for the owner
+- NOPASSWD: as root, find the rule in /etc/sudoers or a file it includes (usually in /etc/sudoers.d), and edit that file with visudo -f; remove the NOPASSWD: tag; keep one password-asked grant for you. Change only the tag: do not delete the rule, which may hold other users, hosts or exclusions (README, step 3).
+== summary
+findings: 3; stops: 0
+result: findings remain: fix them by hand, then run --check again
+exit: 1

@@ -26,8 +26,13 @@
 // CONFIG", whose roots are the config's (--state-dir and --runtime-dir are
 // refused), "ataniqd canary define|start|ticket|inject|stop --config CONFIG",
 // which calls the operation of the running daemon and prints its result as one
-// JSON line, and "ataniqd --version", which names the tag. Package leaddaemon
-// says what the daemon then does.
+// JSON line, and "ataniqd --version", which names the tag. It also adds
+// scratch mode, "ataniqd run --scratch CONFIG", and the desk's switch of the
+// scratch leads' written replies, "ataniqd chat list --config CONFIG",
+// "ataniqd chat set KEY off|read --config CONFIG" and "ataniqd chat purge KEY
+// --config CONFIG", which call chat.list, chat.set and chat.purge of the
+// running daemon and print the result as one JSON line.
+// Package leaddaemon says what the daemon then does.
 //
 // A build with the ataniq_ownerchannel tag adds one flag to run
 // (owner_linux.go; every other build has owner_off_linux.go and none of it):
@@ -47,7 +52,21 @@
 // same names for every other build) the daemon serves the phone trial, a
 // STAND-IN rig whose settings "ataniqd trial init" writes: sample cards only,
 // made on demand by "ataniqd trial submit" through the operation trial.submit,
-// decided through the real decision path and applied to nothing.
+// decided through the real decision path and applied to nothing; with
+// --seat-gate its gate also serves seat.chat (the capability chat) from the
+// STAND-IN sample leads of package chat/standin, held in memory. In a build
+// with both tags, run --scratch CONFIG --owner-channel --seat-gate ADDR
+// (chat_scratch_linux.go) gives the gate the scratch leads' read-only chat
+// port, leaddaemon.LeadChat, instead: the replies the leads wrote to their
+// outboxes, of each lead the desk turned on with "ataniqd chat set KEY read".
+// --trial is refused with --scratch and with --canary, from the flags
+// before any config is read, so no other gate serves chat.
+// "ataniqd genesis list" and "ataniqd genesis handoff TAG" (genesis_linux.go;
+// genesis_off_linux.go has the same names for every other build) read the
+// finished interviews in owner/genesis of the state folder through the thread
+// store's read-only reader, whether or not the daemon runs, and print them or
+// the hand-off of one software plan (package genesis/handoff): a command line
+// for the owner to run himself. Nothing is written, run or sent.
 //
 // A build without the tag is read-only. It starts, stops and manages no unit
 // and defines no lead; no flag does. Reconcile runs at start only, not on a timer. Leads,

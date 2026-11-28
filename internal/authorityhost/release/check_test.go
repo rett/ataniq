@@ -1,13 +1,17 @@
 package release
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
 	"testing"
+
+	"ataniq/internal/authorityhost/noaicheck"
 )
 
 var noRun = CheckOptions{NoNoAICheck: true}
@@ -21,6 +25,90 @@ func TestCheckPasses(t *testing.T) {
 		if f := Check(dir, noRun); len(f) != 0 {
 			t.Errorf("%s: %s", name, lines(f))
 		}
+	}
+}
+
+// Both release gates must report the same rule for the same file.
+func checkReleaseUnit(t *testing.T, src, file, rule string) {
+	t.Helper()
+	dir := built(t, dynamicOptions(t, src))
+	var findings []Finding
+	var hits []noaicheck.Hit
+	if rule != "" {
+		findings = []Finding{{Code: rule, Name: file}}
+		hits = []noaicheck.Hit{{Kind: noaicheck.KindUnit, Path: filepath.Join(dir, file), Detail: rule}}
+	}
+	if got := Check(dir, noRun); !slices.Equal(got, findings) {
+		t.Errorf("ah-release findings: %v, want %v", got, findings)
+	}
+	checker, err := noaicheck.Open(t.TempDir(), &noaicheck.Lists{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer checker.Close()
+	if err := checker.CheckRelease(dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := checker.Report().Hits; !slices.Equal(got, hits) {
+		t.Errorf("ah-noaicheck hits: %v, want %v", got, hits)
+	}
+}
+
+func TestReleaseUnitText(t *testing.T) {
+	const unit = "etc/systemd/system/ataniq-seat.service"
+	const exec = "ExecStart=/opt/authority-host/current/bin/ataniq-seat\n"
+	for _, file := range []string{unit, unit + ".d/10-start.conf"} {
+		t.Run(filepath.Base(file), func(t *testing.T) {
+			check := func(t *testing.T, text, rule string) {
+				t.Helper()
+				src := dynamicSrc(t)
+				set(t, src, file, text)
+				checkReleaseUnit(t, src, file, rule)
+			}
+			t.Run("initial BOM", func(t *testing.T) {
+				check(t, "\ufeff[Service]\n"+exec, noaicheck.UnitSyntax)
+			})
+			t.Run("continued directive", func(t *testing.T) {
+				check(t, "[Service]\nEnvironment=A=1 \\\n B=2\n"+exec, noaicheck.UnitSyntax)
+			})
+			t.Run("letters and ASCII spacing", func(t *testing.T) {
+				check(t, "[Unit]\r\nDescription=Café 東京\r\n \t[Service]\t \r\n\t"+exec, "")
+			})
+			for _, r := range []rune{'\u00a0', '\u3000', '\u2028', '\u0085', '\u200b', '\u200c', '\u200d', '\u200e', '\u200f', '\u2060', '\ufeff'} {
+				t.Run(fmt.Sprintf("%U/header", r), func(t *testing.T) {
+					check(t, "[Service]\n"+string(r)+"[X]\n"+exec, noaicheck.UnitSyntax)
+				})
+				t.Run(fmt.Sprintf("%U/directive", r), func(t *testing.T) {
+					check(t, "[Service]\n"+string(r)+exec, noaicheck.UnitSyntax)
+				})
+			}
+		})
+	}
+}
+
+func TestReleaseUserServices(t *testing.T) {
+	const user = "etc/systemd/user/"
+	for _, tc := range []struct{ name, rule string }{
+		{"app.service", "user-service"},
+		{"app@.service", "user-service"},
+		{"app.service.d/env.conf", "user-service"},
+		{"app@.service.d/env.conf", "user-service"},
+		{"app-.service.d/env.conf", "user-service"},
+		{"service.d/env.conf", "user-service"},
+		{"default.target.wants/app.service", "user-service"},
+		{"app.socket", ""},
+		{"app.socket.d/env.conf", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := dynamicSrc(t)
+			file := user + tc.name
+			set(t, src, file, "[Unit]\nDescription=Example\n")
+			if !strings.HasSuffix(file, ".conf") {
+				replace(t, src, "share/validators.list", "caddy validate",
+					"systemd-analyze verify {release}/"+file+"\ncaddy validate")
+			}
+			checkReleaseUnit(t, src, file, tc.rule)
+		})
 	}
 }
 
@@ -104,6 +192,11 @@ func TestCheckCoverage(t *testing.T) {
 		{name: "a drop-in names its release", mutate: func(t *testing.T, s string) {
 			set(t, s, "etc/systemd/system/ataniq-seat.service.d/10-env.conf", "[Service]\nEnvironment=RELEASE={release}\n")
 		}},
+		{name: "a host service runs the release through a drop-in", mutate: func(t *testing.T, s string) {
+			set(t, s, "etc/systemd/system/worker.service.d/10-start.conf", "[Service]\nExecStart=\nExecStart={release}/bin/ataniq-seat\n")
+			set(t, s, "share/stop.list", dynStop+"systemctl stop worker.service\n")
+			set(t, s, "share/reload.list", dynReload+"systemctl restart worker.service\n")
+		}},
 		{name: "a drop-in needs no validator of its own", mutate: func(t *testing.T, s string) {
 			set(t, s, "etc/systemd/system/ataniq-seat.service.d/10-hardening.conf", "[Service]\nNoNewPrivileges=yes\n")
 		}},
@@ -180,11 +273,11 @@ func TestCheckCoverage(t *testing.T) {
 			set(t, s, "etc/systemd/system/ataniq-seat.service", testUnit)
 			set(t, s, "share/validators.list", testValidators+"systemd-analyze verify {release}/etc/systemd/system/ataniq-seat.service\n")
 			set(t, s, "share/reload.list", testReload+"systemctl daemon-reload\n")
-		}, want: []string{"static-has-service: etc/systemd/system/ataniq-seat.service"}},
+		}, want: []string{"static-has-service: etc/systemd/system/ataniq-seat.service", "decision-exec: etc/systemd/system/ataniq-seat.service"}},
 		{name: "a static release with a service in a drop-in", static: true, mutate: func(t *testing.T, s string) {
 			set(t, s, "etc/systemd/system/x.service.d/10.conf", "[Service]\nExecStart=\nExecStart=/bin/sh\n")
 			set(t, s, "share/reload.list", testReload+"systemctl daemon-reload\n")
-		}, want: []string{"static-has-service: etc/systemd/system/x.service.d/10.conf"}},
+		}, want: []string{"static-has-service: etc/systemd/system/x.service.d/10.conf", "decision-exec: etc/systemd/system/x.service.d/10.conf"}},
 		{name: "a static release with a timer and a oneshot-less service section", static: true, mutate: func(t *testing.T, s string) {
 			set(t, s, "etc/systemd/system/x.timer", "[Timer]\nOnBootSec=1min\n")
 			set(t, s, "etc/systemd/system/x.service", "[Service]\nType=oneshot\n")
@@ -215,17 +308,20 @@ func TestCheckCoverage(t *testing.T) {
 			replace(t, s, "etc/systemd/system/ataniq-seat.service", "current/bin", "releases/0001-abcdef0/bin")
 		}, want: []string{"decision-exec: etc/systemd/system/ataniq-seat.service"}},
 		{name: "decision service runs a binary of its own release by id", mutate: func(t *testing.T, s string) {
-			replace(t, s, "etc/systemd/system/ataniq-seat.service", "ExecStart=/opt/authority-host/current/bin", "ExecStart=-/opt/authority-host/releases/0007-0123456/bin")
+			replace(t, s, "etc/systemd/system/ataniq-seat.service", "ExecStart=/opt/authority-host/current/bin", "ExecStart=/opt/authority-host/releases/0007-0123456/bin")
 		}},
+		{name: "a prefixed release executable", mutate: func(t *testing.T, s string) {
+			replace(t, s, "etc/systemd/system/ataniq-seat.service", "ExecStart=/opt", "ExecStart=-/opt")
+		}, want: []string{"decision-exec: etc/systemd/system/ataniq-seat.service"}},
 		{name: "decision service with ExecStartPre from the system", mutate: func(t *testing.T, s string) {
 			replace(t, s, "etc/systemd/system/ataniq-seat.service", "Restart=", "ExecStartPre=/usr/bin/true\nRestart=")
-		}},
+		}, want: []string{"decision-exec: etc/systemd/system/ataniq-seat.service"}},
 		{name: "a second ExecStart runs a system binary", mutate: func(t *testing.T, s string) {
 			replace(t, s, "etc/systemd/system/ataniq-seat.service", "Restart=", "ExecStart=/usr/bin/sleep 1\nRestart=")
 		}, want: []string{"decision-exec: etc/systemd/system/ataniq-seat.service"}},
 		{name: "an ExecStart continued over two lines", mutate: func(t *testing.T, s string) {
 			replace(t, s, "etc/systemd/system/ataniq-seat.service", "ExecStart=/opt", "ExecStart=\\\n  /opt")
-		}},
+		}, want: []string{"unit-syntax: etc/systemd/system/ataniq-seat.service"}},
 		{name: "a unit gated on the inhibit", mutate: func(t *testing.T, s string) {
 			replace(t, s, "etc/systemd/system/ataniq-seat.service", "[Service]", "ConditionPathExists=!/var/lib/authority-host/decisions.inhibit\n\n[Service]")
 		}, want: []string{"inhibit-start-condition: etc/systemd/system/ataniq-seat.service"}},

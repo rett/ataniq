@@ -1,10 +1,12 @@
 package seatapp
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -74,7 +76,9 @@ type Session struct {
 	Kind string
 	// key is the session's key in the app's table, for the state the app
 	// keeps with it (see decide.go).
-	key tokenKey
+	key       tokenKey
+	chat      *chatHistory
+	directory *directoryMemory
 }
 
 // session is one session as the app keeps it.
@@ -143,25 +147,60 @@ func (ss *sessions) get(value string) (Session, bool) {
 // look returns the session of a cookie value like get, and does not mark it
 // used: a request that only looks never extends the session's idle time. A
 // session past its idle time or its age is removed and is not returned. The
-// watch poll is its only caller. gone is closed when the session ends.
+// watch poll is its only caller (the hint stream uses lookUntil). gone is
+// closed when the session ends.
 func (ss *sessions) look(value string) (s Session, gone <-chan struct{}, ok bool) {
+	s, gone, _, ok = ss.lookUntil(value)
+	return s, gone, ok
+}
+
+// lookUntil is look, which also returns when the session ends by itself if
+// nothing marks it used: the earlier of its idle time and its age. The hint
+// stream arms a timer at it, so that it ends with the session in silence.
+func (ss *sessions) lookUntil(value string) (s Session, gone <-chan struct{}, until time.Time, ok bool) {
 	k, ok := keyOf(value)
 	if !ok {
-		return Session{}, nil, false
+		return Session{}, nil, time.Time{}, false
 	}
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	cur, ok := ss.m[k]
 	if !ok {
-		return Session{}, nil, false
+		return Session{}, nil, time.Time{}, false
 	}
 	if !cur.live(ss.now()) {
 		ss.drop(k)
-		return Session{}, nil, false
+		return Session{}, nil, time.Time{}, false
 	}
 	out := cur.Session
 	out.key = k
-	return out, cur.gone, true
+	return out, cur.gone, cur.until(), true
+}
+
+// liveUntil reports whether the session of k is live, without marking it
+// used, and when it ends by itself (see lookUntil). A session past its idle
+// time or its age is removed.
+func (ss *sessions) liveUntil(k tokenKey) (until time.Time, ok bool) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	cur, ok := ss.m[k]
+	if !ok {
+		return time.Time{}, false
+	}
+	if !cur.live(ss.now()) {
+		ss.drop(k)
+		return time.Time{}, false
+	}
+	return cur.until(), true
+}
+
+// until is when s ends by itself if nothing marks it used.
+func (s *session) until() time.Time {
+	idle, age := s.used.Add(SessionIdle), s.created.Add(SessionMax)
+	if age.Before(idle) {
+		return age
+	}
+	return idle
 }
 
 // holdWatch makes the caller one of the session's held watch polls, at most
@@ -231,6 +270,8 @@ func (ss *sessions) add(k tokenKey, s Session) {
 		ss.drop(oldest)
 	}
 	s.CredentialID = append([]byte(nil), s.CredentialID...)
+	s.chat = &chatHistory{}
+	s.directory = &directoryMemory{rows: make(map[string][]directoryRow)}
 	ss.m[k] = &session{Session: s, created: now, used: now, gone: make(chan struct{})}
 }
 
@@ -245,6 +286,23 @@ func (ss *sessions) end(value string) {
 	ss.mu.Unlock()
 }
 
+// endCredential removes every session that the credential of raw id
+// credentialID logged in: a revocation the daemon reported ends them all,
+// whichever session's request learnt it. An ordinary logout is end, which
+// keeps to its own session.
+func (ss *sessions) endCredential(credentialID []byte) {
+	if len(credentialID) == 0 {
+		return
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	for k, s := range ss.m {
+		if bytes.Equal(s.CredentialID, credentialID) {
+			ss.drop(k)
+		}
+	}
+}
+
 // count is the number of sessions kept, live or not yet swept.
 func (ss *sessions) count() int {
 	ss.mu.Lock()
@@ -254,13 +312,34 @@ func (ss *sessions) count() int {
 
 // cookieValue returns the value of the one cookie of a name the request
 // carries. A request with none, or with more than one, has none: two cookies
-// of one name are not the app's doing.
+// of one name are not the app's doing. The names are counted in the Cookie
+// headers as sent, before they are parsed, since the parser drops a cookie
+// whose value is malformed: a second cookie of the name is refused whatever
+// its value.
 func cookieValue(r *http.Request, name string) string {
+	if cookieNames(r, name) != 1 {
+		return ""
+	}
 	cs := r.CookiesNamed(name)
 	if len(cs) != 1 {
 		return ""
 	}
 	return cs[0].Value
+}
+
+// cookieNames counts the cookies of a name in the request's Cookie headers,
+// whatever their values.
+func cookieNames(r *http.Request, name string) int {
+	n := 0
+	for _, line := range r.Header.Values("Cookie") {
+		for _, part := range strings.Split(line, ";") {
+			k, _, _ := strings.Cut(strings.TrimSpace(part), "=")
+			if strings.TrimSpace(k) == name {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // setCookie sets a cookie of the app: the path /, Secure, HttpOnly and
@@ -287,7 +366,7 @@ func clearCookie(w http.ResponseWriter, name string) {
 
 // session returns the session of a request, if it has one that is live.
 func (a *app) session(r *http.Request) (Session, bool) {
-	return a.sess.get(cookieValue(r, SessionCookie))
+	return a.sess.get(cookieValue(r, SessionCookie+a.cookieSuffix))
 }
 
 // loginPath is the login page.
@@ -308,7 +387,7 @@ func (a *app) authed(h func(http.ResponseWriter, *http.Request, Session)) http.H
 		}
 		s, ok := a.session(r)
 		if !ok {
-			w.Header().Set("Location", loginPath)
+			w.Header().Set("Location", a.mount+loginPath)
 			writeText(w, http.StatusSeeOther, "log in first\n")
 			return
 		}

@@ -32,6 +32,45 @@ const CodeTooManyRefusals = "too-many-refusals"
 // door-unavailable, journal-reopened, keys-unavailable, keys-full) does not
 // count: a seat that polls while the door is down is not shut out for it.
 //
+// Of the words of seat.genesis only genesis-bad-answer counts, with
+// bad-params as everywhere: an answer the question cannot take (an unknown
+// node, an option the question does not hold, a form of answer it does not
+// take, a round the thread has not reached) is what the peer sent, the seat's
+// own pages never send one, and a seat that keeps sending them is the misuse
+// the bound is for. None of the others counts. genesis-stale-round (a round
+// already taken), genesis-busy (a third open thread), genesis-done (a call to
+// a finished thread), genesis-unknown-thread (a thread that expired, was
+// discarded, or is not the store's), genesis-not-ready (a plan of a brief that
+// is not complete) and genesis-no-template (a plan of a kind no template
+// serves) answer the state of the daemon's store, which a seat in good order
+// meets: a double tap, a second tab, a post the browser sent again, a start
+// after two threads were left open, a page left open past a discard, a link
+// to the plan of a thread the owner finished early or of a kind of the
+// owner's own words. genesis-secret-shaped and genesis-over-cap answer what
+// the owner typed, which the owner may get wrong a few times on the way to a
+// good answer. None of them says anything against the peer, and a few taps
+// must not shut the owner out of approvals for ten minutes. They stay bounded
+// elsewhere: by the seat's own 30 project requests a minute for each
+// credential, by the seat link's room of 12 interview calls, by the gate's 60
+// requests a minute, and by the store's own limits (two open threads, eight
+// files). They are kept out of this table by being absent.
+//
+// Of seat.chat, none of its three words counts; bad-params does, as
+// everywhere, and so does unknown-op from a handler that serves no chat.
+// chat-off (a lead whose switch is off), chat-unknown-lead (a lead the host
+// does not know, such as one removed while a page was open) and chat-busy (a
+// host that cannot serve the read now) answer the state of the leads and of
+// the host, which a seat in good order meets: a page left open while the desk
+// turned a lead's chat off, a link to a lead that is gone, a reload while the
+// host is busy. A read is a read: the seat may send it as often as its own
+// room allows, and a few reloads must not shut the owner out of approvals for
+// ten minutes. Params the wire's decoder refuses (a verb that sends, a lead of
+// another form, a limit past 16) are bad-params and count: the seat's own
+// pages never send them. The chat words are kept out of this table by being
+// absent; they stay bounded by the seat's own 30 chat pages a minute for each
+// credential, by the seat link's own chat room of 5 calls in 80 seconds,
+// which Cards reads never use, and by the gate's 60 requests a minute.
+//
 // wait-full, the answer to a seat.wait past the peer's two held waits or the
 // service's own limit, does not count either, and must not: it is a load
 // answer, not a misuse. A seat that reconnects while its old wait is still
@@ -55,6 +94,9 @@ var counted = func() map[string]bool {
 		CodeKeyAmbiguous:      true,
 		// An assertion that does not verify is what the peer sent.
 		ownerwire.CodeAssertionInvalid: true,
+		// The one refusal of seat.genesis that counts: an answer the
+		// question cannot take. None of the others: see above.
+		ownerwire.CodeGenesisBadAnswer: true,
 	}
 	for c := range passedRefusals {
 		m[string(c)] = true

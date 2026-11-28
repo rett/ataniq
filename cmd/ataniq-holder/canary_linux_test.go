@@ -307,6 +307,9 @@ func TestCanaryStartServes(t *testing.T) {
 		t.Fatalf("%d starts", len(seen))
 	}
 	in := seen[0]
+	if in.AuthorityTag != "0123456789abcdef" {
+		t.Errorf("holder launch tag = %q", in.AuthorityTag)
+	}
 	if strings.Join(in.AgentArgv, " ") != "/ataniq/agent/bin/stand-in --sample" {
 		t.Errorf("AgentArgv %q", in.AgentArgv)
 	}
@@ -450,6 +453,19 @@ func TestCanaryCounters(t *testing.T) {
 	for k, v := range want {
 		if rec.Counters[k] != v {
 			t.Errorf("final record: %s is %d, want %d", k, rec.Counters[k], v)
+		}
+	}
+}
+
+func TestCanaryStartRequiresAuthorityTag(t *testing.T) {
+	for _, tag := range []string{"", "0123456789abcdeg"} {
+		c := newCanaryRig(t)
+		t.Setenv(sandboxstart.AuthorityTagEnv, tag)
+		if code := c.runNow(c.spec("").build()); code != exitSandbox || !strings.Contains(c.errbuf.String(), "authority tag") {
+			t.Fatalf("tag %q: exit %d, stderr %q", tag, code, c.errbuf.String())
+		}
+		if calls := c.sys.callList(); len(calls) != 0 || len(c.launches()) != 0 {
+			t.Fatalf("tag %q: start continued after identity refusal: %v", tag, calls)
 		}
 	}
 }

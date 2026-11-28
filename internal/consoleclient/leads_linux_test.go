@@ -309,27 +309,27 @@ func TestLeadsDetectionByHello(t *testing.T) {
 			t.Fatalf("Detect: %v", err)
 		}
 	})
-	t.Run("every operation is needed", func(t *testing.T) {
-		all := leadwire.Operations()
-		for i := range all {
-			var ops []string
-			ops = append(ops, all[:i]...)
-			ops = append(ops, all[i+1:]...)
+	for i, missing := range leadwire.Operations() {
+		t.Run("without "+missing, func(t *testing.T) {
+			all := leadwire.Operations()
+			ops := append(all[:i], all[i+1:]...)
 			f := startOwnerWith(t, clientapi.Options{}, ops)
+			f.onResult(leadwire.OpList, []byte(`{"leads":[]}`))
 			l := newLeads(t, f.dir)
-			if err := l.Detect(); !errors.Is(err, ErrLeadsVersion) {
-				t.Errorf("without %s: Detect = %v", all[i], err)
+			err := l.Detect()
+			if len(f.sent()) != 0 {
+				t.Fatalf("Detect sent %v", f.sent())
 			}
-			if _, err := l.List(); !errors.Is(err, ErrLeadsVersion) {
-				t.Errorf("without %s: List = %v", all[i], err)
+			_, listErr := l.List()
+			if missing == leadwire.OpList {
+				if !errors.Is(err, ErrLeadsVersion) || !errors.Is(listErr, ErrLeadsVersion) || len(f.sent()) != 0 {
+					t.Fatalf("Detect = %v, List = %v, sent %v", err, listErr, f.sent())
+				}
+			} else if err != nil || listErr != nil || f.count(leadwire.OpList) != 1 || len(f.sent()) != 1 {
+				t.Fatalf("Detect = %v, List = %v, sent %v", err, listErr, f.sent())
 			}
-			if len(f.sent()) != 0 || l.conn != nil {
-				t.Errorf("without %s: sent %v, kept %v", all[i], f.sent(), l.conn)
-			}
-			l.Close()
-			f.stop()
-		}
-	})
+		})
+	}
 	t.Run("all six", func(t *testing.T) {
 		d := startLeadDaemon(t)
 		l := newLeads(t, d.dir)
@@ -341,6 +341,26 @@ func TestLeadsDetectionByHello(t *testing.T) {
 		}
 		if l.conn == nil {
 			t.Fatal("the connection was not kept")
+		}
+	})
+	// The desk's two chat operations, which a scratch daemon lists after the
+	// six, change nothing of the detection: beside the six they are lead
+	// control, and alone they are none of it.
+	t.Run("the chat operations beside the six", func(t *testing.T) {
+		f := startOwnerWith(t, clientapi.Options{}, append(leadwire.Operations(), leadwire.ChatOperations()...))
+		l := newLeads(t, f.dir)
+		if err := l.Detect(); err != nil {
+			t.Fatalf("Detect: %v", err)
+		}
+		if len(f.sent()) != 0 {
+			t.Fatalf("Detect sent %v", f.sent())
+		}
+	})
+	t.Run("the chat operations alone", func(t *testing.T) {
+		f := startOwnerWith(t, clientapi.Options{}, leadwire.ChatOperations())
+		l := newLeads(t, f.dir)
+		if err := l.Detect(); !errors.Is(err, ErrNoLeadControl) {
+			t.Fatalf("Detect: %v", err)
 		}
 	})
 	t.Run("another protocol", func(t *testing.T) {
@@ -735,6 +755,8 @@ func TestRefusedAndUnavailableReceiptsCarryOnlyAGrammarWord(t *testing.T) {
 	}{
 		{leadwire.StatusRefused, "max-running", "max-running"},
 		{leadwire.StatusRefused, "second-message", "second-message"},
+		{leadwire.StatusRefused, "profile-not-launchable", "profile-not-launchable"},
+		{leadwire.StatusRefused, "holder-version-skew", "holder-version-skew"},
 		{leadwire.StatusUnavailable, "holder-down", "holder-down"},
 		{leadwire.StatusRefused, "", ""},
 		{leadwire.StatusRefused, "Max Running!", "unrecognised"},
@@ -1310,39 +1332,23 @@ func TestListCarriesAFreeMessageWithTheWordsOfTheLastOne(t *testing.T) {
 	}
 }
 
-// The rule for a row of a daemon from before state_reason and message_result:
-// the decoding refuses a member the types do not have and does not require one
-// they have, so such a row is accepted with both empty, and a row with a member
-// nobody defined is a bad answer.
-func TestAListRowWithoutTheNewMembersIsAcceptedAndOneWithAnUnknownMemberIsNot(t *testing.T) {
+// A daemon built before state_reason and message_result still lists leads.
+func TestAListRowWithoutTheNewMembersIsAccepted(t *testing.T) {
 	oldRow := map[string]any{
 		"key": "alpha", "role": testRole, "defined": true, "provision": "done", "state": "ready",
 		"epoch": 3, "unit": "u", "inject": true, "message_spent": true, "last": nil,
 	}
-	list := func(row map[string]any) map[string]any {
-		return map[string]any{"max_running": 2, "running": 1, "leads": []any{row}}
-	}
-	p, _, _ := scriptedPeer(t, func(clientapi.Request, cmdParams) any { return list(oldRow) })
+	p, _, _ := scriptedPeer(t, func(clientapi.Request, cmdParams) any {
+		return map[string]any{"max_running": 2, "running": 1, "leads": []any{oldRow}}
+	})
 	l := newLeads(t, p.dir)
+	defer l.Close()
 	lst, err := l.List()
 	if err != nil || len(lst.Leads) != 1 {
 		t.Fatalf("%+v %v", lst, err)
 	}
 	if r := lst.Leads[0]; r.State != "ready" || r.StateReason != "" || r.MessageResult != (LeadDelivery{}) || !r.MessageSpent {
 		t.Fatalf("row = %+v", r)
-	}
-	l.Close()
-
-	withUnknown := map[string]any{}
-	for k, v := range oldRow {
-		withUnknown[k] = v
-	}
-	withUnknown["state_note"] = "x"
-	p2, _, _ := scriptedPeer(t, func(clientapi.Request, cmdParams) any { return list(withUnknown) })
-	l2 := newLeads(t, p2.dir)
-	defer l2.Close()
-	if _, err := l2.List(); !isUnavailable(err, StateBadAnswer) {
-		t.Fatalf("a row with an unknown member: %v", err)
 	}
 }
 
@@ -1373,8 +1379,13 @@ func TestListCleansWhatItShowsAndKeepsRolesExact(t *testing.T) {
 	if lst.MaxRunning != 0 || lst.Running != 0 {
 		t.Fatalf("negative counts: %+v", lst)
 	}
-	if len(lst.Leads) != 1 || lst.LeftOut != 5 {
+	if len(lst.Leads) != 6 || lst.LeftOut != 0 {
 		t.Fatalf("rows %d, left out %d", len(lst.Leads), lst.LeftOut)
+	}
+	for _, bad := range lst.Leads[1:] {
+		if bad.Role != "" || bad.Key == "" || bad.State != "degraded" || bad.StateReason != "client/invalid-row" || bad.Capabilities != (LeadCapabilities{}) {
+			t.Errorf("invalid role in row %+v", bad)
+		}
 	}
 	r := lst.Leads[0]
 	if r.Role != testRole {
@@ -1401,36 +1412,6 @@ func TestListIsBoundedToTheDaemonsCap(t *testing.T) {
 	lst, err := l.List()
 	if err != nil || len(lst.Leads) != leadwire.MaxLeads || lst.LeftOut != 3 {
 		t.Fatalf("%d rows, left out %d, %v", len(lst.Leads), lst.LeftOut, err)
-	}
-}
-
-func TestAListThatIsNotValidIsABadAnswer(t *testing.T) {
-	row := func(edit func(r *leadwire.Receipt)) leadwire.ListResult {
-		r := leadwire.Receipt{CommandID: "c1", Op: leadwire.OpStart, Role: testRole, Status: leadwire.StatusDone, AdmittedAt: testTime}
-		edit(&r)
-		return leadwire.ListResult{Leads: []leadwire.Lead{{Key: "alpha", Role: testRole, Last: &r}}}
-	}
-	for name, res := range map[string]any{
-		"a last receipt of lead.list": row(func(r *leadwire.Receipt) { r.Op = leadwire.OpList }),
-		"a last receipt of no op":     row(func(r *leadwire.Receipt) { r.Op = "" }),
-		"a last receipt of another":   row(func(r *leadwire.Receipt) { r.Role = "scratch-beta/lead" }),
-		"a last receipt, bad id":      row(func(r *leadwire.Receipt) { r.CommandID = "a b" }),
-		"a last receipt, no id":       row(func(r *leadwire.Receipt) { r.CommandID = "" }),
-		"a last receipt, bad status":  row(func(r *leadwire.Receipt) { r.Status = "nearly" }),
-		"an unknown member":           map[string]any{"max_running": 2, "running": 0, "leads": []any{}, "extra": 1},
-		"not an object":               []any{},
-	} {
-		p, _, hellos := scriptedPeer(t, func(clientapi.Request, cmdParams) any { return res })
-		l := newLeads(t, p.dir)
-		_, err := l.List()
-		if !isUnavailable(err, StateBadAnswer) {
-			t.Errorf("%s: %v", name, err)
-		}
-		if l.conn != nil {
-			t.Errorf("%s: the connection was kept", name)
-		}
-		_ = hellos
-		l.Close()
 	}
 }
 

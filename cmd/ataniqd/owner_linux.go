@@ -73,7 +73,16 @@ of the socket is a seat.
                     comment, at most 4). Both are read at start, so a change of
                     the pins takes effect at the next start; the daemon refuses
                     to start without a key or a pin. It serves the pairing call
-                    and the reads of the cards. With the seat origin in the
+                    and the reads of the cards, and the guided new-project
+                    interview, whose threads it keeps one file each in
+                    owner/genesis/ of the state folder (a folder it makes,
+                    mode 0700; it refuses a link, a folder that is not the
+                    daemon user's and one open to writing). In the phone
+                    trial alone (--trial, below) it also serves the seat's
+                    lead pages from STAND-IN samples; a daemon with real
+                    leads (--scratch, a build with both tags) serves their
+                    replies instead, read only. With the seat
+                    origin in the
                     owner-local file ataniq/owner-local/seat-origin of the
                     configuration folder (https:// and a lower-case domain
                     name, read once at start) it also serves a login and a
@@ -81,12 +90,32 @@ of the socket is a seat.
                     user verification, on scratch state only; without one it
                     decides nothing. At start it prints one line with the
                     address, the gate's key fingerprint, the origin and what
-                    it serves (or why it serves pair and read only), and no
-                    pin; it stops the gate before it closes the service.
+                    it serves (or why it serves no login and decision), and
+                    no pin; it stops the gate before it closes the service.
   seat-gate init    make the gate's key in owner/gate/ of the state folder and
                     print its fingerprint, the pin the seat is given. A key
                     already there is never overwritten.
   seat-gate pins    print the seat pins as the daemon reads them at start.
+
+The desk reads the finished interviews of owner/genesis/ of the state folder,
+whether or not the daemon runs, and writes nothing there:
+
+       ataniqd genesis list [--state-dir DIR]
+       ataniqd genesis handoff TAG [--state-dir DIR]
+
+  genesis list      print one line per finished interview that holds a plan:
+                    its tag (the first 6 digits of its id), its kind, the
+                    plan's digest (12 digits) and the day it was finished. A
+                    file that is not served is named on standard error.
+  genesis handoff   print the hand-off of the plan of the interview whose id
+                    starts with TAG (6 to 16 digits): comment lines and one
+                    command line, "qargi project new NAME --methodology
+                    gitflow", for you to run yourself in the folder where you
+                    keep projects; it prints Qargi's plan and token, and
+                    creating the project needs your own words. Nothing is run.
+                    Only a software plan has a hand-off yet. Exit codes: 0
+                    printed, 1 a failure, 2 usage, 3 refused (no interview or
+                    more than one has the tag, or its kind has no hand-off).
 
 The phone trial is a STAND-IN rig for scratch state only, in which the owner
 tries the phone end to end without a lead, a mirror or a sandbox:
@@ -111,7 +140,13 @@ tries the phone end to end without a lead, a mirror or a sandbox:
                     without --trial and other settings with it, and a state or
                     runtime folder that is, lies inside or contains a default
                     folder of the account (so give --runtime-dir), and prints a
-                    TRIAL line after the STAND-IN banner at start.
+                    TRIAL line after the STAND-IN banner at start. With
+                    --seat-gate the trial's gate also serves the seat's lead
+                    pages (the capability chat, read only) from STAND-IN
+                    sample leads and conversations held in memory: no lead is
+                    read or reached, and no other gate serves these samples.
+                    --trial is refused with every flag that gives the
+                    daemon leads (--scratch, in a build that has it).
   trial submit      ask the trial daemon on the socket (default the runtime
                     folder's daemon.sock) for N sample cards (1 to 10, default
                     1) of a kind: finish, a sample feature finish, or branch-prune,
@@ -133,6 +168,41 @@ type ownerFlags struct {
 	gateSet  bool
 	// trial is --trial: the phone trial (owner_trial_linux.go).
 	trial bool
+	// settings are --owner-settings and --check, which only a build with both
+	// tags registers (scratch_settings_linux.go).
+	settings settingsFlags
+}
+
+// settingsFlags are the flags of run that only a build with both tags has:
+// --owner-settings DIR, the folder the owner channel reads its settings from
+// in place of owner/ of the state folder, and --check, which checks and prints
+// what the daemon would read and exits; with --check, --keys-prefix and
+// --keys-since PREFIX check the state folder's key list alone
+// (scratch_keys_linux.go), and --expect-state DIR refuses any of them, before
+// a file of the state folder is read, unless DIR is the config's state
+// folder.
+type settingsFlags struct {
+	dir         string
+	dirSet      bool
+	check       bool
+	keysPrefix  bool
+	keysSince   string
+	sinceSet    bool
+	expectState string
+	expectSet   bool
+}
+
+// given reports whether any of the flags was given.
+func (s settingsFlags) given() bool {
+	return s.dirSet || s.check || s.keysPrefix || s.sinceSet || s.expectSet
+}
+
+// ownerSettingsNote is the line the daemon prints after the banner when the
+// owner channel's settings come from the folder of --owner-settings: the file
+// scratch.json in it (hostadapter.ScratchName) is read, and owner/scratch.json
+// of the state folder is not.
+func ownerSettingsNote(dir string) string {
+	return "owner channel: settings read from " + leaddaemon.SafeText(dir) + "/scratch.json (--owner-settings); owner/scratch.json of the state folder is not read"
 }
 
 func (o *ownerFlags) define(fs *flag.FlagSet) {
@@ -142,6 +212,9 @@ func (o *ownerFlags) define(fs *flag.FlagSet) {
 		return nil
 	})
 	fs.BoolVar(&o.trial, "trial", false, "serve the phone trial's sample cards (with --owner-channel)")
+	if scratchSeat != nil && scratchSeat.flags != nil {
+		scratchSeat.flags(fs, &o.settings)
+	}
 }
 
 // ownerServiceBuilder builds the host's side of a card in the daemon's state
@@ -151,11 +224,19 @@ func (o *ownerFlags) define(fs *flag.FlagSet) {
 // is.
 var ownerServiceBuilder func(stateDir string) (leaddaemon.OwnerService, func() error, error)
 
+// ownerBuildFrom is the host adapter's builder on settings read by load in
+// place of owner/scratch.json of the state folder, which run --owner-settings
+// uses (a build with both tags). The host adapter sets it with the builder.
+var ownerBuildFrom func(stateDir string, load scratchLoad) (leaddaemon.OwnerService, func() error, error)
+
 // ownerGuardSet is what the builder of a build brings with it: the checks of
 // the state folder and the settings that run before the daemon starts, and the
 // line the daemon prints once the service is built.
 type ownerGuardSet struct {
 	check func(stateDir string, getenv func(string) string) error
+	// checkFrom, when set, is check on the settings load reads, for run
+	// --owner-settings; a guard without it cannot take that flag.
+	checkFrom func(stateDir string, load scratchLoad, getenv func(string) string) error
 	// checkRuntime, when set, checks the runtime folder (the daemon's socket
 	// is in it) before the daemon takes a lock.
 	checkRuntime func(runtimeDir string, getenv func(string) string) error
@@ -172,10 +253,66 @@ var ownerGuard *ownerGuardSet
 // decider. A test replaces it, so that none needs a real terminal.
 var ownerInspector leaddaemon.PeerInspector = leaddaemon.ProcInspector{}
 
+// scratchSeatSet is what a build with both tags, ataniq_ownerchannel and
+// ataniq_canary, adds to the owner channel (chat_scratch_linux.go): scratch
+// mode with the seat gate.
+type scratchSeatSet struct {
+	// on reports whether the daemon runs a mode with leads: scratch mode
+	// (run --scratch) or canary mode (run --canary).
+	on func(cfg *leaddaemon.Config) bool
+	// chat gives the gate the scratch leads' chat port when the daemon runs
+	// scratch mode.
+	chat func(cfg *leaddaemon.Config, gate *leaddaemon.SeatGate)
+	// flags registers --owner-settings and --check.
+	flags func(fs *flag.FlagSet, s *settingsFlags)
+	// settings takes --owner-settings and --check, after the scratch config
+	// is read: it returns the reader of the folder's settings, or a code to
+	// end with (a refusal, or the end of --check).
+	settings func(a *app, o *ownerFlags, cfg *leaddaemon.Config) (scratchLoad, int)
+}
+
+// scratchSeat is set by a build with both tags. It is nil in a build with the
+// owner channel's tag alone, which has no scratch mode: its gate serves no
+// lead's chat but the phone trial's samples.
+var scratchSeat *scratchSeatSet
+
+// leadsOn reports whether the daemon runs a mode with leads, scratch or
+// canary mode.
+func leadsOn(cfg *leaddaemon.Config) bool {
+	return scratchSeat != nil && scratchSeat.on(cfg)
+}
+
+// trialLeadRefusal is what run says when --trial is given with a mode that
+// has leads, --scratch or --canary.
+const trialLeadRefusal = "ataniqd run: --trial excludes --scratch and --canary: a daemon with leads never serves the phone trial's samples\n"
+
+// trialCheck refuses --trial with a mode that has leads (--scratch, or
+// --canary, whose agent may be live), from the flags alone: before any
+// config or setting is read, at the usage exit code. It returns a code to
+// end with, or -1 to go on.
+func (a *app) trialCheck(o *ownerFlags, c *canaryFlags) (code int) {
+	if o.trial && c.leadMode() {
+		fmt.Fprint(a.stderr, trialLeadRefusal)
+		return leaddaemon.ExitUsage
+	}
+	return -1
+}
+
 // ownerRun sets the daemon's serve hook when --owner-channel was given. It
 // returns a code to end with, or -1 to go on. The roots of cfg are final.
 func (a *app) ownerRun(o *ownerFlags, cfg *leaddaemon.Config) (code int) {
+	// The phone trial serves sample cards and, with a gate, STAND-IN sample
+	// leads; a daemon with leads never does. trialCheck refused the flags
+	// already; this holds it for the config too.
+	if o.trial && leadsOn(cfg) {
+		fmt.Fprint(a.stderr, trialLeadRefusal)
+		return leaddaemon.ExitUsage
+	}
 	if !o.set {
+		if o.settings.given() {
+			fmt.Fprint(a.stderr, "ataniqd run: --owner-settings and --check need --owner-channel\n")
+			return leaddaemon.ExitUsage
+		}
 		if o.gateSet {
 			fmt.Fprint(a.stderr, "ataniqd run: --seat-gate needs --owner-channel\n")
 			return leaddaemon.ExitUsage
@@ -198,6 +335,29 @@ func (a *app) ownerRun(o *ownerFlags, cfg *leaddaemon.Config) (code int) {
 	if build == nil {
 		fmt.Fprint(a.stderr, "ataniqd run: --owner-channel: this build cannot build the host's side of a card yet\n")
 		return leaddaemon.ExitConfig
+	}
+	// --owner-settings (a build with both tags): the settings are read from
+	// the folder it names, which is checked first, and owner/scratch.json of
+	// the state folder is not read. --check ends here.
+	if o.settings.given() {
+		if scratchSeat == nil || scratchSeat.settings == nil {
+			fmt.Fprint(a.stderr, "ataniqd run: --owner-settings: this build has no scratch mode\n")
+			return leaddaemon.ExitUsage
+		}
+		load, code := scratchSeat.settings(a, o, cfg)
+		if code >= 0 {
+			return code
+		}
+		if guard == nil || guard.checkFrom == nil || ownerBuildFrom == nil {
+			fmt.Fprint(a.stderr, "ataniqd run: --owner-settings: this build cannot read the owner channel's settings from another folder\n")
+			return leaddaemon.ExitConfig
+		}
+		from, checkFrom := ownerBuildFrom, guard.checkFrom
+		build = func(stateDir string) (leaddaemon.OwnerService, func() error, error) { return from(stateDir, load) }
+		g := *guard
+		g.check = func(stateDir string, getenv func(string) string) error { return checkFrom(stateDir, load, getenv) }
+		g.note = ownerSettingsNote(o.settings.dir)
+		guard = &g
 	}
 	stateDir := cfg.StateDir
 	// The guards of the builder's own door come before the daemon takes a
@@ -223,6 +383,14 @@ func (a *app) ownerRun(o *ownerFlags, cfg *leaddaemon.Config) (code int) {
 			return code
 		}
 		gate = g
+		// The phone trial's gate, and no other, serves the STAND-IN chat; a
+		// scratch daemon's gate serves the real leads' chat (a build with
+		// both tags), and the two exclude each other (above).
+		if trial != nil {
+			trialChat(gate)
+		} else if scratchSeat != nil {
+			scratchSeat.chat(cfg, gate)
+		}
 	}
 	oc := &leaddaemon.OwnerChannel{
 		Build: withSeatGate(gate, func() (leaddaemon.OwnerService, func() error, error) {

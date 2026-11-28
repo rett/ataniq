@@ -268,3 +268,116 @@ func FuzzDecodeSeatWaitResult(f *testing.F) {
 		`{"cards":null,"more":false,`+v+`,"waiting":0}`,
 		`{"cards":[],"more":false,"version":"","waiting":0}`)
 }
+
+func FuzzDecodeSeatWaitChatParams(f *testing.F) {
+	const v = "9ac6d04d66be695b1abd73a004de6e86"
+	fuzzForm(f, "seat wait chat params", `{"chat":0,"since":""}`, `{"chat":9007199254740991,"since":"`+v+`"}`,
+		`{"chat":9007199254740992,"since":"`+v+`"}`, `{"chat":-1,"since":""}`, `{"chat":"1","since":""}`,
+		`{"chat":null,"since":""}`, `{"since":"`+v+`"}`, `{"chat":1}`, `{"chat":1,"since":"`+v+`","x":1}`)
+}
+
+func FuzzDecodeSeatWaitChatResult(f *testing.F) {
+	const v = `"version":"9ac6d04d66be695b1abd73a004de6e86"`
+	fuzzForm(f, "seat wait chat result",
+		`{"cards":[],"chat":1,"more":false,`+v+`,"waiting":0}`,
+		`{"cards":[],"more":false,`+v+`,"waiting":0}`,
+		`{"cards":[],"chat":0,"more":false,`+v+`,"waiting":0}`,
+		`{"cards":[],"chat":9007199254740992,"more":false,`+v+`,"waiting":0}`,
+		`{"cards":[],"chat":-5,"more":false,`+v+`,"waiting":0}`,
+		`{"cards":[],"chat":1,"lead":"daemon:a","more":false,`+v+`,"waiting":0}`)
+}
+
+func FuzzDecodeSeatGenesisParams(f *testing.F) {
+	const t = `"thread":"0123456789abcdef"`
+	fuzzForm(f, "seat genesis params",
+		`{"verb":"start"}`, `{"verb":"start",`+t+`}`, `{`+t+`,"verb":"round"}`, `{`+t+`,"verb":"summary"}`,
+		`{`+t+`,"verb":"finish"}`, `{`+t+`,"verb":"discard"}`, `{"verb":"round"}`, `{`+t+`,"verb":"round","round":1}`,
+		`{"answers":[{"ids":["a"],"kind":"choice","node":"goal"}],"round":1,`+t+`,"verb":"answer"}`,
+		`{"answers":[{"ids":["a","b"],"kind":"choices","node":"formats"},{"kind":"skip","node":"hosts"},{"kind":"you_decide","node":"schedule"}],"round":6,`+t+`,"verb":"answer"}`,
+		`{"answers":[{"kind":"other","node":"goal","text":"a family cookbook"}],"round":2,`+t+`,"verb":"answer"}`,
+		`{"answers":[],"round":1,`+t+`,"verb":"answer"}`,
+		`{"answers":[{"kind":"skip","node":"goal"},{"kind":"skip","node":"goal"}],"round":1,`+t+`,"verb":"answer"}`,
+		`{"answers":[{"ids":["a","a"],"kind":"choices","node":"goal"}],"round":1,`+t+`,"verb":"answer"}`,
+		`{"answers":[{"ids":["A"],"kind":"choice","node":"goal"}],"round":1,`+t+`,"verb":"answer"}`,
+		`{"answers":[{"kind":"other","node":"goal","text":" "}],"round":1,`+t+`,"verb":"answer"}`,
+		`{"answers":[{"kind":"other","node":"goal","text":"a\u0007b"}],"round":1,`+t+`,"verb":"answer"}`,
+		`{"answers":[{"ids":[],"kind":"skip","node":"goal"}],"round":1,`+t+`,"verb":"answer"}`,
+		`{"answers":[{"kind":"skip","node":"goal"}],"round":7,`+t+`,"verb":"answer"}`,
+		`{"answer":{"ids":["try"],"kind":"choice"},"node":"goal",`+t+`,"verb":"change"}`,
+		`{"answer":{"kind":"other","text":"x"},"node":"goal",`+t+`,"verb":"change"}`,
+		`{"answer":{"kind":"skip","node":"goal"},"node":"goal",`+t+`,"verb":"change"}`,
+		`{"node":"goal",`+t+`,"verb":"change"}`, `{"answer":null,"node":"goal",`+t+`,"verb":"change"}`,
+		`{"verb":"approve"}`, `{"verb":"Start"}`, `{"verb":1}`, `{"verb":"start","verb":"start"}`,
+		`{"verb":"list"}`, `{"verb":"list",`+t+`}`, `{"round":1,"verb":"list"}`,
+		`{`+t+`,"verb":"plan"}`, `{"verb":"plan"}`, `{"round":1,`+t+`,"verb":"plan"}`, `{`+t+`,"verb":"Plan"}`)
+}
+
+func FuzzDecodeSeatGenesisResult(f *testing.F) {
+	const head = `"catalog_digest":"5d41402abc4b2a76b9719d911017c5925d41402abc4b2a76b9719d911017c592","thread":"0123456789abcdef"`
+	const node = `{"allow_other":true,"allow_you_decide":false,"can_skip":true,"id":"goal","options":[{"example":"e","id":"a","label":"l"},{"example":"e","id":"b","label":"l"}],"prompt":"p","topic":"t","type":"single"}`
+	const row = `{"field":"goal","label":"p","node":"goal","untrusted":false,"value":"v"}`
+	const dig = `"digest":"7d793037a0760186574b0282f2f435e77d793037a0760186574b0282f2f435e7"`
+	const lt = `{"filled":1,"of":6,"round":2,"state":"question","thread":"0123456789abcdef","total":7}`
+	fuzzForm(f, "seat genesis result",
+		`{`+head+`,"nodes":[`+node+`],"of":6,"progress":{"filled":1,"total":7},"reset":0,"round":2,"state":"question"}`,
+		`{`+head+`,"nodes":[],"of":6,"progress":{"filled":1,"total":7},"reset":0,"round":2,"state":"question"}`,
+		`{`+head+`,"nodes":[`+node+`,`+node+`],"of":6,"progress":{"filled":1,"total":7},"reset":0,"round":2,"state":"question"}`,
+		`{`+head+`,"nodes":[`+node+`],"of":6,"progress":{"filled":1,"total":7},"reset":0,"round":0,"state":"question"}`,
+		`{`+head+`,"groups":{"decided_for_you":[],"defaults":[],"you_chose":[`+row+`]},"nodes":[],"of":6,"progress":{"filled":1,"total":1},"reset":2,"round":3,"state":"summary"}`,
+		`{`+head+`,"groups":{"decided_for_you":[],"defaults":[`+row+`],"you_chose":[`+row+`]},"nodes":[],"of":6,"progress":{"filled":1,"total":1},"reset":0,"round":3,"state":"summary"}`,
+		`{`+head+`,"nodes":[],"of":6,"progress":{"filled":1,"total":1},"reset":0,"round":3,"state":"summary"}`,
+		`{`+head+`,`+dig+`,"groups":{"decided_for_you":[],"defaults":[],"you_chose":[`+row+`]},"nodes":[],"of":6,"progress":{"filled":1,"total":1},"reset":0,"round":3,"state":"finished"}`,
+		`{`+head+`,"groups":{"decided_for_you":[],"defaults":[],"you_chose":[`+row+`]},"nodes":[],"of":6,"progress":{"filled":1,"total":1},"reset":0,"round":3,"state":"finished"}`,
+		`{`+head+`,"nodes":[],"of":6,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"discarded"}`,
+		`{`+head+`,`+dig+`,"nodes":[],"of":6,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"discarded"}`,
+		`{`+head+`,"nodes":[],"of":6,"progress":{"filled":2,"total":1},"reset":0,"round":0,"state":"discarded"}`,
+		`{`+head+`,"nodes":null,"of":6,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"discarded"}`,
+		`{`+head+`,"nodes":[],"of":6,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"approved"}`,
+		`{"nodes":[],"of":0,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"threads","threads":[]}`,
+		`{"nodes":[],"of":0,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"threads","threads":[`+lt+`]}`,
+		`{"nodes":[],"of":0,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"threads","threads":[`+lt+`,`+lt+`]}`,
+		`{"nodes":[],"of":0,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"threads"}`,
+		`{`+head+`,"nodes":[],"of":0,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"threads","threads":[]}`,
+		`{`+head+`,"nodes":[],"of":6,"plan":`+planJSON+`,"plan_digest":"`+genPlan+`","progress":{"filled":1,"plan_ready":true,"total":1},"reset":0,"round":3,"state":"plan","stored":true}`,
+		`{`+head+`,"nodes":[],"of":6,"plan":`+planJSON+`,"plan_digest":"`+genPlan+`","progress":{"filled":1,"total":1},"reset":0,"round":3,"state":"plan"}`,
+		`{`+head+`,"nodes":[],"of":6,"plan":`+planJSON+`,"plan_digest":"`+genBrief+`","progress":{"filled":1,"total":1},"reset":0,"round":3,"state":"plan"}`,
+		`{`+head+`,"nodes":[],"of":6,"plan_digest":"`+genPlan+`","progress":{"filled":1,"total":1},"reset":0,"round":3,"state":"plan"}`,
+		`{`+head+`,"nodes":[],"of":6,"plan":`+planJSON+`,"plan_digest":"`+genPlan+`","progress":{"filled":0,"total":1},"reset":0,"round":3,"state":"plan"}`,
+		`{`+head+`,"nodes":[],"of":6,"plan":`+planJSON+`,"plan_digest":"`+genPlan+`","progress":{"filled":1,"total":1},"reset":0,"round":3,"state":"plan","stored":false}`,
+		`{`+head+`,"groups":{"decided_for_you":[],"defaults":[],"you_chose":[`+row+`]},"nodes":[],"of":6,"plan":`+planJSON+`,"progress":{"filled":1,"total":1},"reset":0,"round":3,"state":"summary"}`,
+		`{`+head+`,"groups":{"decided_for_you":[],"defaults":[],"you_chose":[`+row+`]},"nodes":[],"of":6,"progress":{"filled":1,"plan_ready":true,"total":1},"reset":0,"round":3,"state":"summary"}`)
+}
+
+func FuzzDecodeSeatChatParams(f *testing.F) {
+	const l = `"lead":"daemon:alpha"`
+	fuzzForm(f, "seat chat params",
+		`{"verb":"leads"}`, `{`+l+`,"limit":1,"verb":"read"}`, `{"after":4,`+l+`,"limit":16,"verb":"read"}`,
+		`{"after":0,`+l+`,"limit":2,"verb":"read"}`, `{"after":9007199254740991,`+l+`,"limit":1,"verb":"read"}`,
+		`{"after":9007199254740992,`+l+`,"limit":1,"verb":"read"}`, `{"after":-1,`+l+`,"limit":1,"verb":"read"}`,
+		`{`+l+`,"limit":0,"verb":"read"}`, `{`+l+`,"limit":17,"verb":"read"}`, `{`+l+`,"verb":"read"}`,
+		`{"limit":1,"verb":"read"}`, `{`+l+`,"verb":"leads"}`, `{"limit":1,"verb":"leads"}`,
+		`{"body":"hi",`+l+`,"verb":"send"}`, `{"verb":"Leads"}`, `{"verb":1}`, `{"verb":"leads","verb":"leads"}`,
+		`{"lead":"tmux:alpha","limit":1,"verb":"read"}`, `{"lead":"daemon:-a","limit":1,"verb":"read"}`,
+		`{"lead":"daemon:A","limit":1,"verb":"read"}`, `{"lead":"daemon:","limit":1,"verb":"read"}`)
+}
+
+func FuzzDecodeSeatChatResult(f *testing.F) {
+	const at = `"at":"2026-11-23T10:00:00Z"`
+	const e1 = `{` + at + `,"cut":false,"seq":1,"text":"Lead started","who":"system"}`
+	const e2 = `{` + at + `,"cut":true,"seq":2,"text":{"b64":"dHdvCmxpbmVz"},"who":"lead"}`
+	const on = `{"chat":"read","epoch":3,"head":10,"lead":"daemon:alpha","state":"running"}`
+	const off = `{"chat":"off","lead":"daemon:charlie"}`
+	fuzzForm(f, "seat chat result",
+		`{"leads":[],"state":"leads"}`, `{"leads":[`+on+`,`+off+`],"stand_in":true,"state":"leads"}`,
+		`{"leads":[`+on+`,`+on+`],"state":"leads"}`, `{"leads":[{"chat":"off","epoch":0,"lead":"daemon:charlie"}],"state":"leads"}`,
+		`{"leads":[{"chat":"off","lead":"daemon:charlie","state":"stopped"}],"state":"leads"}`,
+		`{"leads":[{"chat":"read","lead":"daemon:alpha"}],"state":"leads"}`, `{"state":"leads"}`,
+		`{"entries":[`+e1+`,`+e2+`],"epoch":3,"head":2,"lead":"daemon:alpha","more":true,"stand_in":true,"state":"read"}`,
+		`{"entries":[`+e2+`,`+e1+`],"epoch":3,"head":2,"lead":"daemon:alpha","state":"read"}`,
+		`{"entries":[`+e1+`],"head":0,"lead":"daemon:alpha","state":"read"}`,
+		`{"entries":[],"lead":"daemon:alpha","more":true,"state":"read"}`,
+		`{"entries":[],"lead":"daemon:alpha","reset":true,"state":"read"}`,
+		`{"entries":[{`+at+`,"cut":false,"seq":1,"text":{"b64":"YeKArmI="},"who":"lead"}],"head":1,"lead":"daemon:alpha","state":"read"}`,
+		`{"entries":[{`+at+`,"cut":false,"seq":1,"text":"x","who":"owner"}],"head":1,"lead":"daemon:alpha","state":"read"}`,
+		`{"entries":[],"lead":"daemon:alpha","leads":[],"state":"read"}`, `{"entries":[],"leads":[],"state":"leads"}`)
+}

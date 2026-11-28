@@ -1,0 +1,16 @@
+== sudo -n -l -U agent (exit 1)
+  | User agent is not allowed to run sudo on aihost.
+stop: no sudo grant: make sure root can log in another way
+question: agent has no sudo grant. How does root log in on this host without it (a root password at the console, another administrator account)? If there is such a way and you have written it down, run --check again with --other-root-login. If there is none, give agent a grant that asks for the password (README, step 3) before you go on.
+== register /etc/ataniq/grants
+  | d 0 755 /
+  | d 0 755 /etc
+  | d 0 755 /etc/ataniq
+  | d 0 755 /etc/ataniq/grants
+  | f 0 644 /etc/ataniq/grants/README
+  | f 0 644 /etc/ataniq/grants/backup-unit
+check: /etc/ataniq/grants and every folder above it are root's and not writable by group or others; its 2 entries are regular files of root's, not writable by group or others
+== summary
+findings: 0; stops: 1
+result: STOPPED: the check could not see everything, so it is not clean; fix what each stop says and run --check again
+exit: 3

@@ -6,6 +6,1031 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.14] - 2026-11-27
+
+### Added
+
+- Added `make home-build` and the Linux `ataniq-home` command for the
+  checkpoint home identity ceremony. Use `identity-init` to create the home ledger and TLS keys
+  and `pins` to print the two public values for the witness operator.
+  The read-only `check` verifies the home identity and the witness credentials.
+- Added `ataniq-home observe` to append synthetic events for one disposable
+  mirror and compare the replayed home head, a challenged witness receipt
+  and an optional owner archive.
+  Home retirement preserves the ledger and blocks further use of that
+  installation. Offline status reports retirement and the last comparison.
+- Added the home witness listener and its offline `serve --check` preflight.
+  The home can prepare, resume and finalize enrollment with an owner-carried
+  receipt. `ataniq-home status` verifies the binding and replays the local
+  ledger without contacting the witness.
+- `make canary-build` now builds the static hook helper at
+  `build/canary/ataniq-hook`. The run kit lists it separately from the
+  binaries that `canary-run.sh` uses and hashes.
+- Console approval cards show a four-word tag of the card's binding digest.
+  Waiting and recent cards show the tag in the list when the backend supplies
+  the digest. For daemon listings, open the card to read its tag.
+- A client API server can opt into `ataniq.client/2`. Its authenticated
+  `hello` lists the operations available for each visible target. Managed
+  requests require a verified client identity and a current target permission.
+- The Codex holder pack includes an app-server stdio codec for the pinned
+  0.172.0 schema. The codec requests a read-only thread with on-request
+  approval and binds to the thread the server returns. Each message needs an
+  idle thread and reserves its turn start until the server rejects the request
+  or names a turn in its answer and reports that turn completed. Forgetting a
+  timed-out start keeps the reservation for a late answer. If the outcome never
+  arrives, further messages return `ErrTurn` until the session restarts.
+  Closing the thread or reporting a system error prevents further messages on
+  that thread. Steering checks the target turn.
+  A turn-scoped permission reply grants only the selected subset
+  and answers the original, unaltered request once. The codec returns an
+  ID-matched decline for stale, invalid or excess permission requests, command
+  and file approvals, user input, MCP elicitation and unsupported requests.
+  Protocol sessions escape backslashes and non-printable characters in event
+  text, including message deltas and error details, while preserving newlines
+  and tabs.
+- The console's leads view has words for the refusal `holder-version-skew`
+  of a start, a ticket and a message: the holder and the daemon are other
+  builds, so the owner runs the holder and the daemon from one checkout (a
+  holder built again, or the daemon restarted with the matching build), and
+  restarts a lead that is running. A refused start leaves the lead stopped, so
+  starting it again alone is refused again. It also has words for a lead the
+  daemon shows `degraded`, with the reason `holder-version-skew`, because its
+  running holder is another build: the daemon leaves its unit running, and
+  the owner stops the lead, then starts it again.
+- Added a durable Linux checkpoint witness that journals receipts and settlement
+  fences and lets the local owner recover an interrupted genesis publication.
+- The internal desk link authenticates both ends with pinned TLS keys and gives
+  each connection its enrolled device principal and role. Revoking a principal
+  closes its live connections and removes its device pins.
+- Split the enrollment library into home preparation, owner submission and home
+  finalization. An interrupted ceremony can resume with the original request.
+  The home can save an owner-only binding and verify it against the ledger.
+- The daemon serves the host's side of the guided new-project interview over
+  the seat gate: the capability `genesis` and its one operation,
+  `seat.genesis`, with the verbs start, round, answer, change, summary, finish
+  and discard. The questions are the host's own, from the versioned catalog,
+  and the answers fill a typed project brief and nothing else: an answer is a
+  message from the owner and never an approval. The threads are kept by a new
+  store (`internal/genesis/thread`), one file each (mode 0600, written whole
+  and synced) in `owner/genesis/` of the state folder, a folder the daemon
+  makes with mode 0700 when the gate starts and refuses when it is a link, not
+  the daemon user's or writable by group or others. A refused folder does not
+  stop the daemon: it logs one line with a fixed reason word (such as
+  `folder-link`) and starts the gate without `genesis`, so the phone offers no
+  "New project" until the folder is fixed and the daemon restarted. At most two threads are open (a third start is `genesis-busy`), eight
+  files are kept, a thread untouched for 14 days is discarded, text that looks
+  like a key or a password is refused `genesis-secret-shaped` (a pasted key
+  or an obvious assignment such as `password=...`; names, web addresses and
+  paths pass, and a bare git commit id is refused), and a thread
+  that is finished is frozen with the digest of its brief (an answer, a
+  change or a discard of it is `genesis-done`). A file that is not as
+  the daemon wrote it is not served and is logged once, in fixed text, and
+  never repaired; no log line holds an answer. A restart serves the same
+  threads. The gate's start line now lists every capability it serves in words,
+  `genesis` last (for example `pair, read, login, decide, watch and genesis`).
+  An answer to a round the thread has already taken (a double tap, a second
+  tab) is `genesis-stale-round`, the thread's state and not a bad answer. The
+  refusal bound counts only `genesis-bad-answer` and `bad-params` of the
+  interview, and not `genesis-stale-round`, `genesis-busy`, `genesis-done`,
+  `genesis-unknown-thread`, `genesis-secret-shaped` or `genesis-over-cap`, so
+  that a few taps never shut the seat out of approvals.
+- The tagged build's daemon command gains `ataniqd genesis list` and
+  `ataniqd genesis handoff TAG` (`--state-dir DIR` as the other commands), for
+  the desk: `list` prints one line per finished guided interview that holds a
+  plan (tag, kind, plan digest, finish day), and `handoff` prints, for a
+  software plan, comment lines and one command line,
+  `qargi project new NAME --methodology gitflow`, with a name made by the host
+  from the kind of project and the thread's tag. Ataniq never runs it: the
+  owner runs it himself, Qargi prints its plan and token, and creating the
+  project needs his own words. The command never carries a URL, a provider, a
+  folder, gates, a deployment, a plan token, approval words or any of the
+  owner's own text, and is held to a closed grammar. Other kinds are refused
+  "A hand-off for this kind of project is not available yet." (exit 3). Both
+  read the thread folder without writing anything, whether or not the daemon
+  runs.
+- The seat shows the project plan of the guided new-project interview on the
+  phone. The summary links "See the draft plan" when every required answer is
+  given and a plan template serves the kind of project, and otherwise says how
+  many answers are filled in (or that there is no template for the kind yet);
+  the finished page links "See the plan" and says that handing a plan to a
+  project is a later step; it does not say the plan is kept, since the link
+  shows what the desk has when it is followed. The plan page
+  (`/projects/<id>/plan`) shows "Draft plan" or "Plan, revision N" with the
+  title and the first six digits of the project's id, the plan's short digest,
+  the fixed lines "A plan binds nothing: nothing has started, and nothing
+  starts from this page." and, for a draft, "This is a draft; finishing the
+  interview keeps it as revision 1.", the first demo, what waits for you (your
+  review points and always "Publishing, releases, pushing code, credentials
+  and raising any limit always wait for you, whatever the plan says."), the
+  outside services, where the files live, the budget band (advisory), the
+  estimate (an estimate, not a promise), the warnings, the milestones and their
+  tasks in sections you open, your own notes quoted as your words, each with
+  the question it answers above it ("A note" for a note of your own), and "What
+  a charter would cover", a draft of words that allows nothing: its list holds
+  the work areas, the outside services, where it would stop for you and the
+  line "Always stopping for you before publishing, releases, pushing code,
+  credentials and raising any limit.", and the monthly budget band follows it
+  as a sentence of its own (advisory; nothing enforces it yet). The page has
+  two links and no button, form or script, and nothing is signed or started from
+  it. A plan that cannot be drawn yet, or a kind with no template, is a page of
+  fixed words. The seat's link reads the plan in one call of the interview's
+  room and keeps a draft 10 seconds and a kept plan 5 minutes; a change of an
+  answer forgets the draft.
+  The summary of a brief with answers missing says, above the finish button,
+  that finishing now draws no plan and that a finished brief cannot be
+  changed.
+- The daemon serves the project plan of the guided new-project interview over
+  the seat gate: `seat.genesis` gains the verb `plan` (the thread alone) and
+  the result state `plan`, which carries the plan record member by member,
+  its digest (`plan_digest`, which the wire holds the plan's bytes to) and
+  `stored`. On a thread at its summary whose brief is complete, `plan` answers
+  a preview, compiled on each read and kept nowhere; `finish` of such a
+  thread compiles revision 1 and stores it in the thread's file, in the same
+  write as the frozen brief, and `plan` of the finished thread answers that
+  stored plan, the same after a restart. A stored plan is never compiled
+  again: a later change of a template never alters it. A thread finished
+  before this change is given its plan the first time one is asked of it,
+  stored once; its file needs no migration. A brief that is not complete
+  (the owner finished early) is refused `genesis-not-ready`, and a kind in
+  the owner's own words, which no template serves, `genesis-no-template`;
+  neither counts against the refusal bound. A result's progress says
+  `plan_ready` when `plan` would answer a plan. The log says
+  `genesis: a plan was drawn` and holds nothing of the plan.
+- A finished project brief can be compiled into a project plan
+  (`ataniq.project-plan/1`, `internal/genesis/plan`): milestones and tasks
+  chosen from a versioned template of the brief's kind (software, publishing
+  or media), with gates, a first demo, every external service named, an
+  advisory budget band and an estimate band. The plan is a proposal that
+  binds nothing; the owner's own words are kept in it for the owner's eyes
+  only, choose nothing and are never given to an agent.
+- The seat offers the guided new-project interview on the phone when the
+  daemon's gate lists `genesis`: a "New project" button on the card list and
+  the projects in progress, then pages of one to three multiple-choice
+  questions of the desk's own catalog (each option with a one-line example,
+  "Other" in your own words, a short note of about 200 letters (200 bytes), "You decide for me" and
+  "Skip" where the question allows them), a summary grouped by what you chose,
+  what was decided for you and the defaults, a "Change" on each row, "Looks
+  right: finish" and "Discard this project". The pages are made on the server
+  and each act is a plain form answered with a redirect; a refusal is a fixed
+  line, and text that looks like a password or a key is refused and never
+  shown back. Nothing starts and no agent is given the answers: they are kept
+  by the daemon in `owner/genesis/` of its state folder and sent nowhere else.
+  `seat.genesis` has a new verb, `list`, which answers the open projects, so a
+  restarted seat finds them again. The seat keeps 12 of the gate's 60 calls a
+  minute (in its 80-second window) for the interview, taken from the reads and
+  the decisions (with the Leads pages' room below, the reads now have 12 and
+  the decisions 8, 4 decisions). `ataniq-seat` needs nothing
+  configured for it, and logs the capabilities each hello of the gate lists,
+  with whether the phone offers "New project". Every response of the seat now
+  carries `Referrer-Policy: same-origin` (it was `no-referrer`), under which a
+  browser keeps the `Origin` header of a form's post to the seat and still
+  sends no address to another site; a proxy in front must not set a policy of
+  its own on the seat's site, or the project pages' forms are refused. When the seat refuses a call because its own room is spent, or the project pages' limit of one credential is reached, it writes a fixed-text line to its log naming which, at most one in 30 seconds for each, so that "The desk is busy" can be traced.
+- The lead holder records its own build identity, read from the Go build
+  information of the executable that actually runs (`/proc/<pid>/exe`, never
+  the path it was started by): the main module and its version, the VCS
+  revision and whether the checkout was modified, and as provenance the Go
+  version and the build tags. It is the member `build` of `holder.json` and the
+  field `build` of the `start` event of the holder's event log. A holder that
+  cannot read it refuses to start, with exit status 2. The member is added,
+  and nothing older refuses it: a daemon or `ataniq-scratch` of an earlier
+  release never reads `holder.json`, and the canary run kit's
+  `ataniq-canary fields` prints any member.
+- The daemon (canary and scratch mode) and `ataniq-scratch` refuse a holder
+  that is not their own build, with the named reason `holder-version-skew` and
+  a message that names what was found and both builds: before a start, from
+  the build of the holder binary, and before an attach ticket and (in the
+  daemon) a message, from the build the running holder recorded in its
+  `holder.json`; a `holder.json` of another epoch than the one to be attached
+  is refused first, with `stale-epoch`, as it is not the record of the holder
+  that would be asked, and so is, in the daemon, a role shown `starting` whose
+  holder has not written its `holder.json` yet (the console's leads view words
+  `stale-epoch` as "the epoch changed or the lead is not ready yet"). The same
+  build is the same main module path, module version, VCS revision and
+  modified flag (the message names both module paths when they differ); build
+  tags and the Go version are not compared, and a build without a VCS revision
+  is never the expected one. A holder that records no build, as every holder
+  before this release, is refused as an older holder. Nothing changes on a
+  refusal (a refused message is not spent), and stop and status are not
+  checked, nor are the status questions of the daemon's ready observer, so a
+  skewed lead can still be stopped. In scratch mode the code of the refused
+  receipt of `lead.start`, `lead.ticket` and `lead.inject` is
+  `holder-version-skew`. A holder that starts as another build than the one
+  checked before the start (its executable replaced in between, which the
+  start looks up again) records that build in the `holder.json` it writes
+  from its own running executable. `ataniq-scratch start` reads that file,
+  of the epoch and of the launch intent it gave the holder, before it reports
+  the holder started, also when the holder did not answer its status in time,
+  and refuses the start `holder-version-skew` when it records another build;
+  a unit is never stopped by it: it is left running and the refusal names
+  `systemctl --user stop` with the unit (a `--direct` holder, its own child,
+  is ended as after any failed start). In the daemon's scratch mode the
+  start is not refused: `lead.start` has already returned a `done` receipt with the state
+  `starting` when the ready observer reads the file, after the holder answers
+  its status or, when it does not, after each question. A lead whose file
+  records another build is never shown `ready`: it is shown `degraded` with
+  the reason `holder-version-skew`, whether this daemon launched it or
+  adopted it, and a file that is missing or cannot be read changes nothing
+  and is read again. A lead an earlier daemon showed `ready` is checked again
+  before the new daemon serves: one whose `holder.json` records another build
+  than the new daemon's is shown `degraded` the same way, never `ready`, and
+  a `degraded` state that cannot be written ends the daemon's start at the
+  reconcile step (exit 16), before anything is served. The
+  daemon never stops a holder for its build: the unit is left running, its
+  ticket and message are refused, and the owner stops the lead and starts it
+  again; the next `lead.start` is refused `holder-version-skew` while the
+  executable is the other build. The canary's holder is refused at its ticket
+  and message.
+- The canary-tagged sandbox command `ataniq-hook <row>` reports one bounded
+  hook observation using the fields and digests declared for that row. It
+  exits silently, including when the hook port is unavailable.
+- Initialize each daemon state root with `ataniqd init --state-dir DIR` before
+  running it. The registry records the instance authority and store incarnation.
+  Use the same command on a stopped scratch root to migrate its existing journal.
+- Under the canary tag, a daemon in scratch mode now takes its leads' written
+  replies to the owner, read only. Each lead's chat is switched at the desk with
+  `ataniqd chat list --config CONFIG` and `ataniqd chat set KEY off|read
+  --config CONFIG`, and its quarantine emptied with `ataniqd chat purge KEY
+  --config CONFIG` (the operations `chat.list`, `chat.set` and `chat.purge`,
+  which the daemon lists after the six lead operations, so the console's check
+  of lead control is unchanged, and which the seat gate does not serve); every
+  lead is off whenever the daemon starts, a switch takes effect at once, and
+  sending is not built (`send` is refused `chat-send-not-built`). A turn-on
+  needs one of the four names of the lead's quarantine free, and is refused
+  `chat-quarantine-full` (exit 31, with one fixed line) otherwise; the purge
+  runs only while the lead is proven stopped (`chat-lead-not-stopped`, exit
+  30, otherwise) and removes what it can in bounded steps, each of which
+  removes something, wide and deep folders over repeated runs, never
+  following a link or leaving the quarantine. While a lead's chat is on,
+  one scanner of its own takes its replies every 2 seconds, stops with the
+  switch, the daemon or a store that fails, and logs counts only. Every
+  `lead.define` and `lead.start` writes the reply instructions into the lead's
+  empty instruction file while the lead is proven stopped, by an exchange that
+  puts back an owner's version saved meanwhile, never over the owner's own
+  text, and deletes no owner's version: one an upgrade displaced or a crash
+  left is kept beside the file as `instructions.md.displaced-N`, which the
+  daemon reports in its log and never deletes; neither touches the reply folder
+  (`/home/lead/.ataniq-replies`), which
+  each turn-on of the chat makes afresh. The instructions say that Cards are
+  the only path of an approval and a chat message grants no authority, that
+  the daemon makes a fresh folder at each turn-on, and that a full folder or
+  an odd entry stops chat until the owner turns it on again. When the
+  instruction file cannot be installed safely, the define or start is refused
+  `chat-folder`, which the console words as such. A new
+  read-only chat port, `leaddaemon.LeadChat`, answers the seat's `seat.chat`
+  from the same chats (off leads as bare rows and `chat-off`, a stopped chat or
+  a failed store as `chat-busy`, at most 40 calls a minute, and `chat-busy`
+  until the daemon binds it). See `docs/scratch-leads.md`, "Lead replies".
+- Under the canary tag, the stand-in agent now writes one short reply to the
+  lead's reply folder (`~/.ataniq-replies`) after each commit it makes
+  (`Stand-in: handled <7-character commit id>.`, written to a dot-name and
+  renamed to `<seq>-standin.txt`, below one held descriptor of the folder it
+  listed), so the outbox can be proved with no AI. It writes nothing when the
+  folder is missing, is a link, cannot be written or holds more than 64 names,
+  or when three of its own replies are waiting, and never makes or changes the
+  folder. See `docs/scratch-leads.md`, "Lead replies".
+- Under the canary tag, `internal/leadchat` holds the daemon's side of a
+  scratch lead's written replies to the owner, read only and not wired into
+  the daemon or the seat yet: a reader of the lead's outbox
+  (`/home/lead/.ataniq-replies`, one plain-text file per reply, closed and
+  renamed from a dot-name to `NAME.txt`), reached by descriptor from the state
+  root with `openat2` and no fallback, without following a link or crossing a
+  mount point, that moves each reply it takes into a claim folder of the
+  daemon's by one rename that replaces nothing and reads only that claim,
+  takes only a settled regular file of the daemon's user with one link,
+  readable by its owner, no write bit for group or other and at most 2000
+  bytes, drops a claim it cannot read whole within three tries or 30 seconds,
+  never claims or removes drafts and other names, stops the lead's chat with
+  one line when the outbox holds more than 32 entries, holds a folder, a link
+  or a special file, or is replaced, removed or no longer private, and takes
+  at most 6 a minute and 60 an hour; and a chat store per lead
+  (`<state root>/chat/<layout role>.jsonl`, strict synced JSON lines, at most
+  8 MiB, locked and checked by handle, that replays after every compaction)
+  that stores each claim at most once in a conversation, drops text that is
+  not plain or too long, withholds text shaped like a key, a token or a full
+  commit id (any bare word of 40 or 64 hexadecimal digits), keeps 500 entries or
+  14 days, and has a per-lead switch `off` or
+  `read` that, when turned on, makes a fresh outbox (mode 0700) in a private
+  staging folder (`<state root>/leads/<layout role>/staging`), holds it open
+  and proves with a probe there that the file system can claim, sets the
+  earlier outbox aside unread, an empty one included, in the lead's quarantine
+  (`<state root>/leads/<layout role>/quarantine`, at most four, which the
+  owner purges), and publishes the held folder at the outbox's name by a
+  rename that replaces nothing, refusing the turn-on when the name was taken
+  or replaced meanwhile; it deletes the stored replies when turned off, and
+  is off again after every restart. See `docs/scratch-leads.md`, "Lead
+  replies".
+- The live attach pane keeps up to 64 rows that scroll off the main screen
+  on this client. In the narrow layout, Page Up and Page Down move through
+  those rows. A page stays fixed while more output arrives. Restoring a
+  holder snapshot starts a fresh window of recent output.
+- Added an internal decoder library for Qargi schema-1 marshal status, check,
+  handoff and refusal evidence. It checks evidence per feature and distinguishes
+  a held feature from an unreachable remote.
+- A guide to the outward keys (`docs/outward-keys.md`): the deploy, push and
+  signing keys live in the owner's laptop agent with a confirmation for each
+  use, forwarded to the development host only for a deploy, push or release
+  session, on a connection of its own (no shared connection, whose forwarded
+  agent may be another), and torn down when the step is done (`ssh-add -D`
+  on the outward agent, then close the login); a confirmation is accepted
+  only right after the owner started the step that causes it, and any other
+  prompt is refused as an incident; destination constraints (`ssh-add -h`)
+  need OpenSSH 8.9 at both ends of every hop, a FIDO2 key 8.2 on the laptop
+  and the authority host as well; the repository fetches through a
+  read-only route and pushes with the laptop's key; commits and tags are
+  signed with a public-key literal (`gpg.format ssh`), so the private part
+  stays in the agent; a cutover replaces every exposed key with a new,
+  distinct keypair made on the laptop, and withdraws the old ones from all
+  three key stores, the git host, the authority host's `authorized_keys` and
+  the release signers file `ah-switch` verifies against, checking there that
+  the old signing key is rejected and the new one accepted; for git, the old
+  signing key is revoked (`gpg.ssh.revocationFile`) and history is verified
+  by object ids recorded beforehand, since `valid-before` is judged by the
+  signing time the object itself records; branch and tag protection is the
+  owner's setting on the git host.
+- The owner can correct an enrolled home with `ataniqd project-home --replace`
+  before any lead is defined. A conflict prints the recorded authority.
+- Daemon startup and scratch-seat `run --check` list each project missing a
+  home and the leads it blocks. Missing homes allow the daemon to start.
+- Enroll each project's home with `ataniqd project-home` after initializing
+  the daemon state root. Lead define, launch and coordinator admission now refuse
+  an unset or foreign home with a distinct code. The registry journals the
+  qualified assignment and checks its generation and revision.
+- `make scratch-seat-build` builds the daemon with both build tags,
+  `ataniq_ownerchannel` and `ataniq_canary`, into the ignored folder
+  `build/scratch-seat/`, for the owner's own trial of real scratch leads with
+  the seat gate. It runs doctor first and starts nothing, and it is the one
+  target that builds with both tags: `make ownerchannel-build` stays the one
+  with the owner channel's tag alone and `make canary-build` the one with the
+  canary tag alone. No release, no CI job and no other target uses it, and the
+  guard tests hold its recipe to exactly the mkdir of its folder and one build
+  of `./cmd/ataniqd`, with `doctor` its sole prerequisite.
+- The daemon of `make scratch-seat-build` (both build tags) now gives the seat
+  gate the scratch leads' replies: `build/scratch-seat/ataniqd run --scratch
+  CONFIG --owner-channel --seat-gate IP:PORT` serves the capability `chat`, read
+  only, from `leaddaemon.LeadChat`, and the gate's start line is followed by
+  `seat gate: chat: replies the scratch leads wrote to their outboxes; read
+  only`. The phone's Leads pages show what each lead wrote to its reply folder
+  once the desk turned its chat on with `ataniqd chat set KEY read --config
+  CONFIG`; every lead is off whenever the daemon starts, and a lead turned off
+  is refused `chat-off` at once. `--trial` is refused with `--scratch` and
+  with `--canary` (exit status 2, from the flags before any config is read),
+  so a daemon with leads never serves the phone trial's samples; the trial
+  alone and the owner channel without `--scratch` are unchanged. The owner
+  prepares the scratch roots, the non-trial `owner/scratch.json` of the state
+  root, the gate's key and pinned seat key and the seat origin. See
+  `docs/scratch-leads.md`, "Running real leads with the seat".
+- The owner's runbook for an attended proof of real lead replies on the phone,
+  `docs/scratch-seat-proof.md`, linked from the scratch leads guide: one
+  sitting with the daemon of both tags on the phone trial's state folder, so
+  that the trial's gate key, seat pins and paired phones are reused, first
+  with the stand-in lead and then, only once the drop rule (a separate
+  change, installed by the owner at the start of sitting 1) is in place and
+  the network check passes again, one real Claude lead, in three terminals
+  (daemon, console, desk), with every step that starts or stops a process or
+  defines a lead marked OWNER ONLY. Nothing of the trial is renamed, moved,
+  masked or swapped: the daemon of both tags takes `run --scratch CONFIG
+  --owner-channel --owner-settings DIR`, reads the owner channel's settings
+  from `DIR/scratch.json` and never from `owner/scratch.json` of the state
+  root (the folder sits beside the state and runtime roots, not inside
+  them), and the owner stops the trial and starts it again with his own
+  commands while the state folder's lock keeps the two daemons apart. The
+  daemon refuses to start (exit 10), naming every rule that fails, a folder
+  that is not private or that is, lies in or holds the trial's settings
+  folder `owner/`, the state or runtime root, a path a lead's sandbox
+  reaches (each lead's folder, mirror, mailbox, published and holder
+  runtime folders, the agent install, the probe, the host paths every
+  sandbox binds), the gate's folder, the key list or the journal, decided on
+  the resolved path and on the folders' identities (so a bind mount of a
+  guarded folder itself given as the folder is caught; the checks guard
+  against mistakes, not attackers, and a mount layout the owner or root
+  makes, such as a bind of a folder within a guarded one, nested mounts, a
+  mount made later or another namespace, is outside them; a lead cannot
+  make a mount on the host), and a settings file that
+  is a link, not private, has a second name, is the key list, the journal,
+  a gate file or the trial's settings, or holds a trial's settings, or
+  settings whose drop folder, mirror, work folder or sandbox template the
+  folder is, lies in or holds; the
+  folder is opened by its handle with no link followed and the file opened
+  beneath it, so a link planted after the check changes nothing, and the
+  settings are decoded from the bytes read from the descriptor that was
+  checked, never from a second open by name.
+  `--check` with the same flags prints every check the daemon makes before
+  its locks (also the root marker, the gate's key and pins and the daemon's
+  socket path) and one the start does not make, the socket paths of the
+  leads' holders, pass or FAIL with the reason, and what it would read,
+  then exits 0 or 10 (a refusal says the sitting failed preflight and names
+  the start that would fail: the daemon's, or for a holder's socket path
+  alone the later start of that lead's holder), binding, locking, making and
+  starting nothing. `qualification/scratch-seat/prepare.sh`
+  writes the scratch config and the settings folder (modes 0600 and 0700)
+  and the files they name in a folder of the proof's own, with leads fresh
+  for each sitting (`standin-N`, `live-N`): `--dry` prints from the values
+  alone, `--self-test` computes only (an exported `CDPATH` is cleared
+  before the script finds its own folder), `--write` checks the state folder, the
+  tools and the root first (physical paths, an existing parent that is not
+  and lies not in the state folder, its `owner/`, the checkout or a
+  temporary folder, by path and by identity, and a root that is not there
+  yet), makes the root and every folder below it with `mkdir` of a new name
+  and writes only into folders it has just made (a root that is there is
+  refused, an earlier run's included), runs git in a
+  cleared environment, never writes in the trial's state folder, never
+  deletes and starts nothing, and `--status`
+  refuses a `--state` that is not the config's `state_root` (the same device
+  and inode), passes `--expect-state` with it to each of the daemon's
+  checks, which refuses (exit 10) before reading a file of the trial when
+  it is not the state root it decoded from the config in that invocation,
+  and runs the daemon's `--check` (the printed steps that run
+  `--status` carry the selected `--daemon`); with `--record` (before the
+  sitting) it then takes the baseline, the digests of the trial's gate key,
+  certificate, pins and settings and the daemon's prefix of the key list
+  and digest of its head, both of one snapshot (prepare opens neither file
+  of the key list), and writes them, whole, into `evidence/step-g` (synced
+  to disk, published by a rename that replaces nothing, not even an empty
+  folder made meanwhile, and the evidence folder synced before it says
+  `recorded`; a refusal of the key check writes nothing, and the step is
+  taken again);
+  with `--compare` it then refuses a record of
+  the digests taken before the sitting that does not name each of the six
+  files once (the names compared as text, checked as bytes so that a NUL
+  is refused rather than dropped, read once and compared from that one
+  reading, before any listed file is opened), compares the trial's gate key, certificate, pins and settings
+  with it (any exit status of `sha256sum -c` but 0 is CHANGED), and has the daemon judge the key list. For that the daemon of
+  both tags takes `run --scratch CONFIG --owner-channel --check
+  --keys-prefix`, which checks the key list and its head with the journal's
+  own checks read only, on the files themselves (the ownership, mode and
+  link-count checks of the journal's opener and its replay, with an exact
+  head; nothing is created, repaired or written, anywhere; a pass is a
+  snapshot of the files' identity, metadata, content and head agreement,
+  and whether the list can be opened for writing and locked is checked
+  only at the daemon's start), and prints the
+  list's length and SHA-256 and the SHA-256 of its head, from the bytes it
+  checked, and `--check --keys-since
+  LEN:SHA256`, which checks them again, checks that the prefix is the
+  list's beginning and names the type of each record appended since:
+  counter records alone (a phone login) hold, and any other record, a
+  changed old byte, a head that does not count the list or any damage is
+  CHANGED. It takes an IPv4 gate only. It also writes
+  the owner's network check `netcheck.sh` (its connect test in the network
+  shape of a scratch lead's sandbox: the plan's pasta arguments and the
+  profile's bubblewrap flag set for the lead's identity, which a test
+  holds; it probes the gate's numeric address with curl, no configuration
+  file and no proxy, from this host, from the lead's network in this shell
+  and in a throwaway user unit with the lead unit's fixed properties,
+  classifies each probe as connected, refused, or filtered or timed out,
+  passes the lead's network only on a timeout the probe itself reports
+  after the sandbox showed the route it takes to the gate's address and
+  the source address the kernel selects for it, both from the kernel's own
+  lookup, `ip -4 route get` (a unicast route: not local, a loopback gate
+  included, not a reject, unreachable or blackhole route, not on lo; a
+  lookup that fails or cannot be made is indeterminate; without them the
+  probe did not run), takes curl's "could not connect" (status 7,
+  no time to connect), a probe that did not run and a wrapper that ended
+  with a status other than 0 for findings, and the runbook
+  records its exit status). The runbook's last steps compare the trial's
+  files byte for byte with the record and start the trial again. A test in
+  `cmd/ataniqd` takes a trial-shaped state folder to the scratch daemon and
+  back on the files `--write` makes and shows the gate's key, the pins, the
+  paired keys and the trial's settings the same bytes after it; another
+  holds the script's gate check to the daemon's.
+- The scratch security-key verifier checks console decision signatures against
+  the enrolled key, TLS connection and displayed card. Hardware qualification
+  and decision dispatch are pending.
+- A scratch daemon's gate (`ataniqd run --scratch CONFIG --owner-channel
+  --seat-gate ADDR`, both tags) lists `wait-chat` too: its chat cursor covers
+  the leads whose chat the desk set to `read` and that a scan has not stopped
+  (each lead's switch generation and head), sampled together as one state of
+  the desk, and moves when such a lead gets a new entry (a reply, or the line
+  that says replies were dropped) or a lead's chat is turned on or off; a
+  lead whose chat is off moves nothing, and a reply that arrives while it is
+  off leaves no gap in its sequence numbers. Its start line ends
+  `... genesis, chat and wait-chat`.
+- The seat's log now has a line of counts, at most every 10 minutes and only
+  after a period in which the seat refused a call for want of room: `ataniq-seat:
+  calls of the link in the last N minutes, taken/refused by kind: public T/R,
+  read T/R, decide T/R, genesis T/R, wait T/R`. It holds numbers and fixed
+  words only. The rooms are unchanged. A measurement of them is recorded in the
+  seat gate design: three card lists reloading every 20 seconds and a lead's
+  conversation refreshed once in 10 seconds left 42 of 90 card list reloads busy.
+- The seat's card list reads its hints over a stream (`POST /api/watch/stream`,
+  server-sent events read with a same-origin fetch), with its long poll as
+  the fallback. Both wake as soon as the seat hears of a change; the stream
+  holds none of the session's three held polls and names the kind of each
+  hint. It says only that the cards moved, with the version the poll
+  answers; the list reloads by the same rule as before (at most once every
+  20 seconds, never over typed text, and only while it is shown: a hidden
+  list reloads once for a change it missed when it is shown again). It asks
+  the gate nothing, does not keep the session alive, ends with the session,
+  a logout or the seat's shutdown, and lasts 25 seconds at most from its
+  request, its opening included, before the list opens another. At most 3
+  streams are open for one passkey (a fourth list falls back to the poll),
+  12 are opened a minute, 32 are open in all, and 3 openings of one passkey
+  (8 in all) are in progress, bounded before the body is read. Each stream
+  the shown list opens holds the notices back for 30 seconds and counts the
+  cards it shows as seen, as a poll does; nothing the seat writes on it
+  counts, so a card the list has not shown yet still brings its notice. Any
+  refusal or failure of the stream (its first heartbeat not within 8
+  seconds, a hint it cannot read, a stream cut inside an event), or a
+  browser that cannot read one, falls back to the long poll, which the Card
+  page keeps. A proxy in front must pass the stream on unbuffered and
+  uncompressed; not yet qualified on the deployed path or on a phone.
+- The phone trial now shows a Leads directory and read-only sample conversations
+  after login. Open a shared lead to read, page through its history or refresh.
+  The Leads pages carry their own STAND-IN banner: "These leads and
+  conversations are samples held by the phone trial. No real lead is read, and
+  nothing here is an approval." Every sample line, the system lines too (such as
+  "Sample: lead restarted, epoch 3"), begins "Sample:". The Leads pages' calls
+  are reads of the desk, counted in a room of their own at the gate, apart
+  from the card lists' reads (see the entry on the Leads pages' room).
+- The seat gate has a read-only view of the leads' conversations, served in
+  the phone trial only from STAND-IN samples: the gate operation `seat.chat`
+  under the capability `chat`, with the verbs `leads` (up to 8 leads, each
+  with its chat switch `off`, `read` or `send`, a state word, an epoch and a
+  head; an off lead's row carries nothing but its name and switch) and `read`
+  (one page of a lead's retained conversation after a sequence number, at
+  most 16 entries, paged by encoded bytes within 16 KiB, with `more` and
+  `reset`). No verb sends. An entry's text is up to 2000 bytes of plain text
+  (line feeds allowed; other controls and bidirectional and format controls
+  refused), a lead's text is untrusted and shown to the owner only, and a
+  shortened entry is marked `cut`. The refusals `chat-off`,
+  `chat-unknown-lead` and `chat-busy` are not counted by the refusal bound.
+  `ataniqd run --owner-channel --trial --seat-gate ADDR` gives its gate the
+  STAND-IN (`internal/chat/standin`: three sample leads and conversations
+  held in memory, every result marked `stand_in`), and its start line ends
+  `... genesis and chat` followed by a line that says the chat is the
+  STAND-IN's; every other gate lists no `chat`. No lead, conversation file or
+  other port of the daemon is read or reached. The seat's lead pages are not
+  built yet.
+- Repeat `ataniq-seat --gate-entry NAME,HOST:PORT,PIN_FILE` with one
+  `--identity DIR` to see cards, projects and leads from several gates at
+  one seat. Log in to each instance separately. Rows name their instance
+  and retain its pinned identity when opened. An offline gate shows the
+  session's last directory rows marked stale while other gates remain usable.
+- The seat's Leads pages follow the chat hint over the card list's stream
+  (`POST /api/watch/stream`, opened with `{"leads":"<cursor>"}`), which
+  carries one kind of event, `chat-changed`, with the cursor alone: never a
+  lead, a count or a text, and nothing of a lead whose chat is off. A
+  conversation open at its newest message shows new replies by itself, read
+  again through its ordinary page at most once every 40 seconds (2 calls of
+  the Leads pages' 5 in 80 seconds: one following conversation fits, and a
+  refresh by hand or a second following tab beside it can meet the busy
+  page) and only while shown, never over typed text, an open dialog or a
+  link or other control that has the focus; scrolled away, holding the
+  focus or on older messages it shows "New replies." with a link **Show
+  newest**, which loads the page that holds the newest message, and the
+  Leads page shows "Leads changed." with **Refresh**. A read set off by
+  another lead's reply, with nothing new for this lead, shows the
+  conversation's newest messages again, as its own address does, and keeps
+  following, rather than an empty page. Nothing takes the
+  focus, and the status line is the page's one live region. The stream asks
+  the gate nothing, shares the card list's limits (3 streams of one
+  passkey, card lists and Leads pages together, 32 in all), takes no
+  notices' foreground lease and counts no card as seen. With no live hint
+  (a gate without `wait-chat`, a lost link), in a browser that cannot read
+  the stream, or on any failure the page says "Not live", moves no more and
+  keeps its Refresh link; there is no poll of the chat. In the phone trial
+  the samples never change, so the pages never move. Not yet qualified on
+  the deployed path or on a phone.
+- The seat's link asks for the chat hint: its hello lists `wait-chat`, and its
+  one watcher sends the extended `seat.wait` to a gate that lists `wait-chat`
+  and `chat` (the plain one to any other, and to one that refuses the
+  extended params), with no call or room beyond the waits'. Each wait is
+  bound to one connection: it is not sent when the connection changed after
+  it was made, and never carries another connection's cursor. The hint (the
+  cursor and the connection it came on) is dropped on a lost link, also
+  while the watcher pauses, a new connection, a gate that no longer lists it,
+  an answer without a cursor and any failed wait, and is never read as live
+  for a connection that is not the current one. The seat's pages do not use
+  it yet.
+- The seat's pages behind the login have a main navigation: a short row of
+  plain links at the top of every card and project page, "Cards" and, when
+  the desk runs new projects, "Projects", with the current part marked in
+  bold with a bar and announced as the current page, and a "Skip to content"
+  link that the first Tab reaches. The status, pairing, login and error pages
+  have none, the row adds no Log out, and the plan page still has links only.
+  In a browser window at least about 960 pixels wide (60rem) the row becomes
+  a column on the left that stays in place while the page scrolls, beside a
+  column of comfortable width (wider for the card list and the project
+  list); narrower windows keep the phone layout.
+- The seat gate's live wait can carry a chat hint, opt-in on both sides: a gate
+  that serves `watch` and `chat` and whose chat port gives a cursor lists the
+  new capability `wait-chat`, last, and then also takes `seat.wait` params
+  with `chat` (the cursor the seat last saw, 0 for none) and answers with
+  `chat`, the cursor now, an integer up to 2^53-1 and never any text. The
+  cursor is a keyed digest (HMAC-SHA-256 under a random key the daemon makes
+  for each binding of its source and never sends) over the leads whose chat
+  the desk switched on (their key, switch generation and head) and nothing
+  else: a lead whose chat is off moves no cursor and changes no answer or its
+  timing, and a cursor says nothing a seat can recognise across a restart.
+  Cursor equality is only a change hint and never authorizes a read. A chat
+  change answers a held wait no sooner than 18 seconds after it began, a Card
+  change at once, and a cursor source that fails gives the plain Card result
+  with no `chat`. The extended wait never recovers an uncertain journal: it
+  answers `unavailable` and leaves the recovery to the daemon's tick. A seat
+  or gate that does not know the extension sends and receives exactly the old
+  shapes; the plain form now refuses a `chat` member. The phone trial's gate
+  lists it (its start line ends `... genesis, chat and wait-chat`); its
+  STAND-IN cursor never moves within a run.
+- The federation guide lists the state root's identity files, journal,
+  migration backup and daemon lock, with their contents and recovery roles.
+- Add `ataniq-witness enroll-submit` so the local owner can compare the
+  Prepared digest with the home device, submit enrollment over the witness
+  owner socket and archive the signed receipt and witness status.
+- Added witness owner commands to archive a freshly challenged slot head,
+  release a fenced writer's session, and retire the slot with a disposition.
+- Ship `ataniq-witness` as an optional authority-host release component. It
+  polls one pinned home, records durable checkpoints and serves signed status
+  and storage acknowledgement over a private owner socket. The release switch
+  checks its health and stops it on rollback. The operator guide covers pin
+  exchange, recovery, backup limits and re-enrollment.
+
+### Changed
+
+- Instance authority fingerprints now include the domain and version of the
+  Ed25519 authority in their SHA-256 input.
+- The outward keys guide documents authority-host release signing with a
+  passphrase-protected Ed25519 key held on the owner's laptop, including
+  per-use confirmation and a 30-minute agent lifetime.
+- The daemon console opens the lead directory whenever the daemon offers
+  `lead.list`. The client checks each command against the current connection's
+  offer and keeps the original command ID if a reconnect prevents a retry.
+- Every existing daemon state root needs `ataniqd init` once. Back it up with
+  the daemon stopped. Older builds cannot open the journal after init. The
+  daemon refuses hard-linked journals and journals replaced while opening.
+  Scratch preflight now reports identity refusals with the daemon's exit code.
+- Scratch lead instructions now direct executors to return results and patches
+  to the home lead and name the daemon's `project-home-foreign` refusal.
+- Managed leads now carry an instance-qualified Qargi lead name. Coordinator
+  labels use the same parent name. The sandbox profile digest changes, so
+  existing profile digest pins must be recomputed. Running leads keep their
+  old `QARGI_LEAD` until their next start.
+- At 80x24 and phone SSH sizes such as 60x20, `ataniq-console --attach`
+  shows the live terminal below the role, connection state and `q` detach
+  hint. A writer requests the viewport size. A viewer sees the top left
+  of the holder's screen.
+- Claiming a project locally after an executor-only designation warns and
+  requires `ataniqd project-home --confirm-self`.
+- Existing daemon state roots need a project home set once per project. With
+  the daemon stopped, run `ataniqd init --state-dir DIR`, then
+  `ataniqd project-home --state-dir DIR --home self PROJECT` on its home
+  instance. Use that instance's authority ID on each executor.
+- The lead registry reads a journal written by another build of the daemon
+  when that build added record members and nothing else: replay ignores a
+  record member it does not know instead of refusing the whole journal as
+  corrupt, and a launch intent's profile digest is taken from the requested
+  profile as its define record stores it, so recorded launch digests stay
+  valid when a later build adds a member. A value it does not know in a member
+  it knows (a provider, a desired or shown state, an outcome) is still damage,
+  as are an unknown record kind and another format version: the journal does
+  not open and the daemon exits 14. A role whose stored profile has a member
+  this build does not know, or names a pack, or whose define record repeats
+  a member anywhere, its envelope's `payload` and the line's final `hash`
+  included (exactly or as a case
+  alias encoding/json matches to the same field, which no build writes),
+  replays but is not launched
+  (`ErrLaunchProfile`) until it is defined again: in scratch mode its start is
+  refused with the code `profile-not-launchable`, and the console's leads view
+  says to define the lead again. A fixture journal written by an earlier build
+  is read back byte for byte by the tests.
+- Init reports journal creation, migration with a record count, or an existing
+  binding. Migration keeps the exact v1 bytes in `registry/registry.jsonl.v1`.
+  Older builds cannot open the migrated journal.
+- The seat's Leads pages now have a room of their own at the gate, 5 calls in
+  80 seconds (opening Leads, selecting a lead and refreshing it once), 2 taken
+  from the reads, which keep 12 for the card lists, 2 from the decisions (now
+  8: 4 decisions in 80 seconds) and 1 from the watcher's waits (now 5: an idle
+  seat's 4 and one for a reconnect, which was measured to meet no `wait-full`
+  and no wait for room); pairing and login keep 12 (6 logins), which pairing a
+  phone and then logging in on it needs, and the total stays 60 requests a
+  minute. A Leads page past its room says "The desk is busy. Try again in a
+  minute." and never takes a card list's read: measured with three card lists
+  reloading every 20 seconds and a conversation refreshed once in 10 seconds,
+  no list reload is busy (42 of 90 were while the Leads pages shared the
+  reads), and the owner's visit of the Leads pages once in 80 seconds never
+  is. The seat's log names the Leads pages' calls kind `chat`, and its line of
+  counts gains `chat T/R` after `read T/R`.
+- The seat's Leads pages now show a read-only cockpit with lead context, a
+  paged conversation, a link to Cards and a timeline. On a phone the page opens
+  on the lead's name and the conversation, then the other panes. The Leads page
+  says "Chat is off for this lead. Turn it on at the desk." under an off lead.
+  The trial labels its sample project, gate and events STAND-IN.
+- The authority-host seat unit reads one or more named gates from
+  `SEAT_GATE_ARGS` in `seat.env`. Replace the old `SEAT_GATE` address with
+  one `--gate-entry NAME,ADDR:PORT,PIN_FILE` per gate. Seat notices are off
+  with named entries, including a single entry.
+- `ataniqd init --restored` preserves the authority of a restored key and
+  creates a fresh `store.incarnation`. The old journal belongs to the previous
+  incarnation and is refused.
+- `make test-canary` and both runs of `make test-ownerchannel` no longer run
+  the repository checks in `./tests/`, which build the same under every tag
+  set; they run once per suite, untagged, in `make test`, and a tagged run with
+  no tagged package runs `./tests/` alone, so that `go test` is never given an
+  empty package list. A new check, `TestCanaryTagTestsClosure`, lists the
+  `./tests/` test closure under each of the four tag sets and fails when a
+  file of it, a Go file or another source (assembly, C and the like), has a
+  build constraint that names `ataniq_canary` or `ataniq_ownerchannel`, or
+  when a tag set selects other sources or other cgo flags (compiler and linker
+  flags and `pkg-config` packages, in order, package by package) than the
+  untagged build, so that running `./tests/` under a tag again is a deliberate
+  change. It reads only the headers of the sources the go command reads on
+  the host, each once. The targeted checks of both tags are now run once,
+  without `-tags`.
+- Witness identifiers require printable ASCII. Initialization and offline
+  publication each print one success line after closing the store.
+- The witness unit documents owner-local provisioning. The host no-AI
+  check reports a missing egress drop-in even when local health passes.
+- Witness release lists document the inherited seat and notifier commands
+  and check their order when the overlays change.
+
+### Fixed
+
+- Recover an interrupted first stage write at the confirmed enrollment head.
+  The home clears the unsent stage after claiming a fresh witness session.
+  Both home preflight commands check retirement and the installation directory.
+  The witness certificate can be one raw DER certificate or a single PEM
+  CERTIFICATE block.
+  Inhibited enrollment and observation now direct the owner to switch status.
+- Home observation reports the original interrupted advance and its owner
+  action so the owner can reconcile the session before retrying. A restart can
+  reclaim the session after an intent was staged before its ledger append.
+  Status marks stale comparisons and shows the latest restore or retirement
+  refusal. Observe prints start and launch counts only with a comparison verdict.
+  Identity initialization syncs the seed, TLS files and their directory
+  entries before it reports success.
+- Attach retries back off when the holder repeatedly grants the wrong role.
+  Each mismatch still releases the granted place immediately.
+- A console that redeems a ticket for the wrong role now detaches immediately,
+  freeing the holder's place and reporting the roles it requested and received.
+  The attach client also supports renewing viewer tickets in memory after a
+  lost connection or a resync.
+- When a service departure cannot be confirmed, `ah-switch` reports the unit
+  and its observed state. For a failed service it gives the owner the
+  `systemctl reset-failed` command to run before retrying.
+- Authority host switches record the owning service of each shipped service
+  drop-in. A release that configures a host service through a drop-in must
+  leave that service inactive or absent before the next release reloads.
+- Authority host switches and rollbacks keep decisions inhibited when a legacy
+  deployment lacks its service inventory. After stopping the services, the owner
+  can record the inventory from the original import with
+  `ah-switch recover --services-stopped` and retry the departure.
+- Forward switches stop and check every departing service before reloading
+  the target, including on retry. Notifier and witness overlays now stop the
+  notifier. Add its stop to the host list when upgrading an existing host.
+- Authority-host release validation, the standalone no-AI check and switch
+  import now refuse user services and their drop-ins under `etc/systemd/user/`
+  with `user-service`. The switch checks departing services through the system
+  manager.
+- Authority-host rollback and recovery verify departing services with systemd
+  before reloading the target and keep decisions inhibited on failure. Witness
+  releases validate the host’s canonical witness stop before activation.
+- An explicit authority-host rollback stops services from both the host and
+  departing release stop lists before reloading the target. A failed stop keeps
+  decisions inhibited and the rollback available for retry.
+- Both authority-host release checks report `unit-syntax` for systemd units
+  and drop-ins that begin with a UTF-8 byte-order mark.
+- The authority-host release and host checks report `unit-syntax` for
+  non-ASCII whitespace and invisible format characters in systemd units and
+  drop-ins, so those characters cannot hide a service from release validation.
+- A `project-assignment-busy` reply from the daemon now gives the canary
+  command the same refusal exit status (30) as other assignment refusals.
+- Scratch-seat `--status --record` gives the same refusal across GNU `mv`
+  versions when another folder takes the baseline name. It keeps that folder
+  intact and reports where the staged baseline was left.
+- The client API counter snapshot now counts requests answered `forbidden`,
+  including refusals during parsing, dispatch, and the delivery recheck.
+- A late Codex start answer for a completed turn now preserves later activity.
+  The holder keeps a second message blocked while the thread is busy and can
+  still report progress and interrupt the newer turn.
+- The Codex codec keeps progress from each live turn when turns overlap.
+  Interrupting targets the latest live turn announced by the server. A new
+  message waits for all live turns to finish and an idle thread status.
+- The Codex holder accepts the next message when a turn completes before its
+  start answer arrives. A stale idle status for an accepted turn no longer
+  hides its progress or prevents the holder from interrupting it.
+- The console keeps directory selections and conversation scroll positions with
+  their home, project, lead, conversation and launch epoch. Offline rows stay
+  visible as stale. A changed target clears its selection and open draft.
+- The console's leads view now explains why a lead is degraded when the holder
+  gives no usable status or reports that the agent exited.
+- An offline cockpit refresh keeps the leads view open with its message draft
+  or stop confirmation intact.
+- The leads view names the operation or ticket role the daemon does not offer.
+  A message refused for a missing operation leaves the editor available for
+  another message in the same epoch.
+- After a lead list outage, a receipt that confirms nothing was sent lets the
+  operator try the message again in the same epoch.
+- The terminal console no longer exits when it opens a branch-prune approval
+  card. A prune changes no file and so has no diff summary; the console now
+  opens the card and can approve or deny it from the desk.
+- The leads view shows why a scratch lead is degraded and lets the owner stop
+  its current epoch. Unreadable rows still refuse every command.
+- A change on the new-project summary that clears later answers now has their
+  questions asked again, after the last round too, so the brief can still be
+  completed and planned.
+- The new-project interview now asks every required question within its six
+  rounds, so a finished interview can be planned.
+- A new-project interview that answers "You decide for me" on the language,
+  the sign-in or where a web app runs can now be planned: those answers count
+  as given, and the plan says some answers were decided for you. Finishing
+  accepts them as your answers, as the summary now says.
+- The holder requires `ATANIQ_AUTHORITY_TAG` to contain exactly 16 lowercase
+  hexadecimal digits before a managed lead can start.
+- `ah-noaicheck` reads continued directives in installed systemd units,
+  drop-ins and manager configuration. The stock systemd-pcrosseparator
+  service passes the host scan, and a provider key set on a continuation
+  line is reported by name.
+- A damaged `store.incarnation` now reports how to remove the damaged file
+  and restore the original key with a fresh incarnation.
+- `ataniqd init` checks a pre-identity registry journal before creating an
+  authority key. A corrupt record leaves the original journal available for
+  repair and the root uninitialized.
+- Daemon identity and journal refusals identify the affected path. Supplying
+  `--label` after the first `ataniqd init` now reports an error.
+- The terminal lead-control table keeps an open message or stop confirmation
+  on its lead across renames and reordering. If the lead disappears or its
+  epoch changes, the table clears the selection and field. Use j or k to
+  select a lead again. A ticket for a selection that changed cannot attach.
+- One malformed lead row or last receipt no longer hides the whole leads list.
+  The console shows the reason on that row and keeps other leads usable.
+- A key from the pre-release instance format now reports its origin and
+  directs the owner to run init on a fresh root.
+- A malformed `--home` prints the accepted format and exits with usage status
+  2. Missing-home refusals explain that enrollment needs a stopped daemon.
+- Init validates the legacy journal under the migration lock and removes stale
+  `.registry-check-*` replay copies left by earlier builds.
+- Restoring an incarnation with a journal in place now requires explicit
+  acknowledgement with `--leave-old-journal`. Scratch preflight reads the
+  journal header and reports a foreign binding with exit 14. Missing-key
+  messages distinguish an intact root from a restore.
+- The authority-host switch counts exit 5 from a single-unit systemctl stop as
+  already stopped, including when retrying or settling a rollback.
+- Rollback can leave an unverifiable release after the host stop list succeeds.
+  The switch skips the untrusted stop list and qualifies the target.
+- The sandbox guide now describes identity validation at daemon startup and
+  the public tag passed to the holder at launch.
+- A scratch lead stays ready through a single missed health poll. Two
+  consecutive misses in one epoch mark the holder unreachable, and a confirmed
+  agent exit is shown immediately. Successful status polls no longer fill the
+  holder's event log.
+- Scratch leads now show `degraded` at the desk and `unknown` on the phone
+  when a health poll loses contact with the holder or finds the agent has
+  exited. A fresh healthy status for the same launch restores `ready`.
+- The scratch guides list the registry header check and its exit code, and
+  explain when the daemon takes the journal lock and when holders check their
+  socket paths.
+- In scratch mode, the daemon's scan at start of the leads it adopted
+  `starting` could, when a lead was stopped and started again while the scan
+  ran, start the observer of the old epoch in place of the new epoch's,
+  which then ended without looking at the new holder: the lead stayed
+  `starting`. An observer is no longer started for a lead that has one of a
+  later epoch.
+- Scratch-seat step f enrolls every configured project before the trial
+  restarts. The switch to the proof daemon confirms those homes.
+- The seat no longer reuses a real lead directory for 20 seconds. Each Leads
+  page asks the desk for the directory and the transcript, so a lead whose chat
+  the desk turns off shows as off on the next page, with nothing left of its
+  state. Only the phone trial's sample directory and pages are still reused.
+  The "Lead restarted" notice no longer carries over a reset, a change of the
+  lead's chat setting or a fall of its epoch, where the name may belong to
+  another lead.
+- A seat conversation opened without a page cursor (`/leads/daemon/KEY`, the
+  directory's link, **Refresh** and **Jump to newest**) now ends at the
+  lead's latest message: when long messages did not all fit on the page, or
+  replies arrived while it was read, it reads on toward the latest message,
+  at most twice more (up to 4 of the Leads pages' 5 calls in 80 seconds),
+  instead of stopping short with **Show later**. **Jump to newest** links to
+  that address rather than to a window counted back from the head, which the
+  same limit could cut short. A further read that meets a busy desk keeps
+  the page read so far.
+- The daemon's seat gate no longer stops for good when accepting a connection
+  fails, as it does when descriptors or memory run out: it tries again after
+  a wait that starts at 5 ms and doubles to at most 1 s, so phone approvals
+  come back by themselves once the cause is gone. The daemon logs
+  `seat gate: accepting a connection failed; retrying until one succeeds` when
+  such failures begin.
+- When the desk answers that a passkey is no longer paired, the seat ends
+  every session that passkey logged in (another tab's or another phone's
+  login, and their open card-list streams), not only the session whose tap
+  learnt it. A logout still ends its own session only.
+- The seat keeps phone-shaped text plain on iPhone, gives pages and answer
+  links clearer names, and offers a fresh read on temporary errors and
+  pending decisions. Status messages, touch targets and scrolling navigation
+  are more accessible. Rejected answers lead back to the question to fix.
+  The interview shows actual progress and explains when answers become final.
+  Plans explain their limits and let you expand the draft charter details.
+- Daemon identity checks follow symbolic links in parent directories of the
+  state root. A linked identity file is refused with its name.
+- A viewer using a ticket service waits for a fresh ticket before dialing.
+  Empty polls no longer register refused handshakes at the holder.
+- The authority-host witness guide uses port 7444 for the home endpoint,
+  leaving 7443 for the seat gate.
+- The witness link reports a refused owner read as refused when the owner
+  certificate is missing or untrusted, even if the request write fails.
+- Witness preflight reports an occupied or unusable owner socket path and
+  rejects overlapping state, key, guard and runtime locations.
+- The recovery guide names the switch guard checks before acknowledgement
+  and separates offline signing-seed custody from the store backup.
+- The witness unit stops retrying fixed refusals and limits repeated starts
+  after a crash. The operator guide covers attended restart.
+- The witness names the obsolete `guard` key on refusal. Service startup checks
+  on-disk egress settings without invoking systemctl. Owner preflight and the
+  host no-AI check still verify the manager’s effective grants.
+- The witness recovery guide directs interrupted publication to offline
+  completion immediately after signed status. It reserves guard clearing and
+  acknowledgement for recovery from storage errors or an unclean process end.
+
+### Security
+
+- AP14 level 1 for an AI host (`deploy/ai-host/README.md`): the owner takes
+  passwordless and cached sudo away from the everyday user by hand, from the
+  guide's steps: the edits with `visudo -f` (remove the `NOPASSWD:` tag in
+  place, keep one password-asked grant, never delete a rule), the drop-in
+  `/etc/sudoers.d/zz-ap14-level1-NAME` (`Defaults:NAME timestamp_timeout=0`,
+  checked with `visudo -c`) and the root-owned standing-grants register
+  `/etc/ataniq/grants`, one fresh root-owned file per grant; a register
+  folder found not root's or writable by others is set right in place, never
+  moved or replaced.
+  `deploy/ai-host/ap14-level1.sh --check --user NAME` is the read-only check
+  of the result, run by the owner as root from a copy installed as root's own
+  file: it runs `sudo -n -l -U NAME` once and judges only what sudo prints
+  (a `NOPASSWD` command; `targetpw`, `rootpw`, `runaspw`, `!authenticate` or
+  `exempt_group`, global or command-specific, judged in every word of a
+  setting so that a quoted value with blanks is read; a non-zero
+  `timestamp_timeout`; no `timestamp_timeout=0`), checks the register and every folder above it by
+  stat rules, and prints plain steps for the owner, never an edit command. It
+  changes nothing. It stops, never clean (exit 3), on a failed or unknown
+  sudo output, anything on sudo's error output, an unreadable register, and a
+  user with no sudo grant until the owner answers that root can log in
+  another way (`--other-root-login`). Verification is `--check` again and the
+  owner's `sudo -k; sudo -n true` in a new login, whose limit the guide states.
+  Groups, polkit, doas, setuid files and root-run paths are a checklist for the
+  owner; the user's own shell start files and `PATH` folders are a known limit
+  of level 1. `--self-test` runs unprivileged and judges saved `sudo -l`
+  outputs and register listings in place, never running sudo and writing
+  nothing. Agents run only `--self-test` and the Go tests.
+- Authority-host checks reject systemd line continuations and control characters
+  in units and drop-ins with a `unit-syntax` finding.
+- Managed desk streams accept only `ataniq.client/2` and check the enrolled
+  principal's permission for the requested target at dispatch and delivery.
+  A request that supplies its own principal is refused. The local version 1
+  socket serves its own scratch inventory and extensions.
+- The authority host's `deploy.sh` logs in with the checked ssh agent's key
+  only, isolated from the development host's ssh configuration: every ssh and
+  rsync runs with `-F /dev/null` (no `IdentityFile`, `IdentityAgent`,
+  `ProxyJump` or alias of a config applies) and explicit options: batch mode,
+  no key file, `IdentityAgent=SSH_AUTH_SOCK`, public-key authentication only
+  (no password, keyboard-interactive, GSSAPI, host-based or PKCS#11), no proxy,
+  no shared connection (`ControlMaster=no`, `ControlPath=none`), no agent
+  forwarded further, and `StrictHostKeyChecking=yes` with only the known-hosts
+  file the owner names. The destination comes from the owner's environment:
+  `AUTHORITY_HOST_SSH` must now be `USER@HOST` (an ssh alias no longer works),
+  `AUTHORITY_HOST_KNOWN_HOSTS` is required, and `AUTHORITY_HOST_PORT` sets a
+  port other than 22. Except for `--self-test`, which prints the options, it
+  refuses when the known-hosts file is missing, or `SSH_AUTH_SOCK` is unset or
+  its agent holds no key, and `--dry` ends with a reminder that the use must
+  have popped a confirmation on the laptop. DEPLOY.md has the owner's
+  procedure, "The deploy key": kept on the laptop and loaded with
+  `ssh-add -c -h -t`, the agent forwarded for the deploy session only, a
+  `restrict,from=` line on the authority host, how to prove it (the negative
+  check tests each identity under review, one key file at a time, on the
+  driver's own connection: the same destination, port and known-hosts file,
+  no ssh configuration, no proxy and no agent), and the same with a FIDO2
+  key; the git push command of `docs/outward-keys.md` uses the same options.
+- Authority-host release checks require an unprefixed executable path for each
+  systemd service or socket command, as used by the shipped units.
+- The phone's `kinds` setting accepts only WebAuthn kinds. Listing
+  `security-key` raises a settings error. Scratch security-key verification
+  requires an explicit opt-in, a laptop desk, and a disposable local
+  `ref-move` card for `feature finish`.
+- Scratch security-key verification requires witnessed enrollment. A stored
+  `attested` claim is rejected until enrollment can verify attestation.
+- Scratch security-key enrollment and signature verification reject malformed
+  Ed25519 keys and points of small order, including the identity.
+- The seat refuses a POST that carries `Sec-Fetch-Site` or `Content-Type`
+  twice, and any request with two `__Host-seat` cookies, now counted before
+  they are parsed, so a second cookie with a malformed value no longer hides.
+  The card-list stream takes a body of exactly one string member `version`
+  (absent, null or repeated is 400) and opens only once the seat's watcher
+  has a version.
+- The no-AI check detects TCP listeners owned by the witness account
+  after its unit link is removed, including on baseline-approved ports.
+- Require a literal home endpoint for witness polling and document the
+  single-destination output filter and matching home source restriction.
+- Release checks reject references to the witness binary in other units’
+  executable commands, including quoted paths and shell arguments.
+- The witness now uses the switch guard at `/var/lib/authority-host` and
+  refuses an unusable guard directory during preflight. Remove the former
+  `guard` key from the witness configuration.
+- Witness preflight and the host no-AI check validate the owner’s single
+  address grant against the canonical numeric home endpoint.
+- Both authority-host release checks verify the executable path in unit
+  commands and reject links inside the release. Installation checks the
+  witness unit link target. Witness preflight and the host no-AI check
+  verify inherited address grants and the running system manager’s policy.
+  Group- or world-writable witness TLS directories fail preflight.
+- Release checks require every shipped witness unit setting and reject
+  release drop-ins that override the witness sandbox.
+
 ## [0.0.13] - 2026-11-23
 
 ### Added

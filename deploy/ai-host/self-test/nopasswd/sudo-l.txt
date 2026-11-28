@@ -1,0 +1,9 @@
+Matching Defaults entries for agent on aihost:
+    env_reset, timestamp_timeout=0
+
+User agent may run the following commands on aihost:
+    (ALL : ALL) ALL
+    (root) NOPASSWD: /usr/bin/systemctl restart web.service
+    (root) /usr/bin/journalctl, /usr/bin/dmesg,
+        NOPASSWD: /usr/bin/true
+    (ALL) NOPASSWD: ALL

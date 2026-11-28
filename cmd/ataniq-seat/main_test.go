@@ -104,6 +104,35 @@ func TestRunRefusesNonLoopbackBeforeListening(t *testing.T) {
 	}
 }
 
+// waitLong is how long a test waits for the command to listen or to shut
+// down. It only matters on a real hang: a shutdown may take up to the
+// command's own grace (shutdownGrace, 10 s) when a connection is still open,
+// and a process under suite load may be slow to start, so the wait is a good
+// deal longer than both.
+const waitLong = 30 * time.Second
+
+// getOnce makes one GET of url over a connection of its own, which closes
+// with the response, and returns the response with its body read and closed.
+//
+// http.Get shares a transport that keeps connections and, when a request
+// finds no idle connection (it just closed one whose body was not read), may
+// dial a second one in parallel and keep whichever is free first. The
+// spare, with no request ever sent on it, stays open on the server in the
+// state of a new connection, which Shutdown does not count as idle for 5 s,
+// so the command's shutdown waited that long: as long as a test's own wait.
+func getOnce(t *testing.T, url string) *http.Response {
+	t.Helper()
+	tr := &http.Transport{DisableKeepAlives: true}
+	defer tr.CloseIdleConnections()
+	resp, err := (&http.Client{Transport: tr}).Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	return resp
+}
+
 // serve runs the command with args until the test ends and returns its address.
 func serve(t *testing.T, args []string) (addr net.Addr, stderr *bytes.Buffer, stop func() int) {
 	t.Helper()
@@ -117,7 +146,7 @@ func serve(t *testing.T, args []string) (addr net.Addr, stderr *bytes.Buffer, st
 	case c := <-done:
 		cancel()
 		t.Fatalf("run ended with %d: %s", c, stderr.String())
-	case <-time.After(5 * time.Second):
+	case <-time.After(waitLong):
 		cancel()
 		t.Fatal("no listener")
 	}
@@ -126,8 +155,8 @@ func serve(t *testing.T, args []string) (addr net.Addr, stderr *bytes.Buffer, st
 		select {
 		case c := <-done:
 			return c
-		case <-time.After(5 * time.Second):
-			t.Fatal("no shutdown")
+		case <-time.After(waitLong):
+			t.Fatalf("no shutdown after %v", waitLong)
 			return -1
 		}
 	}
@@ -182,11 +211,7 @@ func TestServeOnLoopback(t *testing.T) {
 	free := l.Addr().String()
 	l.Close()
 	addr, _, stop := serve(t, []string{"--origin", "https://seat.example", "--listen", free})
-	resp, err := http.Get("http://" + addr.String() + "/healthz")
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
+	resp := getOnce(t, "http://"+addr.String()+"/healthz")
 	if resp.StatusCode != 200 {
 		t.Errorf("healthz: %d", resp.StatusCode)
 	}

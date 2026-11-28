@@ -198,6 +198,46 @@
 // that the reconcile at start did not act on the registry's cut journal (one
 // log line names the restart that settles the lead).
 //
+// # Scratch mode: the leads' replies
+//
+// In scratch mode the daemon also keeps each lead's written replies to the
+// owner (its chat), read only, through package leadchat
+// (chat_desk_linux.go). At start, with both locks held, it opens one chat
+// store per lead in <state>/chat; a lead whose store cannot be opened has no
+// chat and every other lead is untouched. Each lead's switch is the desk's,
+// in memory: off or read, off for every lead whenever the daemon starts,
+// effective at once, and checked on every list, read and scan. Three
+// operations of their own, chat.list, chat.set and chat.purge
+// (leadwire.ChatOperations, listed after the six), are the desk's on the
+// Unix socket; chat.set refuses send (chat-send-not-built), a key longer
+// than a seat's lead identifier holds (chat-key-unrepresentable) and a
+// turn-on whose lead's quarantine has no free name (chat-quarantine-full),
+// which chat.purge empties, only while the lead is proven stopped and with
+// the role's operation lock held (chat-lead-not-stopped otherwise). While a
+// lead's switch is read
+// one scanner of its own takes its replies every [DefaultChatScanEvery]; a
+// scanner ends when the switch is off, the scan stops the lead's chat (the
+// reply folder was replaced, opened to others or held too much), the lead's
+// store fails, or the daemon stops, where it is joined with the observers.
+// Its log lines hold counts and fixed words only. Every define and every
+// start of a lead first writes the text of its instruction file while the
+// lead is proven stopped (provision.EnsureChat); an instruction file that is
+// not private, that changed while it was replaced, or that is busy, refuses
+// the command (chat-folder). A version an upgrade displaced or a crash left is
+// kept beside it under a recovery name the daemon never deletes, and the log
+// says so. Neither looks at the reply folder, which the turn-on of the lead's
+// chat makes.
+//
+// [LeadChat] (chat_port_linux.go) is the seat's view of the same chats, the
+// chat port of the gate's seat.chat route: it fits gatehost.ChatPort by its
+// method set, imports nothing of the approval packages but ownerwire, and
+// reads only a view the scratch mode binds to it ([Scratch].Chat) once the
+// stores are open; it answers chat-busy before that, after shutdown, for a
+// lead whose chat the scan stopped or whose store failed, past
+// [ChatCallsPerMinute] calls a minute, and on a panic. A lead whose switch is
+// off is a bare row and chat-off. Nothing of it reaches the lifecycle, a
+// holder, the command table, or the owner channel's service.
+//
 // # The owner connection
 //
 // A build with the ataniq_ownerchannel tag has one more thing, and no other

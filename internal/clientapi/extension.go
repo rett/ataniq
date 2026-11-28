@@ -163,3 +163,31 @@ func (s *extensionSet) operations() []string {
 
 // mutating tells whether hello says "mutations": true.
 func (s *extensionSet) mutating() bool { return s != nil && s.mutations }
+
+// Principal identifies a verified managed client in its issuer's namespace.
+// Both fields must be set. A principal is supplied by the server's trusted
+// connection verifier, never by the request or by the same-UID check.
+type Principal struct {
+	Issuer   string
+	ClientID string
+}
+
+type principalKey struct{}
+
+// PrincipalFromContext returns the principal bound to a managed handler call.
+func PrincipalFromContext(ctx context.Context) (Principal, bool) {
+	p, ok := ctx.Value(principalKey{}).(Principal)
+	return p, ok
+}
+
+// ManagedHandler serves only protocol v2. Its methods may run concurrently.
+// Capabilities returns a stable snapshot for the principal in ctx at dispatch
+// and again at delivery. Managed and extension operations follow the same
+// naming rules.
+// HandleManaged receives only a target and operation from that snapshot.
+// It must recheck current authorization when committing an effect. Its result
+// and error follow the same wire rules as Extension.Handle.
+type ManagedHandler interface {
+	Capabilities(ctx context.Context) (TargetCapabilities, error)
+	HandleManaged(ctx context.Context, target, op string, params json.RawMessage) (any, *ErrorBody)
+}

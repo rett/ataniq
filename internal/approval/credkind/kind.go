@@ -15,9 +15,10 @@ const (
 
 // The names of the kinds.
 const (
-	NamePlatform = "platform-passkey"
-	NameVault    = "vault-passkey"
-	NameUnknown  = "passkey"
+	NamePlatform    = "platform-passkey"
+	NameVault       = "vault-passkey"
+	NameUnknown     = "passkey"
+	NameSecurityKey = "security-key"
 )
 
 // The errors. Each is a fixed value that holds no part of the input.
@@ -127,7 +128,7 @@ type Result struct {
 	BackupState bool
 }
 
-// Kind is a kind of credential.
+// Kind registers and verifies a WebAuthn credential.
 type Kind interface {
 	// Name is the kind's name, as a policy lists it.
 	Name() string
@@ -145,10 +146,10 @@ var kinds = []Kind{
 	passkey{name: NameUnknown},
 }
 
-// Kinds returns every kind.
+// Kinds returns the WebAuthn kinds.
 func Kinds() []Kind { return append([]Kind(nil), kinds...) }
 
-// ByName returns the kind of a name.
+// ByName looks up a WebAuthn kind.
 func ByName(name string) (Kind, bool) {
 	for _, k := range kinds {
 		if k.Name() == name {
@@ -179,7 +180,8 @@ func Verify(c Credential, in AssertionInput, e Expect) (Result, error) {
 	return k.Verify(c, in, e)
 }
 
-// Policy is the kinds a project accepts. With no names it accepts every kind.
+// Policy lists the WebAuthn kinds a project accepts. With no names it accepts
+// every WebAuthn kind.
 // A name that is not a kind matches nothing, so a policy that names only
 // unknown kinds accepts nothing; Check finds such a name.
 type Policy struct {

@@ -2212,6 +2212,8 @@ step_10() {
     'it listens; status shows no role; hello lists the canary operations' 'G4'
   out '   Owner: in a second terminal (T2), run it; it stays in front of that terminal until you stop it'
   out '   with Ctrl-C at step 26, so the console and the intake need terminals of their own:'
+  out "     $BIN/ataniqd init --state-dir \"$STATE\""
+  out "     $BIN/ataniqd project-home --state-dir \"$STATE\" --home self $PROJECT"
   out "     $BIN/ataniqd run --canary $CONFIG"
   out '   Start it first and wait for its listening line, then press Enter here. If it is not up yet'
   out '   when you press Enter, this step asks for it every second for up to a minute.'

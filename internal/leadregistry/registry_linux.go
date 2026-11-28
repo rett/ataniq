@@ -5,22 +5,28 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
 
+	"ataniq/internal/instanceid"
 	"ataniq/internal/leadrole"
 )
 
 // Options tunes a Registry. The zero value is what production uses; the fields
 // exist so tests can fix the clock and the randomness.
 type Options struct {
+	// standaloneV1 preserves standalone v1 writes for format compatibility.
+	// Only in-package fixtures use it. Bound registries always check the home.
+	standaloneV1 bool
 	// Now returns the time stamped on a record. Default: time.Now.
 	Now func() time.Time
 	// Rand supplies the random bits of intent ids. Default: crypto/rand.
@@ -81,16 +87,20 @@ func (e *CorruptError) Is(target error) bool { return target == ErrCorrupt }
 // Registry is the open, locked registry. Its methods are safe for concurrent
 // use. It is not safe to use after Close.
 type Registry struct {
-	mu       sync.Mutex
-	f        *os.File
-	roles    map[leadrole.Role]Entry
-	seq      uint64
-	prev     [sha256.Size]byte
-	recovery Recovery
-	now      func() time.Time
-	rand     io.Reader
-	closed   bool
-	broken   error
+	standaloneV1 bool
+	binding      instanceid.Binding
+	mu           sync.Mutex
+	f            *os.File
+	homes        map[string]ProjectAssignment
+	foreignHomes map[string]string // most recent foreign home ever recorded per project
+	roles        map[leadrole.Role]Entry
+	seq          uint64
+	prev         [sha256.Size]byte
+	recovery     Recovery
+	now          func() time.Time
+	rand         io.Reader
+	closed       bool
+	broken       error
 }
 
 // Open opens the registry in dir, creating dir (mode 0700) and the journal
@@ -101,14 +111,18 @@ type Registry struct {
 // an unfinished final line. An unfinished final line is cut off and counted
 // in Recovery.
 func Open(dir string, opts Options) (*Registry, error) {
-	r := &Registry{roles: map[leadrole.Role]Entry{}, now: opts.Now, rand: opts.Rand}
+	return open(dir, opts, syncFD)
+}
+
+func open(dir string, opts Options, syncFile func(int) error) (*Registry, error) {
+	r := &Registry{homes: make(map[string]ProjectAssignment), roles: map[leadrole.Role]Entry{}, now: opts.Now, rand: opts.Rand}
 	if r.now == nil {
 		r.now = time.Now
 	}
 	if r.rand == nil {
 		r.rand = rand.Reader
 	}
-	dirFD, err := openDir(dir)
+	dirFD, err := openDir(dir, syncFile)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +132,22 @@ func Open(dir string, opts Options) (*Registry, error) {
 		return nil, err
 	}
 	r.f = f
-	if err := r.start(dirFD); err != nil {
+	// Resolve the state root from the locked journal's directory. A standalone
+	// registry with no instance key retains its v1 format.
+	parent, err := unix.Openat(dirFD, "..", unix.O_PATH|dirFlags, 0)
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	id, err := instanceid.LoadAt(parent)
+	unix.Close(parent)
+	if err != nil && !errors.Is(err, instanceid.ErrMissing) {
+		f.Close()
+		return nil, err
+	}
+	r.binding = id.Binding
+	r.standaloneV1 = opts.standaloneV1 && id.Authority == ""
+	if err := r.start(dirFD, syncFile); err != nil {
 		f.Close()
 		return nil, err
 	}
@@ -141,58 +170,132 @@ func checkOwner(st *unix.Stat_t, path string) error {
 	return nil
 }
 
-func openDir(dir string) (int, error) {
-	dir = filepath.Clean(dir)
-	flags := unix.O_RDONLY | unix.O_DIRECTORY | unix.O_NOFOLLOW | unix.O_CLOEXEC
-	fd, err := unix.Open(dir, flags, 0)
-	if err == unix.ENOENT {
-		parent := filepath.Dir(dir)
-		if err := os.MkdirAll(parent, 0o700); err != nil {
-			return -1, fmt.Errorf("leadregistry: create folder: %w", err)
-		}
-		if err := unix.Mkdir(dir, 0o700); err != nil && err != unix.EEXIST {
-			return -1, fmt.Errorf("leadregistry: create folder: %w", err)
-		}
-		fd, err = unix.Open(dir, flags, 0)
-		if err != nil {
-			return -1, fmt.Errorf("leadregistry: open folder: %w", err)
-		}
-		if err := unix.Fchmod(fd, 0o700); err != nil {
-			unix.Close(fd)
-			return -1, fmt.Errorf("leadregistry: chmod folder: %w", err)
-		}
-		if pfd, perr := unix.Open(parent, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0); perr == nil {
-			serr := syncFD(pfd)
-			unix.Close(pfd)
-			if serr != nil {
-				unix.Close(fd)
-				return -1, fmt.Errorf("leadregistry: sync parent folder: %w", serr)
-			}
-		}
-	} else if err == unix.ELOOP || err == unix.ENOTDIR {
-		return -1, fmt.Errorf("%w: %s is a symlink or not a folder", ErrInsecure, dir)
-	} else if err != nil {
-		return -1, fmt.Errorf("leadregistry: open folder: %w", err)
-	}
-	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil {
-		unix.Close(fd)
-		return -1, fmt.Errorf("leadregistry: stat folder: %w", err)
-	}
-	if err := checkOwner(&st, dir); err != nil {
-		unix.Close(fd)
+const dirFlags = unix.O_DIRECTORY | unix.O_CLOEXEC
+
+func openDir(dir string, syncFile func(int) error) (int, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
 		return -1, err
 	}
-	if st.Mode&0o077 != 0 {
+	flags := unix.O_PATH | dirFlags
+	if abs == "/" {
+		flags = unix.O_RDONLY | dirFlags
+	}
+	fd, err := unix.Open("/", flags, 0)
+	if err != nil {
+		return -1, err
+	}
+	names := strings.FieldsFunc(abs, func(c rune) bool { return c == '/' })
+	for i, name := range names {
+		childFlags := unix.O_PATH | dirFlags
+		nextName := FileName
+		if i+1 < len(names) {
+			nextName = names[i+1]
+		} else {
+			childFlags = unix.O_RDONLY | dirFlags | unix.O_NOFOLLOW
+		}
+		next, err := openSyncedChild(fd, name, nextName, childFlags, syncFile)
+		_ = unix.Close(fd)
+		if err != nil {
+			return -1, err
+		}
+		fd = next
+	}
+	if err := checkDir(fd, dir); err != nil {
 		unix.Close(fd)
-		return -1, fmt.Errorf("%w: folder %s has group or other permission bits (want 0700)", ErrInsecure, dir)
+		return -1, err
 	}
 	return fd, nil
 }
 
+func checkDir(fd int, dir string) error {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return fmt.Errorf("leadregistry: stat folder: %w", err)
+	}
+	if err := checkOwner(&st, dir); err != nil {
+		return err
+	}
+	if st.Mode&0o077 != 0 {
+		return fmt.Errorf("%w: folder %s has group or other permission bits (want 0700)", ErrInsecure, dir)
+	}
+	return nil
+}
+
+// Each creator confirms a directory's entry before adding the next path
+// component (or journal). If the next entry already exists, we can traverse
+// this one with search permission alone. A missing next entry can be a crash
+// between mkdir and fsync, so confirm the containing directory on that retry.
+func openSyncedChild(parent int, name, nextName string, flags int, syncFile func(int) error) (int, error) {
+	fd, err := unix.Openat(parent, name, flags, 0)
+	if err == nil {
+		var st unix.Stat_t
+		err = unix.Fstatat(fd, nextName, &st, unix.AT_SYMLINK_NOFOLLOW)
+		if err == unix.ENOENT {
+			err = syncDirectoryAt(parent, syncFile)
+		}
+		if err != nil {
+			_ = unix.Close(fd)
+			return -1, fmt.Errorf("leadregistry: confirm folder %s: %w", name, err)
+		}
+		return fd, nil
+	}
+	created := false
+	if err == unix.ENOENT {
+		err = unix.Mkdirat(parent, name, 0700)
+		created = err == nil
+		if err != nil && err != unix.EEXIST {
+			return -1, fmt.Errorf("leadregistry: create folder %s: %w", name, err)
+		}
+		if created {
+			flags = flags&^unix.O_PATH | unix.O_RDONLY
+		}
+		fd, err = unix.Openat(parent, name, flags, 0)
+	}
+	if err == unix.ELOOP || err == unix.ENOTDIR {
+		return -1, fmt.Errorf("%w: %s is a symlink or not a folder", ErrInsecure, name)
+	}
+	if err != nil {
+		return -1, fmt.Errorf("leadregistry: open folder %s: %w", name, err)
+	}
+	if created {
+		if err := unix.Fchmod(fd, 0700); err != nil {
+			_ = unix.Close(fd)
+			return -1, fmt.Errorf("leadregistry: chmod folder: %w", err)
+		}
+	}
+	if err := syncDirectoryAt(parent, syncFile); err != nil {
+		// Roll back only our own still-named empty directory. A concurrent
+		// creator may have populated it. Preserve those entries for retry.
+		if created {
+			var held, named unix.Stat_t
+			if unix.Fstat(fd, &held) == nil && unix.Fstatat(parent, name, &named, unix.AT_SYMLINK_NOFOLLOW) == nil && held.Dev == named.Dev && held.Ino == named.Ino {
+				rmErr := unix.Unlinkat(parent, name, unix.AT_REMOVEDIR)
+				if rmErr != unix.ENOTEMPTY && rmErr != unix.ENOENT {
+					err = errors.Join(err, rmErr)
+				}
+			}
+		}
+		_ = unix.Close(fd)
+		return -1, fmt.Errorf("leadregistry: sync parent of %s: %w", name, err)
+	}
+	return fd, nil
+}
+
+// Reopen the held parent for fsync. An O_PATH descriptor pins the directory
+// across renames but cannot itself be passed to fsync.
+func syncDirectoryAt(parent int, syncFile func(int) error) error {
+	fd, err := unix.Openat(parent, ".", unix.O_RDONLY|dirFlags, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+	return syncFile(fd)
+}
+
 func openFile(dirFD int, path string) (*os.File, error) {
 	name := FileName
-	base := unix.O_RDWR | unix.O_APPEND | unix.O_NOFOLLOW | unix.O_CLOEXEC
+	base := unix.O_NONBLOCK | unix.O_RDWR | unix.O_APPEND | unix.O_NOFOLLOW | unix.O_CLOEXEC
 	created := true
 	fd, err := unix.Openat(dirFD, name, base|unix.O_CREAT|unix.O_EXCL, 0o600)
 	if err == unix.EEXIST {
@@ -227,47 +330,39 @@ func openFile(dirFD int, path string) (*os.File, error) {
 			return fail(fmt.Errorf("leadregistry: chmod journal: %w", err))
 		}
 	}
-	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil {
-		return fail(fmt.Errorf("leadregistry: stat journal: %w", err))
-	}
-	if st.Mode&unix.S_IFMT != unix.S_IFREG {
-		return fail(fmt.Errorf("%w: %s is not a regular file", ErrInsecure, path))
-	}
-	if err := checkOwner(&st, path); err != nil {
+	if err := checkJournalFile(dirFD, fd, path); err != nil {
 		return fail(err)
-	}
-	if st.Mode&0o177 != 0 {
-		return fail(fmt.Errorf("%w: %s has permission bits wider than 0600", ErrInsecure, path))
 	}
 	return f, nil
 }
 
+func checkJournalFile(dirFD, fd int, path string) error {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return fmt.Errorf("leadregistry: stat journal: %w", err)
+	}
+	var named unix.Stat_t
+	if err := unix.Fstatat(dirFD, filepath.Base(path), &named, unix.AT_SYMLINK_NOFOLLOW); err != nil || st.Dev != named.Dev || st.Ino != named.Ino || st.Nlink != 1 {
+		return fmt.Errorf("%w: journal replaced or linked", ErrInsecure)
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFREG {
+		return fmt.Errorf("%w: %s is not a regular file", ErrInsecure, path)
+	}
+	if err := checkOwner(&st, path); err != nil {
+		return err
+	}
+	if st.Mode&0o177 != 0 {
+		return fmt.Errorf("%w: %s has permission bits wider than 0600", ErrInsecure, path)
+	}
+	return nil
+}
+
 // start replays the journal, cuts an unfinished tail and writes the header of
 // an empty journal.
-func (r *Registry) start(dirFD int) error {
-	rd := bufio.NewReaderSize(r.f, MaxLineBytes+1)
-	var offset int64
-	var tail int
-	lines := 0
-	for {
-		line, err := rd.ReadSlice('\n')
-		if err == nil {
-			lines++
-			if err := r.replayLine(lines, line[:len(line)-1]); err != nil {
-				return err
-			}
-			offset += int64(len(line))
-			continue
-		}
-		if err == io.EOF {
-			tail = len(line)
-			break
-		}
-		if err == bufio.ErrBufferFull {
-			return &CorruptError{Line: lines + 1, Reason: fmt.Sprintf("line longer than %d bytes", MaxLineBytes)}
-		}
-		return fmt.Errorf("leadregistry: read journal: %w", err)
+func (r *Registry) start(dirFD int, syncFile func(int) error) error {
+	offset, tail, lines, err := r.readRecords(r.f)
+	if err != nil {
+		return err
 	}
 	if tail > 0 {
 		if err := r.f.Truncate(offset); err != nil {
@@ -276,7 +371,7 @@ func (r *Registry) start(dirFD int) error {
 	}
 	if lines == 0 {
 		line, sum, err := encodeLine(genesis, 0, r.now(), kindHeader, leadrole.Role{},
-			&headerPayload{Format: formatName, Version: formatVersion})
+			journalHeader(r.binding))
 		if err != nil {
 			return err
 		}
@@ -293,17 +388,43 @@ func (r *Registry) start(dirFD int) error {
 			return err
 		}
 	}
-	if tail > 0 || lines == 0 {
-		if err := r.f.Sync(); err != nil {
-			return fmt.Errorf("leadregistry: sync after recovery: %w", err)
-		}
+	// The header and its directory entry may only be visible in cache after
+	// a previous failed Open. Establish both durability boundaries on retry.
+	if err := syncFile(int(r.f.Fd())); err != nil {
+		return fmt.Errorf("leadregistry: sync journal: %w", err)
 	}
-	if lines == 0 {
-		if err := syncFD(dirFD); err != nil {
-			return fmt.Errorf("leadregistry: sync folder: %w", err)
-		}
+	if err := syncFile(dirFD); err != nil {
+		return fmt.Errorf("leadregistry: sync folder: %w", err)
 	}
 	return nil
+}
+
+// readRecords replays complete lines and reports the uncommitted suffix.
+func (r *Registry) readRecords(input io.Reader) (offset int64, tail, lines int, readErr error) {
+	rd := bufio.NewReaderSize(input, MaxLineBytes+1)
+	for {
+		line, err := rd.ReadSlice('\n')
+		if err == nil {
+			lines++
+			if err := r.replayLine(lines, line[:len(line)-1]); err != nil {
+				return 0, 0, 0, err
+			}
+			offset += int64(len(line))
+			continue
+		}
+		if err == io.EOF {
+			tail = len(line)
+			break
+		}
+		if err == bufio.ErrBufferFull {
+			return 0, 0, 0, &CorruptError{Line: lines + 1, Reason: fmt.Sprintf("line longer than %d bytes", MaxLineBytes)}
+		}
+		return 0, 0, 0, fmt.Errorf("leadregistry: read journal: %w", err)
+	}
+	if tail > 0 && lines == 0 && r.binding.Authority != "" {
+		return 0, 0, 0, &CorruptError{Line: 1, Reason: "unfinished instance header"}
+	}
+	return offset, tail, lines, nil
 }
 
 // commitRecovered appends the record of a cut to the file, without a sync,
@@ -349,13 +470,32 @@ func (r *Registry) replayLine(n int, line []byte) error {
 		return &CorruptError{Line: n, Reason: "header line missing or repeated"}
 	}
 	switch {
+	case rec.kind == kindHeader:
+		if err := rec.payload.(*headerPayload).match(r.binding); err != nil {
+			return err
+		}
+	case rec.kind == kindProjectHome:
+		next := rec.payload.(*ProjectAssignment)
+		if err := r.validateAssignment(rec.role, next); err != nil {
+			return &CorruptError{Line: n, Reason: err.Error()}
+		}
+		r.recordAssignment(rec.role.Project(), next)
+	case rec.kind == kindReplaceHome:
+		p := rec.payload.(*replaceHomePayload)
+		if err := r.validateReplacement(rec.role, p); err != nil {
+			return &CorruptError{Line: n, Reason: err.Error()}
+		}
+		r.recordAssignment(rec.role.Project(), &p.ProjectAssignment)
 	case rec.kind == kindRecovered || rec.kind == kindRecoveryAck:
 		next, err := applyRecovery(r.recovery, rec)
 		if err != nil {
 			return &CorruptError{Line: n, Reason: err.Error()}
 		}
 		r.recovery = next
-	case rec.kind != kindHeader:
+	default:
+		if err := r.checkRecordedAdmission(rec); err != nil {
+			return &CorruptError{Line: n, Reason: err.Error()}
+		}
 		cur, ok := r.roles[rec.role]
 		next, err := reduce(cur, ok, r.roles, rec)
 		if err != nil {
@@ -528,13 +668,34 @@ func (r *Registry) existing(role leadrole.Role) (Entry, error) {
 // DefaultCoordinatorProvider and DefaultCoordinatorModel when empty, and the
 // version, effort, permission mode and access mode are optional; the profile
 // is journaled with the defaults filled in.
+//
+// A profile that sets Pack is refused with ErrInvalid, writing nothing:
+// provider packs are not wired in this build. (A define record that a later
+// build wrote with a pack replays; see BeginLaunch.)
 func (r *Registry) Define(role leadrole.Role, manager Manager, requested Requested) (Entry, error) {
+	return r.define(role, manager, requested, nil)
+}
+
+// DefineAt compares the project version observed before provisioning with
+// the current row under the same lock that commits the definition.
+func (r *Registry) DefineAt(role leadrole.Role, manager Manager, requested Requested, expected ProjectVersion) (Entry, error) {
+	return r.define(role, manager, requested, &expected)
+}
+
+func (r *Registry) define(role leadrole.Role, manager Manager, requested Requested, expected *ProjectVersion) (Entry, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	version, err := r.checkProjectHome(role, expected)
+	if err != nil {
+		return Entry{}, err
+	}
+	if !requested.Pack.IsZero() {
+		return Entry{}, invalid("a pack reference in the requested profile: provider packs are not wired in this build")
+	}
 	if role.Kind() == leadrole.KindCoordinator {
 		requested = requested.withCoordinatorDefaults()
 	}
-	return r.mutate(kindDefine, role, &definePayload{Manager: manager, Requested: requested})
+	return r.mutate(kindDefine, role, &definePayload{Manager: manager, Requested: requested, Assignment: version.recorded()})
 }
 
 // SetDesired sets the desired state of a role. It does not change the shown
@@ -563,6 +724,13 @@ func (r *Registry) SetDesired(role leadrole.Role, desired Desired) (Entry, error
 // instance number is the coordinator's epoch. A lead is refused with
 // ErrLaunchCoordinator while a coordinator of it that was launched under one
 // of its earlier epochs is not stopped, ended or desired.
+//
+// The intent's profile digest is the digest of the requested profile as the
+// role's define record stores it. A role whose define record a newer build
+// wrote with a member this build does not know is refused with
+// ErrLaunchProfile: it replays, but this build does not launch a profile it
+// cannot read whole. So is a role whose recorded profile names a pack
+// (Requested.Pack): this build does not launch packs.
 func (r *Registry) BeginLaunch(role leadrole.Role) (Intent, error) {
 	return r.BeginLaunchWith(role, LaunchOptions{})
 }
@@ -570,6 +738,8 @@ func (r *Registry) BeginLaunch(role leadrole.Role) (Intent, error) {
 // LaunchOptions are the optional inputs of BeginLaunchWith. The zero value
 // is what BeginLaunch uses.
 type LaunchOptions struct {
+	// Project is the assignment version observed at admission, when supplied.
+	Project *ProjectVersion
 	// BootIdentity is the identity of the boot the launch is made in, as the
 	// caller knows it: at most MaxBootIdentityBytes bytes of valid UTF-8
 	// without a control character. It is journaled in the launch intent and
@@ -585,7 +755,8 @@ type LaunchOptions struct {
 func (r *Registry) BeginLaunchWith(role leadrole.Role, opts LaunchOptions) (Intent, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := r.usable(); err != nil {
+	version, err := r.checkProjectHome(role, opts.Project)
+	if err != nil {
 		return Intent{}, err
 	}
 	if err := validText("boot identity", opts.BootIdentity, MaxBootIdentityBytes, false); err != nil {
@@ -601,6 +772,11 @@ func (r *Registry) BeginLaunchWith(role leadrole.Role, opts LaunchOptions) (Inte
 	if err := launchGate(e, r.roles); err != nil {
 		return Intent{}, err
 	}
+	// A rule of writing only: a launch a newer build journaled for such a
+	// profile replays, but this build does not launch what it cannot read.
+	if err := e.ProfileLaunchable(); err != nil {
+		return Intent{}, err
+	}
 	var parentEpoch uint64
 	var identity string
 	if role.Kind() == leadrole.KindCoordinator {
@@ -612,10 +788,11 @@ func (r *Registry) BeginLaunchWith(role leadrole.Role, opts LaunchOptions) (Inte
 		return Intent{}, fmt.Errorf("leadregistry: random intent id: %w", err)
 	}
 	next, err := r.mutate(kindLaunchBegin, role, &beginPayload{
+		Assignment:    version.recorded(),
 		IntentID:      hex.EncodeToString(id[:]),
 		Epoch:         e.Epoch + 1,
 		UnitName:      role.UnitName(),
-		ProfileDigest: e.Requested.Digest(),
+		ProfileDigest: e.profileDigest,
 		ParentEpoch:   parentEpoch,
 		Identity:      identity,
 		BootID:        opts.BootIdentity,

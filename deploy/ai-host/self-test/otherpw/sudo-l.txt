@@ -1,0 +1,9 @@
+Matching Defaults entries for agent on aihost:
+    env_reset, targetpw, rootpw, exempt_group=wheel, timestamp_timeout=0
+
+Runas and Command-specific defaults for agent:
+    Defaults>root runaspw
+    Defaults!/usr/bin/apt-get !authenticate, !targetpw
+
+User agent may run the following commands on aihost:
+    (ALL : ALL) ALL

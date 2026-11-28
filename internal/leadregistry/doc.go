@@ -12,7 +12,9 @@
 // an append that never returned: Open cuts it off and journals the cut in a
 // recovered record, which Recovery reports until AcknowledgeRecovery journals
 // a recovery-acknowledged record after it, also across a reopen. Any other
-// damage makes Open fail with ErrCorrupt and nothing is repaired.
+// damage makes Open fail with ErrCorrupt and nothing is repaired. An instance
+// journal must have a complete header matching the parent state's authority
+// and incarnation before Open may replay or recover it.
 //
 // The shown state changes by these rules only; a record that breaks them is
 // refused when written and makes Open fail with ErrCorrupt when it is found in
@@ -91,9 +93,55 @@
 // not decide when a launch is safe beyond the checks documented on
 // BeginLaunch; the caller must still prove that the previous unit is gone.
 //
-// This package is provisional and unqualified: it is part of the lead daemon
-// work in progress, the file format is version 1 and may change before any
-// release. Version 1 has no compatibility promise until the first deployment:
-// a rule may be tightened so that a journal written by an earlier build is no
-// longer accepted, and there is no migration.
+// Builds of other versions. A journal outlives the build that wrote it, so
+// replay reads a record by what it says and tolerates what it does not know:
+// a member of a line or of a payload that this build has no field for is
+// ignored (the hash chain still covers the line's bytes as they are), and a
+// member this build added is written only when it is set (omitempty or
+// omitzero), so a record that does not use it is encoded as an older build
+// encoded it. The identity of a requested profile is its stored bytes: the
+// profile digest a launch intent carries, and the one replay checks it
+// against, is the digest of the define record's requested member as stored,
+// compacted and escaped as json.Marshal escapes (see Requested.Digest), which
+// for a profile this build wrote is Requested.Digest. So a launch-begin line
+// keeps matching its profile whatever members later builds add, and a line of
+// a newer build whose profile has a member this build lacks still replays.
+// What this build cannot read whole it does not act on: BeginLaunch refuses a
+// role whose stored profile is not what this build would write for it, with
+// ErrLaunchProfile, until the role is defined again. A define record that
+// repeats a member anywhere in the record, its payload and the envelope that
+// holds it (two payload members of which only the last would be read) and the
+// line's final hash member (an earlier "hash" member is a repeat) included,
+// exactly or as a name encoding/json
+// folds to the same field, is such a profile too: no build writes one, and the
+// typed decoding merges the occurrences while the stored bytes keep the last,
+// so it replays and is not launched (see repeatsMember). testdata/v1-base holds a
+// journal an older build wrote, with the digests it recorded; the tests read
+// it back byte for byte.
+//
+// The tolerance is of members, not of values. A value this build does not
+// know in a member it knows is damage, as before: a provider, a manager, a
+// desired or shown state, an evidence kind or an outcome outside this build's
+// sets, a text over its bound, a required member left empty, or a member of
+// another JSON type fails the record's check, and the journal does not open
+// (ErrCorrupt; the daemon exits 14). So are an unknown record kind and a
+// header of another format version. A journal a newer build wrote opens only
+// when that build added members and nothing else.
+//
+// The rule for a later build follows from that. Replay ignores an unknown
+// member in every record kind, and only the requested profile of a define
+// record is checked for one (ErrLaunchProfile): a member added to any other
+// kind is dropped by an older build without a word, which replays the record
+// as the record it knows and may act on it (resolve an intent, launch, stop).
+// A member may therefore be added to an existing record kind only when an
+// older build that ignores it does nothing the newer build would not: a note,
+// a piece of evidence, provenance. A member that restricts what a reader may
+// do (a hold, a fence, a guard, a precondition) must not be added to an
+// existing kind. It needs a new record kind or a new format version, both of
+// which an older build refuses as damage, or a value of a known member that
+// an older build refuses, which has the same effect for that record.
+//
+// This package is provisional and unqualified. Standalone journals use v1.
+// InitInstance migrates a daemon's v1 journal to the instance-bound v2
+// format. Both formats may change before release.
 package leadregistry

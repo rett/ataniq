@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,11 +99,7 @@ func TestRunTellsTheNotifierHowManyWait(t *testing.T) {
 	// With the notifier's socket the seat also serves the phone's side of
 	// the notices: the service worker's script is there, and no session is
 	// needed for it.
-	resp, err := http.Get("http://" + addr.String() + "/sw.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
+	resp := getOnce(t, "http://"+addr.String()+"/sw.js")
 	if resp.StatusCode != 200 || resp.Header.Get("Service-Worker-Allowed") != "/" {
 		t.Errorf("sw.js: %d %v", resp.StatusCode, resp.Header)
 	}
@@ -124,11 +119,7 @@ func TestRunWithoutNotifySocketStartsNoNotices(t *testing.T) {
 	}
 	// Nor is there a phone's side of the notices.
 	for _, p := range []string{"/sw.js", "/manifest.webmanifest", "/static/push.js"} {
-		resp, err := http.Get("http://" + addr.String() + p)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
+		resp := getOnce(t, "http://"+addr.String()+p)
 		if resp.StatusCode != 404 {
 			t.Errorf("%s without the flag: %d", p, resp.StatusCode)
 		}

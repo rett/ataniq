@@ -827,7 +827,7 @@ func TestRebootInDoneRequalifies(t *testing.T) {
 			if tc.reload {
 				// The checker is the one of the verified release current
 				// points at, by its full path.
-				if strings.Join(ran, " ") != "reload-units health-probe nft "+filepath.Join(e.relDir(rel3), NoAICheckProgram) {
+				if strings.Join(ran, " ") != "stop-all stop-old systemctl reload-units health-probe nft "+filepath.Join(e.relDir(rel3), NoAICheckProgram) {
 					t.Errorf("ran %v, want the reload list, health check and post-activation check of %s", ran, rel3)
 				}
 				if strings.Join(g.asked, " ") != "refused" {
@@ -840,7 +840,7 @@ func TestRebootInDoneRequalifies(t *testing.T) {
 			}
 			// The reload may have started a service: the host's stop list
 			// runs, and the health check does not.
-			if strings.Join(ran, " ") != "reload-units stop-all" {
+			if strings.Join(ran, " ") != "stop-all stop-old systemctl reload-units stop-all" {
 				t.Errorf("ran %v", ran)
 			}
 			in, ok := e.inhibited()
@@ -873,8 +873,8 @@ func TestRetryAfterFailedRequalification(t *testing.T) {
 	if code := e.switchTo(rel3); code != ExitFailed {
 		t.Fatalf("the retry: exit %d, want %d\n%s", code, ExitFailed, e.last)
 	}
-	if e.runner.called("stop-all") != 1 {
-		t.Errorf("the host's stop list ran %d times, want 1; commands: %v", e.runner.called("stop-all"), e.runner.calls)
+	if e.runner.called("stop-all") != 2 {
+		t.Errorf("the host's stop list ran %d times, want 2; commands: %v", e.runner.called("stop-all"), e.runner.calls)
 	}
 	if !strings.Contains(e.last, "decisions stay inhibited") {
 		t.Errorf("output:\n%s", e.last)

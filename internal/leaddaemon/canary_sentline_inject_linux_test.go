@@ -39,7 +39,8 @@ func TestCanaryInjectWhoseSentLineCannotBeWritten(t *testing.T) {
 		x := &canaryExt{
 			cfg: c.cfg, role: c.cfg.Role, holderDir: c.holderDir, reg: reg, ev: ev, adm: adm,
 			dial: 2 * time.Second, wait: 5 * time.Second, spent: map[uint64]bool{},
-			logf: func(f string, a ...any) { fmt.Fprintf(&log, f+"\n", a...) },
+			logf:  func(f string, a ...any) { fmt.Fprintf(&log, f+"\n", a...) },
+			build: sameHolderBuild(),
 		}
 		got, fail := x.inject(context.Background(), CanaryInjectParams{Role: canaryRoleText, MessageID: "msg-one", Body: "body text\n"})
 		if fail != nil {

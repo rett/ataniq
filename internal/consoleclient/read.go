@@ -2,6 +2,8 @@ package consoleclient
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io/fs"
 	"net"
@@ -165,7 +167,7 @@ func buildView(hello clientapi.HelloResult, status clientapi.StatusResult) View 
 			}
 			at = len(v.Projects)
 			index[raw] = at
-			v.Projects = append(v.Projects, Project{Name: e.Project})
+			v.Projects = append(v.Projects, Project{Name: e.Project, ID: scratchID(raw)})
 		}
 		p := &v.Projects[at]
 		switch {
@@ -178,6 +180,13 @@ func buildView(hello clientapi.HelloResult, status clientapi.StatusResult) View 
 		}
 	}
 	return v
+}
+
+// scratchID gives the local inventory a bounded comparison key from the
+// entire wire identifier, before display cleaning or truncation.
+func scratchID(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
 }
 
 // entry returns the cleaned entry for one entry of the status result, and
@@ -195,6 +204,7 @@ func entry(l *clientapi.LeadStatus) (Entry, bool) {
 		return Entry{}, false
 	}
 	e := Entry{
+		ID:       scratchID(l.Role),
 		Kind:     kind,
 		Name:     clean(l.Role),
 		State:    entryState(l.State),

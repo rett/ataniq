@@ -1,0 +1,4 @@
+User agent may run the following commands on aihost:
+    (ALL : ALL) ALL
+
+User agent is not allowed to run sudo on aihost.

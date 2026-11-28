@@ -1,0 +1,80 @@
+{{define "content"}}
+<h1>Lead <bdi>{{text .Selected.Key maxID}}</bdi></h1>
+<p class="chat-state">{{template "chat-state" .Selected}}</p>
+{{if .Sample}}{{template "standin-chat"}}{{end}}
+{{template "chat-rule"}}
+
+<nav class="chat-links" aria-label="Cockpit sections">
+  <a id="chat-back" href="{{mount}}/leads/">Back to Leads</a>
+  <a id="chat-conversation" href="#conversation-h">Conversation</a>
+  <a id="chat-evidence" href="#evidence-h">Evidence</a>
+  <a id="chat-timeline" href="#timeline-h">Timeline</a>
+</nav>
+<div class="chat-layout">
+  <section class="chat-thread" aria-labelledby="conversation-h">
+    <p class="chat-source">Source · {{if .Sample}}<strong>STAND-IN</strong> phone trial{{else}}Daemon chat{{end}} · Epoch {{num .Epoch}}</p>
+    <h2 id="conversation-h" tabindex="-1">Conversation</h2>
+    <p class="chat-links">
+      <a id="chat-refresh" href="{{mount}}/leads/daemon/{{text .Selected.Key maxID}}">Refresh</a>
+      {{if .JumpRemote}}<a id="chat-jump" href="{{mount}}/leads/daemon/{{text .Selected.Key maxID}}#newest">Jump to newest</a>
+      {{else if .Messages}}<a id="chat-jump" href="#newest">Jump to newest</a>{{end}}
+    </p>
+    {{template "watch-leads" .Watch}}
+
+    {{if .Reset}}<p class="note-line">This page starts again from the oldest kept message.</p>{{end}}
+    {{if .Restarted}}<p class="chat-epoch"><strong>Lead restarted: epoch {{num .Epoch}}</strong></p>{{end}}
+
+    <ol class="chat-log" aria-labelledby="conversation-h">
+      {{range .Messages}}<li{{if .Last}} id="newest" tabindex="-1"{{end}}>
+        <p class="chat-byline">
+          <strong>{{if eq .Who "lead"}}Lead{{else}}System{{end}}</strong>
+          {{template "chat-time" .At}}
+        </p>
+        <p dir="auto" class="{{if eq .Who "lead"}}lead {{end}}chat-body">{{text .Text 2000}}</p>
+        {{if .Cut}}<p class="meta">Shortened; the lead wrote more.</p>{{end}}
+      </li>{{end}}
+    </ol>
+    {{if not .Messages}}<p id="newest" tabindex="-1">{{if .Head}}No messages on this page.{{else}}No messages yet.{{end}}</p>{{end}}
+
+    {{if or .HavePrev .More}}<nav class="chat-links" aria-label="Conversation pages">
+      {{if .HavePrev}}<a id="chat-prev" href="{{mount}}/leads/daemon/{{text .Selected.Key maxID}}?after={{num .PrevAfter}}">Show earlier</a>{{end}}
+      {{if .More}}<a id="chat-next" href="{{mount}}/leads/daemon/{{text .Selected.Key maxID}}?after={{num .LastSeq}}">Show later</a>{{end}}
+    </nav>{{end}}
+  </section>
+
+  <div class="chat-aside">
+    <section class="chat-context" aria-labelledby="context-h">
+      <h2 id="context-h">Context</h2>
+      {{with .Sample}}{{template "chat-project" .}}{{end}}
+      <dl>
+        <dt>Lead key</dt><dd><bdi>{{text .Selected.Key maxID}}</bdi></dd>
+        <dt>Sharing</dt><dd>{{template "chat-sharing" .Selected}}</dd>
+        <dt>State</dt><dd>{{template "chat-state" .Selected}}</dd>
+        <dt>Epoch</dt><dd>{{num .Epoch}}</dd>
+      </dl>
+    </section>
+    <section class="chat-directory" aria-labelledby="directory-h">
+      {{template "chat-directory" .}}
+    </section>
+  </div>
+
+  <section class="chat-evidence" aria-labelledby="evidence-h">
+    <h2 id="evidence-h" tabindex="-1">Evidence &amp; approvals</h2>
+    <p>Terminal attachment is available at the desk.</p>
+    {{with .Sample}}<p class="chat-source"><strong>STAND-IN</strong> Sample gate · {{text .Gate maxLine}}</p>{{end}}
+    <p class="chat-links"><a id="chat-cards" href="{{mount}}/cards/">Open Cards</a></p>
+  </section>
+
+  <section class="chat-timeline" aria-labelledby="timeline-h">
+    <h2 id="timeline-h" tabindex="-1">Timeline</h2>
+    {{if .Sample}}<p class="chat-source"><strong>STAND-IN</strong> Sample events from the console trial.</p>
+    {{else}}<p class="chat-source">System entries from this conversation page.</p>{{end}}
+    {{with .Timeline}}<ol class="chat-events">
+      {{range .}}<li>{{template "chat-time" .At}}
+        <p dir="auto" class="chat-body">{{text .Text 2000}}</p>
+        {{if .Cut}}<p class="meta">Shortened system entry.</p>{{end}}
+      </li>{{end}}
+    </ol>{{else}}<p>No system entries on this page.</p>{{end}}
+  </section>
+</div>
+{{end}}

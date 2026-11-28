@@ -47,7 +47,7 @@
 --setenv LANG C.UTF-8
 --setenv LOGNAME root
 --setenv PATH /ataniq/qargi/bin:/ataniq/agent/bin:/usr/local/bin:/usr/bin:/bin:/home/lead/.local/bin
---setenv QARGI_LEAD arc-lead
+--setenv QARGI_LEAD demo-lead-0123456789abcdef
 --setenv SHELL /bin/bash
 --setenv TERM xterm-256color
 --setenv TMPDIR /tmp
@@ -112,7 +112,7 @@ HOME=/home/lead
 LANG=C.UTF-8
 LOGNAME=root
 PATH=/ataniq/qargi/bin:/ataniq/agent/bin:/usr/local/bin:/usr/bin:/bin:/home/lead/.local/bin
-QARGI_LEAD=arc-lead
+QARGI_LEAD=demo-lead-0123456789abcdef
 SHELL=/bin/bash
 TERM=xterm-256color
 TMPDIR=/tmp
@@ -189,7 +189,7 @@ fd 30 dir /coord /state pub/demo
 fd 31 dir /ataniq/assignment /opt/ataniq/assignment demo
 fd 32 dir /ataniq/projection /opt/ataniq/projection demo
 # digest
-d303f0857fe4d836ba2e55d9933986f602b6f64f3cf2eec2a11e04181b5f443a
+a4f78d7d1ea3b224dce875cebbd55e50dfe53041388adcfdc1ad69396cf8a5c5
 # workdir
 /work/demo/internal
 # set-controlling-terminal

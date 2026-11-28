@@ -1,0 +1,112 @@
+[
+  {
+    "ataniq": {
+      "pack": "claude",
+      "pack_tier": "built-in",
+      "qargi_name": "claude-code"
+    },
+    "calls": [
+      {
+        "argv": ["qargi", "provider", "show", "claude-code", "--json"],
+        "exit": 0,
+        "stdout": "definition"
+      },
+      {
+        "argv": ["qargi", "provider", "show", "claude", "--json"],
+        "ataniq_code": "pack-qargi-no-definition",
+        "exit": 1,
+        "stdout": "empty"
+      }
+    ],
+    "link": "qargi-name",
+    "qargi": {
+      "family": "claude",
+      "releases": ["0.3.5"],
+      "runtime": "claude-code"
+    },
+    "row": "claude.claude-code",
+    "schema": "qargi-ataniq.runtime-crosswalk/1",
+    "show_json": {
+      "/barrier/kind": "hook",
+      "/dispatch/mode": "in-session",
+      "/family": "claude",
+      "/kind": "provider",
+      "/models/catalog": "claude",
+      "/models/use": "alias",
+      "/provider": "claude-code",
+      "/schema": 2,
+      "/surface": "local"
+    }
+  },
+  {
+    "ataniq": {
+      "pack": "claude",
+      "pack_tier": "built-in"
+    },
+    "calls": [
+      {
+        "argv": ["qargi", "provider", "show", "claude-platform", "--json"],
+        "exit": 0,
+        "stdout": "definition"
+      }
+    ],
+    "link": "family",
+    "qargi": {
+      "family": "claude",
+      "releases": ["0.3.5"],
+      "runtime": "claude-platform"
+    },
+    "row": "claude.claude-platform",
+    "schema": "qargi-ataniq.runtime-crosswalk/1",
+    "show_json": {
+      "/barrier/kind": "none",
+      "/dispatch/mode": "adapter",
+      "/family": "claude",
+      "/kind": "provider",
+      "/models/catalog": "claude",
+      "/models/use": "id",
+      "/provider": "claude-platform",
+      "/schema": 2,
+      "/surface": "cloud"
+    }
+  },
+  {
+    "ataniq": {
+      "pack": "codex",
+      "pack_tier": "built-in",
+      "qargi_name": "codex"
+    },
+    "calls": [
+      {
+        "argv": ["qargi", "provider", "show", "codex", "--json"],
+        "exit": 0,
+        "stdout": "definition"
+      },
+      {
+        "argv": ["qargi", "provider", "show", "openai", "--json"],
+        "ataniq_code": "pack-qargi-no-definition",
+        "exit": 1,
+        "stdout": "empty"
+      }
+    ],
+    "link": "qargi-name",
+    "qargi": {
+      "family": "openai",
+      "releases": ["0.3.5"],
+      "runtime": "codex"
+    },
+    "row": "codex.codex",
+    "schema": "qargi-ataniq.runtime-crosswalk/1",
+    "show_json": {
+      "/barrier/kind": "sandbox-args",
+      "/dispatch/mode": "command",
+      "/family": "openai",
+      "/kind": "provider",
+      "/models/catalog": "openai",
+      "/models/use": "id",
+      "/provider": "codex",
+      "/schema": 2,
+      "/surface": "local"
+    }
+  }
+]

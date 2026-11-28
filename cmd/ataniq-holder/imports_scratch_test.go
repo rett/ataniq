@@ -5,5 +5,5 @@ package main
 // guardListFlags are the flags of go list for this build: none.
 var guardListFlags []string
 
-// guardRepoDeps is the list of this build: exactly the six.
+// guardRepoDeps is the dependency list for the scratch build.
 func guardRepoDeps() []string { return scratchRepoDeps }

@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"ataniq/internal/dispatch"
@@ -244,34 +245,194 @@ func TestRecognizeConfiguredPageBound(t *testing.T) {
 	}
 }
 
+// sqliteBusy reports whether err is the engine's busy error: its busy
+// handler gave up waiting for a lock.
+func sqliteBusy(err error) bool {
+	var se *sqlite.Error
+	return errors.As(err, &se) && se.Code()&0xff == 5
+}
+
+// TestRecognizeBusyDeadline: a database that another connection holds
+// locked ends a recognition at a bound, with no Info, within time, and
+// leaves no ownership behind. Which bound ends it is the case's:
+//   - the caller's deadline, with the engine's busy wait and the operation's
+//     timeout far beyond it: the context error, never the busy one;
+//   - the busy timeout alone, the operation's timeout far beyond it: the
+//     engine's busy error, never the context's;
+//   - the busy timeout equal to the operation's timeout, the most that
+//     Options allow (BusyTimeout may not exceed OperationTimeout): the two
+//     bounds are one instant. The context's timer and the engine's busy
+//     handler run on their own clocks and goroutines, so which of them ends
+//     the wait first is not decided (under load the engine's gave up first
+//     in about half the runs, with the context's timer not yet fired); either
+//     is the end of the wait, and the case holds the result to be one of the
+//     two, and the wait to be bounded.
 func TestRecognizeBusyDeadline(t *testing.T) {
-	for _, callerDeadline := range []bool{false, true} {
-		path, o := fixture(t)
-		mustCreate(t, path, o).Close()
-		db := fixtureDB(t, path)
-		execFixture(t, db, "PRAGMA journal_mode=DELETE")
-		execFixture(t, db, "BEGIN EXCLUSIVE")
-		ctx := context.Background()
-		if callerDeadline {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, 30*time.Millisecond)
-			defer cancel()
-		} else {
-			o.OperationTimeout = 30 * time.Millisecond
-			o.BusyTimeout = 30 * time.Millisecond
+	const (
+		ctxOK = 1 << iota
+		busyOK
+	)
+	for _, tc := range []struct {
+		name     string
+		caller   time.Duration // the caller's deadline, or none
+		op, busy time.Duration // Options, 0 for the defaults
+		accept   int           // ctxOK, busyOK or both
+	}{
+		{"caller deadline", 30 * time.Millisecond, 5 * time.Second, 4 * time.Second, ctxOK},
+		{"busy timeout alone", 0, 5 * time.Second, 30 * time.Millisecond, busyOK},
+		{"operation timeout equal to the busy timeout", 0, 30 * time.Millisecond, 30 * time.Millisecond, ctxOK | busyOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path, o := fixture(t)
+			mustCreate(t, path, o).Close()
+			db := fixtureDB(t, path)
+			execFixture(t, db, "PRAGMA journal_mode=DELETE")
+			execFixture(t, db, "BEGIN EXCLUSIVE")
+			// The look for leaked ownership below uses the fixture's own
+			// options: the case's short bounds would fail a healthy
+			// recognition that a loaded host slows.
+			reopenOptions := o
+			o.OperationTimeout, o.BusyTimeout = tc.op, tc.busy
+			ctx := context.Background()
+			if tc.caller > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, tc.caller)
+				defer cancel()
+			}
+			start := time.Now()
+			got, err := Recognize(ctx, path, o)
+			if got != (Info{}) {
+				t.Fatal("busy recognition returned an Info", got, err)
+			}
+			byCtx, byBusy := errors.Is(err, context.DeadlineExceeded), sqliteBusy(err)
+			if !(byCtx && tc.accept&ctxOK != 0) && !(byBusy && !byCtx && tc.accept&busyOK != 0) {
+				t.Fatalf("busy recognition ended with %v (context's deadline %v, engine's busy %v), accepted: context %v, busy %v",
+					err, byCtx, byBusy, tc.accept&ctxOK != 0, tc.accept&busyOK != 0)
+			}
+			// Far below the bounds the case does not use.
+			if time.Since(start) > 2*time.Second {
+				t.Fatal("unbounded recognition")
+			}
+			execFixture(t, db, "ROLLBACK")
+			db.Close()
+			if _, err := Recognize(context.Background(), path, reopenOptions); err != nil {
+				t.Fatal("deadline leaked ownership", err)
+			}
+		})
+	}
+}
+
+// stalledConn is a connection whose first query after the connection is
+// set up, the read of the application id, records the deadline of its
+// context and then waits until the context ends, and reports the context's
+// error and cause. noDeadline ends the wait, with errNoDeadline, when no
+// deadline does.
+type stalledConn struct {
+	driver.Conn
+	sqlite.ExecQuerierContext
+	saw        chan stalledQuery
+	noDeadline time.Duration
+}
+
+// stalledQuery is what the stalled query saw: its context's deadline, when
+// it had one, and the error and cause it ended with.
+type stalledQuery struct {
+	deadline    time.Time
+	hasDeadline bool
+	err, cause  error
+}
+
+var errNoDeadline = errors.New("the query outlived every deadline")
+
+func (c *stalledConn) QueryContext(ctx context.Context, q string, args []driver.NamedValue) (driver.Rows, error) {
+	if q != "PRAGMA application_id" {
+		return c.ExecQuerierContext.QueryContext(ctx, q, args)
+	}
+	var s stalledQuery
+	s.deadline, s.hasDeadline = ctx.Deadline()
+	select {
+	case <-ctx.Done():
+		s.err, s.cause = ctx.Err(), context.Cause(ctx)
+	case <-time.After(c.noDeadline):
+		s.err = errNoDeadline
+	}
+	c.saw <- s
+	return nil, s.err
+}
+
+// TestRecognizeOperationDeadline: Recognize bounds its own work by
+// OperationTimeout, counted from the operation's start. Nothing else can end
+// the stalled query: the caller gives no deadline, no other connection holds
+// a lock (so the engine's busy timeout has nothing to wait for), and the
+// query waits on its context alone.
+//
+// The recognition runs in a synctest bubble, whose clock moves only when
+// every goroutine of the bubble is blocked: the work before the query
+// (ownership, connection, configuration) takes no time on it, however slowly
+// the host runs it, and a pause the setup sleeps is counted exactly. The
+// ownership's acquisition is given such a pause, acquireTakes, so that the
+// operation's start is located: a budget started after the ownership was
+// acquired would end acquireTakes late. So the query's deadline is checked
+// to be exactly OperationTimeout after the operation's start, and then the
+// query is left to wait: the bubble's clock moves to the deadline, which
+// ends it with context.DeadlineExceeded as its error and its cause, and
+// Recognize returns that error with a zero Info.
+// The ownership is then released: a recognition with the fixture's ordinary
+// options, outside the bubble, succeeds.
+func TestRecognizeOperationDeadline(t *testing.T) {
+	path, o := fixture(t)
+	mustCreate(t, path, o).Close()
+	reopenOptions := o
+	// Far longer than the setup: on the bubble's clock the setup takes only
+	// the acquisition's pause, and this costs no real time.
+	o.OperationTimeout = 20 * time.Second
+	// The time the ownership's acquisition takes on the bubble's clock: a
+	// slow host or file system, as the operation's budget must count it.
+	const acquireTakes = 75 * time.Millisecond
+	synctest.Test(t, func(t *testing.T) {
+		saw := make(chan stalledQuery, 1)
+		d := recognitionDriver{Driver: &sqlite.Driver{}, wrap: func(raw driver.Conn) driver.Conn {
+			return &stalledConn{Conn: raw, ExecQuerierContext: raw.(sqlite.ExecQuerierContext), saw: saw, noDeadline: time.Hour}
+		}}
+		acquired := false
+		slowAcquire := func(path string, create bool) (*ownership, error) {
+			owner, err := acquire(path, create)
+			time.Sleep(acquireTakes)
+			acquired = err == nil
+			return owner, err
 		}
 		start := time.Now()
-		if got, err := Recognize(ctx, path, o); !errors.Is(err, context.DeadlineExceeded) || got != (Info{}) {
-			t.Fatal("busy recognition", got, err)
+		got, err := recognizeWithDriver(context.Background(), path, o, d, slowAcquire)
+		if !acquired {
+			t.Fatalf("the recognition did not acquire the ownership: %v", err)
 		}
-		if time.Since(start) > 2*time.Second {
-			t.Fatal("unbounded recognition")
+		var q stalledQuery
+		select {
+		case q = <-saw:
+		default:
+			t.Fatalf("the stalled query was never made: %v", err)
 		}
-		execFixture(t, db, "ROLLBACK")
-		db.Close()
-		if _, err := Recognize(context.Background(), path, o); err != nil {
-			t.Fatal("deadline leaked ownership", err)
+		if !q.hasDeadline {
+			t.Fatalf("the stalled query had no deadline (it ended with %v)", q.err)
 		}
+		if want := start.Add(o.OperationTimeout); !q.deadline.Equal(want) {
+			t.Fatalf("the stalled query's deadline is %v after the operation's start, want OperationTimeout, %v", q.deadline.Sub(start), o.OperationTimeout)
+		}
+		if !errors.Is(q.err, context.DeadlineExceeded) || !errors.Is(q.cause, context.DeadlineExceeded) {
+			t.Fatalf("the stalled query ended with %v (cause %v), want the operation deadline", q.err, q.cause)
+		}
+		if got != (Info{}) {
+			t.Fatal("a recognition past its deadline returned an Info", got, err)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("the recognition ended with %v, want its operation deadline", err)
+		}
+		if ended := time.Since(start); ended != o.OperationTimeout {
+			t.Fatalf("the recognition ended %v after its start, want at its deadline, %v", ended, o.OperationTimeout)
+		}
+	})
+	if _, err := Recognize(context.Background(), path, reopenOptions); err != nil {
+		t.Fatal("the deadline leaked ownership", err)
 	}
 }
 
@@ -380,7 +541,7 @@ func TestRecognizeConnectorAndCleanup(t *testing.T) {
 				}
 				return c
 			}}
-			got, err := recognizeWithDriver(ctx, path, o, d)
+			got, err := recognizeWithDriver(ctx, path, o, d, acquire)
 			if closed != 1 || (mode != "configuration" && !readOnly) {
 				t.Fatal("connection verification/cleanup missing", closed, readOnly)
 			}

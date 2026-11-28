@@ -222,13 +222,16 @@ func onlyEntry(field, dir, name string) error {
 //
 // It is an assumption, to be confirmed at qualification [qualify]: the two
 // options are taken to have come with bubblewrap 0.10.0, and that could not be
-// confirmed offline when this was written. If the release is another one, this
-// constant is the one place to change. A bubblewrap that is older than this
-// and does have the options is refused wrongly; one that is at least this and
-// lacks them is launched, and is expected to refuse the plan's arguments as
-// unknown options and to start nothing (not observed). The plan has no form
-// that binds such a source by path, so no weaker plan is started in either
-// case.
+// confirmed offline when this was written. The holder's start sequence
+// (internal/leadholder/sandboxstart) declares the same assumption in its own
+// MinBwrapBindFD, so this constant is not the one place to change: if the
+// release is another one, both copies change together, and
+// TestMinBwrapBindFDMatchesTheHolder fails while they differ. A bubblewrap
+// that is older than this and does have the options is refused wrongly; one
+// that is at least this and lacks them is launched, and is expected to refuse
+// the plan's arguments as unknown options and to start nothing (not
+// observed). The plan has no form that binds such a source by path, so no
+// weaker plan is started in either case.
 const MinBwrapBindFD = "0.10.0"
 
 // parseBwrapVersion reads the release out of the first line bubblewrap prints

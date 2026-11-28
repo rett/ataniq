@@ -3,6 +3,7 @@ package consoleclient
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -574,7 +575,10 @@ func TestViewFromTheServer(t *testing.T) {
 	if want := (Daemon{Version: "0.0.0-test", PID: 4242, StartedAt: started, ReconcileCompleted: true}); v.Daemon != want {
 		t.Errorf("daemon = %+v, want %+v", v.Daemon, want)
 	}
-	wantSupervisor := Entry{Kind: KindSupervisor, Name: "supervisor", State: EntryDegraded, Desired: "running",
+	// Scratch status identifies projects and roles by their raw wire strings.
+	// It carries no home or conversation ID.
+	wantID := func(raw string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(raw))) }
+	wantSupervisor := Entry{ID: wantID("supervisor"), Kind: KindSupervisor, Name: "supervisor", State: EntryDegraded, Desired: "running",
 		Reason: "probe", Since: since, Epoch: 1, Manager: "ataniq"}
 	if !v.HasSupervisor || v.Supervisor != wantSupervisor {
 		t.Errorf("supervisor = %v %+v, want %+v", v.HasSupervisor, v.Supervisor, wantSupervisor)
@@ -586,18 +590,22 @@ func TestViewFromTheServer(t *testing.T) {
 		t.Fatalf("%d projects, want %d", len(v.Projects), len(shownStates))
 	}
 	demo := v.Projects[0]
-	wantLead := Entry{Kind: KindLead, Name: "demo/lead", Project: "demo", State: EntryReady, Desired: "running",
+	wantLead := Entry{ID: wantID("demo/lead"), Kind: KindLead, Name: "demo/lead", Project: "demo", State: EntryReady, Desired: "running",
 		Reason: "observed", Detail: "up", Since: since, Epoch: 3, Manager: "ataniq",
 		Provider: "provider-a", Model: "model-a", Effort: "high"}
 	if demo.Name != "demo" || !demo.HasLead || demo.Lead != wantLead {
 		t.Errorf("project = %q, lead = %v %+v, want %+v", demo.Name, demo.HasLead, demo.Lead, wantLead)
+	}
+	if demo.HomeID != "" || demo.ID != wantID("demo") {
+		t.Errorf("demo project identity = (%q, %q), want local project %q", demo.HomeID, demo.ID, wantID("demo"))
 	}
 	if len(demo.Coordinators) != len(shownStates) {
 		t.Fatalf("%d coordinators, want %d", len(demo.Coordinators), len(shownStates))
 	}
 	for i, s := range shownStates {
 		feature := fmt.Sprintf("feature-%d", i)
-		want := Entry{Kind: KindCoordinator, Name: "demo/coord/" + feature, Project: "demo", Feature: feature,
+		role := "demo/coord/" + feature
+		want := Entry{ID: wantID(role), Kind: KindCoordinator, Name: role, Project: "demo", Feature: feature,
 			Parent: "demo/lead", State: EntryState(s), Desired: "running", Reason: "reason-" + s, Since: since,
 			Epoch: uint64(i), Manager: "ataniq", Provider: "runtime-a", Model: "model-a"}
 		if got := demo.Coordinators[i]; got != want {
@@ -606,6 +614,10 @@ func TestViewFromTheServer(t *testing.T) {
 	}
 	seen := map[EntryState]bool{}
 	for _, p := range v.Projects[1:] {
+		project := "p-" + string(p.Lead.State)
+		if p.HomeID != "" || p.ID != wantID(project) || p.Lead.ID != wantID(project+"/lead") || p.Lead.ConversationID != "" {
+			t.Errorf("project %q: unexpected scratch identity in %+v", project, p)
+		}
 		if !p.HasLead || len(p.Coordinators) != 0 || p.Lead.Project != p.Name || p.Name != "p-"+string(p.Lead.State) {
 			t.Errorf("project %q: lead %+v, %d coordinators", p.Name, p.Lead, len(p.Coordinators))
 		}

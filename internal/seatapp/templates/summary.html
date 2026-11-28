@@ -1,0 +1,32 @@
+{{define "content"}}
+<h1>Your new project</h1>
+{{if .Note}}<p class="note-line" role="status">{{.Note}}</p>
+{{end}}{{if .Reset}}<p class="note-line" role="status">Your change cleared {{num .Reset}} later answers. Their questions are asked again.</p>
+{{end}}<p class="progress">{{num .View.Filled}} of {{num .View.Total}} required answers given. Read it through; change what is not right.</p>
+{{range .Groups}}<section>
+<h2>{{.Heading}}</h2>
+{{with .Rows}}<dl class="facts">
+{{range .}}<dt>{{text .Label maxLine}}</dt>
+<dd>{{if .OwnersWords}}<q class="owners">{{text .Value maxLine}}</q> <span class="meta">(your own words)</span>{{else}}{{text .Value maxLine}}{{end}}
+{{if .Question}}<br><a href="{{mount}}{{changeHref $.View.Thread .Node}}" aria-label="Change answer: {{text .Label maxLine}}">Change</a>{{end}}</dd>
+{{end}}</dl>
+{{else}}<p>{{.Empty}}</p>
+{{end}}</section>
+{{end}}<section aria-labelledby="plan-h">
+<h2 id="plan-h">The plan</h2>
+{{if .View.PlanReady}}<p>You can review a draft plan drawn from these answers. Reading it gives no permission to start work.</p>
+<p><a id="see-plan" href="{{mount}}{{projectHref .View.Thread "plan"}}">See the draft plan</a></p>
+{{else if eq .View.Filled .View.Total}}<p>There is no plan template for this kind of project yet.</p>
+{{else}}<p>{{num .View.Filled}} of {{num .View.Total}} answers are filled in: no plan can be drawn yet.</p>
+{{end}}</section>
+<form id="finish" action="{{mount}}{{projectHref .View.Thread "finish"}}" method="post">
+<p>Finishing saves these answers as your project brief. You cannot edit them afterwards.{{if .View.DecidedForYou}} Finishing also accepts the answers the desk chose for you.{{end}} Finishing starts no work and sends nothing to an agent.</p>
+{{if and (not .View.PlanReady) (ne .View.Filled .View.Total)}}<p class="note-line">If you finish now, no plan is drawn for this project, and a finished brief cannot be changed.</p>
+{{end}}<button id="finish-go" type="submit">Looks right: finish</button>
+</form>
+<nav aria-label="Project">
+<p><a id="project-list" href="{{mount}}/projects/">Back to the project list</a></p>
+<p><a id="discard-link" href="{{mount}}{{projectHref .View.Thread "discard"}}">Discard this project</a></p>
+</nav>
+{{template "leave"}}
+{{end}}

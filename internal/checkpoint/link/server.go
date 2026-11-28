@@ -1,0 +1,406 @@
+package link
+
+import (
+	"bytes"
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"net"
+	"slices"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	cp "ataniq/internal/checkpoint"
+	"ataniq/internal/checkpoint/link/internal/frame"
+	"ataniq/internal/seatgate"
+)
+
+// WitnessEvidence belongs to the same backend as the operations it serves.
+type WitnessEvidence interface {
+	cp.DispositionSigner
+	WitnessEpoch() uint64
+	HasReceipt(context.Context, cp.Slot, cp.ID) (bool, error)
+}
+
+// Witness rechecks the live grant for each request. RawSubmit verifies the
+// exact body and both signatures under the witness's mutation contract.
+type Witness interface {
+	WitnessEvidence
+	SettleHome(context.Context, uint64, cp.Slot, cp.ID, ed25519.PublicKey) (cp.Receipt, error)
+	CheckHome(context.Context, cp.Slot, ed25519.PublicKey) error
+	ReadHome(context.Context, cp.ReadRequest, ed25519.PublicKey) (cp.View, error)
+	RawSubmit(context.Context, cp.Slot, ed25519.PublicKey, string, []byte, []byte, []byte) (cp.Receipt, error)
+}
+
+const requestTimeout = 30 * time.Second
+const handshakeTimeout = 5 * time.Second
+
+type Server struct {
+	id            seatgate.Identity
+	witnessKeyID  string
+	witnessPin    ed25519.PublicKey
+	timeout       time.Duration
+	ownerCapacity int
+	ownerServing  atomic.Bool
+	home          Remote
+	slot          cp.Slot
+	polling       atomic.Bool
+	pollDelay     func(time.Duration) time.Duration
+	limits        limiter
+}
+
+func NewServer(id seatgate.Identity, witnessPin ed25519.PublicKey, home Remote, slot cp.Slot) (*Server, error) {
+	wid, err := cp.KeyID(witnessPin)
+	if err != nil || id.Fingerprint() == "" || !validSlot(slot) || home.Address == "" || !seatgate.ValidFingerprint(home.ServerPin) {
+		return nil, &ConfigError{"invalid home, enrollment, or witness identity"}
+	}
+	if home.DialContext == nil {
+		switch home.Network {
+		case "", "tcp", "tcp4", "tcp6":
+			_, port, err := net.SplitHostPort(home.Address)
+			if err != nil || port == "" {
+				return nil, &ConfigError{"invalid home TCP address"}
+			}
+		case "unix":
+		default:
+			return nil, &ConfigError{"invalid home stream network"}
+		}
+	}
+	return &Server{
+		id: id, witnessKeyID: wid, witnessPin: slices.Clone(witnessPin),
+		pollDelay: retryDelay, timeout: requestTimeout, ownerCapacity: 2, home: home, slot: slot,
+	}, nil
+}
+
+// Probe the live signer before accepting work. A fresh challenge and a
+// distinct result keep probe signatures separate from request dispositions.
+func (s *Server) checkEvidence(ctx context.Context, evidence WitnessEvidence) error {
+	ctx, cancel := context.WithTimeout(ctx, handshakeTimeout)
+	defer cancel()
+	const probe = "startup-probe"
+	var digest [32]byte
+	rand.Read(digest[:])
+	epoch := evidence.WitnessEpoch()
+	sig, err := evidence.SignDisposition(ctx, digest, probe)
+	if err != nil {
+		return err
+	}
+	if epoch == 0 || !cp.VerifyDisposition(s.witnessPin, epoch, digest, probe, sig) {
+		return &ConfigError{"backend disposition signer does not match witness pin and epoch"}
+	}
+	return nil
+}
+
+// ServeOwner is a separate owner endpoint. Supply a private local listener
+// and an independently provisioned client-certificate SPKI pin. Enrollment,
+// release, retirement and owner reads exist only on this authenticated endpoint.
+func (s *Server) ServeOwner(l net.Listener, a cp.Administration, evidence WitnessEvidence, ownerPin string, uid uint32) error {
+	if _, ok := l.(*net.UnixListener); !ok {
+		return &ConfigError{"owner listener must be a Unix socket"}
+	}
+	return s.serveOwner(l, a, evidence, ownerPin, ownerAdmission(uid))
+}
+func (s *Server) serveOwner(l net.Listener, a cp.Administration, evidence WitnessEvidence, ownerPin string, admit admission) error {
+	if a == nil || evidence == nil || !seatgate.ValidFingerprint(ownerPin) || !s.ownerServing.CompareAndSwap(false, true) {
+		return cp.ErrRefused
+	}
+	defer s.ownerServing.Store(false)
+	if err := s.checkEvidence(context.Background(), evidence); err != nil {
+		return err
+	}
+	return serveListener(l, serverTLS(s.id, ownerPin), s.ownerCapacity, s.timeout, admit, func(ctx context.Context, conn *tls.Conn, m frame.Message) {
+		_ = s.reply(ctx, conn, nil, a, evidence, m)
+	})
+}
+
+func transientAccept(err error) bool {
+	var n net.Error
+	return !errors.Is(err, net.ErrClosed) && (errors.As(err, &n) && n.Timeout() ||
+		errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) ||
+		errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM))
+}
+
+func serveListener(l net.Listener, cfg *tls.Config, capacity int, timeout time.Duration, admit admission, handle func(context.Context, *tls.Conn, frame.Message)) error {
+	connections := make(chan struct{}, capacity)
+	ctx, cancel := context.WithCancel(context.Background())
+	var workers sync.WaitGroup
+	defer func() { cancel(); workers.Wait() }()
+	delay := 5 * time.Millisecond
+	for {
+		c, err := l.Accept()
+		if err != nil {
+			if !transientAccept(err) {
+				return err
+			}
+			time.Sleep(delay)
+			delay = min(delay*2, time.Second)
+			continue
+		}
+		delay = 5 * time.Millisecond
+		release := admit(c)
+		if release == nil {
+			c.Close()
+			continue
+		}
+		workers.Go(func() {
+			defer c.Close()
+			stop := context.AfterFunc(ctx, func() { c.Close() })
+			defer stop()
+			now := time.Now()
+			deadline := now.Add(handshakeTimeout)
+			conn := tls.Server(&countedConn{Conn: &firstByteConn{Conn: c, deadline: deadline}}, cfg)
+			authenticated := c.SetDeadline(deadline) == nil && c.SetReadDeadline(now.Add(500*time.Millisecond)) == nil && conn.HandshakeContext(ctx) == nil
+			release()
+			if !authenticated {
+				return
+			}
+			select {
+			case connections <- struct{}{}:
+				defer func() { <-connections }()
+			default:
+				return
+			}
+			reqCtx, done := context.WithTimeout(ctx, timeout)
+			defer done()
+			deadline, _ = reqCtx.Deadline()
+			if c.SetDeadline(time.Now().Add(min(timeout, 2*time.Second))) != nil {
+				return
+			}
+			m, err := frame.ReadAfterHeader(conn, func() error { return c.SetDeadline(deadline) })
+			if err != nil {
+				return
+			}
+			handle(reqCtx, conn, m)
+		})
+	}
+}
+
+var errRequestFailed = errors.New("checkpoint link: request failed")
+
+func (s *Server) reply(ctx context.Context, conn *tls.Conn, w Witness, a cp.Administration, evidence WitnessEvidence, m frame.Message) error {
+	replies, err := s.dispatch(ctx, w, a, evidence, m)
+	if errors.Is(err, frame.ErrProtocol) {
+		return err
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err != nil || replies[0].Kind == frame.Granted {
+		result := "granted"
+		if err != nil {
+			result = errorCode(err)
+		}
+		data, marshalErr := m.Marshal()
+		if marshalErr != nil {
+			return marshalErr
+		}
+		sig, signErr := evidence.SignDisposition(ctx, sha256.Sum256(data), result)
+		if signErr != nil {
+			return signErr
+		}
+		if err != nil {
+			replies = []frame.Message{frame.New(frame.Failure, []byte(result), sig)}
+		} else {
+			replies = []frame.Message{frame.New(frame.Granted, sig)}
+		}
+	}
+	for _, reply := range replies {
+		if err := reply.WriteToStream(conn); err != nil {
+			return err
+		}
+	}
+	if replies[0].Kind == frame.Failure {
+		return errRequestFailed
+	}
+	return nil
+}
+
+func (s *Server) dispatch(ctx context.Context, w Witness, a cp.Administration, evidence WitnessEvidence, m frame.Message) ([]frame.Message, error) {
+	f := m.Fields
+	var receipt cp.Receipt
+	var err error
+	switch m.Kind {
+	case frame.Connect, frame.Read, frame.PendingRead, frame.OwnerRead, frame.Settle, frame.OwnerSettle:
+		ownerOp := m.Kind == frame.OwnerRead || m.Kind == frame.OwnerSettle
+		if ownerOp != (a != nil) {
+			return nil, cp.ErrRefused
+		}
+		q, epoch, err := parseRead(f[0], s.witnessKeyID, operation[m.Kind])
+		if err != nil {
+			return nil, err
+		}
+		if w != nil && q.Slot != s.slot {
+			return nil, cp.ErrRefused
+		}
+		pool := ordinary
+		if m.Kind == frame.Settle || m.Kind == frame.OwnerSettle || m.Kind == frame.PendingRead {
+			if q.ReceiptID == (cp.ID{}) {
+				return nil, frame.ErrProtocol
+			}
+			pool = reconcile
+		}
+		if (m.Kind == frame.Read || m.Kind == frame.OwnerRead) && q.ReceiptID != (cp.ID{}) {
+			pool = receiptIndex
+		}
+		if !s.limits.allow(w == nil, pool) {
+			return nil, cp.ErrUnavailable
+		}
+		if w != nil {
+			if err := authenticate(ctx, w, q.Slot, f[1], f[0], f[2]); err != nil {
+				return nil, err
+			}
+		}
+		if pool == receiptIndex {
+			found, err := evidence.HasReceipt(ctx, q.Slot, q.ReceiptID)
+			if err != nil {
+				return nil, err
+			}
+			pool = ordinary
+			if found {
+				pool = recoveryReads
+			}
+			if !s.limits.allow(w == nil, pool) {
+				return nil, cp.ErrUnavailable
+			}
+		}
+		if m.Kind == frame.Connect {
+			return []frame.Message{frame.New(frame.Granted)}, nil
+		}
+		if m.Kind == frame.Settle || m.Kind == frame.OwnerSettle {
+			var r cp.Receipt
+			if w != nil {
+				r, err = w.SettleHome(ctx, epoch, q.Slot, q.ReceiptID, f[1])
+			} else {
+				r, err = a.Settle(ctx, epoch, q.Slot, q.ReceiptID)
+			}
+			if err != nil {
+				return nil, err
+			}
+			return []frame.Message{frame.New(frame.Receipt, r.Body, r.Signature)}, nil
+		}
+		var v cp.View
+		if w != nil {
+			v, err = w.ReadHome(ctx, q, f[1])
+		} else {
+			v, err = a.Read(ctx, q)
+		}
+		// A signed inhibited view carries recoverable evidence. The client
+		// independently derives ErrUnavailable from its signed guard field.
+		if err != nil {
+			if !errors.Is(err, cp.ErrUnavailable) || !errors.Is(cp.VerifyView(s.witnessPin, q, v), cp.ErrUnavailable) {
+				return nil, err
+			}
+		}
+		if pool == recoveryReads && v.Prior == nil {
+			return nil, cp.ErrUnavailable
+		}
+		current, err := json.Marshal(v.Current)
+		if err != nil {
+			return nil, err
+		}
+		var prior cp.Receipt
+		if v.Prior != nil {
+			prior = *v.Prior
+		}
+		return []frame.Message{frame.New(frame.View, current), frame.New(frame.Fresh, v.Fresh.Body, v.Fresh.Signature), frame.New(frame.Prior, prior.Body, prior.Signature)}, nil
+	case frame.OwnerStatus, frame.OwnerAcknowledge:
+		admin, ok := a.(cp.RecoveryAdministration)
+		if w != nil || !ok {
+			return nil, cp.ErrRefused
+		}
+		if !s.limits.allow(true, ordinary) {
+			return nil, cp.ErrUnavailable
+		}
+		if m.Kind == frame.OwnerStatus {
+			if len(f[0]) != len(cp.ID{}) {
+				return nil, frame.ErrProtocol
+			}
+			status, err := admin.Status(ctx, cp.ID(f[0]))
+			if err != nil {
+				return nil, err
+			}
+			return []frame.Message{frame.New(frame.DirectoryStatus, status.Body, status.Signature)}, nil
+		}
+		if len(f[0]) != 8 {
+			return nil, frame.ErrProtocol
+		}
+		if binary.BigEndian.Uint64(f[0]) != evidence.WitnessEpoch() {
+			return nil, cp.ErrStale
+		}
+		if err := admin.AcknowledgeStorageError(ctx); err != nil {
+			return nil, err
+		}
+		return []frame.Message{frame.New(frame.Granted)}, nil
+	case frame.Claim, frame.Advance:
+		if w == nil {
+			return nil, cp.ErrRefused
+		}
+		var slot cp.Slot
+		if !exactJSON(f[0], &slot) || !validSlot(slot) {
+			return nil, frame.ErrProtocol
+		}
+		if !s.limits.allow(false, ordinary) {
+			return nil, cp.ErrUnavailable
+		}
+		if slot != s.slot {
+			return nil, cp.ErrRefused
+		}
+		if err := authenticate(ctx, w, slot, f[1], f[2], f[3]); err != nil {
+			return nil, err
+		}
+		receipt, err = w.RawSubmit(ctx, slot, f[1], operation[m.Kind], f[2], f[3], f[4])
+	case frame.Enroll, frame.Release, frame.Retire:
+		if a == nil {
+			return nil, cp.ErrRefused
+		}
+		if !s.limits.allow(true, ordinary) {
+			return nil, cp.ErrUnavailable
+		}
+		intent, parseErr := cp.ParseIntent(operation[m.Kind], s.witnessKeyID, f[0])
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		switch q := intent.(type) {
+		case cp.Enrollment:
+			q.ProofOfPossession = f[1]
+			receipt, err = a.Enroll(ctx, q)
+		case cp.Mutation:
+			receipt, err = a.Release(ctx, q)
+		case cp.Retirement:
+			receipt, err = a.Retire(ctx, q)
+		default:
+			return nil, frame.ErrProtocol
+		}
+	default:
+		return nil, frame.ErrProtocol
+	}
+	if err != nil {
+		return nil, err
+	}
+	return []frame.Message{frame.New(frame.Receipt, receipt.Body, receipt.Signature)}, nil
+}
+
+func exactJSON(b []byte, out any) bool {
+	if !decodeJSON(b, out) {
+		return false
+	}
+	encoded, err := json.Marshal(out)
+	return err == nil && bytes.Equal(b, encoded)
+}
+
+func authenticate(ctx context.Context, w Witness, slot cp.Slot, key, body, sig []byte) error {
+	if err := w.CheckHome(ctx, slot, key); err != nil {
+		return err
+	}
+	if cp.VerifySignature(cp.HomeNamespace, key, body, sig) != nil {
+		return &cp.Reason{Kind: cp.Unauthorized}
+	}
+	return nil
+}

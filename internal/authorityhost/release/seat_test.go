@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"ataniq/internal/authorityhost/noaicheck"
 	"ataniq/internal/authorityhost/switcher"
 )
 
@@ -146,8 +147,8 @@ func mustRead(t *testing.T, p string) []byte {
 func unitKeys(text string) map[string][]string {
 	keys := map[string][]string{}
 	section := ""
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
+	for line := range strings.Lines(text) {
+		line = noaicheck.TrimUnitSpace(line)
 		switch {
 		case line == "" || line[0] == '#' || line[0] == ';':
 		case line[0] == '[':
@@ -162,41 +163,21 @@ func unitKeys(text string) map[string][]string {
 }
 
 // TestSeatUnit: the seat's unit runs as its own user, with the arguments
-// the design asks for (the origin and the gate's pin from the owner's
+// the design asks for (the origin and the gates' pins from the owner's
 // files, the socket the proxy reaches, the client address header the
-// Caddyfile sets, the gate from the owner's environment file, the key in
+// Caddyfile sets, the gates from the owner's environment file, the key in
 // its state folder, the decision guard of the switch's state folder), and
 // no network but what the owner allows; it is never enabled, never gates
 // its start on the inhibit and is not ordered after the boot unit.
 func TestSeatUnit(t *testing.T) {
 	text := string(mustRead(t, filepath.Join(seatTree, "etc/systemd/system/ataniq-seat.service")))
 	keys := unitKeys(text)
-	exec := strings.Fields(strings.Join(keys["Service.ExecStart"], " "))
-	if len(keys["Service.ExecStart"]) != 1 || len(exec) == 0 || exec[0] != "{release}/bin/ataniq-seat" {
-		t.Fatalf("ExecStart %q", keys["Service.ExecStart"])
-	}
-	args := map[string]string{}
-	for i := 1; i+1 < len(exec); i += 2 {
-		args[exec[i]] = exec[i+1]
-	}
-	for flag, want := range map[string]string{
-		"--origin-file":        "/etc/authority-host/seat/origin",
-		"--socket":             "/run/seat/http.sock",
-		"--socket-mode":        "0660",
-		"--client-addr-header": "X-Seat-Client-Addr",
-		"--gate":               "${SEAT_GATE}",
-		"--gate-pin-file":      "/etc/authority-host/seat/gate.pin",
-		"--identity":           "/var/lib/seat/identity",
-		"--decision-guard":     "/var/lib/authority-host",
-	} {
-		if args[flag] != want {
-			t.Errorf("%s %q, want %q", flag, args[flag], want)
-		}
-	}
-	// The last word is the notifier's optional flag, from the owner's
-	// environment file (see TestNotifySeatUnitTakesTheOptionalFlag).
-	if len(args) != 8 || len(exec) != 18 || exec[17] != "$SEAT_NOTIFY_ARGS" {
-		t.Errorf("ExecStart has other arguments: %q", exec)
+	const wantExec = "{release}/bin/ataniq-seat --origin-file /etc/authority-host/seat/origin" +
+		" --socket /run/seat/http.sock --socket-mode 0660 --client-addr-header X-Seat-Client-Addr" +
+		" --identity /var/lib/seat/identity --decision-guard /var/lib/authority-host" +
+		" $SEAT_GATE_ARGS $SEAT_NOTIFY_ARGS"
+	if got := keys["Service.ExecStart"]; len(got) != 1 || got[0] != wantExec {
+		t.Errorf("ExecStart = %q, want %q", got, wantExec)
 	}
 	for key, want := range map[string]string{
 		"Service.User": "seat", "Service.Group": "seat",
@@ -237,6 +218,21 @@ func TestSeatUnit(t *testing.T) {
 				t.Errorf("%s=%s orders the seat after the boot unit, whose reload would wait on it", k, v)
 			}
 		}
+	}
+}
+
+func TestSeatEnvExampleSingleGate(t *testing.T) {
+	example := string(mustRead(t, filepath.Join(baseTree, "seat.env.example")))
+	var settings []string
+	for line := range strings.Lines(example) {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			settings = append(settings, line)
+		}
+	}
+	const want = `SEAT_GATE_ARGS="--gate-entry first,203.0.113.20:GATEPORT,/etc/authority-host/seat/gate.pin"`
+	if len(settings) != 1 || settings[0] != want {
+		t.Errorf("active seat.env settings = %q, want %q", settings, want)
 	}
 }
 

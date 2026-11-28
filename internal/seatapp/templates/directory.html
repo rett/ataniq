@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Seat instances</title><link rel="stylesheet" href="/static/app.css">
+</head><body><header><h1>Seat instances</h1>
+<nav aria-label="Directories"><a href="/cards/">Cards</a> · <a href="/projects/">Projects</a> · <a href="/leads/">Leads</a></nav></header>
+<main>{{if eq .Section "/cards/"}}<h2>Cards</h2><p>STAND-IN · Scratch cards only.</p>{{else if eq .Section "/projects/"}}<h2>Projects</h2>{{else if eq .Section "/leads/"}}<h2>Leads</h2>{{else if eq .Section "/pair/"}}<p>Choose the instance that issued the pairing code.</p>{{end}}{{range $gate := .Gates}}<section><h2>{{text .Name maxName}}</h2>
+{{if eq $.Section "/pair/"}}<button type="button" data-pair="{{text .Mount 80}}/pair/">Pair with {{text .Name maxName}}</button>
+{{else if .LoggedIn}}<p><a href="{{text .Mount 80}}{{text $.Section maxID}}">Open {{text .Name maxName}}</a></p>
+{{if .Status}}<p>{{text .Status maxName}}</p>{{end}}
+<ul>{{range .Rows}}<li data-instance="{{text $gate.Instance maxID}}" data-id="{{text .ID maxID}}">{{text .Project maxName}} · {{text .State maxName}} ·
+{{text $gate.Name maxName}} · {{if $gate.Stale}}{{text .ID maxID}} · Stale{{else if .Path}}<a href="{{text .Path 256}}">{{text .ID maxID}}</a>{{else}}{{text .ID maxID}}{{end}}</li>{{end}}</ul>
+{{if and (not .Status) (not .Rows)}}<p>No entries.</p>{{end}}{{else}}<a href="{{text .Mount 80}}/login/">Log in to {{text .Name maxName}}</a>
+{{end}}</section>{{end}}</main>
+{{if eq .Section "/pair/"}}<script src="/static/choose-gate.js"></script>{{end}}</body></html>

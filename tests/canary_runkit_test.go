@@ -32,15 +32,14 @@ import (
 
 const canaryRunScript = "qualification/canary/run/canary-run.sh"
 
-// canaryRunBinaries are the commands the run script uses, and so the ones
-// make canary-build builds, and no more.
+// canaryRunBinaries are the commands the run script uses.
 var canaryRunBinaries = []string{
 	"ataniqd", "ataniq-holder", "ataniq-canary", "ataniq-canary-standin",
 	"ataniq-console", "ataniq-intake", "ataniq-probe",
 }
 
-// canaryStaticBinaries are built without cgo: both run inside the sandbox.
-var canaryStaticBinaries = []string{"ataniq-canary-standin", "ataniq-probe"}
+// canaryStaticBinaries are built without cgo for use inside the sandbox.
+var canaryStaticBinaries = []string{"ataniq-canary-standin", "ataniq-probe", "ataniq-hook"}
 
 // canaryStep is one row of the plan's table of steps (section 6), written
 // from the plan and not from the script: the gates the step serves ("none"
@@ -283,14 +282,14 @@ func TestCanaryRunKitMakefileTarget(t *testing.T) {
 		}
 		built = append(built, m[2])
 	}
-	want := slices.Clone(canaryRunBinaries)
+	want := append(slices.Clone(canaryRunBinaries), "ataniq-hook")
 	sort.Strings(want)
 	sort.Strings(built)
 	if !slices.Equal(built, want) {
 		t.Errorf("canary-build builds %v, want %v", built, want)
 	}
 
-	// The script uses each of them, from build/canary and from nowhere else.
+	// The script takes its commands from build/canary.
 	script, err := os.ReadFile(filepath.Join(root(t), canaryRunScript))
 	if err != nil {
 		t.Fatal(err)
@@ -336,7 +335,15 @@ func TestCanaryRunKitInstructionLines(t *testing.T) {
 			t.Errorf("the run kit item of AGENTS.md does not say %s", want)
 		}
 	}
+	// Three targets build with a tag, each the one for its tags: the run kit
+	// with the canary tag alone, the owner's daemon with the owner channel's tag
+	// alone, and the daemon for real scratch leads with the seat gate with both.
 	const oneTarget = "`make canary-build` is the one target that builds binaries with the canary tag"
+	oneTargets := []string{
+		oneTarget + " alone",
+		"`make ownerchannel-build` is the one target that builds a binary with that tag alone",
+		"`make scratch-seat-build` is the one target that builds the daemon with both tags",
+	}
 	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
 		data, err := os.ReadFile(filepath.Join(root(t), name))
 		if err != nil {
@@ -345,8 +352,30 @@ func TestCanaryRunKitInstructionLines(t *testing.T) {
 		if strings.Contains(string(data), "no other target builds with the tag") {
 			t.Errorf("%s still says that no other target builds with the tag", name)
 		}
+		if strings.Contains(string(data), "no other target builds the pair") {
+			t.Errorf("%s still says that no other target builds the pair of tags", name)
+		}
 		if !strings.Contains(string(data), oneTarget) {
 			t.Errorf("%s does not say: %s", name, oneTarget)
+		}
+		for _, want := range oneTargets {
+			if !strings.Contains(string(data), want) {
+				t.Errorf("%s does not say: %s", name, want)
+			}
+		}
+		// The pair's build is for the owner's own trial and no release's.
+		if !regexp.MustCompile("`make scratch-seat-build` is the one target that builds the daemon with both tags[^.]*`build/scratch-seat/`[^.]*for the owner's own trial of real scratch leads with the seat gate[^.]*no release and no CI job uses it").Match(data) {
+			t.Errorf("%s does not say that make scratch-seat-build builds into build/scratch-seat/ for the owner's own trial and that no release and no CI job uses it", name)
+		}
+	}
+	// The guides that name the builds with a tag name the pair's build too.
+	for _, name := range []string{"README.md", "docs/lead-daemon.md", "docs/seat-gate.md"} {
+		data, err := os.ReadFile(filepath.Join(root(t), name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "`make scratch-seat-build`") {
+			t.Errorf("%s does not name make scratch-seat-build", name)
 		}
 	}
 	// The two helpers are fenced too: the reset deletes after a typed word, the
@@ -524,6 +553,13 @@ func TestCanaryRunKitDryListsEveryStep(t *testing.T) {
 						t.Errorf("the second epoch does not say %q", want)
 					}
 				}
+			}
+
+			step10 := strings.Join(first[10].lines, "\n")
+			if !strings.Contains(step10, "ataniqd init --state-dir \"/sample/canary/state\"\n"+
+				"     build/canary/ataniqd project-home --state-dir \"/sample/canary/state\" --home self throwaway-one\n"+
+				"     build/canary/ataniqd run --canary ") {
+				t.Errorf("step 10 lacks the ordered enrollment and start commands:\n%s", step10)
 			}
 
 			// Step 11 is one step: one key, before define, and none between
@@ -2736,7 +2772,7 @@ func (e canaryHelperEnv) run(t *testing.T, rel string, stdin string, args ...str
 	home := filepath.Join(e.dir, "home")
 	cmd := exec.Command("/bin/sh", append([]string{filepath.Join(root(t), rel)}, args...)...)
 	cmd.Dir = e.dir
-	cmd.Env = []string{"PATH=" + e.tools + ":/usr/bin:/bin", "HOME=" + home, "XDG_RUNTIME_DIR=" + filepath.Join(e.dir, "run")}
+	cmd.Env = []string{"PATH=" + e.tools + ":/usr/bin:/bin", "HOME=" + home, "TMPDIR=" + t.TempDir(), "XDG_RUNTIME_DIR=" + filepath.Join(e.dir, "run")}
 	cmd.Stdin = strings.NewReader(stdin)
 	out, err := cmd.CombinedOutput()
 	code := 0
@@ -3012,7 +3048,7 @@ func TestCanaryRunKitPrepareRefuses(t *testing.T) {
 		{"a root with a quote", e.prepareArgs(t, filepath.Join(e.dir, "a\"b")), "character"},
 		{"a root that is a link", e.prepareArgs(t, link), "symbolic link"},
 		{"pass B without --claude", e.prepareArgs(t, filepath.Join(e.dir, "b"), "--pass", "B"), "--pass B needs --claude"},
-		{"a missing binary", append([]string{"--root", filepath.Join(e.dir, "c"), "--bin", noBin, "--pasta", e.pasta(t)}), "not built in"},
+		{"a missing binary", []string{"--root", filepath.Join(e.dir, "c"), "--bin", noBin, "--pasta", e.pasta(t)}, "not built in"},
 		{"a pasta link", []string{"--root", filepath.Join(e.dir, "d"), "--bin", e.bin, "--pasta", link}, "link is refused"},
 		{"an unknown argument", []string{"--root", filepath.Join(e.dir, "e"), "--yes"}, "usage:"},
 	} {
@@ -5632,7 +5668,10 @@ func TestCanaryRunKitPreflightReady(t *testing.T) {
 	}
 	for _, want := range []string{
 		"ok:   the binaries are newer than the newest commit that touches the code (by file time: --version names no commit;",
-		"     " + p.bin + "/ataniqd run --canary " + p.root + "/config.json",
+		"after every canary-reset",
+		"     " + p.bin + "/ataniqd init --state-dir \"" + p.root + "/state\"\n" +
+			"     " + p.bin + "/ataniqd project-home --state-dir \"" + p.root + "/state\" --home self throwaway-one\n" +
+			"     " + p.bin + "/ataniqd run --canary " + p.root + "/config.json",
 		"     " + p.bin + "/ataniq-console --attach " + p.root + "/runtime/leads/throwaway-one-lead --ticket-file " + p.root + "/runtime/leads/throwaway-one-lead/ticket",
 		"BEFORE you press Enter at step 10",
 		"The run never starts the daemon or the console for you.",
@@ -6407,6 +6446,8 @@ func TestCanaryRunKitReadmeDocumentsTheEntriesAndTheCommands(t *testing.T) {
 		"CANARY_RUN_WAIT_TRIES", "CANARY_RUN_WAIT_INTERVAL", "CANARY_RUN_STATUS_TIMEOUT", "CANARY_PREFLIGHT_PROC", "CANARY_PREFLIGHT_TIOCSTI", "CANARY_PREFLIGHT_ATANIQ",
 		"## Easier on the owner", "canary-preflight.sh", "answers.hint", "CHECKLIST.txt", "--template-review PATH", "--unit-report PATH", "--plan-summary PATH",
 		"READY", "NOT READY (n to fix)", "for the tests only",
+		"ataniqd init --state-dir \"ROOT/state\"\nbuild/canary/ataniqd project-home --state-dir \"ROOT/state\" --home self throwaway-one\n" +
+			"build/canary/ataniqd run --canary ROOT/config.json",
 	} {
 		if !strings.Contains(readme, want) {
 			t.Errorf("the README does not mention %q", want)

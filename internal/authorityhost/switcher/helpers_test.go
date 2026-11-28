@@ -39,7 +39,8 @@ type fakeRunner struct {
 	extra    [][]*os.File     // the ExtraFiles of each command
 	// gate, when set, is asked about every command after hook: an error
 	// is the command's failure (a model of what the command acts on).
-	gate func(argv []string) error
+	gate      func(argv []string) error
+	unitState func(name string) (Output, error)
 }
 
 const fakeRuleset = "table inet filter {\n}\n"
@@ -85,6 +86,12 @@ func (f *fakeRunner) Run(ctx context.Context, c Command) (Output, error) {
 			f.fail[name] = n - 1
 		}
 		return Output{Stderr: []byte(name + " said no")}, fmt.Errorf("%s: exit status 1", name)
+	}
+	if name == "systemctl" && len(argv) >= 3 && (argv[1] == "is-active" || argv[1] == "show") {
+		if f.unitState != nil {
+			return f.unitState(argv[len(argv)-1])
+		}
+		return Output{Stdout: []byte("inactive\n")}, &RunError{Status: 3}
 	}
 	if name == "nft" {
 		out := []byte(f.nftOut)

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/wire"
 	"golang.org/x/sys/unix"
 )
@@ -59,11 +60,16 @@ type fakeLauncher struct {
 	runFn     func(argv []string) (int, error)
 	startFn   func(argv, env []string) (child, error)
 	realStart bool
+	// intent is the launch intent of the last holder started.
+	intent string
 }
 
 func (f *fakeLauncher) Run(argv []string, stdout, stderr io.Writer) (int, error) {
 	f.mu.Lock()
 	f.runs = append(f.runs, append([]string(nil), argv...))
+	if in := argAfter(argv, "--launch-intent"); in != "" {
+		f.intent = in
+	}
 	fn := f.runFn
 	f.mu.Unlock()
 	if fn != nil {
@@ -76,6 +82,9 @@ func (f *fakeLauncher) Start(argv, env []string, stdout, stderr io.Writer) (chil
 	f.mu.Lock()
 	f.starts = append(f.starts, append([]string(nil), argv...))
 	f.envs = append(f.envs, append([]string(nil), env...))
+	if in := argAfter(argv, "--launch-intent"); in != "" {
+		f.intent = in
+	}
 	fn := f.startFn
 	f.mu.Unlock()
 	if f.realStart {
@@ -85,6 +94,14 @@ func (f *fakeLauncher) Start(argv, env []string, stdout, stderr io.Writer) (chil
 		return fn(argv, env)
 	}
 	return nil, fmt.Errorf("fake launcher: no start function")
+}
+
+// lastIntent returns the launch intent of the last holder this launcher
+// started, directly or as a unit, or "".
+func (f *fakeLauncher) lastIntent() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.intent
 }
 
 func (f *fakeLauncher) runList() [][]string {
@@ -189,9 +206,21 @@ func fastLimits() limits {
 	}
 }
 
-// newApp returns an app on the test environment and its output buffers.
+// newApp returns an app on the test environment and its output buffers. The
+// build check finds every holder to be testBuild (sameBuild); with a fake
+// launcher its records name the launch intent of the last holder started, as
+// the holder's own file does.
 func (e *testEnv) newApp(l launcher) (*app, *lockedBuffer, *lockedBuffer) {
 	out, errout := &lockedBuffer{}, &lockedBuffer{}
+	build := sameBuild()
+	if fl, ok := l.(*fakeLauncher); ok {
+		read := build.Record
+		build.Record = func(dir string, epoch uint64) (buildid.Record, error) {
+			rec, err := read(dir, epoch)
+			rec.LaunchIntent = fl.lastIntent()
+			return rec, err
+		}
+	}
 	return &app{
 		out:        out,
 		errout:     errout,
@@ -200,7 +229,26 @@ func (e *testEnv) newApp(l launcher) (*app, *lockedBuffer, *lockedBuffer) {
 		uid:        os.Getuid(),
 		launch:     l,
 		lim:        fastLimits(),
+		build:      build,
 	}, out, errout
+}
+
+// testBuild is the build the tests' command is and expects.
+var testBuild = buildid.Identity{Module: "ataniq", Version: "v0.0.14-0.20261124010203-222222222222",
+	Revision: "2222222222222222222222222222222222222222"}
+
+// sameBuild is a build check that finds every holder to be testBuild, of
+// whatever epoch is attached: the stand-in holders of the tests are not builds
+// of this command.
+func sameBuild() *buildid.Checker {
+	return &buildid.Checker{
+		Expected:   testBuild,
+		Executable: func(string) (buildid.Identity, error) { return testBuild, nil },
+		Record: func(_ string, epoch uint64) (buildid.Record, error) {
+			b := testBuild
+			return buildid.Record{Epoch: epoch, Build: &b}, nil
+		},
+	}
 }
 
 // fakeHolder is a control server in a unix socket that applies the holder's

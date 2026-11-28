@@ -1,0 +1,11 @@
+{{define "chat-off-note"}}<span class="meta">Chat is off for this lead. Turn it on at the desk.</span>{{end}}
+{{define "content"}}
+<h1>Leads</h1>
+{{if .Sample}}{{template "standin-chat"}}{{end}}
+{{template "chat-rule"}}
+<section class="chat-directory" aria-labelledby="directory-h">
+{{template "chat-directory" .}}
+</section>
+<p class="chat-links"><a id="chat-refresh" href="{{mount}}/leads/">Refresh</a></p>
+{{template "watch-leads" .Watch}}
+{{end}}

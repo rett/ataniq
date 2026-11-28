@@ -1012,6 +1012,22 @@ func TestSeatLinkDecideCodes(t *testing.T) {
 	}
 }
 
+// waitDisconnected waits, for up to 10 seconds, until the link's client
+// reports that it is not connected to a gate.
+func waitDisconnected(t *testing.T, d *Daemon) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, ok := d.c.Connected(); !ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the client was still connected to the stopped gate after 10 s")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // TestSeatLinkDecideLostAnswer: once a decision is sent, a link that drops,
 // the seat's own deadline, and an answer not of its form leave the outcome
 // unknown, and nothing is sent again; a gate that is not connected before
@@ -1020,8 +1036,11 @@ func TestSeatLinkDecideLostAnswer(t *testing.T) {
 	r := newDecideRig(t)
 	r.show(t)
 	ch, _ := r.link.DecideChallenge(context.Background(), r.approve())
+	// The handler runs on the gate's goroutine, which may still read the
+	// rig after the test has moved on to a new one: it holds its own gate.
+	first := r.gate
 	r.desk.outcome = func(ctx context.Context, f ownerwire.DecisionFrame) (json.RawMessage, error) {
-		go r.gate.stop()
+		go first.stop()
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
@@ -1031,7 +1050,11 @@ func TestSeatLinkDecideLostAnswer(t *testing.T) {
 	if _, decides := r.desk.counts(); decides != 1 {
 		t.Errorf("%d decisions reached the desk", decides)
 	}
-	// The gate is gone: nothing is sent, and the phone is told so.
+	// The gate is gone: nothing is sent, and the phone is told so. Its stop
+	// is asynchronous (the handler asked for it and returned), so the client
+	// may still be connected for a moment after the first Decide returned:
+	// wait for it to drop, or the next call is a second send, not a refusal.
+	waitDisconnected(t, r.link)
 	if _, err := r.link.Decide(context.Background(), r.sign(t, ch)); !errors.Is(err, seatapp.ErrDaemonUnavailable) {
 		t.Errorf("no gate: %v", err)
 	}

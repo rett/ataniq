@@ -1,0 +1,5 @@
+Matching Defaults entries for agent on aihost:
+    env_reset, !timestamp_timeout, timestamp_timeout=five, timestamp_timeout=0
+
+User agent may run the following commands on aihost:
+    (ALL : ALL) ALL

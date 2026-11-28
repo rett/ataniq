@@ -414,7 +414,7 @@ func lineEnd(data string, i int) int {
 // parsePam reads ~/.pam_environment: the first word of a line (up to a
 // blank or '=') is the variable, the rest is its settings.
 func parsePam(r *envParse, data string) {
-	for _, line := range logicalLines(data) {
+	for _, line := range pamLines(data) {
 		line = strings.TrimSpace(line)
 		if line == "" || line[0] == '#' {
 			continue
@@ -434,10 +434,8 @@ func parsePam(r *envParse, data string) {
 	}
 }
 
-// logicalLines joins lines ending with a backslash to the next one, as
-// systemd and pam_env do; a comment line inside a continued line is
-// skipped, as systemd does.
-func logicalLines(data string) []string {
+// pamLines joins continuations in ~/.pam_environment.
+func pamLines(data string) []string {
 	var out []string
 	var cur strings.Builder
 	cont := false
@@ -466,6 +464,39 @@ func logicalLines(data string) []string {
 
 // ---- systemd ----
 
+// JoinUnitContinuations joins a systemd line ending in an odd number of
+// backslashes to the next line, replacing the final backslash and line ending
+// with one space. A final continuation at EOF joins with nothing. Systemd
+// skips full-line comments (# or ;) between pieces of a directive. A
+// backslash at the end of a comment does not consume the following line.
+func JoinUnitContinuations(text string) string {
+	if !strings.Contains(text, "\\") {
+		return text
+	}
+	var joined strings.Builder
+	joined.Grow(len(text))
+	continued := false
+	for raw := range strings.Lines(text) {
+		line := unitLineText(raw)
+		content := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(content, "#") || strings.HasPrefix(content, ";") {
+			if !continued {
+				joined.WriteString(raw)
+			}
+			continue
+		}
+		backslashes := len(line) - len(strings.TrimRight(line, "\\"))
+		continued = backslashes%2 == 1
+		if continued {
+			joined.WriteString(line[:len(line)-1])
+			joined.WriteByte(' ')
+		} else {
+			joined.WriteString(raw)
+		}
+	}
+	return joined.String()
+}
+
 // parseSystemd reads a unit file, drop-in or manager configuration:
 // Environment=, DefaultEnvironment= and ManagerEnvironment= (words split
 // with systemd's quoting, each NAME=VALUE; only NAME is kept),
@@ -477,8 +508,8 @@ func logicalLines(data string) []string {
 // is not NAME=VALUE, an unclosed quote or a path with a specifier is
 // syntax the check cannot parse.
 func parseSystemd(r *envParse, data string) {
-	for _, line := range logicalLines(data) {
-		line = strings.TrimSpace(line)
+	for line := range strings.Lines(JoinUnitContinuations(data)) {
+		line = TrimUnitSpace(line)
 		if line == "" || line[0] == '#' || line[0] == ';' || line[0] == '[' {
 			continue
 		}
@@ -486,8 +517,8 @@ func parseSystemd(r *envParse, data string) {
 		if !ok {
 			continue
 		}
-		value = strings.TrimSpace(value)
-		switch strings.TrimSpace(key) {
+		value = TrimUnitSpace(value)
+		switch TrimUnitSpace(key) {
 		case "Environment", "DefaultEnvironment", "ManagerEnvironment":
 			words, ok := splitSystemd(value)
 			if !ok {

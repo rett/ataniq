@@ -33,16 +33,54 @@ const (
 	HoldLife = 5 * time.Minute
 )
 
-// The room of each kind of call in BudgetWindow.
+// The room of each kind of call in BudgetWindow. The seven add up to GateRate:
+//
+//	pings 6 + decisions 8 + anyone's 12 + reads 12 + chat 5 + waits 5 + genesis 12 = 60
+//
+// The room of seat.genesis was made when the interview's pages came: before
+// it the rooms were pings 6, decisions 16, anyone's 12, reads 20 and waits 6.
+// It was first 10 (decisions 12, reads 14), and an interview walked on a
+// phone ran out of it at the fifth round: the owner answers a round every 10
+// to 15 seconds, so 80 seconds hold 6 to 8 taps, each an answer and the page
+// it redirects to (one call together, see genesis.go), plus the reads the
+// pages make now and then (the list of open projects, a summary, a thread
+// the link does not hold). The interview has 12 because it is one call per
+// tap plus an occasional read, with a few to spare for an answer that is
+// refused and asked again. The 2 were taken from decisions (12 to 10: 5
+// decisions, each a challenge and a decision call, in 80 seconds), where
+// they were the least used.
+//
+// Chat's room was carved out of the reads' 14 when replies came (12 for the
+// Cards pages and 2 for chat): a conversation shared the reads' room before,
+// and one refreshed every 10 seconds had almost half of three Card tabs'
+// list reloads refused (TestBudgetMixedUse). Three card lists that reload
+// every 20 seconds take the 12 reads. Chat's 2 did not hold the owner's
+// ordinary path, cold: the Leads page (the directory) and a selected lead's
+// conversation (the directory again and the page) are 3 calls, so the first
+// selection was busy. Chat has 5 now, 2 more taken from the decisions (10 to
+// 8, 4 decisions; decisions are rare) and 1 from the waits (6 to 5): the
+// Leads page, a conversation and one refresh of it (5 calls) fit in 80
+// seconds, with none to spare. Anyone's room was cut to 10 for chat for a
+// while, and the pairing flow (a pairing, then the owner's login) then met
+// a busy desk at its login challenge (TestSeatPairE2E in
+// internal/approval/hostadapter), as it had once before when anyone's room
+// was cut: anyone's room keeps 12, 6 logins. Strangers can hold it with
+// login challenges they never answer, so a smaller one would also let fewer
+// of them keep the owner from logging in. The conversation page's directory
+// is not saved by reusing the Leads page's: the page's heading shows the
+// selected lead's state, which only a directory carries, and a real
+// directory is never reused (chat.go). A chat call past the room is busy
+// without touching the reads, so chat never takes a Card's read and a
+// Card's read never takes chat's.
 const (
 	// pingRoom is the pings: one every PingInterval is 6 at most in
 	// BudgetWindow, and 5 in a minute of the gate's.
 	pingRoom = 6
-	// decideRoom is seat.challenge and seat.decide: 8 decisions. A challenge
+	// decideRoom is seat.challenge and seat.decide: 4 decisions. A challenge
 	// is drawn only with room for its seat.decide as well, kept for that
 	// challenge alone until the decision is sent, the app drops the
 	// challenge, or the challenge's life ends.
-	decideRoom = 16
+	decideRoom = 8
 	// publicRoom is seat.pair, seat.login-challenge and seat.login, which the
 	// seat relays for anyone who reaches its pages: 6 logins. A login
 	// challenge is drawn only with room for its seat.login as well, kept
@@ -51,30 +89,48 @@ const (
 	// answered. Strangers who draw login challenges and never answer them
 	// keep that room until their challenges' life ends.
 	publicRoom = 12
-	// readRoom is owner.list, owner.show and owner.paths, the reads of every
-	// session together.
-	readRoom = 20
+	// readRoom is owner.list, owner.show and owner.paths, the Cards pages'
+	// reads of every session together. Chat never counts in it.
+	readRoom = 12
+	// chatRoom is seat.chat, its leads and read verbs, of every session
+	// together (chat.go): the Leads page's directory, a conversation's
+	// directory and page, and one refresh of it, with no call to spare. A
+	// chat call past it is answered busy and sent nowhere, and it never
+	// spends the reads' room.
+	chatRoom = 5
 	// waitRoom is seat.wait, the watcher's one long wait (watch.go). The
 	// watcher keeps one wait in flight, and the gate holds it up to 25
 	// seconds, so an idle seat sends one about every 25 seconds: 4 in
-	// BudgetWindow (at 0, 25, 50 and 75 seconds), which leaves 2 for the
-	// waits that a change cut short. With no room the watcher sleeps until
-	// some frees rather than sending; the page lags, and nothing is
-	// refused. The room is taken from readRoom (26 before the watcher), so
-	// the rooms still add up to GateRate.
-	waitRoom = 6
+	// BudgetWindow (at 0, 25, 50 and 75 seconds), which leaves 1 for a wait
+	// that a reconnect or a change cut short (a reconnect's wait is sent
+	// about a second after the wait it cut, so one in a window is 5 waits
+	// at most: TestSeatLinkWatchReconnectRate). With no room the watcher
+	// sleeps until some frees rather than sending; the page lags, and
+	// nothing is refused. The room was taken from readRoom (26 before the
+	// watcher) and was 6 until chat took 1, so the rooms still add up to
+	// GateRate.
+	waitRoom = 5
+	// genesisRoom is seat.genesis, every verb of the interview: the pages'
+	// starts, lists, rounds, answers, changes, summaries, finishes and
+	// discards, of every session together.
+	genesisRoom = 12
 )
 
 // The rooms and the pings are the gate's rate: either difference below is
 // a negative constant, which does not convert to uint, if they are not.
 const (
-	_ = uint(GateRate - pingRoom - decideRoom - publicRoom - readRoom - waitRoom)
-	_ = uint(pingRoom + decideRoom + publicRoom + readRoom + waitRoom - GateRate)
+	_ = uint(GateRate - pingRoom - decideRoom - publicRoom - readRoom - chatRoom - waitRoom - genesisRoom)
+	_ = uint(pingRoom + decideRoom + publicRoom + readRoom + chatRoom + waitRoom + genesisRoom - GateRate)
+	// A decision and a login each take two calls of their room, so each
+	// room is even.
+	_ = uint(0 - decideRoom%2)
+	_ = uint(0 - publicRoom%2)
 	// The pings of BudgetWindow fit their room.
 	_ = uint(pingRoom - int(BudgetWindow/PingInterval) - 1)
 	// An idle watcher's waits of BudgetWindow (one every WatchHold, the
-	// first at the window's start) fit their room with 2 to spare.
-	_ = uint(waitRoom - 2 - (int(BudgetWindow/WatchHold) + 1))
+	// first at the window's start) fit their room with 1 to spare, the
+	// wait after a reconnect.
+	_ = uint(waitRoom - 1 - (int(BudgetWindow/WatchHold) + 1))
 )
 
 // kind is a kind of call the link sends.
@@ -85,6 +141,8 @@ const (
 	kindRead
 	kindDecide
 	kindWait
+	kindGenesis
+	kindChat
 	numKinds
 )
 
@@ -97,6 +155,10 @@ func (k kind) room() int {
 		return readRoom
 	case kindWait:
 		return waitRoom
+	case kindGenesis:
+		return genesisRoom
+	case kindChat:
+		return chatRoom
 	}
 	return decideRoom
 }
@@ -116,9 +178,22 @@ type hold struct {
 // concurrent use.
 type budget struct {
 	now func() time.Time
+	// logf, when set, receives a fixed-text line when a call is refused
+	// for room (see refusal.go); logged and held are, for each kind, the
+	// time of the last line and the refusals since that were not told.
+	logf   func(format string, args ...any)
+	logged [numKinds]time.Time
+	held   [numKinds]int
 
 	mu   sync.Mutex
 	sent [numKinds][]time.Time
+	// refusedAt are the calls refused for room in the last BudgetWindow,
+	// by kind, to the second (see stats).
+	refusedAt [numKinds][]refusedStep
+	// The period of the stats line (see rollLocked): when it began, and
+	// the calls taken and refused in it, by kind.
+	period                     time.Time
+	periodTaken, periodRefused [numKinds]int
 	// holds are the room kept for answers, one for each challenge drawn
 	// and not answered, by the token reserve gave it before the challenge
 	// was asked. A challenge's room is its own: another challenge, of the
@@ -130,8 +205,8 @@ type budget struct {
 	last uint64
 }
 
-// prune drops the calls older than BudgetWindow and the holds past their
-// life. It runs under mu.
+// prune drops the calls and the refusals older than BudgetWindow and the
+// holds past their life. It runs under mu.
 func (b *budget) prune(now time.Time) {
 	cut := now.Add(-BudgetWindow)
 	for k := range b.sent {
@@ -141,6 +216,12 @@ func (b *budget) prune(now time.Time) {
 			i++
 		}
 		b.sent[k] = ts[i:]
+		rs := b.refusedAt[k]
+		i = 0
+		for i < len(rs) && !rs[i].at.After(cut) {
+			i++
+		}
+		b.refusedAt[k] = rs[i:]
 	}
 	for t, h := range b.holds {
 		if !now.Before(h.until) {
@@ -165,10 +246,18 @@ func (b *budget) used(k kind) int {
 // it has room. A call without room is not counted, and not sent.
 func (b *budget) take(k kind) bool {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	now := b.now()
 	b.prune(now)
-	return b.takeLocked(k, now)
+	s := b.rollLocked(now)
+	ok := b.takeLocked(k, now)
+	var r *refusal
+	if !ok {
+		r = b.refuseLocked(k, now)
+	}
+	b.mu.Unlock()
+	b.tellStats(s)
+	b.tell(r)
+	return ok
 }
 
 // takeLocked is take under mu.
@@ -176,8 +265,27 @@ func (b *budget) takeLocked(k kind, now time.Time) bool {
 	if b.used(k) >= k.room() {
 		return false
 	}
-	b.sent[k] = append(b.sent[k], now)
+	b.sentLocked(k, now)
 	return true
+}
+
+// sentLocked counts a call of a kind that is sent. It runs under mu.
+func (b *budget) sentLocked(k kind, now time.Time) {
+	b.sent[k] = append(b.sent[k], now)
+	b.periodTaken[k]++
+}
+
+// refuseLocked counts a call of a kind refused for room, and returns the
+// refusal line to tell, if one is due (refusedLocked). It runs under mu.
+func (b *budget) refuseLocked(k kind, now time.Time) *refusal {
+	b.periodRefused[k]++
+	rs := b.refusedAt[k]
+	if n := len(rs); n > 0 && now.Sub(rs[n-1].at) < time.Second {
+		rs[n-1].n++
+	} else {
+		b.refusedAt[k] = append(rs, refusedStep{at: now, n: 1})
+	}
+	return b.refusedLocked(k, now)
 }
 
 // takeOrWait is take for a caller that sleeps rather than refuses: it counts
@@ -186,9 +294,17 @@ func (b *budget) takeLocked(k kind, now time.Time) bool {
 // counted age out of BudgetWindow (never less than a millisecond).
 func (b *budget) takeOrWait(k kind) (bool, time.Duration) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	now := b.now()
 	b.prune(now)
+	s := b.rollLocked(now)
+	ok, wait := b.takeOrWaitLocked(k, now)
+	b.mu.Unlock()
+	b.tellStats(s)
+	return ok, wait
+}
+
+// takeOrWaitLocked is takeOrWait under mu.
+func (b *budget) takeOrWaitLocked(k kind, now time.Time) (bool, time.Duration) {
 	if b.takeLocked(k, now) {
 		return true, 0
 	}
@@ -215,19 +331,26 @@ func (b *budget) takeOrWait(k kind) (bool, time.Duration) {
 // same moment each have a hold of their own.
 func (b *budget) reserve(k kind) (uint64, bool) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	now := b.now()
 	b.prune(now)
+	s := b.rollLocked(now)
 	if b.used(k)+2 > k.room() {
+		r := b.refuseLocked(k, now)
+		b.mu.Unlock()
+		b.tellStats(s)
+		b.tell(r)
 		return 0, false
 	}
 	if b.holds == nil {
 		b.holds = map[uint64]hold{}
 	}
 	b.last++
-	b.sent[k] = append(b.sent[k], now)
+	b.sentLocked(k, now)
 	b.holds[b.last] = hold{kind: k, until: now.Add(HoldLife)}
-	return b.last, true
+	token := b.last
+	b.mu.Unlock()
+	b.tellStats(s)
+	return token, true
 }
 
 // bind names the challenge a hold is for, and lets the room go at the
@@ -275,15 +398,92 @@ func (b *budget) drop(k kind, id string) {
 // as take counts a call.
 func (b *budget) answer(k kind, id string) bool {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	now := b.now()
 	b.prune(now)
+	s := b.rollLocked(now)
 	for t, h := range b.holds {
 		if h.kind == k && h.id != "" && h.id == id {
 			delete(b.holds, t)
-			b.sent[k] = append(b.sent[k], now)
+			b.sentLocked(k, now)
+			b.mu.Unlock()
+			b.tellStats(s)
 			return true
 		}
 	}
-	return b.takeLocked(k, now)
+	ok := b.takeLocked(k, now)
+	var r *refusal
+	if !ok {
+		r = b.refuseLocked(k, now)
+	}
+	b.mu.Unlock()
+	b.tellStats(s)
+	b.tell(r)
+	return ok
+}
+
+// refusedStep is the calls of a kind refused for room within a second of
+// the first of them, at.
+type refusedStep struct {
+	at time.Time
+	n  int
+}
+
+// kindStats are the calls of a kind the link took (counted and sent) and
+// refused for room.
+type kindStats struct {
+	taken, refused int
+}
+
+// budgetStats are, for each kind, the calls taken and refused in the last
+// BudgetWindow. A challenge and its answer are each a call taken; the room
+// a hold keeps is not. The refusals are counted to the second, so one
+// refused up to a second before the window's start may still be counted.
+// A wait that found no room slept and is not a refusal.
+type budgetStats [numKinds]kindStats
+
+// stats returns the calls taken and refused in the last BudgetWindow, by
+// kind.
+func (b *budget) stats() budgetStats {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.prune(b.now())
+	var st budgetStats
+	for k := range st {
+		st[k].taken = len(b.sent[k])
+		for _, r := range b.refusedAt[k] {
+			st[k].refused += r.n
+		}
+	}
+	return st
+}
+
+// StatsLogEvery is the least time between two stats lines (see
+// rollLocked): the link tells what it took and refused, by kind, at most
+// once in StatsLogEvery, and only when it refused something.
+const StatsLogEvery = 10 * time.Minute
+
+// rollLocked ends the stats period when it has lasted StatsLogEvery, and
+// returns its line when the period refused a call and there is a log. A
+// period begins at the link's first call and at the end of the one before;
+// it ends at the first call at least StatsLogEvery after it began, so the
+// line of a period with refusals waits for the link's next call (an idle
+// seat's watcher makes one about every 25 seconds). It runs under mu.
+func (b *budget) rollLocked(now time.Time) *statsLine {
+	if b.period.IsZero() || now.Before(b.period) {
+		b.period = now
+		return nil
+	}
+	if now.Sub(b.period) < StatsLogEvery {
+		return nil
+	}
+	var s *statsLine
+	for k := range b.periodRefused {
+		if b.periodRefused[k] > 0 && b.logf != nil {
+			s = &statsLine{minutes: int(now.Sub(b.period) / time.Minute), taken: b.periodTaken, refused: b.periodRefused}
+			break
+		}
+	}
+	b.period = now
+	b.periodTaken, b.periodRefused = [numKinds]int{}, [numKinds]int{}
+	return s
 }

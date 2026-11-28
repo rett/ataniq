@@ -135,8 +135,19 @@ type Delivery struct {
 	Outcome, Reason, Written string
 }
 
+// Identity identifies a directory row across refreshes. A project key sets
+// Home and Project. A conversation key also sets Lead, Conversation and Epoch.
+type Identity struct {
+	Home, Project, Lead, Conversation string
+	Epoch                             uint64
+}
+
 // Lead is one lead of the listing.
 type Lead struct {
+	// HomeID is empty for the local scratch backend. A row from a named
+	// home is for display only on this role-addressed backend.
+	HomeID, ProjectID, ID, ConversationID string
+	Offline                               bool
 	// Key is the short name shown in the table.
 	Key string
 	// Role is the lead's role, the identifier every command is sent with.
@@ -148,7 +159,8 @@ type Lead struct {
 	// State is the lead's state in the registry, such as "ready".
 	State string
 	// StateReason is the reason code the registry shows with the state, such
-	// as "holder-ready" with "ready". Empty with none. It is never drawn as
+	// as "holder-ready" with "ready", or a "client/" reason for an unreadable
+	// scratch row. Empty with none. It is never drawn as
 	// text: the view has words for the pairs it knows.
 	StateReason string
 	// Epoch is the current epoch, 0 with none.
@@ -173,6 +185,9 @@ type Lead struct {
 
 // Listing is the answer to List.
 type Listing struct {
+	// OfflineHomes names homes that could not be read in this snapshot.
+	// Keep the previously listed rows of these homes, marked stale.
+	OfflineHomes        []string
 	MaxRunning, Running int
 	Leads               []Lead
 	// LeftOut counts the rows the backend did not return. The view adds the

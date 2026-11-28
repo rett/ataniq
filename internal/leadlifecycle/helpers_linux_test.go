@@ -238,27 +238,31 @@ func (q *fakeQuiesce) Stop(ctx context.Context, role leadrole.Role, epoch uint64
 
 // rig is one registry, one fake manager on a fake clock and a controller.
 type rig struct {
-	t      *testing.T
-	dir    string
-	clock  *leadunit.FakeClock
-	fake   *leadunit.Fake
-	aud    *audit
-	plan   *crashPlan
-	reg    *leadregistry.Registry
-	pre    *fakePreflight
-	holder *fakeHolder
-	quiet  *fakeQuiesce
-	ctl    *Controller
-	gen    int64
+	t         *testing.T
+	dir       string
+	clock     *leadunit.FakeClock
+	fake      *leadunit.Fake
+	aud       *audit
+	plan      *crashPlan
+	reg       *leadregistry.Registry
+	pre       *fakePreflight
+	holder    *fakeHolder
+	quiet     *fakeQuiesce
+	ctl       *Controller
+	authority string
+	gen       int64
 }
 
 func newRig(t *testing.T) *rig {
 	t.Helper()
-	r := &rig{t: t, dir: filepath.Join(t.TempDir(), "registry"), plan: &crashPlan{at: -1},
+	r := &rig{t: t, dir: filepath.Join(t.TempDir(), "state", "registry"), plan: &crashPlan{at: -1},
 		pre: &fakePreflight{}, holder: &fakeHolder{}, quiet: &fakeQuiesce{}}
 	r.clock = leadunit.NewFakeClock(t0)
 	r.fake = leadunit.NewFake(r.clock)
 	r.aud = newAudit(r.fake, r.plan)
+	id, err := leadregistry.InitInstance(filepath.Dir(r.dir), "registry", "")
+	noErr(t, err)
+	r.authority = id.Authority
 	r.open()
 	t.Cleanup(func() { r.reg.Close() })
 	return r
@@ -299,8 +303,18 @@ func (r *rig) restart() {
 	r.open()
 }
 
+func (r *rig) enroll(project string) {
+	r.t.Helper()
+	if _, err := r.reg.ProjectHome(project); errors.Is(err, leadregistry.ErrHomeMissing) {
+		noErr(r.t, r.reg.SetProjectAssignment(project, r.authority, leadregistry.ProjectVersion{}, true))
+	} else {
+		noErr(r.t, err)
+	}
+}
+
 func (r *rig) define(project string) leadrole.Role {
 	r.t.Helper()
+	r.enroll(project)
 	role := mkRole(r.t, project)
 	if _, err := r.reg.Define(role, leadregistry.ManagerAtaniq, profile()); err != nil {
 		r.t.Fatal(err)
@@ -310,6 +324,7 @@ func (r *rig) define(project string) leadrole.Role {
 
 func (r *rig) defineTmux(project string) leadrole.Role {
 	r.t.Helper()
+	r.enroll(project)
 	role := mkRole(r.t, project)
 	if _, err := r.reg.Define(role, leadregistry.ManagerTmux, profile()); err != nil {
 		r.t.Fatal(err)

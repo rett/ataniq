@@ -16,6 +16,7 @@ import (
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadcanary/provision"
 	"ataniq/internal/leadcontrol"
+	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/canaryroot"
 	"ataniq/internal/leadlifecycle"
 	"ataniq/internal/leadlock"
@@ -78,6 +79,28 @@ type Scratch struct {
 	// ReadyBackoff is the first wait between two of its questions; default
 	// [DefaultReadyBackoff].
 	ReadyBackoff time.Duration
+	// HealthEvery is the interval between holder status checks after readiness.
+	// It defaults to [DefaultHealthEvery].
+	HealthEvery time.Duration
+	// Chat, when not nil, is the seat's chat port that this mode binds to
+	// its leads' chat once their stores are open (chat_port_linux.go): until
+	// then, and after the daemon stops, it answers chat-busy. Nil leaves the
+	// leads' chat to the desk alone (chat.list and chat.set).
+	Chat *LeadChat
+	// ChatScanEvery is how often the scanner of a lead whose chat is on reads
+	// its reply folder; default [DefaultChatScanEvery].
+	ChatScanEvery time.Duration
+	// HolderBuild is the holder build the daemon expects and how it reads a
+	// holder's, as [Canary.HolderBuild]; nil is the daemon's own build.
+	HolderBuild *buildid.Checker
+
+	// chatNow is the clock of the leads' chat stores; nil means time.Now.
+	// Only a test in this package sets it, to run the settle rule ahead of
+	// the kernel's change times without waiting them out. It is unexported
+	// on purpose: no flag, config key or environment variable reaches it,
+	// because the settle rule is a security property (a lead cannot set its
+	// reply's change time, and the daemon's clock is the daemon's alone).
+	chatNow func() time.Time
 }
 
 // leadActHook is called by a command, after it holds the role's operation lock
@@ -167,6 +190,7 @@ type leadMode struct {
 	// lead_ready_linux.go); ready is its observers.
 	readyWithin  time.Duration
 	readyBackoff time.Duration
+	healthEvery  time.Duration
 	ready        readyObservers
 	// settle is the timers that settle a launch intent that a start left
 	// pending when its late-start window ends (see lead_settle_linux.go).
@@ -186,6 +210,11 @@ type leadMode struct {
 	// broken is set when the registry or the command table was found unusable:
 	// the daemon then admits no new command until it is restarted.
 	broken atomic.Bool
+
+	// chat is the leads' chat (chat_desk_linux.go), and port the seat's chat
+	// port bound to it, or nil.
+	chat *chatDesk
+	port *LeadChat
 }
 
 // scratchSetup checks the scratch config and builds the parts that need no
@@ -215,7 +244,11 @@ func (d *daemon) scratchSetup() (*canaryMode, error) {
 		return nil, fail(StepConfig, "scratch mode: %v", err)
 	}
 	router := newLeadRouter(msgNotALead)
-	m := &canaryMode{d: d, router: router, injectFor: s.InjectWait, dialFor: s.DialTimeout, idPrefix: idPrefixLead}
+	build, err := holderBuildCheck(s.HolderBuild)
+	if err != nil {
+		return nil, fail(StepConfig, "scratch mode: %v", err)
+	}
+	m := &canaryMode{d: d, router: router, injectFor: s.InjectWait, dialFor: s.DialTimeout, idPrefix: idPrefixLead, build: build}
 	if m.injectFor <= 0 {
 		m.injectFor = DefaultInjectWait
 	}
@@ -225,11 +258,12 @@ func (d *daemon) scratchSetup() (*canaryMode, error) {
 	lm := &leadMode{
 		cm: m, d: d, cfg: s.Config, getenv: getenv, provisionT: s.ProvisionTimeout,
 		roles: make(map[leadrole.Role]*leadRole, len(leads)), maxRunning: s.Config.MaxRunning,
-		readyWithin: s.ReadyWithin, readyBackoff: s.ReadyBackoff,
+		readyWithin: s.ReadyWithin, readyBackoff: s.ReadyBackoff, healthEvery: s.HealthEvery,
 	}
 	if lm.provisionT <= 0 {
 		lm.provisionT = DefaultProvisionTimeout
 	}
+	lm.chat, lm.port = newChatDesk(d.logf, s.ChatScanEvery, s.chatNow), s.Chat
 	for i, cfg := range leads {
 		pre, err := leadcanary.NewPreflightFor(leadrole.ReservedScratch, cfg.Role)
 		if err != nil {
@@ -244,6 +278,11 @@ func (d *daemon) scratchSetup() (*canaryMode, error) {
 		lm.roles[cfg.Role] = &leadRole{
 			role: cfg.Role, cfg: cfg, key: s.Config.Entries[i].Key, in: in, op: make(chan struct{}, 1),
 		}
+		layout, err := cfg.Layout()
+		if err != nil {
+			return nil, fail(StepConfig, "scratch mode: %v", err)
+		}
+		lm.chat.add(s.Config.Entries[i].Key, cfg.Role, layout.Role)
 	}
 	m.lead = lm
 	return m, nil
@@ -278,6 +317,11 @@ func (l *leadMode) open() error {
 		return fmt.Errorf("scratch mode: the command table %s cannot be opened: %w; it holds every command that was admitted, so set it aside only once every scratch unit is stopped: a daemon with a new table forgets what was admitted, and a client that asks again would run the command again", path, err)
 	}
 	l.table = t
+	// The chat store of every lead, each off: a lead whose store cannot be
+	// opened has no chat, and the daemon starts all the same.
+	if l.chat != nil {
+		l.chat.open(l.d.StateDir)
+	}
 	return nil
 }
 
@@ -297,24 +341,64 @@ func (l *leadMode) holderFor(lr *leadRole, digest, daemonLock string) (leadlifec
 	return newHolderCommand(cfg, daemonLock)
 }
 
-// closeTable closes the command table when it is open.
+// closeTable closes the command table when it is open, and the leads' chat
+// stores, once the seat's port is unbound and their scanners are told to end.
 func (l *leadMode) closeTable() error {
-	if l == nil || l.table == nil {
+	if l == nil {
 		return nil
 	}
-	return l.table.Close()
+	l.port.bind(nil)
+	l.chat.shutdown()
+	err := l.chat.closeStores()
+	if l.table == nil {
+		return err
+	}
+	return errors.Join(l.table.Close(), err)
 }
 
 // extension builds the extension of each lead's instance over the controller
-// and the registry, and returns the lead.* extension.
-func (l *leadMode) extension(ctl *leadlifecycle.Controller, reg *leadregistry.Registry) clientapi.Extension {
+// and the registry, and returns the lead.* extension. It fails when the check
+// of an adopted ready lead found another build and could not record it
+// (revalidateAdopted); the chat is then not bound.
+func (l *leadMode) extension(ctl *leadlifecycle.Controller, reg *leadregistry.Registry) (clientapi.Extension, error) {
 	l.ctl, l.reg = ctl, reg
 	for _, role := range l.cm.router.order {
 		in := l.cm.router.byRole[role]
 		in.ext = l.cm.newExt(in, ctl, reg)
 	}
-	return &leadExt{m: l}
+	// A lead an earlier daemon showed ready is checked for this daemon's
+	// build before anything is served (see lead_ready_linux.go).
+	if err := l.revalidateAdopted(); err != nil {
+		return nil, err
+	}
+	// The chat reads the registry's state of each lead, and nothing else of
+	// it; the seat's port gets the chat once it can answer.
+	if l.chat != nil {
+		l.chat.stateOf = func(role leadrole.Role) chatState { return chatStateOf(reg.Get(role)) }
+		l.chat.holdStopped = l.holdStopped
+		l.port.bind(l.chat)
+	}
+	return &leadExt{m: l}, nil
 }
+
+// holdStopped takes the role's operation lock, as a define, a start and a
+// stop do (a try-lock: a command of the role in progress answers false), and
+// answers its release when the registry proves the lead stopped
+// (provenStopped). Otherwise it lets the lock go and answers false.
+func (l *leadMode) holdStopped(role leadrole.Role) (func(), bool) {
+	lr, ok := l.roles[role]
+	if !ok || !lr.tryLock() {
+		return nil, false
+	}
+	if !l.provenStopped(lr) {
+		lr.unlock()
+		return nil, false
+	}
+	return lr.unlock, true
+}
+
+// chatExtension is the extension of chat.list and chat.set.
+func (l *leadMode) chatExtension() clientapi.Extension { return &chatExt{d: l.chat} }
 
 // lookup returns the lead the role text names. The text must read back as
 // itself: a spelling the role grammar would turn into another role is no

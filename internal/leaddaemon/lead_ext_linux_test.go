@@ -64,7 +64,8 @@ func newExtFixture(t *testing.T, answer holderAnswer, prefix string) *extFixture
 	f.x = &canaryExt{
 		cfg: c.cfg, role: c.cfg.Role, holderDir: c.holderDir, reg: reg, ev: ev, adm: adm,
 		dial: 2 * time.Second, wait: 300 * time.Millisecond, spent: map[uint64]bool{}, idPrefix: prefix,
-		logf: func(format string, a ...any) { fmt.Fprintf(log, format+"\n", a...) },
+		logf:  func(format string, a ...any) { fmt.Fprintf(log, format+"\n", a...) },
+		build: sameHolderBuild(),
 	}
 	f.holder = newFakeHolder(t, c.holderDir, answer)
 	return f
@@ -176,6 +177,7 @@ func TestUncertainOutcomeComesBeforeTheContext(t *testing.T) {
 func TestRouterHolderCommandIsOptionalAndReplaceable(t *testing.T) {
 	c := newCanaryEnv(t)
 	r := newLeadRouter("not here")
+	r.authorityTag = "0123456789abcdef"
 	in := &leadInstance{cfg: c.cfg, preflight: &seamPreflight{}}
 	if err := r.add(in); err != nil {
 		t.Fatal(err)

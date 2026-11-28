@@ -14,7 +14,8 @@ with the `ataniq_canary` tag, under `--canary`, these joins exist:
 
 1. The owner provisions the folders of one throwaway lead with
    `ataniq-canary provision`.
-2. The owner starts `ataniqd run --canary CONFIG` by hand. The daemon defines
+2. The owner initializes the config's state root and enrolls the project
+   with [the commands below](#ataniqd-run---canary), then starts `ataniqd run --canary CONFIG` by hand. The daemon defines
    the role and starts it in a transient user unit, with memory, swap and task
    limits.
 3. The unit runs the holder, `ataniq-holder --canary`. The holder runs the
@@ -101,11 +102,15 @@ knows `--scratch` only and its control socket answers every `inject` request
 waiver, the path from a control request to the terminal and the canary
 operations are not switched off in such a binary; they are not in it.
 
-Only `make canary-build` builds binaries with the tag. No release step, no
-other target and no CI workflow does. `make test` stays untagged, and
-`make test-canary` runs the tests of the tagged code, so while tagged code
-exists the whole suite is `make test` and then `make test-canary`. CI runs the
-second one as a tests-only job that keeps nothing.
+Only `make canary-build` builds binaries with the tag alone, and only
+`make scratch-seat-build` builds one with it and the owner channel's tag
+together: the daemon, into `build/scratch-seat/`, for the owner's own trial of
+real scratch leads with the seat gate (see
+[the lead daemon guide](lead-daemon.md#the-owner-channel-tagged-build-only)).
+No release step, no other target and no CI workflow does. `make test` stays
+untagged, and `make test-canary` runs the tests of the tagged code, so while
+tagged code exists the whole suite is `make test` and then `make test-canary`.
+CI runs the second one as a tests-only job that keeps nothing.
 
 A few pieces are untagged on purpose, because they are inert capability that a
 release build never calls: the `ptyhost` option for a child with no controlling
@@ -172,7 +177,8 @@ make canary-build
 
 It runs doctor and builds, with the tag, into `build/canary/` (ignored by
 git): `ataniqd`, `ataniq-holder`, `ataniq-canary`, `ataniq-canary-standin`,
-`ataniq-console`, `ataniq-intake` and `ataniq-probe`. It runs none of them.
+`ataniq-console`, `ataniq-intake`, `ataniq-probe` and the static helper
+`ataniq-hook`. It runs none of them. The run script leaves the helper unused.
 `ataniqd`, `ataniq-holder`, `ataniq-canary` and `ataniq-canary-standin` name the
 tag in their `--version` output.
 
@@ -213,7 +219,12 @@ what to remove.
 
 ### `ataniqd run --canary`
 
+After provisioning, initialize the config's state root and enroll the project
+from its role (for example, `throwaway-one` for `throwaway-one/lead`).
+
 ```text
+ataniqd init --state-dir STATE
+ataniqd project-home --state-dir STATE --home self PROJECT
 ataniqd run --canary CONFIG
 ataniqd --version
 ```
@@ -337,7 +348,7 @@ here is a real path.
 | `holder.profile_digest` | The pinned digest of the sandbox profile, 64 lower-case hex digits. The holder refuses a plan whose digest differs. Compute it with `ataniq-canary profile-digest --config CONFIG --inputs FILE`; a wrong pin otherwise fails the real start at step 12. |
 | `agent.kind` | `stand-in` or `live`. It goes into every line of the evidence. |
 | `agent.runtime`, `agent.runtime_version` | Given to the holder as `--runtime` and `--runtime-version`: plain text of 1 to 64 bytes. The runtime must be a key the registry accepts for a lead. |
-| `agent.footer_mode` | The recogniser's short name of the permission mode the fence expects in the agent's footer (`--expected-mode`), 1 to 128 bytes: `manual` or `auto` for claude 2.1.325, never the footer's own text ("manual mode on" is the text of the `manual` footer, and every inject then ends `not-now`). A `live` agent with `inject` true is refused at `show` and `check-inputs` unless it is `manual` or `auto`; the stand-in's value is free. |
+| `agent.footer_mode` | The recogniser's short name of the permission mode the fence expects in the agent's footer (`--expected-mode`), 1 to 128 bytes: `manual` or `auto` for claude 2.1.325, never the footer's own text ("manual mode on" is the text of the `manual` footer, and every inject then ends `not-now`). A `live` agent with `inject` true is refused at `show` and `check-inputs` unless it is `manual` or `auto`; the stand-in's value is free. The fence's rule for codex does not read the mode, so for codex the value changes nothing, and a `live` codex agent with `inject` true writes `manual`. |
 | `agent.argv` | The agent's command as seen inside the sandbox, an absolute executable first, at most 64 elements. For a `live` agent the first element is `/ataniq/agent/NAME`, the executable itself and no wrapper: step 9 runs the file `NAME` of the inputs file's `sources.agent_install` (the install folder is that key of the inputs file, not a field of the config), and `check-inputs` refuses a first element that is not such a file there. |
 | `agent.env` | The agent's whole environment as `KEY=VALUE`, at most 64; one `--env` flag each. The holder inherits nothing for it. It is part of the profile digest, so the pin is taken after it is final; a live claude needs two names here: `DISABLE_AUTOUPDATER=1`, or it may draw an update notice on the screen the fence reads, and `CLAUDE_CODE_NO_FLICKER=1`, which selects the fullscreen (alternate-screen) renderer, the only one the recogniser reads (without it claude chooses the renderer per process and may draw on the main screen, where every inject ends `not-now`). A root prepared before `CLAUDE_CODE_NO_FLICKER=1` was added has another environment and so another digest: prepare a new root and take a new pin. `ataniq-canary show` prints the names (`agent_env_names`), never a value. |
 | `inject` | `true` opens the injection gate: the holder gets `--inject`. With `false` the daemon refuses `canary.inject` at once and spends nothing. |

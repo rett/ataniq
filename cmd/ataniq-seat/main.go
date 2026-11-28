@@ -4,7 +4,7 @@
 //
 //	ataniq-seat (--origin https://HOST | --origin-file PATH) (--socket PATH | --listen 127.0.0.1:PORT)
 //	            [--rpid HOST] [--socket-mode 0660] [--client-addr-header NAME]
-//	            [--gate HOST:PORT --gate-pin-file PATH --identity DIR]
+//	            [--identity DIR (--gate HOST:PORT --gate-pin-file PATH | --gate-entry NAME,HOST:PORT,PIN_FILE ...)]
 //	            [--decision-guard DIR] [--notify-socket PATH]
 //	ataniq-seat gate-init --identity DIR
 //
@@ -41,6 +41,13 @@
 // decisions are for scratch state and the STAND-IN door only. Without the
 // three flags the daemon port is not wired: pairing and login answer with
 // the fixed code daemon_unavailable, and no card offers a decision.
+//
+// Repeat --gate-entry NAME,HOST:PORT,PIN_FILE with one --identity to serve a
+// gate directory at /. Names are unique lowercase letters, digits and hyphens
+// starting with a letter or digit (32 characters at most). Each pin file follows
+// the --gate-pin-file rules. Each gate has its own session and scoped links.
+// /pair/ asks which gate issued the scanned code. The single-gate notifier
+// is available with --gate.
 //
 // --decision-guard names the authority host's state folder, the one the
 // release switch keeps decisions.inhibit in: /var/lib/authority-host when it
@@ -99,7 +106,7 @@ import (
 	"ataniq/internal/seatnotice"
 )
 
-const usageLine = "Usage: ataniq-seat (--origin https://HOST | --origin-file PATH) (--socket PATH | --listen LOOPBACK:PORT) [--rpid HOST] [--socket-mode MODE] [--client-addr-header NAME] [--gate HOST:PORT --gate-pin-file PATH --identity DIR] [--decision-guard DIR] [--notify-socket PATH]\n" +
+const usageLine = "Usage: ataniq-seat (--origin https://HOST | --origin-file PATH) (--socket PATH | --listen LOOPBACK:PORT) [--rpid HOST] [--socket-mode MODE] [--client-addr-header NAME] [--identity DIR (--gate HOST:PORT --gate-pin-file PATH | --gate-entry NAME,HOST:PORT,PIN_FILE ...)] [--decision-guard DIR] [--notify-socket PATH]\n" +
 	"--origin and --origin-file exclude each other; --socket and --listen exclude each other; --socket needs --client-addr-header; --listen takes an IP literal of the loopback range; --gate, --gate-pin-file and --identity go together; --decision-guard is an absolute folder (default " + defaultGuardDir + "); --notify-socket is the absolute path of the separate notifier unit's socket and needs --gate."
 
 const gateInitUsage = "Usage: ataniq-seat gate-init --identity DIR\n" +
@@ -211,6 +218,14 @@ func gateInit(args []string, out, errout io.Writer) int {
 	return 0
 }
 
+type gateConnection struct {
+	address string
+	client  *seatgate.Client
+	link    *seatlink.Daemon
+}
+
+type gateEntry struct{ name, address, pin string }
+
 // options is what the flags select.
 type options struct {
 	origin, originFile, rpid, socket, listen, clientAddrHeader string
@@ -218,6 +233,7 @@ type options struct {
 	// gate, gatePinFile and identity are the gate link's flags; gatePin is
 	// the fingerprint read from gatePinFile. All are empty without a link.
 	gate, gatePinFile, identity, gatePin string
+	entries                              []gateEntry
 	// guardDir is the state folder decisionguard.Check is asked of before
 	// each decision is relayed.
 	guardDir string
@@ -237,6 +253,21 @@ func parse(args []string, errout io.Writer) (o options, code int, ok bool) {
 	fs.StringVar(&o.socket, "socket", "", "Unix socket path")
 	fs.StringVar(&o.listen, "listen", "", "loopback address and port")
 	fs.StringVar(&o.clientAddrHeader, "client-addr-header", "", "header the proxy sets to the client address")
+	fs.Func("gate-entry", "repeat for each gate: NAME,HOST:PORT,PIN_FILE", func(arg string) error {
+		fields := strings.SplitN(arg, ",", 3)
+		if len(fields) != 3 || fields[0] == "" {
+			return errors.New("expected NAME,HOST:PORT,PIN_FILE")
+		}
+		if err := checkGate(fields[1]); err != nil {
+			return err
+		}
+		pin, err := readPinFile(fields[2])
+		if err != nil {
+			return err
+		}
+		o.entries = append(o.entries, gateEntry{fields[0], fields[1], pin})
+		return nil
+	})
 	fs.StringVar(&o.gate, "gate", "", "the seat gate's address, host:port")
 	fs.StringVar(&o.gatePinFile, "gate-pin-file", "", "file holding the gate key's fingerprint")
 	fs.StringVar(&o.identity, "identity", "", "folder of the seat's gate key, made by gate-init")
@@ -290,7 +321,14 @@ func parse(args []string, errout io.Writer) (o options, code int, ok bool) {
 	if !filepath.IsAbs(o.guardDir) {
 		return fail("--decision-guard must be an absolute folder")
 	}
-	if n := countSet(o.gate, o.gatePinFile, o.identity); n != 0 && n != 3 {
+	if len(o.entries) > 0 {
+		if o.gate != "" || o.gatePinFile != "" || o.identity == "" {
+			return fail("--gate-entry needs --identity and its own address and pin file")
+		}
+		if o.notifySocket != "" {
+			return fail("--notify-socket requires a single --gate")
+		}
+	} else if n := countSet(o.gate, o.gatePinFile, o.identity); n != 0 && n != 3 {
 		return fail("give --gate, --gate-pin-file and --identity together, or none of them")
 	}
 	if o.notifySocket != "" {
@@ -310,6 +348,7 @@ func parse(args []string, errout io.Writer) (o options, code int, ok bool) {
 			return fail("--gate-pin-file: " + err.Error())
 		}
 		o.gatePin = pin
+		o.entries = []gateEntry{{address: o.gate, pin: pin}}
 	}
 	return o, 0, true
 }
@@ -445,10 +484,24 @@ func run(ctx context.Context, args []string, errout io.Writer, ready func(net.Ad
 	if !ok {
 		return code
 	}
+	// The link's refusals and the guard's are logged from other goroutines
+	// than this one, so every write to errout that can come from them goes
+	// through logf, one at a time.
+	var logMu sync.Mutex
+	logf := func(format string, args ...any) {
+		logMu.Lock()
+		defer logMu.Unlock()
+		fmt.Fprintf(errout, format, args...)
+	}
+	guard := func(d seatapp.Daemon) seatapp.Daemon {
+		return newGuardedDaemon(d, o.guardDir, func(code string) {
+			logf("ataniq-seat: a decision was refused, decisions are paused on this host: %s\n", code)
+		})
+	}
 	var daemon seatapp.Daemon = unwiredDaemon{}
-	var client *seatgate.Client
-	var link *seatlink.Daemon
-	if o.gate != "" {
+	var clients []gateConnection
+	var gates []seatapp.Gate
+	if len(o.entries) > 0 {
 		id, err := seatgate.LoadIdentity(o.identity)
 		if err != nil {
 			// seatgate's errors are fixed texts, with no path and nothing
@@ -456,40 +509,40 @@ func run(ctx context.Context, args []string, errout io.Writer, ready func(net.Ad
 			fmt.Fprintf(errout, "ataniq-seat: --identity: %v\n", err)
 			return 2
 		}
-		client, err = seatgate.NewClient(o.gate, seatgate.ClientConfig{
-			TLS:  seatgate.ClientTLS(id, o.gatePin, serverName(o.gate)),
-			Caps: seatlink.Caps(),
-			// The link's budget keeps room at the gate for this many pings.
-			PingInterval: seatlink.PingInterval,
-		})
-		if err != nil {
-			fmt.Fprintf(errout, "ataniq-seat: %v\n", err)
-			return 2
-		}
-		link, err = seatlink.New(client, seatlink.WithGatePin(o.gatePin))
-		if err != nil {
-			fmt.Fprintf(errout, "ataniq-seat: %v\n", err)
-			return 2
-		}
-		daemon = link
-		if gateLinkHook != nil {
-			gateLinkHook(client)
+		for _, entry := range o.entries {
+			client, err := seatgate.NewClient(entry.address, seatgate.ClientConfig{
+				TLS:  seatgate.ClientTLS(id, entry.pin, serverName(entry.address)),
+				Caps: seatlink.Caps(),
+				// The link's budget keeps room at the gate for this many pings.
+				PingInterval: seatlink.PingInterval,
+			})
+			if err != nil {
+				fmt.Fprintf(errout, "ataniq-seat: %v\n", err)
+				return 2
+			}
+			link, err := seatlink.New(client, seatlink.WithGatePin(entry.pin), seatlink.WithLogf(logf))
+			if err != nil {
+				fmt.Fprintf(errout, "ataniq-seat: %v\n", err)
+				return 2
+			}
+			clients = append(clients, gateConnection{entry.address, client, link})
+			if entry.name == "" {
+				daemon = link
+			} else {
+				gates = append(gates, seatapp.Gate{Name: entry.name, Instance: entry.pin, Daemon: guard(link)})
+			}
+			if gateLinkHook != nil {
+				gateLinkHook(client)
+			}
 		}
 	}
-	// Every decision's challenge and every decision asks the guard first.
-	// The refusals are logged from the handlers' goroutines, so from here on
-	// every write to errout goes through logf, one at a time.
-	var logMu sync.Mutex
-	logf := func(format string, args ...any) {
-		logMu.Lock()
-		defer logMu.Unlock()
-		fmt.Fprintf(errout, format, args...)
-	}
-	daemon = newGuardedDaemon(daemon, o.guardDir, func(code string) {
-		logf("ataniq-seat: a decision was refused, decisions are paused on this host: %s\n", code)
-	})
-	if daemonHook != nil {
-		daemonHook(daemon)
+	if len(gates) == 0 {
+		daemon = guard(daemon)
+		if daemonHook != nil {
+			daemonHook(daemon)
+		}
+	} else {
+		daemon = nil
 	}
 	cfg := seatapp.Config{
 		Origin:           o.origin,
@@ -510,7 +563,13 @@ func run(ctx context.Context, args []string, errout io.Writer, ready func(net.Ad
 	}
 	// Open starts the notices' goroutine when there is a notifier; Close,
 	// deferred here, stops it when the command ends.
-	h, err := seatapp.Open(cfg)
+	var h *seatapp.App
+	var err error
+	if len(gates) != 0 {
+		h, err = seatapp.OpenGates(cfg, gates)
+	} else {
+		h, err = seatapp.Open(cfg)
+	}
 	if err != nil {
 		fmt.Fprintf(errout, "ataniq-seat: %v\n", err)
 		return 2
@@ -522,27 +581,18 @@ func run(ctx context.Context, args []string, errout io.Writer, ready func(net.Ad
 		return 1
 	}
 	srv := seatapp.Server(h)
-	if client != nil {
-		// The link runs under the signal context, and its own cancel, so it
-		// ends with the server: after the shutdown below has let requests in
-		// flight finish, the deferred cancel stops it and the wait sees it
-		// out.
-		lctx, cancel := context.WithCancel(ctx)
-		linked := make(chan struct{})
-		go func() {
-			defer close(linked)
-			client.Run(lctx)
-		}()
-		defer func() {
-			cancel()
-			<-linked
-		}()
-		// The link's watcher (seat.wait, when the gate offers it) runs with
-		// the client and ends before it: Close, deferred after the stop
-		// above, runs first, so no wait is in flight when the client stops.
-		link.StartWatch()
-		defer link.Close()
-		logf("ataniq-seat: linking to the seat gate at %s\n", o.gate)
+	lctx, stopLinks := context.WithCancel(ctx)
+	var workers sync.WaitGroup
+	defer func() {
+		stopLinks()
+		workers.Wait()
+	}()
+	for _, gate := range clients {
+		workers.Go(func() { gate.client.Run(lctx) })
+		workers.Go(func() { logHellos(lctx, gate.client, helloEvery, logf) })
+		gate.link.StartWatch()
+		defer gate.link.Close()
+		logf("ataniq-seat: linking to the seat gate at %s\n", gate.address)
 	}
 	logf("ataniq-seat: decisions follow the guard in %s\n", o.guardDir)
 	logf("ataniq-seat: serving on %s\n", l.Addr())

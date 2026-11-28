@@ -10,10 +10,11 @@ import (
 	"ataniq/internal/approval/record"
 )
 
-// This file holds the words of the five operations only the seat gate serves:
-// a login and a decision from the owner's phone, each a WebAuthn assertion
-// over a challenge the daemon draws, and the long wait that tells the seat
-// when the pending cards changed. See docs/design/seat-gate.md, "The
+// This file holds the words of five of the operations only the seat gate
+// serves: a login and a decision from the owner's phone, each a WebAuthn
+// assertion over a challenge the daemon draws, and the long wait that tells
+// the seat when the pending cards changed. The sixth, the guided new-project
+// interview seat.genesis, is in genesis.go. See docs/design/seat-gate.md, "The
 // challenge" and "Login".
 
 // The bounds of the seat gate's forms.
@@ -221,6 +222,13 @@ type SeatWaitParams struct {
 	// otherwise holds the answer until it changes or the hold ends. The
 	// field is always written.
 	Since string `json:"since"`
+	// Chat is the extended wait's chat cursor (see waitchat.go): the
+	// cursor of the leads' chat the seat last saw, 0 to [MaxChatSeq], 0
+	// when it has none. It is written only by a seat whose gate listed
+	// [CapWaitChat], and read only by [DecodeSeatWaitChatParams]: the
+	// plain form, [DecodeSeatWaitParams], refuses it, as a gate that does
+	// not know it does.
+	Chat *int64 `json:"chat,omitempty"`
 }
 
 // SeatWaitCard is one pending card in a seat.wait result: what the seat
@@ -249,6 +257,11 @@ type SeatWaitResult struct {
 	// More is true when Waiting is more than the cards listed, and false
 	// when it is exactly their number.
 	More bool `json:"more"`
+	// Chat is the extended wait's chat cursor (see waitchat.go), 1 to
+	// [MaxChatSeq]: only an answer to params that carried one may hold it,
+	// and it is left out when the daemon has no cursor to give. The plain
+	// form, [DecodeSeatWaitResult], refuses it.
+	Chat *int64 `json:"chat,omitempty"`
 }
 
 var (
@@ -528,12 +541,21 @@ func checkSeatLoginResult(r *SeatLoginResult) error {
 
 func checkSeatWaitParams(p *SeatWaitParams) error {
 	c := &checker{invalid: record.CodeRecordInvalid}
+	c.need(p.Chat == nil, "seat.chat is given in the plain wait")
 	c.need(p.Since == "" || record.IsLowerHex(p.Since, SeatWaitVersionLength), "seat.since is neither empty nor "+strconv.Itoa(SeatWaitVersionLength)+" lower-case hexadecimal digits")
 	return c.result()
 }
 
 func checkSeatWaitResult(r *SeatWaitResult) error {
 	c := &checker{invalid: record.CodeRecordInvalid}
+	c.need(r.Chat == nil, "seat.chat is given in the plain wait")
+	checkWaitCards(c, r)
+	return c.result()
+}
+
+// checkWaitCards checks the Card members of a wait's result: the version,
+// the count, the cards and "more".
+func checkWaitCards(c *checker, r *SeatWaitResult) {
 	c.need(record.IsLowerHex(r.Version, SeatWaitVersionLength), "seat.version is not "+strconv.Itoa(SeatWaitVersionLength)+" lower-case hexadecimal digits")
 	c.need(len(r.Cards) <= MaxSeatWaitCards, "seat.cards has more than "+strconv.Itoa(MaxSeatWaitCards)+" cards")
 	c.need(r.Waiting >= len(r.Cards), "seat.waiting is less than the cards listed")
@@ -549,7 +571,6 @@ func checkSeatWaitResult(r *SeatWaitResult) error {
 		c.need(len(card.Kind) <= MaxSeatWaitKindBytes, at+".kind is longer than "+strconv.Itoa(MaxSeatWaitKindBytes)+" bytes")
 		c.sha256(card.BindingSHA256, at+".binding_sha256")
 	}
-	return c.result()
 }
 
 // displayID is a credential's display id: the first 8 bytes of the SHA-256

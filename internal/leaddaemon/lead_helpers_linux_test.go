@@ -91,6 +91,13 @@ type leadEnv struct {
 // and the daemon's parts for it. Nothing is provisioned and nothing runs.
 func newLeadEnv(t *testing.T) *leadEnv {
 	t.Helper()
+	l := newLeadEnvWithoutHomes(t)
+	enrollTestProjects(t, l.state, "scratch-alpha", "scratch-beta")
+	return l
+}
+
+func newLeadEnvWithoutHomes(t *testing.T) *leadEnv {
+	t.Helper()
 	dir, err := os.MkdirTemp("", "ls")
 	if err != nil {
 		t.Fatal(err)
@@ -99,6 +106,7 @@ func newLeadEnv(t *testing.T) *leadEnv {
 	w := provisiontest.NewScratch(shortTB{TB: t, dir: dir})
 	e := newEnv(t)
 	e.state, e.runtime = w.State, w.Runtime
+	initTestIdentity(t, e.state)
 	e.fake = leadunit.NewFake(leadunit.SystemClock{})
 	l := &leadEnv{
 		env: e, w: w, gate: &gateManager{Manager: e.fake}, holders: map[string]*fakeHolder{},
@@ -112,6 +120,7 @@ func (l *leadEnv) resetScratch() {
 	l.scratch = &Scratch{
 		Config: l.w.Config, Getenv: l.w.Getenv(),
 		InjectWait: 300 * time.Millisecond, DialTimeout: 2 * time.Second,
+		HolderBuild: sameHolderBuild(),
 	}
 }
 
@@ -356,12 +365,17 @@ func bareMode(t *testing.T, w *provisiontest.ScratchWorld) *leadMode {
 	log := &syncBuffer{}
 	d := &daemon{Config: Config{StateDir: w.State, RuntimeDir: w.Runtime, Clock: leadunit.SystemClock{}}, log: log}
 	router := newLeadRouter(msgNotALead)
-	cm := &canaryMode{d: d, router: router, injectFor: 300 * time.Millisecond, dialFor: 2 * time.Second, idPrefix: idPrefixLead}
+	cm := &canaryMode{d: d, router: router, injectFor: 300 * time.Millisecond, dialFor: 2 * time.Second, idPrefix: idPrefixLead, build: sameHolderBuild()}
 	m := &leadMode{
 		cm: cm, d: d, cfg: w.Config, getenv: w.Getenv(), provisionT: time.Minute,
 		roles: map[leadrole.Role]*leadRole{}, maxRunning: w.Config.MaxRunning,
 	}
 	cm.lead = m
+	var projects []string
+	for _, cfg := range leads {
+		projects = append(projects, cfg.Role.Project())
+	}
+	enrollTestProjects(t, w.State, projects...)
 	reg, err := leadregistry.Open(filepath.Join(w.State, RegistryDirName), leadregistry.Options{Now: time.Now})
 	if err != nil {
 		t.Fatal(err)

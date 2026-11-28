@@ -93,6 +93,9 @@ func daemonBase(owner bool) terminalconsole.Projection {
 func daemonProjection(r consoleclient.Result) terminalconsole.Projection {
 	p := daemonBase(r.State == consoleclient.StateOK && r.View.OwnerChannel)
 	if r.State != consoleclient.StateOK {
+		// A transport outage preserves directory rows. A refusal or invalid
+		// reply supplies no view of the previous inventory.
+		p.Offline = r.State == consoleclient.StateNoDaemon || r.State == consoleclient.StateSlow || r.State == consoleclient.StateUnavailable
 		p.Problem, p.NextStep = r.Text, r.NextStep
 		if p.Problem == "" {
 			p.Problem = "the daemon could not be asked"
@@ -100,6 +103,7 @@ func daemonProjection(r consoleclient.Result) terminalconsole.Projection {
 		return p
 	}
 	v := r.View
+	p.OfflineHomes = v.OfflineHomes
 	p.Facts = []terminalconsole.Check{
 		{Name: "Daemon version", State: orUnknown(v.Daemon.Version)},
 		{Name: "Daemon process", State: pidText(v.Daemon.PID)},
@@ -122,7 +126,7 @@ func daemonProjection(r consoleclient.Result) terminalconsole.Projection {
 		for _, c := range pr.Coordinators {
 			lead.Subagents = append(lead.Subagents, "coordinator "+orUnknown(c.Feature)+" · "+string(c.State))
 		}
-		p.Projects = append(p.Projects, terminalconsole.Project{Name: pr.Name, Leads: []terminalconsole.Lead{lead}})
+		p.Projects = append(p.Projects, terminalconsole.Project{HomeID: pr.HomeID, ID: pr.ID, Name: pr.Name, Leads: []terminalconsole.Lead{lead}})
 	}
 	return p
 }
@@ -138,6 +142,7 @@ func daemonLead(e consoleclient.Entry) terminalconsole.Lead {
 		requested += " / " + e.Effort
 	}
 	return terminalconsole.Lead{
+		ID: e.ID, ConversationID: e.ConversationID, Epoch: e.Epoch,
 		Name:  e.Name,
 		State: string(e.State),
 		Session: terminalconsole.Session{
@@ -207,14 +212,11 @@ type daemonRig struct {
 	closes []func()
 }
 
-// newDaemonRig makes the rig for --daemon as the command line makes it: the
-// daemon's approvals as the backend and, over the same owner client, its
-// pairing as the pair-a-phone view's, with the approval app's origin from the
-// owner-local file (read when the rig is made), and, when the daemon's hello
-// lists the lead control's operations, the lead client as the leads view's
-// backend. Every build has the approvals and the pairing backends; whether the
-// daemon has an owner channel or lead control is found when it is asked. mk makes the lead client. Close
-// ends what the rig holds.
+// newDaemonRig sets up the approvals and pairing backends for --daemon.
+// Both use the same owner client. The pairing view reads the approval app's
+// origin from the owner-local file. The rig also uses mk to make a lead
+// client and enables the leads view when the daemon's hello offers lead.list.
+// Close releases the backends the rig holds.
 func newDaemonRig(cfg config, mk newLeadsFunc) (*daemonRig, error) {
 	owner, closeOwner, err := ownerBackend(cfg.daemon)
 	if err != nil {

@@ -22,6 +22,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 )
@@ -29,7 +30,7 @@ import (
 const canaryTag = "ataniq_canary"
 
 // canaryAllowedPaths are the only places a Go file's build constraint may name
-// the tag. Each is a folder, with its subfolders.
+// the tag, apart from canaryAllowedTestFiles. Each is a folder, with its subfolders.
 var canaryAllowedPaths = []string{
 	"internal/leadcanary/",
 	"internal/leadholder/sandboxstart/",
@@ -38,13 +39,19 @@ var canaryAllowedPaths = []string{
 	"internal/leadholder/canaryroot/",
 	"internal/leadholder/serve/",
 	"internal/leadcontrol/",
+	"internal/leadchat/",
 	"internal/leaddaemon/",
 	"internal/mirror/",
 	"cmd/ataniqd/",
 	"cmd/ataniq-holder/",
 	"cmd/ataniq-canary/",
 	"cmd/ataniq-canary-standin/",
+	"cmd/ataniq-hook/",
 }
+
+// Task 44 exercises the tagged renderer against the registered packs. Retire
+// this exact test-file entry when the renderer no longer needs the tag.
+var canaryAllowedTestFiles = []string{"packs/all/hookrender_test.go"}
 
 // canaryWholePaths hold packages that have no file outside the tag: an untagged
 // build cannot import them, and every Go file in them, tests included, carries
@@ -56,8 +63,10 @@ var canaryWholePaths = []string{
 	"internal/leadholder/screenrec/",
 	"internal/leadholder/canaryroot/",
 	"internal/leadcontrol/",
+	"internal/leadchat/",
 	"cmd/ataniq-canary/",
 	"cmd/ataniq-canary-standin/",
+	"cmd/ataniq-hook/",
 }
 
 // canaryRequiredFiles are single files outside the wholly tagged packages that
@@ -81,11 +90,14 @@ var canaryForbiddenDeps = []string{
 	"internal/leadholder/screenrec",
 	"internal/leadholder/canaryroot",
 	"internal/leadcontrol",
+	"internal/leadchat",
 }
 
 // canaryMakeTargets are the Makefile targets whose recipes may name the tag.
-// test-ownerchannel runs the pair of tags together, so it names this one too.
-var canaryMakeTargets = []string{"test-canary", "canary-build", "test-ownerchannel"}
+// test-ownerchannel runs the pair of tags together, and scratch-seat-build
+// builds the daemon with the pair, so they name this one too (the owner
+// channel's guard holds the recipe of scratch-seat-build to its exact lines).
+var canaryMakeTargets = []string{"test-canary", "canary-build", "test-ownerchannel", "scratch-seat-build"}
 
 func underAnyPath(p string, folders []string) bool {
 	for _, folder := range folders {
@@ -110,8 +122,10 @@ func headerConstraints(data string) ([]constraint.Expr, []string) {
 // before anything else and no block comment comes before it. It reports
 // whether the file has a go:build line. Placement uses every line that names
 // the tag, which is the conservative reading, and requirement uses the applied
-// constraints.
+// constraints. A UTF-8 byte order mark at the start is dropped first, as the go
+// command drops it: a constraint after it still applies.
 func headerConstraintsGo(data string) (all, applied []constraint.Expr, hasGoBuild bool, bad []string) {
+	data = strings.TrimPrefix(data, "\uFEFF")
 	var goBuild, plusBuild, pending []constraint.Expr
 	inBlock, ended := false, false
 	for _, line := range strings.Split(data, "\n") {
@@ -277,7 +291,7 @@ func checkCanaryPlacement(fsys fs.FS) []string {
 			return nil
 		}
 		switch {
-		case named && !underAnyPath(p, canaryAllowedPaths):
+		case named && !underAnyPath(p, canaryAllowedPaths) && !slices.Contains(canaryAllowedTestFiles, p):
 			problems = append(problems, fmt.Sprintf("%s: the build constraint names %s outside the allowed paths", p, canaryTag))
 		case named && !(hasGoBuild && slices.ContainsFunc(applied, exprNamesTag)):
 			problems = append(problems, fmt.Sprintf("%s: %s is named, but not in a go:build line that the go command applies", p, canaryTag))
@@ -380,8 +394,9 @@ func buildsNeverWithTag(exprs []constraint.Expr) bool {
 
 var makeRuleLine = regexp.MustCompile(`^([A-Za-z0-9_.%/ -]+):($|[^=])`)
 
-// canaryTargetRef finds the name of one of canaryMakeTargets as a word.
-var canaryTargetRef = regexp.MustCompile(`(^|[^A-Za-z0-9_.-])(test-canary|canary-build)($|[^A-Za-z0-9_.-])`)
+// canaryTargetRef finds the name of one of canaryMakeTargets as a word, but
+// test-ownerchannel, which the owner channel's guard reads.
+var canaryTargetRef = regexp.MustCompile(`(^|[^A-Za-z0-9_.-])(test-canary|canary-build|scratch-seat-build)($|[^A-Za-z0-9_.-])`)
 
 var makeInclude = regexp.MustCompile(`^-?s?include\s`)
 
@@ -823,9 +838,9 @@ var canaryJobGuardKey = regexp.MustCompile(`^["']?(if|continue-on-error)["']?\s*
 // checkCanaryWorkflow is check (5). Its input is every file under .github:
 // the workflow files directly below .github/workflows by their file name, and
 // every other file (composite actions, nested folders, anything else) by its
-// path. No file names the tag or canary-build outside a comment, no run line of
-// any file names the run kit's folder, and no file uses a local action outside
-// .github. test.yml has a job test-canary that runs the make target and never
+// path. No file names the tag, or canary-build or scratch-seat-build outside a
+// comment, no run line of any file names the run kit's folder, and no file uses
+// a local action outside .github. test.yml has a job test-canary that runs the make target and never
 // names the tag, uses only the actions of canaryJobUses, has no if or
 // continue-on-error that could keep it from failing, has read-only
 // permissions, and is written in no flow style, with no complex or merge key
@@ -877,8 +892,10 @@ func checkCanaryWorkflow(files map[string]string) []string {
 				kept = append(kept, line)
 			}
 		}
-		if strings.Contains(strings.Join(kept, "\n"), "canary-build") {
-			problems = append(problems, name+": names canary-build")
+		for _, target := range []string{"canary-build", "scratch-seat-build"} {
+			if strings.Contains(strings.Join(kept, "\n"), target) {
+				problems = append(problems, name+": names "+target)
+			}
 		}
 		if strings.Contains(files[name], canaryTag) {
 			problems = append(problems, name+": names the tag "+canaryTag)
@@ -1039,9 +1056,10 @@ func canaryGoEnv() []string {
 	return append(os.Environ(), "GOENV=off", "GOWORK=off", "GOFLAGS=", "GO111MODULE=on", "GOPRIVATE=", "GONOPROXY=none", "GONOSUMDB=none", "GOTOOLCHAIN=local", "GOPROXY=off", "GOSUMDB=off")
 }
 
-// canaryGoList runs go list in the repository, offline. Without the tag it
-// refuses a pattern that names a wholly tagged package: with no Go file left,
-// that is an error, and the checks must not depend on it.
+// canaryGoList runs go list in the repository, offline, through goListOnce.
+// Without the tag it refuses a pattern that names a wholly tagged package:
+// with no Go file left, that is an error, and the checks must not depend on
+// it.
 func canaryGoList(t *testing.T, tagged bool, flags []string, patterns ...string) string {
 	t.Helper()
 	args := []string{"list"}
@@ -1054,9 +1072,31 @@ func canaryGoList(t *testing.T, tagged bool, flags []string, patterns ...string)
 			}
 		}
 	}
-	args = append(append(args, flags...), patterns...)
-	cmd := exec.Command(canaryGoTool(t), args...)
-	cmd.Dir = root(t)
+	return goListOnce(t, append(append(args, flags...), patterns...))
+}
+
+// goListed holds the output of every go list goListOnce ran, by its Go
+// executable, folder and arguments.
+var goListed = struct {
+	sync.Mutex
+	out map[string]string
+}{out: map[string]string{}}
+
+// goListOnce runs go list with the arguments in the repository, offline, once
+// per test process: the guards of both tags ask for some of the same listings,
+// and the repository does not change while the tests run. A failed run is not
+// kept.
+func goListOnce(t *testing.T, args []string) string {
+	t.Helper()
+	tool, dir := canaryGoTool(t), root(t)
+	key := strings.Join(append([]string{tool, dir}, args...), "\x00")
+	goListed.Lock()
+	defer goListed.Unlock()
+	if out, ok := goListed.out[key]; ok {
+		return out
+	}
+	cmd := exec.Command(tool, args...)
+	cmd.Dir = dir
 	cmd.Env = canaryGoEnv()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -1064,6 +1104,7 @@ func canaryGoList(t *testing.T, tagged bool, flags []string, patterns ...string)
 	if err != nil {
 		t.Fatalf("go %s: %v\n%s", strings.Join(args, " "), err, stderr.String())
 	}
+	goListed.out[key] = string(out)
 	return string(out)
 }
 
@@ -1490,7 +1531,7 @@ test: doctor
 # The tagged run.
 test-canary: doctor
 	@pkgs=$$(grep -rl 'ataniq_canary' .); \
-	sh scripts/go-tool.sh test -tags ataniq_canary $$pkgs ./tests/
+	sh scripts/go-tool.sh test -tags ataniq_canary $${pkgs:-./tests/}
 
 canary-build: doctor
 	@sh scripts/go-tool.sh build -tags ataniq_canary ./cmd/ataniq-canary
@@ -1527,6 +1568,9 @@ func TestCanaryTagHeaderConstraints(t *testing.T) {
 		{"a block comment closed on its line, a constraint below", "/* c */\n" + hdrTagged + "\n\npackage a\n", 1, 1, true},
 		{"two block comments on a line", "/* c */ /* d */\n" + hdrTagged + "\n\npackage a\n", 1, 1, true},
 		{"a block comment that closes then opens again", "/* c\n*/ /* d\n*/\n" + hdrTagged + "\n\npackage a\n", 1, 1, true},
+		{"a byte order mark before a go:build line", "\uFEFF" + hdrTagged + "\n\npackage a\n", 1, 1, true},
+		{"a byte order mark before a plus build line", "\uFEFF" + hdrPlusTagged + "\n\npackage a\n", 1, 1, false},
+		{"a go:build line of an assembly file", hdrTagged + "\n\n#include \"textflag.h\"\n", 1, 1, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			all, applied, hasGoBuild, bad := headerConstraintsGo(tc.data)
@@ -1575,6 +1619,17 @@ func TestCanaryTagMakefileCheck(t *testing.T) {
 		{"names that only look like an include", "includedir = x\nINCLUDES = y\n", nil},
 		{"the targets in comments and a continued phony line", ".PHONY: test \\\n\ttest-canary\n# test-canary and canary-build\n", nil},
 		{"a name that only contains a tagged target's", "test-canary-x: doctor\n\t@true\nmy-canary-build:\n\t@true\n", nil},
+		// The daemon built with the pair of tags: its recipe may name the tag,
+		// and no other line may name the target.
+		{"the pair build", "scratch-seat-build: doctor\n\t@mkdir -p build/scratch-seat\n\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary -trimpath -o build/scratch-seat/ataniqd ./cmd/ataniqd\n", nil},
+		{"the pair build in the phony line and a comment", ".PHONY: test scratch-seat-build\n# scratch-seat-build is the owner's\n", nil},
+		{"the pair build's recipe shared with another target", "scratch-seat-build other: doctor\n\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary ./cmd/ataniqd\n", []int{2}},
+		{"a prerequisite of another target names the pair build", "release: doctor scratch-seat-build\n\t@true\n", []int{1}},
+		{"a recipe that calls the pair build", "test: doctor\n\t@$(MAKE) scratch-seat-build\n", []int{2}},
+		{"the canary build runs the pair build", "canary-build: doctor\n\t@$(MAKE) scratch-seat-build\n", []int{2}},
+		{"the pair build depends on the canary build", "scratch-seat-build: canary-build\n\t@true\n", []int{1}},
+		{"a variable that names the pair build", "T = scratch-seat-build\n", []int{1}},
+		{"a name that only contains the pair build's", "my-scratch-seat-build: doctor\n\t@true\nscratch-seat-builds:\n\t@true\n", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var got []int
@@ -1746,6 +1801,11 @@ func TestCanaryTagWorkflowCheck(t *testing.T) {
 		{"a composite action that names the tag", map[string]string{"test.yml": goodWorkflow, ".github/actions/b/action.yml": "runs:\n  using: composite\n  steps:\n    - run: go build -tags ataniq_canary ./...\n      shell: sh\n"}, true},
 		{"a composite action that only mentions canary-build in a comment", map[string]string{"test.yml": goodWorkflow, ".github/actions/b/action.yml": "# not canary-build\nruns:\n  using: composite\n  steps: []\n"}, false},
 		{"a file that is not yaml names canary-build", map[string]string{"test.yml": goodWorkflow, ".github/scripts/ship.sh": "make canary-build\n"}, true},
+		{"another workflow runs scratch-seat-build", map[string]string{"test.yml": goodWorkflow, "release.yml": "jobs:\n  b:\n    steps:\n      - run: make scratch-seat-build\n"}, true},
+		{"the first job runs scratch-seat-build", edit("- run: make test\n", "- run: make scratch-seat-build\n"), true},
+		{"a composite action that runs scratch-seat-build", map[string]string{"test.yml": goodWorkflow, ".github/actions/b/action.yml": "runs:\n  using: composite\n  steps:\n    - run: make scratch-seat-build\n      shell: sh\n"}, true},
+		{"a file that is not yaml names scratch-seat-build", map[string]string{"test.yml": goodWorkflow, ".github/scripts/ship.sh": "make scratch-seat-build\n"}, true},
+		{"a comment that names scratch-seat-build is not a run", map[string]string{"test.yml": goodWorkflow, "x.yml": "# make scratch-seat-build is for the owner\nname: x\n"}, false},
 		{"another workflow names the tag", map[string]string{"test.yml": goodWorkflow, "other.yml": "# ataniq_canary\n"}, true},
 		{"a quoted if on the job", edit("    timeout-minutes: 30\n    permissions", "    'if': always()\n    permissions"), true},
 		{"a quoted continue-on-error on a step of the job", edit("      - run: make test-canary\n", "      - run: make test-canary\n        \"continue-on-error\": true\n"), true},
@@ -1936,8 +1996,10 @@ func TestCanaryTagListRefusesTaggedPackages(t *testing.T) {
 }
 
 // make test-canary runs doctor, then the tagged tests of every package that
-// holds a file whose constraint names the tag, found at run time, and ./tests/,
-// and with no such package runs ./tests/ alone.
+// holds a file whose constraint names the tag, found at run time, and with no
+// such package runs ./tests/ alone, so that go test is never given an empty
+// list. ./tests/ is otherwise left to make test (see
+// TestCanaryTagTestsClosure).
 func TestCanaryTagMakeTarget(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -1959,7 +2021,7 @@ func TestCanaryTagMakeTarget(t *testing.T) {
 			"cmd/ataniqd/main.go":               "// +build ignore\n\npackage main\n",
 			"cmd/ataniq-holder/canary.go":       "//go:build linux && ataniq_canary\n\npackage main\n",
 			"tests/y_test.go":                   "package tests\n",
-		}, "test -tags ataniq_canary ./cmd/ataniq-holder ./internal/leadcanary ./internal/leadcanary/sub ./internal/leaddaemon ./tests/"},
+		}, "test -tags ataniq_canary ./cmd/ataniq-holder ./internal/leadcanary ./internal/leadcanary/sub ./internal/leaddaemon"},
 		// Every form Go builds with the tag is found.
 		{"every form Go builds with the tag", map[string]string{
 			"internal/plusonly/p.go":     hdrPlusTagged + "\n\npackage a\n",
@@ -1971,7 +2033,7 @@ func TestCanaryTagMakeTarget(t *testing.T) {
 			"build/o.go":                 hdrTagged + "\n\npackage a\n",
 			"internal/plain/p.go":        hdrPlusPlain + "\n\npackage a\n",
 			"internal/plain/q.go":        "// the ataniq_canary tag is not a constraint\n\npackage a\n",
-		}, "test -tags ataniq_canary ./build ./internal/indented ./internal/nested/build ./internal/plusonly ./internal/tabbed ./tests/"},
+		}, "test -tags ataniq_canary ./build ./internal/indented ./internal/nested/build ./internal/plusonly ./internal/tabbed"},
 		// Go's ./... skips folders that start with a dot or an underscore,
 		// such as a nested checkout under a hidden tool folder with its own
 		// go.mod.
@@ -1981,13 +2043,13 @@ func TestCanaryTagMakeTarget(t *testing.T) {
 			".tool/worktrees/w/internal/leadcanary/a.go": hdrTagged + "\n\npackage a\n",
 			"internal/_old/a.go":                         hdrTagged + "\n\npackage a\n",
 			".hidden/a.go":                               hdrTagged + "\n\npackage a\n",
-		}, "test -tags ataniq_canary ./internal/leadcanary ./tests/"},
+		}, "test -tags ataniq_canary ./internal/leadcanary"},
 		// The tree the slice leaves, with a nested checkout under a hidden folder.
 		{"a correct tree with tagged packages", canaryCorrectTree(), "test -tags ataniq_canary " +
 			"./cmd/ataniq-canary ./cmd/ataniq-canary-standin ./cmd/ataniq-holder ./cmd/ataniqd " +
 			"./internal/leadcanary ./internal/leadcanary/provision ./internal/leadcanary/provision/provisiontest " +
 			"./internal/leadcanary/standin ./internal/leaddaemon ./internal/leadholder/canaryroot " +
-			"./internal/leadholder/injectbridge ./internal/leadholder/sandboxstart ./internal/leadholder/serve ./tests/"},
+			"./internal/leadholder/injectbridge ./internal/leadholder/sandboxstart ./internal/leadholder/serve"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir, pin := fixture(t)

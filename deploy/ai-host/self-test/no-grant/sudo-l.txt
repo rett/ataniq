@@ -1,0 +1,1 @@
+User agent is not allowed to run sudo on aihost.

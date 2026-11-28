@@ -1,0 +1,5 @@
+//go:build ataniq_ownerchannel || ataniq_canary
+
+package hookwire
+
+const Pulse = "pulse"

@@ -1,0 +1,23 @@
+== sudo -n -l -U agent (exit 0)
+  | Matching Defaults entries for agent on aihost:
+  |     env_reset, exempt_group="wheel admins", timestamp_timeout=0
+  | 
+  | User agent may run the following commands on aihost:
+  |     (ALL : ALL) ALL
+finding: exempt: members of that group are never asked for a password, and sudo -l does not say whether agent is one: Matching Defaults has exempt_group="wheel admins"
+check: no command sudo lists for agent skips the password
+check: timestamp_timeout=0 is listed for agent, and no other value
+== register /etc/ataniq/grants
+  | d 0 755 /
+  | d 0 755 /etc
+  | d 0 755 /etc/ataniq
+  | d 0 755 /etc/ataniq/grants
+  | f 0 644 /etc/ataniq/grants/README
+  | f 0 644 /etc/ataniq/grants/backup-unit
+check: /etc/ataniq/grants and every folder above it are root's and not writable by group or others; its 2 entries are regular files of root's, not writable by group or others
+== by hand, for the owner
+- exempt_group: its members are never asked for a password. As root, edit the file that sets it with visudo -f and remove the setting, or make sure agent is not a member of that group (README, step 3).
+== summary
+findings: 1; stops: 0
+result: findings remain: fix them by hand, then run --check again
+exit: 1

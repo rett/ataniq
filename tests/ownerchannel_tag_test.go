@@ -15,10 +15,14 @@ package tests
 //     the allowed paths and in no folder that ./... skips, needs the tag and
 //     linux together, and every file of a wholly tagged package needs the tag;
 //  2. the Makefile and the scripts: the tag is named only in the recipe of
-//     make test-ownerchannel, which builds nothing, and in the recipe of
+//     make test-ownerchannel, which builds nothing, in the recipe of
 //     make ownerchannel-build, which builds the daemon alone into build/owner/
-//     and runs nothing; nothing names the tag under .github or scripts, and
-//     nothing but those two recipes names the build target;
+//     with the tag alone and runs nothing, and in the recipe of
+//     make scratch-seat-build, which is exactly the mkdir of build/scratch-seat
+//     and one build of the daemon into it with the tag and the canary tag;
+//     nothing names the tag under .github or scripts, nothing but those
+//     recipes names either build target, and nothing under .github, scripts or
+//     deploy names scratch-seat-build;
 //  3. without the tag no command depends on the service, the journal, the host
 //     adapter or the stand-in for the door;
 //  4. with the tag, and with it and the canary tag, every package loads;
@@ -85,6 +89,31 @@ const (
 const ownerBuildDir = "build/owner/"
 
 var ownerBuildPackages = []string{"./cmd/ataniqd"}
+
+// scratchSeatTarget is the one target that builds a binary with the pair of
+// tags, the owner channel's and the canary's: the daemon with the owner channel
+// and the scratch leads, for the owner's own trial of real scratch leads with
+// the seat gate. Its rule is scratchSeatRule, with doctor its sole prerequisite,
+// and its recipe is exactly the two lines of scratchSeatRecipe: the mkdir of
+// scratchSeatDir, which git ignores, and one build of ./cmd/ataniqd into it
+// with the pair of tags. No other line names it.
+const (
+	scratchSeatTarget = "scratch-seat-build"
+	scratchSeatDir    = "build/scratch-seat/"
+	scratchSeatTags   = ownerTag + "," + canaryTag
+	scratchSeatRule   = scratchSeatTarget + ": doctor"
+)
+
+var scratchSeatRecipe = []string{
+	"@mkdir -p " + "build/scratch-seat",
+	"@sh scripts/go-tool.sh build -tags " + scratchSeatTags + " -trimpath -o " + scratchSeatDir + "ataniqd ./cmd/ataniqd",
+}
+
+// scratchSeatFolders are the folders under which no file names
+// scratchSeatTarget outside a comment line: the workflows, the scripts and the
+// deployment, so that no CI job, release step, script or deployment builds the
+// daemon with the pair of tags.
+var scratchSeatFolders = []string{".github", "scripts", "deploy"}
 
 // exprNames reports whether an expression names the tag.
 func exprNames(e constraint.Expr, tag string) bool {
@@ -212,6 +241,22 @@ var ownerTargetRef = regexp.MustCompile(`(^|[^A-Za-z0-9_.-])` + ownerMakeTarget 
 // ownerBuildTargetRef finds the name of the build target as a word.
 var ownerBuildTargetRef = regexp.MustCompile(`(^|[^A-Za-z0-9_.-])` + ownerBuildTarget + `($|[^A-Za-z0-9_.-])`)
 
+// scratchSeatTargetRef finds the name of the pair's build target as a word.
+var scratchSeatTargetRef = regexp.MustCompile(`(^|[^A-Za-z0-9_.-])` + scratchSeatTarget + `($|[^A-Za-z0-9_.-])`)
+
+// scratchSeatLineProblem returns what is wrong with the line of the recipe of
+// scratchSeatTarget at index n (from 0), or "": the recipe is exactly the lines
+// of scratchSeatRecipe, each after one tab, in that order, and nothing more.
+func scratchSeatLineProblem(line string, n int) string {
+	if n >= len(scratchSeatRecipe) {
+		return fmt.Sprintf("the recipe of %s has the line %q after its %d lines, and nothing but %q is allowed", scratchSeatTarget, strings.TrimSpace(line), len(scratchSeatRecipe), strings.Join(scratchSeatRecipe, "\n"))
+	}
+	if line != "\t"+scratchSeatRecipe[n] {
+		return fmt.Sprintf("the recipe of %s has %q as its line %d, and nothing but %q is allowed", scratchSeatTarget, strings.TrimSpace(line), n+1, scratchSeatRecipe[n])
+	}
+	return ""
+}
+
 // ownerMkdirLine is the one line of the build recipe that is not a build.
 var ownerMkdirLine = regexp.MustCompile(`^@?mkdir -p ` + regexp.QuoteMeta(strings.TrimSuffix(ownerBuildDir, "/")) + `$`)
 
@@ -269,18 +314,27 @@ var ownerGoToolVerb = regexp.MustCompile(`go-tool\.sh\s+(\S+)`)
 
 // checkOwnerMakefile is the first half of check (2): in a Makefile the tag
 // appears only inside the recipe of test-ownerchannel, which runs the Go
-// command only as test and so builds no binary, and inside the recipe of
+// command only as test and so builds no binary, inside the recipe of
 // ownerchannel-build, which only makes build/owner/ and builds the daemon into
-// it with the tag alone (see ownerBuildLineProblem) and so runs nothing. A
-// comment, a variable, the .PHONY line, a prerequisite line and the recipe of
-// any other target are all outside. Two more lines are problems, so that no
-// other target can reach a tagged one: a mention of either target anywhere but
-// a comment, the .PHONY line and the rule line that defines it, and an
-// include, whose file this check does not read. The limit of a text check is a name that is assembled at run time
-// or by make's own expansion.
+// it with the tag alone (see ownerBuildLineProblem) and so runs nothing, and
+// inside the recipe of scratch-seat-build, which is exactly the two lines of
+// scratchSeatRecipe (see scratchSeatLineProblem): the mkdir of
+// build/scratch-seat and one build of the daemon into it with the pair of tags.
+// A comment, a variable, the .PHONY line, a prerequisite line and the recipe of
+// any other target are all outside. Every rule line whose targets hold
+// scratch-seat-build is exactly scratchSeatRule, so that it has no other
+// prerequisite, shares its recipe with no target and has no recipe on its rule
+// line, and there is at most one. Two more lines are problems, so that no other
+// target can reach a tagged one: a mention of any of the three targets anywhere
+// but a comment, the .PHONY line and the rule line that defines it, and an
+// include, whose file this check does not read. The limit of a text check is a
+// name that is assembled at run time or by make's own expansion.
 func checkOwnerMakefile(text string) []string {
 	var problems []string
 	var targets []string
+	// seatRules are the line numbers of the rules of scratch-seat-build, and
+	// seatLines the number of recipe lines of each.
+	var seatRules, seatLines []int
 	continued, continuedRecipe, continuedPhony := false, false, false
 	for i, line := range strings.Split(text, "\n") {
 		recipe := strings.HasPrefix(line, "\t")
@@ -291,6 +345,10 @@ func checkOwnerMakefile(text string) []string {
 			trimmed := strings.TrimSpace(line)
 			if m := makeRuleLine.FindStringSubmatch(line); m != nil {
 				targets = strings.Fields(m[1])
+				if slices.Contains(targets, scratchSeatTarget) {
+					seatRules = append(seatRules, i+1)
+					seatLines = append(seatLines, 0)
+				}
 			} else if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
 				targets = nil
 			}
@@ -306,8 +364,23 @@ func checkOwnerMakefile(text string) []string {
 		}
 		inOwnRecipe := recipe && len(targets) == 1 && targets[0] == ownerMakeTarget
 		inBuildRecipe := recipe && len(targets) == 1 && targets[0] == ownerBuildTarget
-		if problem == "" && strings.Contains(line, ownerTag) && !inOwnRecipe && !inBuildRecipe {
-			problem = fmt.Sprintf("names %s outside the recipes of %s and %s", ownerTag, ownerMakeTarget, ownerBuildTarget)
+		inSeatRecipe := recipe && len(targets) == 1 && targets[0] == scratchSeatTarget
+		seatRule := len(seatRules) > 0 && seatRules[len(seatRules)-1] == i+1
+		if problem == "" && strings.Contains(line, ownerTag) && !inOwnRecipe && !inBuildRecipe && !inSeatRecipe {
+			problem = fmt.Sprintf("names %s outside the recipes of %s, %s and %s", ownerTag, ownerMakeTarget, ownerBuildTarget, scratchSeatTarget)
+		}
+		if problem == "" && seatRule && line != scratchSeatRule {
+			problem = fmt.Sprintf("the rule of %s is %q, and nothing but %q is allowed: doctor its sole prerequisite, no other target, no recipe on the rule line", scratchSeatTarget, line, scratchSeatRule)
+		}
+		if problem == "" && seatRule && len(seatRules) > 1 {
+			problem = fmt.Sprintf("a second rule of %s, and one is allowed", scratchSeatTarget)
+		}
+		if inSeatRecipe {
+			n := seatLines[len(seatLines)-1]
+			seatLines[len(seatLines)-1]++
+			if problem == "" {
+				problem = scratchSeatLineProblem(line, n)
+			}
 		}
 		if problem == "" && inBuildRecipe {
 			if regexp.MustCompile(`(^|[^A-Za-z0-9_-])go\s+\S`).MatchString(line) {
@@ -329,7 +402,7 @@ func checkOwnerMakefile(text string) []string {
 		for _, ref := range []struct {
 			name string
 			re   *regexp.Regexp
-		}{{ownerMakeTarget, ownerTargetRef}, {ownerBuildTarget, ownerBuildTargetRef}} {
+		}{{ownerMakeTarget, ownerTargetRef}, {ownerBuildTarget, ownerBuildTargetRef}, {scratchSeatTarget, scratchSeatTargetRef}} {
 			if problem == "" && ref.re.MatchString(line) && !strings.HasPrefix(trimmed, "#") && !phony {
 				own := false
 				if m := makeRuleLine.FindStringSubmatch(line); m != nil && !recipe && !wasContinued {
@@ -342,6 +415,11 @@ func checkOwnerMakefile(text string) []string {
 		}
 		if problem != "" {
 			problems = append(problems, fmt.Sprintf("Makefile:%d: %s", i+1, problem))
+		}
+	}
+	for k, n := range seatLines {
+		if n < len(scratchSeatRecipe) {
+			problems = append(problems, fmt.Sprintf("Makefile:%d: the recipe of %s has %d lines, and it is exactly the %d lines %q", seatRules[k], scratchSeatTarget, n, len(scratchSeatRecipe), strings.Join(scratchSeatRecipe, "\n")))
 		}
 	}
 	return problems
@@ -379,6 +457,20 @@ func checkNoOwnerTagUnder(fsys fs.FS, folders ...string) []string {
 // folders names the build target outside a comment line, so no workflow, release
 // step or script can build the tagged daemon.
 func checkNoOwnerBuildUnder(fsys fs.FS, folders ...string) []string {
+	return checkNoTargetUnder(fsys, ownerBuildTarget, folders...)
+}
+
+// checkNoScratchSeatBuildUnder is the fourth part of check (2): no file under
+// the folders names the pair's build target outside a comment line, so no
+// workflow, release step, script or deployment can build the daemon with the
+// pair of tags.
+func checkNoScratchSeatBuildUnder(fsys fs.FS, folders ...string) []string {
+	return checkNoTargetUnder(fsys, scratchSeatTarget, folders...)
+}
+
+// checkNoTargetUnder reports every line of a file under the folders that names
+// the make target outside a comment line.
+func checkNoTargetUnder(fsys fs.FS, target string, folders ...string) []string {
 	var problems []string
 	for _, folder := range folders {
 		err := fs.WalkDir(fsys, folder, func(p string, d fs.DirEntry, err error) error {
@@ -393,8 +485,8 @@ func checkNoOwnerBuildUnder(fsys fs.FS, folders ...string) []string {
 				return err
 			}
 			for i, line := range strings.Split(string(data), "\n") {
-				if t := strings.TrimSpace(line); !strings.HasPrefix(t, "#") && strings.Contains(line, ownerBuildTarget) {
-					problems = append(problems, fmt.Sprintf("%s:%d: names %s", p, i+1, ownerBuildTarget))
+				if t := strings.TrimSpace(line); !strings.HasPrefix(t, "#") && strings.Contains(line, target) {
+					problems = append(problems, fmt.Sprintf("%s:%d: names %s", p, i+1, target))
 				}
 			}
 			return nil
@@ -566,7 +658,7 @@ func namesOwnerPackage(pattern string) bool {
 // ownerGoList runs go list in the repository, offline, with the given tags (a
 // comma separated list, or none). Without the tag it refuses a pattern that
 // names a wholly tagged package: with no Go file left, that is an error, and
-// the checks must not depend on it.
+// the checks must not depend on it. It runs through goListOnce.
 func ownerGoList(t *testing.T, tags string, flags []string, patterns ...string) string {
 	t.Helper()
 	args := []string{"list"}
@@ -579,17 +671,7 @@ func ownerGoList(t *testing.T, tags string, flags []string, patterns ...string) 
 			}
 		}
 	}
-	args = append(append(args, flags...), patterns...)
-	cmd := exec.Command(canaryGoTool(t), args...)
-	cmd.Dir = root(t)
-	cmd.Env = canaryGoEnv()
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("go %s: %v\n%s", strings.Join(args, " "), err, stderr.String())
-	}
-	return string(out)
+	return goListOnce(t, append(append(args, flags...), patterns...))
 }
 
 // ownerTagSets are the two tag settings the tagged build is checked under.
@@ -612,6 +694,7 @@ func TestOwnerChannelTag(t *testing.T) {
 		reportCanaryProblems(t, checkOwnerMakefile(string(makefile)))
 		reportCanaryProblems(t, checkNoOwnerTagUnder(repo, ".github", "scripts"))
 		reportCanaryProblems(t, checkNoOwnerBuildUnder(repo, ".github", "scripts"))
+		reportCanaryProblems(t, checkNoScratchSeatBuildUnder(repo, scratchSeatFolders...))
 	})
 
 	t.Run("3_untagged_dependencies", func(t *testing.T) {
@@ -736,12 +819,13 @@ func TestOwnerChannelTagMakefileCheck(t *testing.T) {
 		"\n# comment that names test-ownerchannel\n" +
 		"test-ownerchannel: doctor\n" +
 		"\t@own=$$(grep ataniq_ownerchannel .); \\\n" +
-		"\tsh scripts/go-tool.sh test -tags ataniq_ownerchannel $$own ./tests/ && \\\n" +
-		"\tsh scripts/go-tool.sh test -tags ataniq_ownerchannel,ataniq_canary ./tests/\n" +
+		"\tsh scripts/go-tool.sh test -tags ataniq_ownerchannel $${own:-./tests/} && \\\n" +
+		"\tsh scripts/go-tool.sh test -tags ataniq_ownerchannel,ataniq_canary $${both:-./tests/}\n" +
 		"\ntest: doctor\n\t@sh scripts/go-tool.sh test ./...\n"
 	// ownRecipe adds a line to the recipe of the target.
 	ownRecipe := func(line string) string {
-		return strings.Replace(good, "ataniq_canary ./tests/\n\ntest:", "ataniq_canary ./tests/\n"+line+"\ntest:", 1)
+		const last = "ataniq_canary $${both:-./tests/}\n"
+		return strings.Replace(good, last+"\ntest:", last+line+"\ntest:", 1)
 	}
 	// withBuild is the sample with the recipe of the build target, whose one
 	// build line is buildLine; build replaces that line, and buildRecipe adds a
@@ -752,6 +836,21 @@ func TestOwnerChannelTagMakefileCheck(t *testing.T) {
 		"ownerchannel-build: doctor\n\t@mkdir -p build/owner\n" + buildLine
 	build := func(line string) string { return strings.Replace(withBuild, buildLine, line, 1) }
 	buildRecipe := func(line string) string { return withBuild + line }
+	// withSeat is the sample with both build targets, the second building the
+	// daemon with the pair of tags in its one build line, seatLine; seat
+	// replaces that line, seatRecipe adds a line after it and seatRule replaces
+	// its rule line.
+	const seatLine = "\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary -trimpath -o build/scratch-seat/ataniqd ./cmd/ataniqd\n"
+	withSeat := strings.Replace(withBuild, "ownerchannel-build\n", "ownerchannel-build scratch-seat-build\n", 1) +
+		"\n# the daemon with both tags, into an ignored folder\n" +
+		"scratch-seat-build: doctor\n\t@mkdir -p build/scratch-seat\n" + seatLine
+	seat := func(line string) string { return strings.Replace(withSeat, seatLine, line, 1) }
+	seatRecipe := func(line string) string { return withSeat + line }
+	seatRule := func(rule string) string {
+		return strings.Replace(withSeat, "scratch-seat-build: doctor\n", rule+"\n", 1)
+	}
+	const seatExact = "nothing but \"@sh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary -trimpath -o build/scratch-seat/ataniqd ./cmd/ataniqd\" is allowed"
+	const seatRuleOnly = "nothing but \"scratch-seat-build: doctor\" is allowed"
 	for _, tc := range []struct {
 		name string
 		text string
@@ -813,6 +912,57 @@ func TestOwnerChannelTagMakefileCheck(t *testing.T) {
 		{"an include", "include other.mk\n" + good, "includes another makefile"},
 		{"an optional include", "-include other.mk\n" + good, "includes another makefile"},
 		{"the line after a continued phony line", ".PHONY: test \\\n test-ownerchannel\n", ""},
+		// The daemon with the pair of tags: exactly its rule and its two lines.
+		{"the sample with the pair build", withSeat, ""},
+		{"the pair build without the owner's build", strings.Replace(good, ".PHONY: test test-ownerchannel", ".PHONY: test test-ownerchannel scratch-seat-build", 1) + "\nscratch-seat-build: doctor\n\t@mkdir -p build/scratch-seat\n" + seatLine, ""},
+		{"the pair build in a comment and in .PHONY alone", "# scratch-seat-build\n" + strings.Replace(good, ".PHONY: test test-ownerchannel", ".PHONY: test test-ownerchannel scratch-seat-build", 1), ""},
+		{"the pair build is only a word of another name", withSeat + "other: my-scratch-seat-build scratch-seat-builds\n", ""},
+		{"the pair build with the owner tag alone", seat("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel -trimpath -o build/scratch-seat/ataniqd ./cmd/ataniqd\n"), seatExact},
+		{"the pair build with the canary tag alone", seat("\t@sh scripts/go-tool.sh build -tags ataniq_canary -trimpath -o build/scratch-seat/ataniqd ./cmd/ataniqd\n"), seatExact},
+		{"the pair build with the tags in the other order", seat("\t@sh scripts/go-tool.sh build -tags ataniq_canary,ataniq_ownerchannel -trimpath -o build/scratch-seat/ataniqd ./cmd/ataniqd\n"), seatExact},
+		{"the pair build with a third tag", seat("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary,other -trimpath -o build/scratch-seat/ataniqd ./cmd/ataniqd\n"), seatExact},
+		{"the pair build without a tag", seat("\t@sh scripts/go-tool.sh build -trimpath -o build/scratch-seat/ataniqd ./cmd/ataniqd\n"), seatExact},
+		{"the pair build writes into the owner's folder", seat("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary -trimpath -o build/owner/ataniqd ./cmd/ataniqd\n"), seatExact},
+		{"the pair build writes another file in its folder", seat("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary -trimpath -o build/scratch-seat/x ./cmd/ataniqd\n"), seatExact},
+		{"the pair build climbs out of its folder", seat("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary -trimpath -o build/scratch-seat/../ataniqd ./cmd/ataniqd\n"), seatExact},
+		{"the pair build has no output", seat("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary -trimpath ./cmd/ataniqd\n"), seatExact},
+		{"the pair build builds another package", seat("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary -trimpath -o build/scratch-seat/ataniqd ./cmd/ataniq-console\n"), seatExact},
+		{"the pair build builds everything", seat("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary -trimpath -o build/scratch-seat/ ./...\n"), seatExact},
+		{"the pair build builds a second package on its line", seat("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary -trimpath -o build/scratch-seat/ataniqd ./cmd/ataniqd ./cmd/ataniq-holder\n"), seatExact},
+		{"the pair build passes another flag", seat("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary -toolexec x -trimpath -o build/scratch-seat/ataniqd ./cmd/ataniqd\n"), seatExact},
+		{"the pair build runs go directly", seat("\t@go build -tags ataniq_ownerchannel,ataniq_canary -trimpath -o build/scratch-seat/ataniqd ./cmd/ataniqd\n"), seatExact},
+		{"the pair build without at", seat("\tsh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary -trimpath -o build/scratch-seat/ataniqd ./cmd/ataniqd\n"), seatExact},
+		{"the pair build with an extra command on its line", seat(strings.TrimSuffix(seatLine, "\n") + " && build/scratch-seat/ataniqd run --owner-channel\n"), seatExact},
+		{"the pair build with a continued line", seat("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary -trimpath -o build/scratch-seat/ataniqd \\\n\t\t./cmd/ataniqd\n"), seatExact},
+		{"the pair build runs the daemon", seatRecipe("\t@build/scratch-seat/ataniqd run --owner-channel --scratch x\n"), "after its 2 lines"},
+		{"the pair build builds a second binary", seatRecipe("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary -trimpath -o build/scratch-seat/h ./cmd/ataniq-holder\n"), "after its 2 lines"},
+		{"the pair build removes things", seatRecipe("\t@rm -rf build\n"), "after its 2 lines"},
+		{"the pair build runs a line after a blank line", seatRecipe("\n\t@true\n"), "after its 2 lines"},
+		{"the pair build makes another folder", strings.Replace(withSeat, "\t@mkdir -p build/scratch-seat\n", "\t@mkdir -p build/other\n", 1), "nothing but \"@mkdir -p build/scratch-seat\" is allowed"},
+		{"the pair build has no mkdir", strings.Replace(withSeat, "\t@mkdir -p build/scratch-seat\n", "", 1), "nothing but \"@mkdir -p build/scratch-seat\" is allowed"},
+		{"the pair build's lines in the other order", strings.Replace(withSeat, "\t@mkdir -p build/scratch-seat\n"+seatLine, seatLine+"\t@mkdir -p build/scratch-seat\n", 1), "as its line 1"},
+		{"the pair build has only its mkdir", seat(""), "has 1 lines"},
+		{"the pair build has no recipe", strings.Replace(withSeat, "\t@mkdir -p build/scratch-seat\n"+seatLine, "", 1), "has 0 lines"},
+		{"the pair build with an added prerequisite", seatRule("scratch-seat-build: doctor canary-build"), seatRuleOnly},
+		{"the pair build with another prerequisite", seatRule("scratch-seat-build: doctor test"), seatRuleOnly},
+		{"the pair build without doctor", seatRule("scratch-seat-build:"), seatRuleOnly},
+		{"the pair build as a double colon rule", seatRule("scratch-seat-build:: doctor"), seatRuleOnly},
+		{"the pair build with a recipe on its rule line", seatRule("scratch-seat-build: doctor ; build/scratch-seat/ataniqd run"), seatRuleOnly},
+		{"the pair build with a variable of its own", seatRule("scratch-seat-build: GOFLAGS=-toolexec=x"), seatRuleOnly},
+		{"the pair build with a continued rule line", seatRule("scratch-seat-build: doctor \\\n other"), seatRuleOnly},
+		{"a second rule adds a prerequisite", withSeat + "scratch-seat-build: release\n", seatRuleOnly},
+		{"a second rule that looks like the first", withSeat + "scratch-seat-build: doctor\n", "a second rule of scratch-seat-build"},
+		{"a rule of several targets adds a prerequisite", withSeat + "other scratch-seat-build: release\n", seatRuleOnly},
+		{"the pair build shares its recipe", seatRule("scratch-seat-build other: doctor"), "outside the recipes"},
+		{"the pair build shares its recipe with the owner's build", seatRule("scratch-seat-build ownerchannel-build: doctor"), "outside the recipes"},
+		{"the pair tags in another target", withSeat + "other: doctor\n\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary -trimpath -o build/scratch-seat/ataniqd ./cmd/ataniqd\n", "outside the recipes"},
+		{"the pair tags in the canary build", withSeat + "canary-build: doctor\n\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary -trimpath -o build/canary/ataniqd ./cmd/ataniqd\n", "outside the recipes"},
+		{"another target depends on the pair build", withSeat + "release: scratch-seat-build\n", "another line names scratch-seat-build"},
+		{"another target runs the pair build", withSeat + "release: doctor\n\t@$(MAKE) scratch-seat-build\n", "another line names scratch-seat-build"},
+		{"the test target runs the pair build", strings.Replace(withSeat, "test: doctor\n", "test: doctor scratch-seat-build\n", 1), "another line names scratch-seat-build"},
+		{"the owner's build runs the pair build", strings.Replace(withSeat, "ownerchannel-build: doctor\n", "ownerchannel-build: doctor scratch-seat-build\n", 1), "another line names scratch-seat-build"},
+		{"the canary build runs the pair build", withSeat + "canary-build: doctor\n\t@$(MAKE) scratch-seat-build\n", "another line names scratch-seat-build"},
+		{"a variable names the pair build", "ALL = scratch-seat-build\n" + withSeat, "another line names scratch-seat-build"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := checkOwnerMakefile(tc.text)
@@ -869,6 +1019,36 @@ func TestOwnerChannelTagNoBuildMentionUnderCheck(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := checkNoOwnerBuildUnder(tc.files, ".github", "scripts")
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+			for i, w := range tc.want {
+				if !strings.HasPrefix(got[i], w+":") {
+					t.Errorf("problem %d is %q, want it to name %s", i, got[i], w)
+				}
+			}
+		})
+	}
+}
+
+func TestOwnerChannelTagNoScratchSeatMentionUnderCheck(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files fstest.MapFS
+		want  []string
+	}{
+		{"clean folders", fstest.MapFS{"scripts/a.sh": {Data: []byte("echo\n")}, ".github/workflows/test.yml": {Data: []byte("name: test\n- run: make test-ownerchannel\n")}, "deploy/x/deploy.sh": {Data: []byte("echo\n")}}, nil},
+		{"no folders", fstest.MapFS{"other/a.sh": {Data: []byte("make scratch-seat-build\n")}}, nil},
+		{"a workflow runs the target", fstest.MapFS{".github/workflows/x.yml": {Data: []byte("jobs:\n  b:\n    steps:\n      - run: make scratch-seat-build\n")}}, []string{".github/workflows/x.yml:4"}},
+		{"a release workflow runs the target", fstest.MapFS{".github/workflows/release.yml": {Data: []byte("jobs:\n  r:\n    steps:\n      - run: make scratch-seat-build && cp build/scratch-seat/ataniqd dist/\n")}}, []string{".github/workflows/release.yml:4"}},
+		{"a script runs the target", fstest.MapFS{"scripts/a.sh": {Data: []byte("#!/bin/sh\nmake scratch-seat-build\n")}}, []string{"scripts/a.sh:2"}},
+		{"a deployment script runs the target", fstest.MapFS{"deploy/authority-host/deploy.sh": {Data: []byte("#!/bin/sh\nset -eu\nmake scratch-seat-build\n")}}, []string{"deploy/authority-host/deploy.sh:3"}},
+		{"a nested file under .github", fstest.MapFS{".github/actions/b/action.yml": {Data: []byte("run: make scratch-seat-build\n")}}, []string{".github/actions/b/action.yml:1"}},
+		{"a comment line is no use", fstest.MapFS{"scripts/a.sh": {Data: []byte("# make scratch-seat-build is run by hand\n")}, "deploy/a.sh": {Data: []byte("  # scratch-seat-build\n")}}, nil},
+		{"the other builds are not this target", fstest.MapFS{"scripts/a.sh": {Data: []byte("make canary-build\nmake ownerchannel-build\n")}}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := checkNoScratchSeatBuildUnder(tc.files, scratchSeatFolders...)
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %q, want %q", got, tc.want)
 			}
@@ -1019,6 +1199,7 @@ func TestOwnerChannelTagWorkflowCheck(t *testing.T) {
 		{"the job runs another command", edit(job, job+"      - run: make test\n"), "runs \"make test\""},
 		{"the job builds", edit(job, job+"      - run: make canary-build\n"), "runs \"make canary-build\""},
 		{"the job builds the owner daemon", edit(job, job+"      - run: make ownerchannel-build\n"), "runs \"make ownerchannel-build\""},
+		{"the job builds the daemon with the pair of tags", edit(job, job+"      - run: make scratch-seat-build\n"), "runs \"make scratch-seat-build\""},
 		{"the job uploads", edit(job, job+"      - uses: actions/upload-artifact@v4\n"), "uses actions/upload-artifact@v4"},
 		{"the job uses a local action", edit(job, job+"      - uses: ./.github/actions/x\n"), "uses ./.github/actions/x"},
 		{"a continue-on-error", edit("    timeout-minutes: 30\n    permissions:\n      contents: read\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          persist-credentials", "    continue-on-error: true\n    timeout-minutes: 30\n    permissions:\n      contents: read\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          persist-credentials"), "continue-on-error"},
@@ -1153,6 +1334,78 @@ func TestOwnerChannelTagBuildTargetDeclaration(t *testing.T) {
 	}
 }
 
+// The real Makefile has the pair's build target in .PHONY, with the one rule
+// scratchSeatRule and the two lines of scratchSeatRecipe, no other rule depends
+// on it, and git ignores its output folder.
+func TestOwnerChannelTagScratchSeatTargetDeclaration(t *testing.T) {
+	makefile, err := os.ReadFile(filepath.Join(root(t), "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(makefile)
+	if !regexp.MustCompile(`(?m)^\.PHONY:.*\bscratch-seat-build\b`).MatchString(text) {
+		t.Error("scratch-seat-build is not in .PHONY")
+	}
+	want := scratchSeatRule + "\n\t" + strings.Join(scratchSeatRecipe, "\n\t") + "\n"
+	if strings.Count(text, want) != 1 {
+		t.Errorf("the Makefile does not hold the rule and recipe of scratch-seat-build once, exactly as\n%s", want)
+	}
+	rules := 0
+	for _, line := range strings.Split(text, "\n") {
+		if m := makeRuleLine.FindStringSubmatch(line); m != nil && !makePhony.MatchString(line) {
+			if scratchSeatTargetRef.MatchString(line[len(m[1])+1:]) {
+				t.Errorf("a rule depends on scratch-seat-build: %q", line)
+			}
+			if slices.Contains(strings.Fields(m[1]), scratchSeatTarget) {
+				rules++
+			}
+		}
+	}
+	if rules != 1 {
+		t.Errorf("the Makefile has %d rules for scratch-seat-build, want 1", rules)
+	}
+	ignore, err := os.ReadFile(filepath.Join(root(t), ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`(?m)^build/$`).Match(ignore) {
+		t.Error(".gitignore does not ignore build/, which holds build/scratch-seat/")
+	}
+}
+
+// make -n scratch-seat-build, which runs nothing, prints doctor's line and
+// then the two lines of the recipe and nothing else: make itself adds no
+// other prerequisite and no other line to the target.
+func TestOwnerChannelTagScratchSeatDryRun(t *testing.T) {
+	dir, _ := fixture(t)
+	makefile, err := os.ReadFile(filepath.Join(root(t), "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Makefile"), makefile, 0644); err != nil {
+		t.Fatal(err)
+	}
+	// The Go tool fails anything it is asked, so a line that ran would show.
+	path := fakePath(t, "exit 10\n")
+	cmd := exec.Command(filepath.Join(path, "make"), "-n", "--no-print-directory", scratchSeatTarget)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "PATH="+path, "MAKEFLAGS=")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make -n %s: %s %v", scratchSeatTarget, out, err)
+	}
+	want := "sh scripts/go-tool.sh doctor\n"
+	for _, line := range scratchSeatRecipe {
+		want += strings.TrimPrefix(line, "@") + "\n"
+	}
+	if string(out) != want {
+		t.Errorf("make -n printed\n%s\nwant\n%s", out, want)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "build")); !os.IsNotExist(err) {
+		t.Errorf("make -n made build/: %v", err)
+	}
+}
+
 // The instructions say what the target does, in both files that list the
 // targets.
 func TestOwnerChannelTagInstructions(t *testing.T) {
@@ -1161,7 +1414,7 @@ func TestOwnerChannelTagInstructions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{"make test-ownerchannel", ownerTag, "make test-canary", "make ownerchannel-build", "build/owner/"} {
+		for _, want := range []string{"make test-ownerchannel", ownerTag, "make test-canary", "make ownerchannel-build", "build/owner/", "make scratch-seat-build", "build/scratch-seat/"} {
 			if !strings.Contains(string(data), want) {
 				t.Errorf("%s does not mention %s", name, want)
 			}
@@ -1190,9 +1443,10 @@ func TestOwnerChannelTagInstructions(t *testing.T) {
 
 // make test-ownerchannel runs doctor, then two runs of the tests, each over
 // the packages that hold a file whose constraint names a tag it sets, found at
-// run time, and ./tests/. The second run sets the pair of tags. With no such
-// package each run is ./tests/ alone, and the second run does not start when
-// the first fails.
+// run time. The second run sets the pair of tags. With no such package a run
+// is ./tests/ alone, so that go test is never given an empty list; ./tests/ is
+// otherwise left to make test (see TestCanaryTagTestsClosure). The second run
+// does not start when the first fails.
 func TestOwnerChannelTagMakeTarget(t *testing.T) {
 	const own, pair = "test -tags ataniq_ownerchannel ", "test -tags ataniq_ownerchannel,ataniq_canary "
 	for _, tc := range []struct {
@@ -1204,7 +1458,12 @@ func TestOwnerChannelTagMakeTarget(t *testing.T) {
 		{"no tagged package", map[string]string{
 			"internal/a/a.go": "package a\n",
 			"tests/x_test.go": "package tests\n\nconst tag = \"ataniq_ownerchannel\"\n",
-		}, "", ""},
+		}, "./tests/", "./tests/"},
+		// A run with no package of its own runs ./tests/ alone, the other
+		// run its packages.
+		{"only the pair run has a package", map[string]string{
+			"internal/leadcanary/k.go": ownHdrCanaryTag + "\n\npackage a\n",
+		}, "./tests/", "./internal/leadcanary"},
 		{"each run reads the tags it sets", map[string]string{
 			"cmd/ataniqd/o.go":                    ownHdrTagged + "\n\npackage a\n",
 			"internal/leaddaemon/o.go":            ownHdrBothTags + "\n\npackage a\n",
@@ -1219,8 +1478,8 @@ func TestOwnerChannelTagMakeTarget(t *testing.T) {
 			".hidden/a.go":                        ownHdrTagged + "\n\npackage a\n",
 			"internal/other/comment.go":           "// the ataniq_ownerchannel tag\n\npackage a\n",
 			"tests/y_test.go":                     "package tests\n",
-		}, "./cmd/ataniqd ./internal/approval/hostadapter ./internal/leaddaemon ",
-			"./cmd/ataniqd ./internal/approval/hostadapter ./internal/leadcanary ./internal/leaddaemon "},
+		}, "./cmd/ataniqd ./internal/approval/hostadapter ./internal/leaddaemon",
+			"./cmd/ataniqd ./internal/approval/hostadapter ./internal/leadcanary ./internal/leaddaemon"},
 		// Every form Go builds with the tag is found, as in make test-canary.
 		{"every form Go builds with the tag", map[string]string{
 			"internal/plusonly/p.go":     ownHdrPlusOwn + "\n\npackage a\n",
@@ -1228,16 +1487,16 @@ func TestOwnerChannelTagMakeTarget(t *testing.T) {
 			"internal/tabbed/t.go":       "//go:build\tlinux && ataniq_ownerchannel\n\npackage a\n",
 			"internal/indented/i.go":     "  \t" + ownHdrTagged + "\n\npackage a\n",
 			"internal/nested/build/n.go": ownHdrTagged + "\n\npackage a\n",
-		}, "./internal/indented ./internal/nested/build ./internal/plusonly ./internal/tabbed ",
-			"./internal/indented ./internal/nested/build ./internal/plusonly ./internal/tabbed "},
+		}, "./internal/indented ./internal/nested/build ./internal/plusonly ./internal/tabbed",
+			"./internal/indented ./internal/nested/build ./internal/plusonly ./internal/tabbed"},
 		{"a nested checkout under a hidden folder", map[string]string{
 			"cmd/ataniqd/o.go":                   ownHdrTagged + "\n\npackage a\n",
 			".tool/worktrees/w/go.mod":           "module ataniq\n",
 			".tool/worktrees/w/cmd/ataniqd/o.go": ownHdrTagged + "\n\npackage a\n",
-		}, "./cmd/ataniqd ", "./cmd/ataniqd "},
+		}, "./cmd/ataniqd", "./cmd/ataniqd"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			want := own + tc.first + "./tests/\n" + pair + tc.both + "./tests/\n"
+			want := own + tc.first + "\n" + pair + tc.both + "\n"
 			got, out, err := runOwnerMakeTarget(t, tc.files, "")
 			if err != nil {
 				t.Fatalf("make test-ownerchannel: %s %v", out, err)
@@ -1257,7 +1516,7 @@ func TestOwnerChannelTagMakeTarget(t *testing.T) {
 		if err == nil {
 			t.Fatalf("make test-ownerchannel passed although the first run failed:\n%s", out)
 		}
-		if want := own + "./cmd/ataniqd ./tests/\n"; got != want {
+		if want := own + "./cmd/ataniqd\n"; got != want {
 			t.Fatalf("go ran\n%s\nwant\n%s", got, want)
 		}
 	})

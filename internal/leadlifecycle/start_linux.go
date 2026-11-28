@@ -18,7 +18,9 @@ import (
 // wraps leadregistry.ErrNoRole), not run by ataniq (ErrNotManaged), not
 // admitted by the registry (an error that wraps
 // leadregistry.ErrLaunchRefused: the shown state is not desired, stopped or
-// ended, or an intent is pending), refused by the preflight (ErrPreflight),
+// ended, or an intent is pending), when this build does not launch its stored
+// profile (leadregistry.ErrLaunchProfile, checked before the desired state is
+// set, so that the refusal writes nothing), refused by the preflight (ErrPreflight),
 // given limits outside the bounds (an error that wraps
 // leadunit.ErrInvalidSpec, see below), or when the previous unit is not
 // proven gone: a loaded unit gives ErrUnitLoaded (and ErrForeignUnit when it
@@ -89,12 +91,25 @@ import (
 //     unit is proved again and the role is stopped with that proof, or unknown
 //     without it. The error wraps ErrStartFailed.
 func (c *Controller) Start(ctx context.Context, role leadrole.Role) (leadregistry.Entry, error) {
+	return c.start(ctx, role, nil)
+}
+
+// StartAt also fences the version observed by the caller before launch preparation.
+func (c *Controller) StartAt(ctx context.Context, role leadrole.Role, expected leadregistry.ProjectVersion) (leadregistry.Entry, error) {
+	return c.start(ctx, role, &expected)
+}
+
+func (c *Controller) start(ctx context.Context, role leadrole.Role, expected *leadregistry.ProjectVersion) (leadregistry.Entry, error) {
 	unlock, err := c.lock(ctx, role)
 	if err != nil {
 		return leadregistry.Entry{}, err
 	}
 	defer unlock()
 
+	version, err := c.reg.CheckProjectHome(role, expected)
+	if err != nil {
+		return leadregistry.Entry{}, err
+	}
 	e, err := c.load(role)
 	if err != nil {
 		return e, err
@@ -108,6 +123,12 @@ func (c *Controller) Start(ctx context.Context, role leadrole.Role) (leadregistr
 	case leadregistry.StateDesired, leadregistry.StateStopped, leadregistry.StateEnded:
 	default:
 		return e, fmt.Errorf("leadlifecycle: %w (shown state is %s)", leadregistry.ErrLaunchState, e.Shown.State)
+	}
+	// A stored profile this build does not launch: refused before the desired
+	// state is set and journaled, which refuseLaunch would only put back.
+	// BeginLaunchWith checks it again, as the authority.
+	if err := e.ProfileLaunchable(); err != nil {
+		return e, fmt.Errorf("leadlifecycle: %w", err)
 	}
 	parent, err := c.admitUnderParent(e)
 	if err != nil {
@@ -150,7 +171,7 @@ func (c *Controller) Start(ctx context.Context, role leadrole.Role) (leadregistr
 			return e, err
 		}
 	}
-	intent, err := c.reg.BeginLaunchWith(role, leadregistry.LaunchOptions{BootIdentity: boot})
+	intent, err := c.reg.BeginLaunchWith(role, leadregistry.LaunchOptions{BootIdentity: boot, Project: &version})
 	if err != nil {
 		return c.refuseLaunch(e, wasDesired, err)
 	}

@@ -12,12 +12,12 @@ import (
 	"time"
 )
 
-// authedRoutes are the inventory's routes that need a session, with the path
-// each is fetched at.
-func authedRoutes() map[string]string {
+// authedRoutes are the inventory's routes that need a session and whose
+// pattern starts with prefix, with the path each is fetched at.
+func authedRoutes(prefix string) map[string]string {
 	out := map[string]string{}
 	for _, e := range inventory {
-		if e.authed {
+		if e.authed && strings.HasPrefix(e.pattern, prefix) {
 			p := strings.TrimSuffix(strings.TrimPrefix(e.pattern, "GET "), "{$}")
 			if e.path != "" {
 				p = e.path
@@ -32,9 +32,14 @@ func authedRoutes() map[string]string {
 // live session with a redirect to the login page, and asks the daemon
 // nothing; with one, it answers the page, never stored by the browser.
 func TestSeatCardPagesNeedASession(t *testing.T) {
-	routes := authedRoutes()
+	routes := authedRoutes("GET /cards/")
 	if len(routes) != 3 {
 		t.Fatalf("%d card routes in the inventory", len(routes))
+	}
+	// The project pages need a session too (TestGenesisNeedsASession): every
+	// page of the inventory that needs one is a card page or a project or chat page.
+	if n := len(authedRoutes("GET /")) - len(routes) - len(authedRoutes("GET /projects/")) - len(authedRoutes("GET /leads/")); n != 0 {
+		t.Fatalf("%d pages that need a session are outside Cards, Projects and Leads", n)
 	}
 	r := newRig(t)
 	planted := &http.Cookie{Name: SessionCookie, Value: b64.EncodeToString(make([]byte, 32))}
@@ -156,19 +161,16 @@ func TestSeatCardWithHostileLeadText(t *testing.T) {
 				t.Errorf("%s: the page lacks %q", path, want)
 			}
 		}
+		// The skip link's "#content" is the one address of the page
+		// itself.
 		for _, m := range regexp.MustCompile(`(?i)\s(href|src)="([^"]*)"`).FindAllStringSubmatch(body, -1) {
-			if !strings.HasPrefix(m[2], "/") || strings.HasPrefix(m[2], "//") {
+			if (!strings.HasPrefix(m[2], "/") || strings.HasPrefix(m[2], "//")) && m[2] != "#content" {
 				t.Errorf("%s: an address that is not the app's: %q", path, m[2])
 			}
 		}
-		// The rest of the inventory's rules hold too. The lead's text names
-		// an address and a script address, as text only, which is all the
-		// two rules that read the whole page can see; the addresses of the
-		// page are checked above.
-		for _, f := range inspectPage(body, []string{"a", "a#paths", "a#back", "a#prev", "a#next", "button#logout"}, false) {
-			if f != "external address" && f != "javascript address" {
-				t.Errorf("%s: %s", path, f)
-			}
+		// The inventory checks actionable attributes and ignores body text.
+		for _, f := range inspectPage(body, withNav("a", "a#paths", "a#back", "a#prev", "a#next", "button#logout"), false) {
+			t.Errorf("%s: %s", path, f)
 		}
 	}
 	body := r.getWith("/cards/"+testCardID, s).Body.String()
@@ -187,15 +189,21 @@ func TestSeatCardWithHostileLeadText(t *testing.T) {
 // other way.
 func TestSeatTemplatesShowOnlyThroughText(t *testing.T) {
 	control := map[string]bool{"if": true, "else": true, "end": true, "range": true, "with": true, "define": true, "template": true, "block": true}
-	formatters := map[string]bool{"text": true, "lead": true, "when": true, "until": true, "num": true, "short": true, "cardHref": true, "pathsHref": true}
+	formatters := map[string]bool{"text": true, "lead": true, "when": true, "until": true, "num": true, "short": true, "cardHref": true, "pathsHref": true,
+		// The project pages' addresses (of ids the app checked) and the
+		// names, ids and types of a question's controls (of the app's own
+		// words and numbers).
+		"mount": true, "projectHref": true, "changeHref": true, "field": true, "oid": true, "qid": true, "pickName": true, "inputType": true}
 	// The fields the app fills itself: the page title and the problem's
 	// words (fixed words of this package), the relying party (the config),
 	// addresses made by cardHref and pathsHref, and the id of a page's
 	// decide form, which the app draws; and the watch part's version, card
 	// and binding, which the app checks against the forms a poll takes
-	// (watchPage: hex, and a card id) and leaves empty otherwise.
+	// (watchPage: hex, and a card id) and leaves empty otherwise; and the
+	// project pages' note (a fixed text of genesisNotes) and the headings
+	// of a summary's groups (fixed words of groupsOf).
 	appFields := map[string]bool{".Title": true, ".Message": true, ".RPID": true, ".RPName": true, ".Prev": true, ".Next": true, ".Back": true, ".Form": true,
-		".Version": true, ".Card": true, ".Binding": true}
+		".Version": true, ".Card": true, ".Binding": true, ".Note": true, ".Heading": true, ".Empty": true}
 	action := regexp.MustCompile(`\{\{-?\s*(.*?)\s*-?\}\}`)
 	files, err := fs.Glob(templateFS, "templates/*.html")
 	if err != nil || len(files) < 7 {
@@ -266,9 +274,7 @@ func TestSeatReadErrors(t *testing.T) {
 				t.Errorf("%v, %s: %d", tc.err, path, w.Code)
 			}
 			checkHeaders(t, path, w)
-			for _, f := range inspectPage(body, []string{"a#back"}, false) {
-				t.Errorf("%v, %s: %s", tc.err, path, f)
-			}
+			checkProblemLinks(t, body, tc.err == ErrBusy || tc.err == ErrDaemonUnavailable || tc.err == ErrCardChanged)
 		}
 	}
 }
@@ -343,6 +349,7 @@ func TestSeatReadsAreBounded(t *testing.T) {
 	if w.Code != http.StatusTooManyRequests || !strings.Contains(w.Body.String(), "Wait a minute") {
 		t.Errorf("past the bound: %d", w.Code)
 	}
+	checkProblemLinks(t, w.Body.String(), true)
 	if n := r.daemon.readCount(); n != readRequests {
 		t.Errorf("the daemon was asked %d reads", n)
 	}
@@ -418,7 +425,7 @@ func TestSeatLoginGoesToTheCards(t *testing.T) {
 // The test reads the script; no script engine is among the tools.
 func TestSeatSessionScript(t *testing.T) {
 	js := newRig(t).do("GET", "/static/session.js", nil, nil).Body.String()
-	for _, want := range []string{`"/api/logout"`, `credentials: "same-origin"`, `referrerPolicy: "strict-origin"`, `location.assign("/login/")`,
+	for _, want := range []string{`"/api/logout"`, `credentials: "same-origin"`, `referrerPolicy: "strict-origin"`, `location.assign(mount + "/login/")`,
 		`redirect: "error"`, "if (resp.status === 200 && !resp.redirected) { data = await resp.json(); }",
 		`ended = !!data && typeof data === "object" && data.next === "/login/";`,
 		"} catch (e) { ended = false; }", "Logout not confirmed", "button.disabled = false;"} {
@@ -440,7 +447,7 @@ func TestSeatSessionScript(t *testing.T) {
 		t.Errorf("the logout's answer: %d %q", w.Code, w.Body)
 	}
 	guard, after, ok := strings.Cut(js, "if (ended) {")
-	if !ok || strings.Contains(guard, "location.") || !strings.HasPrefix(strings.TrimSpace(after), `location.assign("/login/");`) {
+	if !ok || strings.Contains(guard, "location.") || !strings.HasPrefix(strings.TrimSpace(after), `location.assign(mount + "/login/");`) {
 		t.Error("the move to the login page is not under the logout's answer")
 	}
 	r := newRig(t)

@@ -229,7 +229,7 @@ func (a *app) loginChallenge(w http.ResponseWriter, r *http.Request) {
 		expires = ch.Expires
 	}
 	l.keep(k, loginAttempt{challengeID: ch.ID, created: now, expires: expires})
-	setCookie(w, LoginCookie, value, int(loginTTL/time.Second))
+	setCookie(w, LoginCookie+a.cookieSuffix, value, int(loginTTL/time.Second))
 	writeJSON(w, http.StatusOK, map[string]any{"challenge": b64.EncodeToString(ch.Challenge), "allow": allow})
 }
 
@@ -247,8 +247,8 @@ type loginBody struct {
 func (a *app) loginPost(w http.ResponseWriter, r *http.Request) {
 	// The challenge is the one kept with this browser's login cookie, and
 	// it is burnt before anything the browser sent is looked at.
-	challengeID, ok := a.login.take(cookieValue(r, LoginCookie))
-	clearCookie(w, LoginCookie)
+	challengeID, ok := a.login.take(cookieValue(r, LoginCookie+a.cookieSuffix))
+	clearCookie(w, LoginCookie+a.cookieSuffix)
 	if !ok {
 		writeError(w, errChallenge)
 		return
@@ -290,9 +290,9 @@ func (a *app) loginPost(w http.ResponseWriter, r *http.Request) {
 	}
 	// A session the browser brought ends here: the new one has a value the
 	// app drew, never one the browser chose or held before the login.
-	a.sess.end(cookieValue(r, SessionCookie))
+	a.sess.end(cookieValue(r, SessionCookie+a.cookieSuffix))
 	a.sess.add(k, Session{Credential: res.Credential, CredentialID: res.CredentialID, Kind: res.Kind})
-	setCookie(w, SessionCookie, value, 0)
+	setCookie(w, SessionCookie+a.cookieSuffix, value, 0)
 	writeJSON(w, http.StatusOK, map[string]string{"next": afterLogin})
 }
 
@@ -304,8 +304,8 @@ func (a *app) logout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, bodyError(err))
 		return
 	}
-	a.sess.end(cookieValue(r, SessionCookie))
-	clearCookie(w, SessionCookie)
+	a.sess.end(cookieValue(r, SessionCookie+a.cookieSuffix))
+	clearCookie(w, SessionCookie+a.cookieSuffix)
 	writeJSON(w, http.StatusOK, map[string]string{"next": loginPath})
 }
 

@@ -4,6 +4,7 @@ package leaddaemon
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"strings"
@@ -14,8 +15,10 @@ import (
 
 	"ataniq/internal/clientapi"
 	"ataniq/internal/leadcanary/provision/provisiontest"
+	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/wire"
 	"ataniq/internal/leadregistry"
+	"ataniq/internal/leadunit"
 	"ataniq/internal/leadwire"
 )
 
@@ -177,7 +180,7 @@ func TestLeadReadyPromotedAfterStart(t *testing.T) {
 	if len(reqs) == 0 || reqs[0].Epoch != 1 || reqs[0].CommandID == "" || !strings.HasPrefix(reqs[0].CommandID, "lead-status-1-") {
 		t.Fatalf("the status requests: %+v", reqs)
 	}
-	// Ready stays: no question after it changes the state, and a stop works.
+	// A healthy lead stays ready until stopped.
 	l.stays("alpha", "ready", 150*time.Millisecond)
 	want(t, l.stopLead("alpha", 1), leadwire.StatusDone, "")
 	if state, _, _, _ := l.shown("alpha"); state != "stopped" {
@@ -219,9 +222,9 @@ func TestLeadReadyPromotedAtStartupForAnAdoptedLead(t *testing.T) {
 	}
 }
 
-// A lead that is ready before a restart stays ready after it, and a lead that
-// is stopped is never observed.
-func TestLeadReadyNotObservedWhenNotStarting(t *testing.T) {
+// The new daemon polls an adopted ready lead, resumes polling one it adopts
+// degraded, and never asks the holder of a stopped lead.
+func TestLeadHealthPollAfterAdoption(t *testing.T) {
 	l := newLeadEnv(t)
 	l.readyBounds(10 * time.Second)
 	l.start()
@@ -236,18 +239,182 @@ func TestLeadReadyNotObservedWhenNotStarting(t *testing.T) {
 	want(t, l.startLead("beta"), leadwire.StatusDone, "")
 	l.waitState("beta", "ready")
 	want(t, l.stopLead("beta", 1), leadwire.StatusDone, "")
-	before := len(l.holders["alpha"].requests(wire.OpStatus))
 	bBefore := len(l.holders["beta"].requests(wire.OpStatus))
+	l.holders["alpha"].close()
+	l.scratch.HealthEvery = 10 * time.Millisecond
 	l.restart()
-	l.stays("alpha", "ready", 200*time.Millisecond)
+	l.waitState("alpha", "degraded")
+	if _, code, _, _ := l.shown("alpha"); code != "holder-unreachable" {
+		t.Fatalf("lost contact: %q", code)
+	}
+	l.restart()
+	l.holder("alpha", h.answer)
+	l.waitState("alpha", "ready")
 	if state, _, _, _ := l.shown("beta"); state != "stopped" {
 		t.Fatalf("beta: %q", state)
 	}
-	if n := len(l.holders["alpha"].requests(wire.OpStatus)); n != before {
-		t.Fatalf("a ready lead was asked again: %d requests, had %d", n, before)
-	}
 	if n := len(l.holders["beta"].requests(wire.OpStatus)); n != bBefore {
 		t.Fatalf("a stopped lead was asked: %d requests, had %d", n, bBefore)
+	}
+}
+
+func TestLeadHealthPollAfterReady(t *testing.T) {
+	l := newLeadEnv(t)
+	l.scratch.HealthEvery = 10 * time.Millisecond
+	l.start()
+	h := newReadyHolder(roleOf("alpha"))
+	h.epoch.Store(1)
+	l.upWith("alpha", h)
+	l.waitState("alpha", "ready")
+	l.holders["alpha"].close()
+	l.waitState("alpha", "degraded")
+	if row := l.row("alpha"); row.StateReason != "holder-unreachable" || row.Epoch != 1 {
+		t.Fatalf("lost contact: %+v", row)
+	}
+	l.holder("alpha", h.answer)
+	l.waitState("alpha", "ready")
+}
+
+func TestLeadHealthObserverWithoutAHolder(t *testing.T) {
+	m, lr, epoch := barePromote(t)
+	m.promote(lr, epoch)
+	lr.in.setHolderCommand(&seamHolder{})
+	m.healthEvery = 5 * time.Millisecond
+	m.startObservers(t.Context())
+	defer m.joinObservers(5 * time.Second)
+	deadline := time.After(5 * time.Second)
+	for {
+		e, err := m.reg.Get(lr.role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e.Shown.State == leadregistry.StateDegraded && e.Shown.Reason.Code == "holder-unreachable" {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("no degradation after a failed status call: %+v", e.Shown)
+		case <-time.After(m.healthEvery):
+		}
+	}
+}
+
+func TestLeadHealthObservations(t *testing.T) {
+	m, lr, epoch := barePromote(t)
+	m.promote(lr, epoch)
+	observer := &readyObserver{epoch: epoch}
+	healthy := wire.Status{Lead: lr.role.String(), Epoch: epoch, Facts: wire.Facts{TUIExited: wire.FactNo}}
+	exited := healthy
+	exited.Facts.TUIExited = wire.FactYes
+	treeGone := healthy
+	treeGone.Facts.TreeGone = wire.FactYes
+	wrongEpoch := healthy
+	wrongEpoch.Epoch++
+	wrongLead := healthy
+	wrongLead.Lead = roleOf("beta")
+	unknown := healthy
+	unknown.Facts.TUIExited = wire.FactUnknown
+	check := func(s *wire.Status, state leadregistry.State, reason string) {
+		t.Helper()
+		m.recordHealth(t.Context(), lr, observer, s)
+		e, err := m.reg.Get(lr.role)
+		if err != nil || e.Shown.State != state || e.Shown.Reason.Code != reason || e.Shown.Evidence != leadregistry.EvidenceObservation {
+			t.Fatalf("after status %+v: %+v, %v", s, e.Shown, err)
+		}
+	}
+	check(nil, leadregistry.StateReady, "holder-ready")
+	check(&healthy, leadregistry.StateReady, "holder-ready")
+	check(nil, leadregistry.StateReady, "holder-ready")
+	check(&wrongEpoch, leadregistry.StateReady, "holder-ready")
+	check(nil, leadregistry.StateReady, "holder-ready")
+	check(nil, leadregistry.StateDegraded, "holder-unreachable")
+	check(&healthy, leadregistry.StateReady, "holder-ready")
+	check(&exited, leadregistry.StateDegraded, "lead-exited")
+	check(&unknown, leadregistry.StateDegraded, "lead-exited")
+	check(nil, leadregistry.StateDegraded, "lead-exited")
+	check(nil, leadregistry.StateDegraded, "holder-unreachable")
+	prev, _ := m.reg.Get(lr.role)
+	check(nil, leadregistry.StateDegraded, "holder-unreachable")
+	if next, _ := m.reg.Get(lr.role); next.Shown != prev.Shown {
+		t.Fatal("a repeated failure wrote another observation")
+	}
+	check(&wrongEpoch, leadregistry.StateDegraded, "holder-unreachable")
+	check(&wrongLead, leadregistry.StateDegraded, "holder-unreachable")
+	check(&healthy, leadregistry.StateReady, "holder-ready")
+	check(&treeGone, leadregistry.StateDegraded, "lead-exited")
+	check(&healthy, leadregistry.StateReady, "holder-ready")
+	// Build skew remains a refusal even if the holder answers successfully.
+	if err := m.showSkewed(lr, epoch, &opFail{msg: "another build"}); err != nil {
+		t.Fatal(err)
+	}
+	check(&healthy, leadregistry.StateDegraded, "holder-version-skew")
+}
+
+func TestLeadHealthPollRacingStopAndNewEpoch(t *testing.T) {
+	m, lr, epoch := barePromote(t)
+	m.promote(lr, epoch)
+	observer := &readyObserver{epoch: epoch}
+	m.recordHealth(t.Context(), lr, observer, nil)
+	m.recordHealth(t.Context(), lr, observer, nil)
+	// A recovery reply is in flight when stop takes the role lock.
+	reply := &wire.Status{Lead: lr.role.String(), Epoch: epoch, Facts: wire.Facts{TUIExited: wire.FactNo}}
+	build := lr.in.ext.build
+	read := build.Record
+	checking, resume := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(resume) })
+	defer unblock()
+	build.Record = func(dir string, epoch uint64) (buildid.Record, error) {
+		close(checking)
+		<-resume
+		return read(dir, epoch)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.recordHealth(t.Context(), lr, observer, reply)
+	}()
+	select {
+	case <-checking:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the poll did not check the build before recovery")
+	}
+	if !lr.tryLock() {
+		t.Fatal("role busy before stop")
+	}
+	_, err := m.reg.SetState(lr.role, leadregistry.StateChange{Epoch: epoch, State: leadregistry.StateStopped,
+		Evidence: leadregistry.EvidenceObservation, Reason: leadregistry.Reason{Code: "test-stop"}, Proof: "stopped"})
+	lr.unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unblock()
+	<-done
+	build.Record = read
+	if e, _ := m.reg.Get(lr.role); e.Shown.State != leadregistry.StateStopped {
+		t.Fatalf("recovery after stop: %+v", e.Shown)
+	}
+	next, err := m.reg.BeginLaunchWith(lr.role, leadregistry.LaunchOptions{BootIdentity: "boot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.reg.RecordOutcome(lr.role, next.ID, next.Epoch, leadregistry.OutcomeLaunched,
+		leadregistry.UnitEvidence{InvocationID: "next", ControlGroupPath: "/cg/alpha", ControlGroupID: "2", BootID: "boot"}); err != nil {
+		t.Fatal(err)
+	}
+	m.promote(lr, next.Epoch)
+	m.recordHealth(t.Context(), lr, observer, nil) // an earlier poll lost contact
+	if e, _ := m.reg.Get(lr.role); e.Shown.State != leadregistry.StateReady || e.Epoch != next.Epoch {
+		t.Fatalf("old failure after restart: %+v", e)
+	}
+	nextObserver := &readyObserver{epoch: next.Epoch}
+	m.recordHealth(t.Context(), lr, nextObserver, nil)
+	if e, _ := m.reg.Get(lr.role); e.Shown.State != leadregistry.StateReady {
+		t.Fatalf("first missed poll of new epoch: %+v", e)
+	}
+	m.recordHealth(t.Context(), lr, nextObserver, nil)
+	m.recordHealth(t.Context(), lr, observer, reply)
+	if e, _ := m.reg.Get(lr.role); e.Shown.State != leadregistry.StateDegraded || e.Epoch != next.Epoch {
+		t.Fatalf("old recovery after restart: %+v", e)
 	}
 }
 
@@ -406,26 +573,45 @@ func TestLeadReadyNotPromotedWhenStoppedMeanwhile(t *testing.T) {
 func TestLeadReadyNotPromotedWhenTheEpochChanged(t *testing.T) {
 	l := newLeadEnv(t)
 	l.readyBounds(10 * time.Second)
+	answered := make(chan struct{})
+	restarted := make(chan struct{})
+	resume := sync.OnceFunc(func() { close(restarted) })
+	defer resume()
+	pauseFirst := sync.OnceFunc(func() {
+		close(answered)
+		<-restarted
+	})
+	leadReadyHook = func(string) { pauseFirst() }
+	t.Cleanup(func() { leadReadyHook = nil })
 	l.start()
 	h := newReadyHolder(roleOf("alpha"))
 	h.epoch.Store(1) // refuses epoch 2: the new holder is not up
-	var once sync.Once
-	restarted := make(chan struct{})
-	leadReadyHook = func(stage string) {
-		once.Do(func() {
-			want(t, l.stopLead("alpha", 1), leadwire.StatusDone, "")
-			want(t, l.startLead("alpha"), leadwire.StatusDone, "")
-			close(restarted)
-		})
-	}
-	t.Cleanup(func() { leadReadyHook = nil })
-	l.upWith("alpha", h)
+	askedAgain := make(chan struct{})
+	noteEpochTwo := sync.OnceFunc(func() { close(askedAgain) })
+	l.up("alpha", func(req wire.Request, conn net.Conn) {
+		h.answer(req, conn)
+		if req.Op == wire.OpStatus && req.Epoch == 2 {
+			noteEpochTwo()
+		}
+	})
+	// The first start has returned (and released the role lock). Hold its
+	// observer between the valid answer and the epoch check across the restart.
 	select {
-	case <-restarted:
+	case <-answered:
 	case <-time.After(10 * time.Second):
-		t.Fatal("the hook never ran")
+		t.Fatal("the first observer did not receive the holder's answer")
 	}
-	l.stays("alpha", "starting", 300*time.Millisecond)
+	want(t, l.stopLead("alpha", 1), leadwire.StatusDone, "")
+	want(t, l.startLead("alpha"), leadwire.StatusDone, "")
+	resume()
+	select {
+	case <-askedAgain:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the second observer did not ask for epoch 2")
+	}
+	// Shutdown joins both observers. The next daemon adopts their recorded
+	// state, and the holder still refuses epoch 2 while we inspect it.
+	l.restart()
 	if row := l.row("alpha"); row.State != "starting" || row.Epoch != 2 {
 		t.Fatalf("the row: %+v", row)
 	}
@@ -690,6 +876,47 @@ func TestLeadReadyObserversAreJoinedAndNoneStartsAfter(t *testing.T) {
 	}
 }
 
+// The reviewer's case of the startup scan: the scan read the lead starting in
+// epoch 1, and before it registered that epoch's observer the lead was
+// stopped and started again in epoch 2, whose observer runs. The scan's late
+// registration of epoch 1 is refused in the same step that would replace the
+// observer: the observer of epoch 2 is neither cancelled nor replaced. An
+// observer of the same or a later epoch still replaces one.
+func TestLeadReadyStaleObserverDoesNotReplaceALaterEpochs(t *testing.T) {
+	m, lr, epoch := barePromote(t)
+	m.readyWithin, m.readyBackoff = time.Minute, 10*time.Millisecond
+	newFakeHolder(t, lr.in.ext.holderDir, silent)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.startObservers(ctx)
+	defer m.joinObservers(5 * time.Second)
+	current := func() *readyObserver {
+		m.ready.mu.Lock()
+		defer m.ready.mu.Unlock()
+		return m.ready.byRole[lr.role]
+	}
+	// The observer of a later epoch, as a start of epoch 2 made it; it stands
+	// in the role's place with a context of its own.
+	laterCtx, laterCancel := context.WithCancel(ctx)
+	defer laterCancel()
+	later := &readyObserver{gen: 1000, epoch: epoch + 1, cancel: laterCancel}
+	m.ready.mu.Lock()
+	m.ready.byRole[lr.role] = later
+	m.ready.mu.Unlock()
+	m.observeReady(lr, epoch)
+	if current() != later || laterCtx.Err() != nil {
+		t.Fatal("the stale registration replaced or cancelled the observer of the later epoch")
+	}
+	if !strings.Contains(m.d.log.(*syncBuffer).String(), "the lead has one of epoch 2") {
+		t.Fatalf("log:\n%s", m.d.log.(*syncBuffer).String())
+	}
+	// An observer of the later epoch itself replaces it.
+	m.observeReady(lr, epoch+1)
+	if cur := current(); cur == later || cur == nil || cur.epoch != epoch+1 || laterCtx.Err() == nil {
+		t.Fatal("the registration of the same epoch did not replace the observer")
+	}
+}
+
 // A stop that is refused because it names another epoch leaves the epoch that
 // runs, and so its observer: the lead is shown ready once the holder answers
 // for the epoch, though the stop came while it was still starting.
@@ -795,5 +1022,415 @@ func TestLeadReadyAbandonedServerDoesNotWaitASecondGrace(t *testing.T) {
 	mustFail(t, l.running.stop(), StepShutdown, ExitShutdown)
 	if d := time.Since(t0); d >= 2*grace-grace/5 {
 		t.Fatalf("the stop took %s: the observers were waited for a second grace of %s", d, grace)
+	}
+}
+
+// otherBuildRecord is a check of the holder's build whose holders are the
+// expected build by their executable (the check before the start passes) and
+// record another build in holder.json for every epoch: a holder rebuilt
+// between the check and the start.
+func otherBuildRecord() *buildid.Checker {
+	ch := sameHolderBuild()
+	ch.Record = func(_ string, epoch uint64) (buildid.Record, error) {
+		b := otherHolderBuild
+		return buildid.Record{Epoch: epoch, Build: &b}, nil
+	}
+	return ch
+}
+
+// skewShown checks that the lead is shown degraded with the reason
+// holder-version-skew, the evidence kind ataniq-observation and the refusal,
+// which names both builds, in the detail, in the status and in its row.
+func (l *leadEnv) skewShown(key string, epoch uint64) {
+	l.t.Helper()
+	state, code, evidence, detail := l.shown(key)
+	if state != "degraded" || code != codeHolderVersionSkew || evidence != "ataniq-observation" ||
+		!strings.HasPrefix(detail, "holder-version-skew: the holder is another build") ||
+		!strings.Contains(detail, "expected build "+testHolderBuild.Short()) {
+		l.t.Fatalf("%s shown: %q %q %q %q", key, state, code, evidence, detail)
+	}
+	if row := l.row(key); row.State != "degraded" || row.StateReason != codeHolderVersionSkew || row.Epoch != epoch {
+		l.t.Fatalf("the row: %+v", row)
+	}
+}
+
+// untouched checks that the lead's unit is loaded and that, since the counts
+// were taken, no signal was sent to it and nothing was started.
+func (l *leadEnv) untouched(key string, signals, starts int) {
+	l.t.Helper()
+	if !l.fake.Loaded(l.cfgOf(key).Role.UnitName()) {
+		l.t.Fatal("the unit was stopped")
+	}
+	if n := len(l.fake.CallsOf(leadunit.MethodSignal)); n != signals {
+		l.t.Fatalf("%d signals were sent", n-signals)
+	}
+	if n := len(l.fake.StartedSpecs()); n != starts {
+		l.t.Fatalf("%d starts, want %d", n, starts)
+	}
+	if strings.Contains(l.log.String(), "the lead is stopped") {
+		l.t.Fatalf("log:\n%s", l.log)
+	}
+}
+
+// A holder that answers for the epoch of this daemon's start but recorded
+// another build from its running executable is never shown ready: the lead is
+// shown degraded with the reason holder-version-skew, its unit is left
+// running and nothing is signalled, its ticket is refused, and the daemon's
+// log tells the owner to stop the lead and start it again. The owner's stop
+// ends it.
+func TestLeadReadyShowsAHolderThatStartedAsAnotherBuildDegraded(t *testing.T) {
+	l := newLeadEnv(t)
+	l.readyBounds(10 * time.Second)
+	l.scratch.HolderBuild = otherBuildRecord()
+	l.start()
+	h := newReadyHolder(roleOf("alpha"))
+	h.epoch.Store(1)
+	sr := l.upWith("alpha", h)
+	if sr.State != "starting" || sr.Epoch != 1 {
+		t.Fatalf("the start result: %+v", sr)
+	}
+	l.waitState("alpha", "degraded")
+	l.skewShown("alpha", 1)
+	if len(h.holderRequests(t, l, "alpha")) == 0 {
+		t.Fatal("the holder was never asked")
+	}
+	l.waitLog("the lead is shown degraded and its unit is left running: stop the lead and start it again")
+	l.stays("alpha", "degraded", 150*time.Millisecond)
+	l.untouched("alpha", 0, 1)
+	if ev := l.evidenceOf("alpha"); len(ev) == 0 || ev[len(ev)-1] == "stop" {
+		t.Fatalf("evidence %v", ev)
+	}
+	want(t, l.ticket("alpha", 1, "writer"), leadwire.StatusRefused, codeHolderVersionSkew)
+	want(t, l.inject("alpha", 1, "msg-one", "body one"), leadwire.StatusRefused, codeHolderVersionSkew)
+	want(t, l.stopLead("alpha", 1), leadwire.StatusDone, "")
+	if state, _, _, _ := l.shown("alpha"); state != "stopped" {
+		t.Fatalf("after the stop: %q", state)
+	}
+}
+
+// A lead this daemon adopted as starting, whose holder recorded another build,
+// is shown degraded in the same way and is not stopped either.
+func TestLeadReadyShowsAnAdoptedHolderOfAnotherBuildDegraded(t *testing.T) {
+	l := newLeadEnv(t)
+	l.readyBounds(10 * time.Second)
+	l.start()
+	h := newReadyHolder(roleOf("alpha"))
+	h.epoch.Store(1)
+	h.noStatus.Store(true)
+	l.upWith("alpha", h)
+	l.stays("alpha", "starting", 100*time.Millisecond)
+	if err := l.running.stop(); err != nil {
+		t.Fatalf("the daemon did not stop clean: %v", err)
+	}
+	l.scratch.HolderBuild = otherBuildRecord()
+	h.noStatus.Store(false)
+	signals := len(l.fake.CallsOf(leadunit.MethodSignal))
+	l.start()
+	l.waitState("alpha", "degraded")
+	l.skewShown("alpha", 1)
+	l.stays("alpha", "degraded", 100*time.Millisecond)
+	l.untouched("alpha", signals, 1)
+	want(t, l.ticket("alpha", 1, "writer"), leadwire.StatusRefused, codeHolderVersionSkew)
+}
+
+// The reviewer's case of a holder that never answers: the holder that started
+// for this daemon's start wrote its holder.json of the epoch from its own
+// running executable, which is another build, and gives no usable status (no
+// status in its answers, or nothing listens at all). The observer reads the
+// file after each question that got no answer, and the lead is shown
+// degraded, as for one that answered, with its unit left running; it does not
+// stay starting after the observation ends.
+func TestLeadReadyShowsAHolderOfAnotherBuildThatDoesNotAnswerDegraded(t *testing.T) {
+	for name, listens := range map[string]bool{"no status in its answers": true, "nothing listens": false} {
+		t.Run(name, func(t *testing.T) {
+			l := newLeadEnv(t)
+			l.readyBounds(2 * time.Second)
+			l.scratch.HolderBuild = otherBuildRecord()
+			l.start()
+			want(t, l.define("alpha"), leadwire.StatusDone, "")
+			if listens {
+				h := newReadyHolder(roleOf("alpha"))
+				h.epoch.Store(1)
+				h.noStatus.Store(true)
+				l.holder("alpha", h.answer)
+			}
+			s := l.startLead("alpha")
+			want(t, s, leadwire.StatusDone, "")
+			var sr leadwire.StartResult
+			result(t, s, &sr)
+			if sr.State != "starting" || sr.Epoch != 1 {
+				t.Fatalf("the start result: %+v", sr)
+			}
+			l.waitState("alpha", "degraded")
+			l.skewShown("alpha", 1)
+			l.untouched("alpha", 0, 1)
+		})
+	}
+}
+
+// A holder whose build is not confirmed never changes the lead's state: a
+// silent holder of the expected build, one whose holder.json cannot be read
+// and one with no file leave the lead starting once the observation ends.
+// The reviewer's case is a holder that answers for the epoch while its file
+// cannot be read: that read confirms nothing either, the lead is neither
+// shown ready nor degraded, nothing is signalled, and the file is read again
+// at the next question, so the lead is shown ready once it reads the
+// expected build.
+func TestLeadReadyLeavesAHolderOfNoConfirmedBuildStarting(t *testing.T) {
+	unreadable := func(string, uint64) (buildid.Record, error) {
+		return buildid.Record{}, errors.New("the state file is not a JSON object of a holder")
+	}
+	for name, rec := range map[string]func(string, uint64) (buildid.Record, error){
+		"the expected build": sameHolderBuild().Record,
+		"an unreadable file": unreadable,
+		"no file": func(string, uint64) (buildid.Record, error) {
+			return buildid.Record{}, os.ErrNotExist
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			l := newLeadEnv(t)
+			l.readyBounds(300 * time.Millisecond)
+			l.scratch.HolderBuild.Record = rec
+			l.start()
+			h := newReadyHolder(roleOf("alpha"))
+			h.epoch.Store(1)
+			h.noStatus.Store(true)
+			l.upWith("alpha", h)
+			l.waitLog("the lead stays starting")
+			l.stays("alpha", "starting", 100*time.Millisecond)
+			l.untouched("alpha", 0, 1)
+		})
+	}
+	t.Run("an answer with an unreadable file", func(t *testing.T) {
+		l := newLeadEnv(t)
+		l.readyBounds(10 * time.Second)
+		var good atomic.Bool
+		ch := sameHolderBuild()
+		ch.Record = func(dir string, epoch uint64) (buildid.Record, error) {
+			if good.Load() {
+				return sameHolderBuild().Record(dir, epoch)
+			}
+			return unreadable(dir, epoch)
+		}
+		l.scratch.HolderBuild = ch
+		l.start()
+		h := newReadyHolder(roleOf("alpha"))
+		h.epoch.Store(1)
+		l.upWith("alpha", h)
+		deadline := time.Now().Add(10 * time.Second)
+		for len(l.holders["alpha"].requests(wire.OpStatus)) < 3 {
+			if time.Now().After(deadline) {
+				t.Fatal("the observer did not ask again")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		l.stays("alpha", "starting", 100*time.Millisecond)
+		l.untouched("alpha", 0, 1)
+		good.Store(true)
+		l.waitState("alpha", "ready")
+	})
+}
+
+// The reviewer's case of the role's lock at the observation's end: the
+// holder's file confirms another build while a command of the role holds the
+// lock, and the lock is still held when the observation's deadline passes.
+// The confirmed build is not dropped with the observation: once the lock is
+// free the lead is shown degraded. A lead that was stopped meanwhile (here,
+// shown stopped while the lock was held) is not changed.
+func TestLeadReadySkewOutlastsTheObservationWhileTheRoleIsBusy(t *testing.T) {
+	for name, stopped := range map[string]bool{"still starting": false, "stopped meanwhile": true} {
+		t.Run(name, func(t *testing.T) {
+			m, lr, epoch := barePromote(t)
+			m.readyWithin, m.readyBackoff = 50*time.Millisecond, 5*time.Millisecond
+			m.cm.build.Record = otherBuildRecord().Record
+			newFakeHolder(t, lr.in.ext.holderDir, silent)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			m.startObservers(ctx)
+			if !lr.tryLock() {
+				t.Fatal("the lock is not free")
+			}
+			m.observeReady(lr, epoch)
+			time.Sleep(250 * time.Millisecond) // past the observation's end
+			if stopped {
+				if _, err := m.reg.SetState(lr.role, leadregistry.StateChange{Epoch: epoch, State: leadregistry.StateStopped,
+					Evidence: leadregistry.EvidenceObservation, Reason: leadregistry.Reason{Code: "test-setup"}, Proof: "the test"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e, err := m.reg.Get(lr.role)
+			if err != nil || e.Shown.State == leadregistry.StateDegraded {
+				t.Fatalf("shown %q while the lock is held: %v", e.Shown.State, err)
+			}
+			lr.unlock()
+			want := leadregistry.StateDegraded
+			if stopped {
+				want = leadregistry.StateStopped
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				m.ready.mu.Lock()
+				running := len(m.ready.byRole)
+				m.ready.mu.Unlock()
+				e, err := m.reg.Get(lr.role)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if running == 0 {
+					if e.Shown.State != want || want == leadregistry.StateDegraded && e.Shown.Reason.Code != codeHolderVersionSkew {
+						t.Fatalf("shown %q (%s), want %q", e.Shown.State, e.Shown.Reason.Code, want)
+					}
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("the observer did not end; shown %q", e.Shown.State)
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			if !m.joinObservers(5 * time.Second) {
+				t.Fatal("the join did not finish")
+			}
+		})
+	}
+}
+
+// The reviewer's case of an upgraded daemon: a lead an earlier daemon showed
+// ready is adopted by a daemon of another build. Before the new daemon serves
+// anything its holder.json is read again: the very first status and list
+// show the lead degraded with the reason holder-version-skew and the refusal
+// in the detail, never ready, so the row agrees with the refused ticket. Its
+// unit is left running: no signal, no stop, no start, and the holder is asked
+// nothing. A lead of the expected build that is ready stays ready.
+func TestLeadReadyAdoptedReadyLeadOfAnotherBuildIsShownSkewed(t *testing.T) {
+	l := newLeadEnv(t)
+	l.readyBounds(10 * time.Second)
+	l.start()
+	for _, key := range []string{"alpha", "beta"} {
+		h := newReadyHolder(roleOf(key))
+		h.epoch.Store(1)
+		l.upWith(key, h)
+		l.waitState(key, "ready")
+	}
+	if err := l.running.stop(); err != nil {
+		t.Fatalf("the daemon did not stop clean: %v", err)
+	}
+	// The new daemon's build: alpha's holder recorded another, beta's the
+	// expected one.
+	ch := sameHolderBuild()
+	alphaRole := l.cfgOf("alpha").Role
+	ch.Record = func(dir string, epoch uint64) (buildid.Record, error) {
+		b := testHolderBuild
+		alphaLayout, err := l.cfgOf("alpha").Layout()
+		if err != nil {
+			return buildid.Record{}, err
+		}
+		if dir == alphaLayout.Holder() {
+			b = otherHolderBuild
+		}
+		return buildid.Record{Epoch: epoch, Build: &b}, nil
+	}
+	l.scratch.HolderBuild = ch
+	statusBefore := len(l.holders["alpha"].requests(wire.OpStatus))
+	signals := len(l.fake.CallsOf(leadunit.MethodSignal))
+	l.start()
+	state, code, evidence, detail := l.shown("alpha")
+	if state != "degraded" || code != "holder-version-skew" || evidence != "ataniq-observation" ||
+		!strings.HasPrefix(detail, "holder-version-skew: the holder is another build") ||
+		!strings.Contains(detail, "expected build "+testHolderBuild.Short()) {
+		t.Fatalf("alpha shown: %q %q %q %q", state, code, evidence, detail)
+	}
+	if row := l.row("alpha"); row.State != "degraded" || row.StateReason != "holder-version-skew" || row.Epoch != 1 {
+		t.Fatalf("the row: %+v", row)
+	}
+	if state, code, _, _ := l.shown("beta"); state != "ready" || code != "holder-ready" {
+		t.Fatalf("beta shown: %q %q", state, code)
+	}
+	want(t, l.ticket("alpha", 1, "writer"), leadwire.StatusRefused, "holder-version-skew")
+	l.stays("alpha", "degraded", 150*time.Millisecond)
+	if !l.fake.Loaded(alphaRole.UnitName()) {
+		t.Fatal("the adopted unit was stopped")
+	}
+	if n := len(l.fake.CallsOf(leadunit.MethodSignal)); n != signals {
+		t.Fatalf("%d signals were sent", n-signals)
+	}
+	if n := len(l.fake.StartedSpecs()); n != 2 {
+		t.Fatalf("%d starts", n)
+	}
+	if n := len(l.holders["alpha"].requests(wire.OpStatus)); n != statusBefore {
+		t.Fatalf("the holder was asked %d times", n-statusBefore)
+	}
+	// The owner's way out: a stop ends it.
+	want(t, l.stopLead("alpha", 1), leadwire.StatusDone, "")
+}
+
+// The reviewer's case of a failed write at adoption: an adopted ready lead
+// whose holder.json confirms another build, while the registry's append of
+// its degraded state fails. The daemon does not start (the reconcile step,
+// before the socket is made), so no status or list ever shows the earlier
+// daemon's ready for it, and nothing is stopped or signalled. The next start,
+// with the registry writable, shows it degraded.
+func TestLeadReadyAdoptedSkewThatCannotBeRecordedStopsTheStart(t *testing.T) {
+	l := newLeadEnv(t)
+	l.readyBounds(10 * time.Second)
+	l.start()
+	h := newReadyHolder(roleOf("alpha"))
+	h.epoch.Store(1)
+	l.upWith("alpha", h)
+	l.waitState("alpha", "ready")
+	if err := l.running.stop(); err != nil {
+		t.Fatalf("the daemon did not stop clean: %v", err)
+	}
+	l.scratch.HolderBuild = otherBuildRecord()
+	var asked atomic.Int32
+	showSkewedHook = func() error {
+		asked.Add(1)
+		return errors.New("the journal's append failed (injected)")
+	}
+	t.Cleanup(func() { showSkewedHook = nil })
+	signals := len(l.fake.CallsOf(leadunit.MethodSignal))
+	se := mustFail(t, l.runToEnd(l.daemonConfig()), StepReconcile, ExitReconcile)
+	if asked.Load() != 1 || !strings.Contains(se.Error(), "its state degraded cannot be recorded: the journal's append failed (injected)") {
+		t.Fatalf("asked %d: %v", asked.Load(), se)
+	}
+	l.noSocketMade()
+	if n := len(l.fake.CallsOf(leadunit.MethodSignal)); n != signals {
+		t.Fatalf("%d signals were sent", n-signals)
+	}
+	showSkewedHook = nil
+	l.start()
+	l.skewShown("alpha", 1)
+	l.untouched("alpha", signals, 1)
+}
+
+// An adopted ready lead whose holder.json is missing confirms no other build:
+// it stays ready, and the daemon logs that its build cannot be confirmed.
+func TestLeadReadyAdoptedReadyLeadWithoutARecordStaysReady(t *testing.T) {
+	l := newLeadEnv(t)
+	l.readyBounds(10 * time.Second)
+	l.start()
+	h := newReadyHolder(roleOf("alpha"))
+	h.epoch.Store(1)
+	l.upWith("alpha", h)
+	l.waitState("alpha", "ready")
+	if err := l.running.stop(); err != nil {
+		t.Fatalf("the daemon did not stop clean: %v", err)
+	}
+	l.scratch.HolderBuild.Record = func(string, uint64) (buildid.Record, error) { return buildid.Record{}, os.ErrNotExist }
+	l.start()
+	if state, code, _, _ := l.shown("alpha"); state != "ready" || code != "holder-ready" {
+		t.Fatalf("shown %q %q", state, code)
+	}
+	l.waitLog("the adopted ready lead's build cannot be confirmed for epoch 1; it stays ready")
+}
+
+// waitLog waits for the daemon's log to hold text.
+func (l *leadEnv) waitLog(text string) {
+	l.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(l.log.String(), text) {
+		if time.Now().After(deadline) {
+			l.t.Fatalf("no %q in the log:\n%s", text, l.log)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

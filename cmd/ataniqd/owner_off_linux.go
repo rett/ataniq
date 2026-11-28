@@ -17,6 +17,10 @@ type ownerFlags struct{}
 
 func (*ownerFlags) define(*flag.FlagSet) {}
 
+// trialCheck is the check of run's flags that the phone trial adds. It
+// passes everything here.
+func (a *app) trialCheck(*ownerFlags, *canaryFlags) (code int) { return -1 }
+
 // ownerRun is the part of run that registers the owner connection. It does
 // nothing here.
 func (a *app) ownerRun(*ownerFlags, *leaddaemon.Config) (code int) { return -1 }

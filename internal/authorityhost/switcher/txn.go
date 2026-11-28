@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -56,11 +57,16 @@ func (t *txn) kind() string {
 // errNoFallback: the transaction has no earlier release to go back to.
 var errNoFallback = errors.New("no earlier release")
 
+// openStoredTree checks the protected tree and all its file hashes.
+func (s *Switcher) openStoredTree(id ReleaseID) (*release, error) {
+	b := &budget{lim: s.cfg.Limits, deadline: s.cfg.Now().Add(s.cfg.Limits.Time), now: s.cfg.Now}
+	return openRelease(id, s.relRoot, id.Name, filepath.Join(s.base(), "releases", id.Name), s.entryTrusted, b)
+}
+
 // openVerified opens releases/<id> and verifies it as the switch policy and
 // the transaction's trust say.
 func (s *Switcher) openVerified(ctx context.Context, id ReleaseID) (*release, error) {
-	b := &budget{lim: s.cfg.Limits, deadline: s.cfg.Now().Add(s.cfg.Limits.Time), now: s.cfg.Now}
-	rel, err := openRelease(id, s.relRoot, id.Name, filepath.Join(s.base(), "releases", id.Name), s.entryTrusted, b)
+	rel, err := s.openStoredTree(id)
 	if err != nil {
 		return nil, err
 	}
@@ -258,6 +264,10 @@ func (s *Switcher) activate(ctx context.Context, t *txn) error {
 	if err := s.ensureLink("current", "releases/"+t.j.ID); err != nil {
 		return failf(CodeLinkFailed, "current: %s", q(err.Error()))
 	}
+	if err := s.stopDeparting(ctx, t, false); err != nil {
+		return err
+	}
+	t.j.CandidateUnits = cand.units
 	if err := s.reload(ctx, cand.reloads); err != nil {
 		return s.toRecovery(ctx, t, "reload", err)
 	}
@@ -336,8 +346,8 @@ func (s *Switcher) stopUnrecorded(ctx context.Context, t *txn) {
 }
 
 // restore is the restoring phase: first the services of the transaction's
-// release are stopped (its own stop list when it still verifies, the
-// host's otherwise), so that nothing only it runs survives going back; then
+// release are stopped and checked using the host list followed by any
+// verified release list. A failed departure stays retryable. Then
 // the old release, verified as the transaction's trust says, is made
 // current again with previous as it was, its own reload list runs, and it
 // must be healthy and pass the no-AI check of its phase post on the host as
@@ -354,22 +364,8 @@ func (s *Switcher) restore(ctx context.Context, t *txn) error {
 		s.printf("back: FAILED: the earlier release cannot be used: %s", describe(err))
 		return failed("the earlier release cannot be used (%s)", describe(err))
 	}
-	if cand, err := s.candidate(ctx, t); err == nil {
-		if f := s.runStops(ctx, t.j.ID, cand.stops); len(f) > 0 {
-			t.j.RestoredHealth = "failed"
-			return failed("going back failed: the stop list of %s failed (%s)", t.j.ID, joinFailures(f))
-		}
-	} else {
-		s.printf("back: the stop list of %s is not run: it cannot be verified (%s); the host's stop list runs instead", t.j.ID, describe(err))
-		stops, herr := s.hostStopList()
-		if herr != nil {
-			t.j.RestoredHealth = "failed"
-			return failed("going back failed: the services of %s cannot be stopped: the host's %s: %s", t.j.ID, HostStopList, describe(herr))
-		}
-		if f := s.runStops(ctx, "host", stops); len(f) > 0 {
-			t.j.RestoredHealth = "failed"
-			return failed("going back failed: the host's stop list failed (%s)", joinFailures(f))
-		}
+	if err := s.stopDeparting(ctx, t, true); err != nil {
+		return err
 	}
 	if err := s.crash(CrashCandidateStopped); err != nil {
 		return err
@@ -386,6 +382,7 @@ func (s *Switcher) restore(ctx context.Context, t *txn) error {
 	if err := s.crash(CrashRestoreLinks); err != nil {
 		return err
 	}
+	t.j.OldUnits = fb.units
 	if err := s.reload(ctx, fb.reloads); err != nil {
 		t.j.RestoredHealth = "failed"
 		return failed("going back failed: %s", describe(err))
@@ -409,12 +406,29 @@ func (s *Switcher) restore(ctx context.Context, t *txn) error {
 	return s.done(t, ResultRolledBack)
 }
 
+// Only systemctl stop of a single named unit gives exit 5 this meaning.
+func (s *Switcher) unitNotLoaded(argv []string, err error) bool {
+	if len(argv) != 3 || argv[1] != "stop" || strings.HasPrefix(argv[2], "-") {
+		return false
+	}
+	switch argv[0] {
+	case "systemctl", filepath.Join(s.cfg.Root, "usr/bin/systemctl"), filepath.Join(s.cfg.Root, "bin/systemctl"):
+		var failure *RunError
+		return errors.As(err, &failure) && failure.Status == 5
+	}
+	return false
+}
+
 // runStops runs the stop commands cmds of list, every one whatever the
 // others do, and returns the failures.
 func (s *Switcher) runStops(ctx context.Context, list string, cmds [][]string) []string {
 	var failures []string
 	for _, c := range cmds {
 		if _, err := s.cfg.Runner.Run(ctx, Command{Argv: c, Timeout: ReloadTimeout}); err != nil {
+			if s.unitNotLoaded(c, err) {
+				s.printf("stop: manager reported unit not loaded: %s", qargv(c))
+				continue
+			}
 			s.printf("stop: FAILED: %s: %s", qargv(c), summary(err))
 			failures = append(failures, list+": "+q(c[0])+": "+summary(err))
 			continue
@@ -427,9 +441,8 @@ func (s *Switcher) runStops(ctx context.Context, list string, cmds [][]string) [
 // stop is the stopping phase: the host's own stop list runs, then the stop
 // lists of the transaction's release and of the old release, each one
 // that can be verified (the host's list is what does not depend on that).
-// Only when every command exits 0 are the services taken as stopped and
-// the transaction done; otherwise it stays in this phase, the command
-// fails, and the next one runs the stops again.
+// Both inventories must be observed inactive or absent. On failure the
+// journal stays here and the next command repeats the stops and checks.
 func (s *Switcher) stop(ctx context.Context, t *txn) error {
 	var failures []string
 	run := func(list string, cmds [][]string) {
@@ -439,15 +452,26 @@ func (s *Switcher) stop(ctx context.Context, t *txn) error {
 	// already, before anything that could fail: see hostStopsFirst).
 	s.hostStopsFirst(ctx)
 	failures = append(failures, s.hostStopsFailures...)
-	if cand, err := s.candidate(ctx, t); err == nil {
+	cand, err := s.candidate(ctx, t)
+	if err == nil {
 		run(t.j.ID, cand.stops)
 	} else {
 		s.printf("stop: the stop list of %s is not run: it cannot be verified (%s)", t.j.ID, describe(err))
 	}
-	if fb, err := s.fallback(ctx, t); err == nil {
+	fb, err := s.fallback(ctx, t)
+	if err == nil {
 		run(fb.id.Name, fb.stops)
 	} else if !errors.Is(err, errNoFallback) {
 		s.printf("stop: the stop list of the earlier release is not run: it cannot be verified (%s)", describe(err))
+	}
+	if err := s.confirmStopped(ctx, t.j.ID, t.j.CandidateUnits); err != nil {
+		failures = append(failures, describe(err))
+	}
+	if t.j.OldCurrent != "" {
+		old, _ := s.targetID(t.j.OldCurrent)
+		if err := s.confirmStopped(ctx, old.Name, t.j.OldUnits); err != nil {
+			failures = append(failures, describe(err))
+		}
 	}
 	if err := s.crash(CrashStopped); err != nil {
 		return err
@@ -457,7 +481,7 @@ func (s *Switcher) stop(ctx context.Context, t *txn) error {
 		if err := s.save(t); err != nil {
 			return err
 		}
-		return failf(CodeStopFailed, "%d stop command(s) failed, so the decision services may still run (%s); run the command again once the cause is fixed, or ah-switch recover --services-stopped once they are stopped by hand", len(failures), joinFailures(failures))
+		return failf(CodeStopFailed, "%d stop failure(s), so the decision services may still run (%s); run the command again once the cause is fixed, or ah-switch recover --services-stopped once they are stopped by hand", len(failures), joinFailures(failures))
 	}
 	t.j.Stopped = true
 	t.j.StopFailures = ""
@@ -509,11 +533,25 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 		return unresolved("current cannot be read", err)
 	}
 	if t.requalify && t.healthy() && !t.j.RequalifyFailed {
+		if err := s.stopDeparting(ctx, t, t.j.Result == ResultRolledBack); err != nil {
+			return unresolved("departure stops before requalification", err)
+		}
 		if err := s.requalifyCurrent(ctx, t, cur, curOK); err != nil {
 			if errors.Is(err, errCrashed) {
 				return ExitFailed, false
 			}
 			return unresolved("the failed requalification was not journaled", err)
+		}
+	}
+	// A reload may start shared units from the qualified target. Every
+	// departing-only unit must still be inactive when decisions resume.
+	if t.healthy() && !t.j.RequalifyFailed {
+		departed, current := t.j.OldUnits, t.j.CandidateUnits
+		if t.j.Result == ResultRolledBack {
+			departed, current = current, departed
+		}
+		if err := s.checkInactive(ctx, departed, current); err != nil {
+			return unresolved("departure after reload", err)
 		}
 	}
 	rec, err := s.txnRecord(t, cur, curOK)
@@ -599,8 +637,16 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 // stays unresolved.
 func (s *Switcher) requalifyCurrent(ctx context.Context, t *txn, cur string, curOK bool) error {
 	intro := fmt.Sprintf("reconcile: the %s %s was decided before an interruption; ", t.kind(), t.j.ID)
-	checkFailed, err := s.qualifyAgain(ctx, t.check(), cur, curOK, intro)
-	if err == nil || errors.Is(err, errCrashed) {
+	units, checkFailed, err := s.qualifyAgain(ctx, t.check(), cur, curOK, intro)
+	if err == nil {
+		if cur == t.j.OldCurrent {
+			t.j.OldUnits = units
+		} else {
+			t.j.CandidateUnits = units
+		}
+		return nil
+	}
+	if errors.Is(err, errCrashed) {
 		return err
 	}
 	t.j.RequalifyFailed = true
@@ -620,36 +666,36 @@ func (s *Switcher) requalifyCurrent(ctx context.Context, t *txn, cur string, cur
 // no-AI check's. A test's crash (see crash) returns errCrashed. intro begins the line that says it runs. The verdict of an
 // earlier post-activation check is never reused: the firewall and the
 // listeners may have changed since.
-func (s *Switcher) qualifyAgain(ctx context.Context, check checkRef, cur string, curOK bool, intro string) (checkFailed bool, err error) {
+func (s *Switcher) qualifyAgain(ctx context.Context, check checkRef, cur string, curOK bool, intro string) (units []string, checkFailed bool, err error) {
 	if !curOK {
-		return false, failf(CodeStateInvalid, "current is missing")
+		return nil, false, failf(CodeStateInvalid, "current is missing")
 	}
 	id, err := s.targetID(cur)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
 	s.printf("%s%s runs its reload list, health check and no-AI check again before decisions are no longer inhibited", intro, id.Name)
 	rel, err := s.openVerified(ctx, id)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
 	defer rel.Close()
 	if err := s.reload(ctx, rel.reloads); err != nil {
-		return false, err
+		return nil, false, err
 	}
 	if err := s.crash(CrashRequalifyReload); err != nil {
-		return false, err
+		return nil, false, err
 	}
 	if err := s.checkHealth(ctx, rel.health); err != nil {
-		return false, err
+		return nil, false, err
 	}
 	if err := s.crash(CrashRequalifyHealth); err != nil {
-		return false, err
+		return nil, false, err
 	}
 	if err := s.postCheck(ctx, check, rel); err != nil {
-		return true, err
+		return nil, true, err
 	}
-	return false, nil
+	return rel.units, false, nil
 }
 
 // requalifyFailed is what follows a requalification of current (cur) that
@@ -712,6 +758,11 @@ func (s *Switcher) txnRecord(t *txn, cur string, curOK bool) (Record, error) {
 			return Record{}, err
 		}
 		rec.CurrentID = id.Name
+		if id.Name == t.j.ID {
+			rec.CurrentUnits = t.j.CandidateUnits
+		} else if cur == t.j.OldCurrent {
+			rec.CurrentUnits = t.j.OldUnits
+		}
 	}
 	switch t.j.PackageState {
 	case PackageDone:

@@ -1,0 +1,429 @@
+# Authority-host checkpoint witness
+
+On Linux, use `ataniq-witness COMMAND --config FILE`. Give a clean absolute
+path to one JSON object. Unknown, duplicate and wrong-case field names are
+errors. Store independent public pins in this file. Keep private keys in
+separate files under protected directories.
+
+| Command | Account | Result |
+| --- | --- | --- |
+| `init` | Witness service | Creates signed genesis in a pre-provisioned, service-owned 0700 directory. Prints `witness store initialized` on success. Refuses an existing or interrupted store. |
+| `check` | Witness service | Checks local configuration, signing and TLS identity, and published file modes without opening the journal for replay. Prints one line and exits. |
+| `run` | Witness service | Opens and re-proves the store, grants the configured home access to one slot, polls outbound and serves the owner socket. |
+| `status` | Local root | Verifies a fresh signed status and prints the epoch, directory sequence, predecessor digest, counts and inhibition reason. |
+| `acknowledge` | Local root | Sends a pinned, epoch-bound acknowledgement over the owner socket. |
+| `enroll-submit --config FILE --prepared FILE --receipt-out FILE [--expect-digest HEX]` | Local root | Checks the signed home request and its pairing, submits it over the owner socket, writes the signed receipt and prints both digests and verified witness status. |
+| `slot-read --config FILE [--archive-out FILE]` | Local root | Verifies a freshly challenged read of the configured slot and prints `sequence=N head=HEX`. The optional archive is a new 0600 file containing that line. |
+| `slot-release --config FILE --asked WORDS` | Local root | After fencing the writer, releases its claimed session against the challenged state. Prints the verified release receipt digest and the owner's quoted words. |
+| `slot-retire --config FILE --asked WORDS` | Local root | Permanently retires the challenged slot. The disposition digest is SHA-256 of the exact words. Prints the verified retirement receipt digest and quoted words. |
+| `recover` | Witness service, under owner control | Re-proves storage and serves only the owner socket with decisions inhibited. |
+| `complete-publication` | Witness service, offline | Finishes publication of one unambiguous staged signed genesis pair and prints `witness publication completed`. |
+
+Exit 0 indicates success, 1 refusal and 2 incorrect usage. A verified status
+reporting storage failure, an unclean end or interrupted publication also exits
+1. The switch's ordinary decision inhibit allows status to succeed. Local
+root needs its own pinned TLS key to administer the witness. The socket's
+parent must be a service-owned 0700 directory. Keep that directory, state,
+seed and both TLS directories separate from each other and from the fixed switch
+guard directory, `/var/lib/authority-host`. Remove the former `guard` key
+from existing configurations. Preflight requires a readable guard directory
+even when the switch has inhibited decisions. Before startup,
+`check` verifies the socket path fits in 107 bytes, its private parent is
+writable and the name is free. It leaves the socket untouched. A bind can
+still fail at startup. Both cases report `owner socket already present or unusable`.
+
+Build the witness for Linux with the release toolchain. On the development
+host, compose the base, seat and notifier release trees as described in
+the authority-host README, then copy `deploy/authority-host/witness/.` over the
+result before filling the baseline. Add `--bin build/authority-host/ataniq-witness`
+to the release build and check the resulting release. The switch uses the
+witness's read-only preflight at startup and a challenged local status after
+restart. The main process performs preflight before opening the store. A refusal
+(exit 1), including a bad configuration, unsafe files, a pin mismatch or a
+poisoned store, leaves the service failed. Other failures eligible for restart
+are limited to five starts in 300 seconds. After repairing the cause, perform
+any required storage recovery, then run `systemctl reset-failed ataniq-witness.service`
+and `systemctl restart ataniq-witness.service` by hand. The witness needs no additional enabled unit, port or package.
+
+## Firewall and home listener
+
+The owner installs these two rules, in order, in the host's existing nftables
+`inet` output filter. Place them **before** any general accept, including
+established traffic and loopback. Substitute the dedicated account's numeric
+UID, one home IP address and one TCP port. For IPv6 change `ip daddr` to
+`ip6 daddr`. Install only the rule for the chosen family. The final drop
+covers both families and all protocols for that UID.
+
+```nft
+meta skuid WITNESS_UID ip daddr HOME_ADDRESS tcp dport HOME_PORT accept
+meta skuid WITNESS_UID drop
+```
+
+In the owner's `ataniq-witness.service.d/egress.conf`, add the corresponding
+single address (`/32` for IPv4 or `/128` for IPv6).
+
+```ini
+[Service]
+IPAddressAllow=HOME_ADDRESS
+```
+
+Configure `home_endpoint` as that literal address and decimal port, bracketing
+IPv6. Use the canonical address spelling and decimal port without leading
+zeros. Use a unicast destination outside loopback and link-local space.
+IPv4-mapped IPv6 addresses and zones are refused. Only the firewall restricts
+the TCP port. The host no-AI check and witness `check` read the owner’s unit
+drop-ins across the system manager’s unit search path, including
+`ataniq-witness.service.d`, `ataniq-.service.d` and `service.d`. Together
+these files may set one `IPAddressAllow` matching the home address. On a
+running systemd host both checks query the loaded unit with
+`systemctl show -p IPAddressAllow,IPAddressDeny ataniq-witness.service`.
+Its deny list must cover all IPv4 and IPv6 addresses, and its allow list must
+match the files on disk. After changing a drop-in, run
+`systemctl daemon-reload` before checking it. The owner verifies the live
+rules, their order and counters, then records the reviewed ruleset digest
+with the release baseline. No DNS allowance is needed.
+
+On the home firewall allow inbound TCP to that listener **only from the
+witness's observed source address** and drop other sources for the port.
+Set the home link's `TrustSources` to that same host prefix. The home checks
+the witness's pinned TLS identity on every connection.
+
+## Provision once, by hand
+
+**Installation is the owner's step.** Keep managed admission closed throughout
+setup. Prepare the signed release on the development host, including the
+binary built with the following command.
+
+```sh
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 sh scripts/go-tool.sh build -trimpath -o build/authority-host/ataniq-witness ./cmd/ataniq-witness
+```
+
+1. On the authority host create a system account and group named
+   `ataniq-witness`, with a locked password, no login shell and no
+   supplementary groups. Give neither the seat nor the deploy account group
+   membership, write access to unit/configuration files, or access to a
+   signing socket. Use a local filesystem supporting flock, keep-size
+   fallocate, and durable file and directory fsync.
+2. Pre-create `/var/lib/ataniq-witness` and its `store` subdirectory as
+   `ataniq-witness:ataniq-witness`, mode 0700. Sync the new directories and
+   their parents before provisioning genesis. Keep the signing seed and TLS
+   identities outside `store`. Create `/etc/authority-host/witness` under
+   root control, traversable by the service. Give the service read access to
+   `config.json` (root-owned 0640, group `ataniq-witness`). All ancestor
+   directories must be real, protected directories.
+3. Create a new Ed25519 witness signing identity using the owner's trusted
+   key provisioner. Store the **raw 32-byte seed** in `seed`, owned by the
+   service with mode 0600 and one hard link. Record the raw 32-byte public
+   key in lowercase hex independently. On the home, provision a different
+   Ed25519 ledger signing key under its protected signer account. Transfer
+   only its public key to the witness.
+4. Create three distinct P-256 TLS identities for the witness, the local
+   owner and the home. The verified seat binary's `gate-init --identity DIR`
+   produces the supported `cert.pem` and `key.pem` format. Run it under the
+   account that will use each key. Direct its fingerprint output to the
+   owner's protected pairing record. Use new 0700 folders and 0600 keys. Both TLS directories must deny
+   writes by group and others, including when the sticky bit is set.
+   The local owner's key and directory belong to root. Use separate keys
+   from the seat, gate, notifier and deploy tools.
+5. Exchange pins over an independent authenticated channel. At the witness
+   record the home's TLS SPKI SHA-256 fingerprint and Ed25519 public key.
+   At the home provision the witness TLS certificate as one raw DER certificate
+   or the single CERTIFICATE block in `cert.pem` from `gate-init --identity`.
+   Set `witness_cert` to the protected copy, verify its SPKI fingerprint, and pin the witness
+   Ed25519 public key, exact slot and activation epoch. The witness pins the
+   local owner's TLS fingerprint. The local owner pins the witness's TLS
+   fingerprint, Ed25519 key and epoch. Verify the values at both devices
+   before proceeding. Private keys stay with their principals.
+6. On a device outside the witness backup, retain the owner's signed activation
+   record with witness identity, signing key, monotonically increasing epoch
+   and directory commitment. Record the home key, slot, TLS pins and the
+   exact genesis head after initialization. Prepare the host and home
+   firewall rules above. Allow the witness to read the switch state
+   directory `/var/lib/authority-host` and reserve writes there for the switch.
+
+### Configuration file
+
+Replace the uppercase values locally. The five public-key and fingerprint
+values each use 64 lowercase hex digits. The witness directory identity
+and the home ledger slot have separate store identifiers. The witness name
+is shared. Use nonempty printable ASCII (space through tilde) for witness,
+store, incarnation and authority identifiers. Encode the nonzero activation epoch as a decimal string.
+
+```json
+{
+  "identity": {
+    "witness": "WITNESS_ID",
+    "store": "DIRECTORY_ID",
+    "incarnation": "DIRECTORY_INCARNATION",
+    "epoch": "1"
+  },
+  "slot": {
+    "witness": "WITNESS_ID",
+    "authority": "LEDGER_AUTHORITY",
+    "store": "LEDGER_STORE"
+  },
+  "state": "/var/lib/ataniq-witness/store",
+  "seed": "/var/lib/ataniq-witness/seed",
+  "socket": "/run/ataniq-witness/owner.sock",
+  "service_tls": "/var/lib/ataniq-witness/tls",
+  "owner_tls": "/etc/authority-host/witness/owner-tls",
+  "service_tls_pin": "WITNESS_SPKI_SHA256",
+  "owner_tls_pin": "OWNER_SPKI_SHA256",
+  "home_tls_pin": "HOME_SPKI_SHA256",
+  "home_endpoint": "192.0.2.20:7444",
+  "signing_public_key": "WITNESS_ED25519_PUBLIC_HEX",
+  "home_public_key": "HOME_ED25519_PUBLIC_HEX"
+}
+```
+
+### First activation
+
+Use a verified copy of the candidate release's executable for these first
+two calls, before switching `current`. In the examples, `WITNESS` stands for
+its absolute path, and `CONFIG` for `/etc/authority-host/witness/config.json`.
+Before running `check` by hand, create `/run/ataniq-witness` owned by the
+witness account with mode 0700. Systemd creates it on subsequent unit starts.
+
+```sh
+runuser -u ataniq-witness -- WITNESS init --config CONFIG
+runuser -u ataniq-witness -- WITNESS check --config CONFIG
+```
+
+Link the release-managed unit and create the firewall drop-in as local root.
+Use ASCII spaces or tabs around directives. The release and host checks report
+`unit-syntax` for non-ASCII whitespace, U+200B–U+200F, U+2060 or U+FEFF
+anywhere in a unit or drop-in.
+
+```sh
+ln -s /opt/authority-host/current/etc/systemd/system/ataniq-witness.service /etc/systemd/system/ataniq-witness.service
+```
+
+Before activation, add this exact line to the host emergency stop list
+`/etc/authority-host/stop.list`, retaining the other service stops. The
+witness validator requires the line even on the first switch.
+
+```text
+systemctl stop ataniq-witness.service
+```
+
+If a departing unit is `failed`, use the
+[reset and retry procedure](#backup-restore-and-rollback).
+On first witness activation over an existing seat or notifier deployment,
+a missing service inventory holds the decision inhibit. Stop the decision
+services by hand, make the original imported release available, run
+`ah-switch recover --services-stopped` and retry activation.
+[Inventory recovery](../deploy/authority-host/README.md#the-journal-and-recover)
+
+Activate the signed release with the existing switch procedure. Leave the
+unit disabled in systemd. The switch's validator checks the unit and its
+exact link target under `/opt/authority-host/current`, even on the first
+switch while the link dangles. Its reload list starts the unit under the decision inhibit.
+The unit's `run` process checks the egress files on disk. The health command
+verifies signed local status over the owner socket even if the home is offline.
+Neither operation calls `systemctl`. The post-switch host no-AI check queries
+systemd for the loaded unit's effective grants before decisions resume. Without the egress drop-in the service can pass this local health
+check while the unit denies all IP traffic. The host no-AI check reports
+`NOTE witness egress drop-in missing: home unreachable`.
+Verify the effective account and restrictions, the output filter and the
+absence of a witness IP listener. Run `WITNESS status --config CONFIG` as
+local root. Fresh genesis reports sequence 1, zero slots, receipts and fences.
+
+### Enroll the home
+
+Use protected transfer directories on both devices, outside witness state
+and separate from the private keys. Keep the home ledger and signing key on
+the home throughout the ceremony. Keep managed admission closed. A new
+enrollment and a fresh home observation require the decision inhibit to be
+clear. Check `ah-switch status` for `decisions: not inhibited`. If the inhibit
+is held, follow the switch recovery procedure below. An exact retry of the
+latest committed enrollment can still return its original receipt during
+inhibition.
+
+1. As the home account, run
+   `ataniq-home enroll prepare --config HOME_CONFIG --out prepared.json`.
+   Read the printed `prepared_sha256` on the home device. Keep the original
+   and transfer the exact file to the authority host over an authenticated channel.
+2. As local root on the authority host, substitute the hex value read on the
+   home device for `HOME_DIGEST` and run
+
+   ```sh
+   WITNESS enroll-submit --config CONFIG --prepared prepared.json --receipt-out receipt.bin --expect-digest HOME_DIGEST
+   ```
+
+   The command prints `prepared_digest` and checks the comparison before it
+   contacts the witness. A mismatch stops enrollment. Check the transfer and
+   the digest on the home device. On success the command publishes the raw
+   signed receipt in a new 0600 file, prints `receipt_digest`, then prints
+   the signed directory status summary. For the first enrollment, expect one
+   slot. Archive the receipt, digests and status line with the off-host record.
+   After an interrupted submission, replay the identical Prepared with the
+   same home digest and a fresh receipt filename to recover the same receipt.
+   If the slot has advanced since enrollment, the receipt records the original
+   enrollment and the status line reports the current directory position.
+3. Return the exact receipt to the home. As the home account, run
+   `ataniq-home enroll finalize --config HOME_CONFIG --prepared prepared.json --receipt receipt.bin`.
+   Finalize verifies the receipt and ledger identity and publishes the binding.
+   Compare its `receipt_digest` with the owner's archived value. Verify that
+   a fresh signed read agrees with home replay before opening managed admission.
+   [Home enrollment and recovery](home.md)
+
+## Outage or uncertain delivery
+
+If the witness, home endpoint or private link is down, suspend new managed
+admission and publication that require a fresh witnessed head. The seat and
+notifier continue their own functions. An existing route may still be active.
+An offline writer or a lost reply gives no authority to replace it.
+
+Retain the exact staged intent, mutation ID, digest and expected state. On
+reconnect, use a new challenged read for that ID and match any returned
+receipt to the saved intent. A historical receipt records a past commit.
+Check the current fence and head before publication. If a read cannot
+establish the outcome, use the authorized link's `Settle` for that ID and
+epoch, or preserve the ambiguity for an owner decision. Never invent a new
+request ID to bypass an unresolved mutation.
+
+## Storage error and interrupted publication
+
+1. Close home admission, fence any active routes and preserve an evidence
+   copy including hidden files, `journal.v1`, `witness.lock`, and both marker
+   files if present. With an unclean stop, normal startup can re-prove the
+   store and sign status with reason `unclean process end`. A live write
+   error can stop the signer itself. A poisoned store refuses normal startup.
+2. Stop `ataniq-witness.service` and check the storage device, filesystem,
+   space and durability before attempting repair. Keep the original evidence
+   and all external receipts. Leave markers and partial data intact.
+   To inspect a provable store, start the following command under the witness
+   UID, attended, with the regular unit stopped. If systemd removed its runtime
+   directory, recreate `/run/ataniq-witness` owned by the service, mode 0700.
+   Confirm any stale Unix socket has no live owner before removing **only**
+   that socket. The recovery process holds the store and key locks and serves
+   only local owner requests.
+
+   ```sh
+   runuser -u ataniq-witness -- WITNESS recover --config CONFIG
+   ```
+
+3. From a second local root terminal, run `WITNESS status --config CONFIG`.
+   Compare its verified head, reason and counts with the independent record.
+   If signed status reports `interrupted publication`, preserve the staged
+   files and keep home admission closed. `acknowledge` always refuses staged publication.
+   Stop the attended recovery process and keep the regular unit stopped.
+   After identifying exactly one staged journal and its staged or
+   already-published index, run `WITNESS complete-publication --config CONFIG`
+   offline as the witness account. It verifies the pinned signed genesis and
+   exact index, publishes the pair, then reopens and verifies the published
+   names. Run `check`, start the verified unit and compare fresh signed status
+   with the independent record before resuming admission. This completes the
+   interrupted-publication procedure. An ambiguous pair, torn frame, corrupt
+   receipt, missing partner or legacy format needs preservation and owner
+   reconciliation before fresh provisioning. A second `init` cannot repair
+   an existing store.
+
+4. For a storage error or unclean process end, repair storage and reconcile
+   the evidence. Keep home admission independently suspended. In the owner's
+   root session run `ah-switch status`.
+   If a transaction is open, including a journal held in the inhibit, end the
+   attended witness process before running `ah-switch recover`. Recovery can
+   reload services. Follow the switch's recovery procedure until the transaction
+   settles, inspect the outcome, then re-establish attended witness recovery
+   with the regular unit stopped.
+
+   A healthy switched release normally has its guard cleared by the switch.
+   If a plain inhibit remains, first verify the active release and that it is
+   safe for **all** decision services to resume. With no open transaction, the
+   owner can run `ah-switch inhibit-clear --asked "WORDS"`, recording what was
+   checked. Never remove `decisions.inhibit` by hand. Confirm `ah-switch status`
+   reports `decisions: not inhibited` before running
+   `WITNESS acknowledge --config CONFIG`, then request fresh signed status.
+   A lost acknowledgement reply requires a fresh status read before deciding
+   to retry. Recovery mode remains service-inhibited after acknowledgement.
+   End the recovery process cleanly, start the verified unit and check status
+   again before restoring home admission.
+
+## Backup, restore and rollback
+
+Stop the service and back up the complete store, including hidden files.
+Back up the signing seed separately, encrypted and in the owner's offline custody.
+Keep private TLS keys out of the store backup as well. Retain verification keys and
+owner-signed activation records outside that backup. Keep signed receipts
+and challenged sequence/digest observations outside the witness after each
+accepted pilot transition. A status line is a verified summary. Retain the
+actual signed receipts when independently verifiable evidence is needed.
+
+After a known restore, isolate all copies of the signer and store, keep
+managed admission closed, and fence the old identity before using any key
+to inspect the evidence through attended `recover`. Never reactivate the old
+seed beside a live instance. Returning a restored store to service requires
+a fresh identity and a higher externally recorded epoch. A directory lock
+and key-file lock protect only those particular filesystem objects. A copied
+directory and copied key can sign conflicting histories. Replay detects a
+journal suffix missing from just one file. Matching truncation of **both**
+files at a commit boundary, or a whole-directory restore, can hide later
+mutations, releases, retirements and settlement fences. A forgotten fence
+may allow the same mutation ID to commit later.
+
+A lower signed sequence or a different digest at the same observed position
+exposes a conflict with the outside record. A larger sequence alone does
+not establish continuity. If all surviving evidence ends at the same older
+prefix, later activity is undetectable. Reconcile the home journal, exact
+receipts, tombstones, fences and owner record. Preserve the evidence, fence
+the old identity and provision a fresh identity at a higher externally
+recorded epoch. A new epoch fences future requests. It cannot reconstruct
+the missing interval. [Durable storage contract](../internal/checkpoint/durable/doc.go)
+
+Before rolling back across the change that pinned the guard directory, edit
+`/etc/authority-host/witness/config.json` for the target binary. The older
+`ataniq-witness` requires `"guard": "/var/lib/authority-host"`. Restore that
+key before switching to the older witness. Remove it before switching back
+to the binary with the pinned guard.
+
+For an upgrade or downgrade, keep the seat, notifier and witness stops
+in the host list. This includes `systemctl stop ataniq-seat-notify.service`
+when departing an older release whose own list omitted the notifier.
+Use the updated host switch helper throughout rollback and recovery. Older
+helpers use a strict JSON reader and cannot read the new inventory fields.
+
+For a software rollback use the signed switch procedure
+`ah-switch --rollback-to previous`. The switch runs the host stop list before reloading the target.
+It also runs the departing release’s stop list when that release still verifies. If a stop fails, decisions
+stay inhibited. Correct the cause and retry the rollback. A target that carries the witness restarts its own
+binary against the existing store. Verify storage-format compatibility,
+pins, epoch and signed status before resuming admission. When returning to a
+release without the witness, confirm it is stopped. Keep its single-unit
+stop command in the host list. A stop reporting exit 5 still requires
+the manager to confirm that the canonical unit is inactive or absent.
+If the departure check reports `failed` for the witness, run
+`systemctl reset-failed ataniq-witness.service` and retry the same switch or
+rollback. For a failed seat or notifier, use the reported unit name
+(`ataniq-seat.service` or `ataniq-seat-notify.service`) in that command.
+
+Departure checks query the system manager. Release checks and switch import
+refuse services, templates and service drop-ins under `etc/systemd/user/`
+with `user-service`.
+The switch records the verified service names in the transaction journal
+and the current release’s names in `deploy.json`. A shipped service drop-in
+such as `worker.service.d/10-start.conf` records `worker.service`, even if
+the host provides the unit file. If rollback stalls on a missing inventory,
+follow the same recovery procedure as for [first activation](#first-activation),
+then retry the rollback.
+Preserve witness state and keep dependent homes
+suspended until an appropriate release is active again. The no-AI listener
+check continues to check the witness account after its unit link is removed.
+
+## Retire and enroll a replacement
+
+Drain the old home, fence every former writer and route, and record the
+disposition of outstanding work. As local root, run
+`WITNESS slot-read --config CONFIG --archive-out ARCHIVE` to capture the final
+assignment head. If the writer still holds a session, run
+`WITNESS slot-release --config CONFIG --asked "WORDS"`, describing the fence.
+Then run `WITNESS slot-retire --config CONFIG --asked "WORDS"` with the owner's
+disposition. Keep the printed receipt digest and exact words in the off-host
+record. Each mutation uses a fresh ID and the exact challenged state. The owner can retire after losing the home's key.
+
+Stop the old instance cleanly and preserve its store and verification keys.
+For the replacement prepare a fresh home key, store, incarnation and ledger
+ID. Use a fresh witness directory and identity with a higher activation epoch
+for the new home pin. Repeat both directions of the pin exchange and the
+create-only enrollment above. Check the new genesis and receipt against the
+owner's outside record before reopening admission.

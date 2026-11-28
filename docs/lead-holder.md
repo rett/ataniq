@@ -104,6 +104,44 @@ sh scripts/go-tool.sh build -o build/ataniq-console ./cmd/ataniq-console
 `build/`, or name the holder with `--holder /absolute/path`. `build/` is
 ignored by git.
 
+Build the two from one checkout, in a git checkout: `start` and `ticket` refuse
+a holder that is not the build of `ataniq-scratch` itself, with
+`refused: holder-version-skew: ...` and exit status 1; a refusal before the
+start changes nothing. `start` reads the build from the holder binary before it takes an epoch, and
+again, once the holder has answered, from the `holder.json` the holder wrote
+from its own running executable: the binary may have been replaced between
+the first check and the start, which looks the path up again. Only a
+`holder.json` of this start is its holder's record: one of the epoch and of
+the launch intent `start` gave the holder (a start that failed gives its
+epoch back, and the next start takes it again with an intent of its own, so
+the file an earlier holder left can be of the epoch). A holder that does not
+answer within the wait is checked the same way when its `holder.json` of this
+start is there: a file that records another build (or none) refuses the start
+as below, with "(it did not answer within ...)" in the reason, and a file
+that is missing, cannot be read or is of another launch leaves the start to
+fail as a holder that did not answer. A holder that answered and started as
+another build is refused, and one whose `holder.json` of this start is
+missing or cannot be read is not counted started either ("the build it
+started as cannot be confirmed"). `start` prints the refusal and why and
+exits 1 without saying that anything started. In unit mode the unit is never
+stopped by `start`: it is left running, the epoch is kept, and the refusal
+ends with the command that stops it (`stop it with: systemctl --user stop
+ataniq-scratch-NAME`; `ataniq-scratch stop NAME` stops it too). With
+`--direct` the holder is this command's own child, which no unit holds: it is
+ended, as after any start that fails, and the epoch is given back.
+`ticket` reads the build the
+running holder recorded in its `holder.json` before it asks the holder
+anything. A `holder.json` of another epoch than the
+last one `start` took is refused first, with `refused: stale-epoch: ...`, which
+names both epochs: it is not the record of the holder that would be asked. The
+same build is the same main module path, module version, VCS revision and
+modified flag (the build tags and the Go version are not compared), and a
+build without a VCS revision (built with `-buildvcs=false` or outside a git checkout) is never the
+same build. A holder that records no build, which is every holder built before
+build identities, is refused as an older holder: stop it (`stop` and `status`
+are not checked) and start it again with the new build. The message names what
+was found and both builds, and both module paths when they differ.
+
 The holder refuses to start, with exit status 2 and a line on its standard
 error, in these cases, among others, each checked before the agent starts:
 
@@ -117,6 +155,16 @@ error, in these cases, among others, each checked before the agent starts:
   handling.
 - Its state folder or runtime folder is not a real folder of your user with
   mode 0700 (a link is refused too).
+- It cannot read its own build identity from the executable that runs
+  (`/proc/<pid>/exe`).
+
+**The build identity.** The holder reads which build it is from the Go build
+information of the executable that actually runs, through `/proc/<pid>/exe`,
+never from the path it was started by: the main module and its version, the
+VCS revision and whether the checkout was modified, and as provenance the Go
+version and the build tags. It records it in `holder.json`, as the member
+`build`, and in the `start` event of its event log. A holder built before this
+records none.
 
 In unit mode `start` then reports only that the holder did not answer, and the
 reason is in the journal of the unit (`journalctl --user -u
@@ -261,7 +309,7 @@ The state folder, `$XDG_STATE_HOME/ataniq/scratch/demo/` (`~/.local/state` when
 
 | File | Mode | What |
 | --- | --- | --- |
-| `holder.json` | 0600 | What the holder was started with (role, epoch, launch intent, runtime and version, profile digest, tree), written before the agent starts, and which process it is (its pid and start time), the screen size, the agent's program (`ARGV[0]` only, never its arguments or environment) and `scratch: true`. |
+| `holder.json` | 0600 | What the holder was started with (role, epoch, launch intent, runtime and version, profile digest, tree), written before the agent starts, and which process it is (its pid and start time), the screen size, the agent's program (`ARGV[0]` only, never its arguments or environment), `scratch: true`, and `build`, the holder's own build identity (see below). |
 | `events.jsonl` | 0600 | The event log. At 4 MiB it is renamed to `events.jsonl.1` (replacing an older one) and a new file starts, so the two together stay under 8 MiB. |
 | `final.json` | 0600 | The final record, written when the session is over. |
 | `final.json.previous` | 0600 | The final record of an earlier epoch. At the next start that takes the role lock, a `final.json` that is there is renamed to this name (replacing an older one) before the new `holder.json` is written, so that `final.json` is never the record of an epoch other than the last one that ended. A start that fails or is stopped by a signal leaves no `final.json`, and the last record is then only here. |
@@ -415,8 +463,14 @@ sequence number, a kind and a name. The names are `start`, `exit`, `attach`,
 `detach`, `writer-change`, `resize`, `state`, `inject`, `refusal`, `counters`,
 `check-mismatch`, `resync` and `key-held`. A line carries codes and identities
 only: the role and epoch, the client's name, process ID and command line, sizes,
-a reason code, counters, the command ID of a control command, and the three
-facts. It holds no keystrokes and no output text; the logging API has no field
+a reason code, counters, the command ID of a control command, the three facts,
+and on the `start` event the holder's build identity as one token, the member
+`build`: `module:version:rev=REVISION` (`rev=none` for a build without a VCS
+revision), with `:modified` for a modified checkout, in the characters
+`A-Z a-z 0-9 . _ : / + = -` (any other becomes `_`). The token is at most 463
+bytes (a module path of 256, a version of 128 and a revision of 64), and the
+log keeps it whole, so the revision at its end is never cut. It
+holds no keystrokes and no output text; the logging API has no field
 that could take them. Its sequence number starts at 1 in each holder process, so
 a restart shows as the number going back to 1. An event is one write and
 survives a crash of the holder, but is not synced to disk each time.
@@ -528,6 +582,33 @@ The flow:
    disconnects it with `too-slow`. A client that takes no bytes for 30 seconds is
    disconnected as `stalled`. A writer that disconnects leaves the lead without a
    writer, and nothing is typed on its behalf.
+
+## Measuring idle holder wakeups
+
+Run the opt-in measurement from the checkout root on a Linux coordinator with
+PTYs and private Unix sockets. Record the checkout revision alongside the output.
+
+```sh
+make doctor
+git rev-parse HEAD
+ATANIQ_MEASURE_WAKES=1 sh scripts/go-tool.sh test -count=1 -v -run '^TestMeasureHolderWakes$' ./internal/leadholder/serve/
+```
+
+Each of the four cells runs for 60 seconds. Set `ATANIQ_MEASURE_INTERVAL` to a
+positive Go duration to change that window. Allow time for four windows plus
+setup when selecting a longer Go test timeout. The one or eight canary holders
+share a test process. Each has private sockets and a quiet fake agent on its own
+PTY. Each attached holder has one console attach client reading frames as its
+writer. Sampling starts two production poll intervals after setup, once every
+attached client has restored its initial snapshot.
+
+The table and final JSON line give raw counts and wakes per second for each
+holder and the group. A temporary Go build overlay counts the timekeeper's
+timer and kick, the sender's wake channel and the canary counter pump's ticker.
+The timer column covers the hour timer with no client and the poll or check
+deadline with a client. The holder polls lifetime facts at 100 ms while
+attached. A facts poll occurs inside a timekeeper wake and is counted separately
+from the wake total. Rates cover those holder goroutines only.
 
 ## What needs a check before anyone relies on it
 

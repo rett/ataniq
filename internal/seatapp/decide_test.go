@@ -178,7 +178,8 @@ func TestSeatDecideFormOnTheCardPage(t *testing.T) {
 	}
 	r.daemon.card.State, r.daemon.card.Ended, r.daemon.card.OnItsWay = "", false, true
 	body = r.getWith("/cards/"+testCardID, s).Body.String()
-	if strings.Contains(body, `id="decide"`) || !strings.Contains(body, "A decision of this card is on its way to the door.") {
+	if strings.Contains(body, `id="decide"`) || !strings.Contains(body, "The decision is on its way to the door.") ||
+		!strings.Contains(body, `<a id="look" href="/cards/`+testCardID+`">Look again</a>`) {
 		t.Error("a card whose decision is on its way")
 	}
 	if len(r.daemon.offers) != before {
@@ -485,7 +486,8 @@ func TestSeatDecideStaleReadKeepsTheMark(t *testing.T) {
 	}
 	w := r.getWith("/cards/"+testCardID, s)
 	body := w.Body.String()
-	if w.Code != 200 || strings.Contains(body, `id="decide"`) || !strings.Contains(body, "A decision of this card was sent and its outcome is not known. Look at it again.") {
+	if w.Code != 200 || strings.Contains(body, `id="decide"`) || !strings.Contains(body, "The decision was sent. Its outcome is still unknown.") ||
+		!strings.Contains(body, `<a id="look" href="/cards/`+testCardID+`">Look again</a>`) {
 		t.Errorf("the page of a read that began before the send: %d", w.Code)
 	}
 	r.clock.Advance(time.Second)
@@ -515,7 +517,7 @@ func TestSeatDecideReadInFlight(t *testing.T) {
 	wantFailure(t, "the lost answer", r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s), 502, "outcome_unknown", sayUnknown)
 	r.daemon.decideHook = nil
 	if body := during.Body.String(); during.Code != 200 || strings.Contains(body, `id="decide"`) ||
-		!strings.Contains(body, "A decision of this card was sent and its outcome is not known. Look at it again.") {
+		!strings.Contains(body, "The decision was sent. Its outcome is still unknown.") {
 		t.Errorf("the page read while the decision was on its way: %d", during.Code)
 	}
 	r.clock.Advance(time.Second)
@@ -570,7 +572,7 @@ func TestSeatDecideReadAcrossTheLoss(t *testing.T) {
 	close(release)
 	w := <-done
 	if body := w.Body.String(); w.Code != 200 || strings.Contains(body, `id="decide"`) ||
-		!strings.Contains(body, "A decision of this card was sent and its outcome is not known. Look at it again.") {
+		!strings.Contains(body, "The decision was sent. Its outcome is still unknown.") {
 		t.Errorf("the page of a read that began while the decision was on its way: %d", w.Code)
 	}
 	r.clock.Advance(time.Second)
@@ -1041,7 +1043,7 @@ func TestSeatDecideLostAnswer(t *testing.T) {
 
 			r.daemon.readErr = nil
 			r.daemon.card.OnItsWay = true
-			if body := r.openCard(t, s); strings.Contains(body, `id="decide"`) || !strings.Contains(body, "on its way to the door") {
+			if body := r.openCard(t, s); strings.Contains(body, `id="decide"`) || !strings.Contains(body, "The decision is on its way to the door.") {
 				t.Error("on its way: the form is offered")
 			}
 			wantFailure(t, "on its way", r.tap(approveBody, s), 409, "cannot_decide", sayCannot)
@@ -1429,5 +1431,54 @@ func TestSeatCardWhileDecisionsAreInhibited(t *testing.T) {
 	r.daemon.card.State, r.daemon.card.Ended = "approved", true
 	if body := r.getWith("/cards/"+testCardID, s).Body.String(); strings.Contains(body, "Decisions are paused") || len(r.daemon.offers) != before {
 		t.Error("an ended card is offered to the port or shows the notice")
+	}
+}
+
+// TestSeatDecideRevokedEndsEveryLoginOfTheKey: a key_revoked the daemon
+// says to one session's decision ends every session that credential logged
+// in, with the held stream of another of them, and leaves another
+// credential's session alone; an ordinary logout keeps to its own session.
+func TestSeatDecideRevokedEndsEveryLoginOfTheKey(t *testing.T) {
+	r, _ := newWatchRig(t, "aa", time.Minute)
+	a, b, c := r.login(t), r.login(t), r.login(t)
+	r.daemon.mu.Lock()
+	saved := r.daemon.loginRes
+	r.daemon.loginRes.Credential = "fedcba9876543210"
+	r.daemon.loginRes.CredentialID = bytes.Repeat([]byte{0x22}, 32)
+	r.daemon.mu.Unlock()
+	r.clock.Advance(loginAllWindow)
+	other := r.login(t)
+	r.daemon.mu.Lock()
+	r.daemon.loginRes = saved
+	r.daemon.mu.Unlock()
+
+	// A logout ends its own session only.
+	if w := r.postWith("/api/logout", "{}", c); w.Code != 200 {
+		t.Fatalf("logout: %d", w.Code)
+	}
+	for name, ck := range map[string]*http.Cookie{"a": a, "b": b, "other": other} {
+		if _, ok := r.sessionOf(ck.Value); !ok {
+			t.Fatalf("the logout of c ended %s", name)
+		}
+	}
+
+	// The stream's timers stand still, so that the revocation, not a
+	// heartbeat that finds the session gone, ends it.
+	ft := stillTimers(r)
+	held := r.heldStream(t, streamOK, b)
+	r.waitStreams(t, 1)
+	waitTimers(t, ft, 3) // the life, the heartbeat and the session's end
+	r.openCard(t, a)
+	r.daemon.decideChErr = ErrKeyRevoked
+	wantFailure(t, "revoked", r.tap(approveBody, a), 403, "key_revoked", "This phone's passkey is no longer paired. Pair it again at the desk.")
+	within(t, held, waitBound)
+	r.waitStreams(t, 0)
+	for name, ck := range map[string]*http.Cookie{"a": a, "b": b} {
+		if _, ok := r.sessionOf(ck.Value); ok {
+			t.Errorf("session %s of the revoked key goes on", name)
+		}
+	}
+	if _, ok := r.sessionOf(other.Value); !ok {
+		t.Error("another credential's session ended with the revoked key")
 	}
 }

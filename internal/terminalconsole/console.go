@@ -37,6 +37,7 @@ package terminalconsole
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -60,6 +61,10 @@ type Source interface{ Snapshot() Projection }
 
 // Projection describes display data and why live control is unavailable.
 type Projection struct {
+	// OfflineHomes lists homes missing from this read due to an outage.
+	// Offline marks an outage of the entire source.
+	OfflineHomes       []string
+	Offline            bool
 	Projects           []Project
 	ControlUnavailable string
 	// Operator names the operator the cockpit shows in the context block.
@@ -83,12 +88,16 @@ type Projection struct {
 	Problem, NextStep string
 }
 type Project struct {
-	Name  string
-	Leads []Lead
-	Tasks []string
+	HomeID, ID string
+	Offline    bool
+	Name       string
+	Leads      []Lead
+	Tasks      []string
 }
 type Lead struct {
-	Name string
+	ID, ConversationID string
+	Epoch              uint64
+	Name               string
 	// State is the lead's state in a word or two, shown beside its name in
 	// the tree. Empty shows the name alone.
 	State        string
@@ -134,6 +143,9 @@ const (
 
 // Model holds its own sanitized, bounded copy of a source snapshot.
 type Model struct {
+	directoryOffline bool
+	// resume holds the conversation and cockpit scroll positions of each visible target.
+	resume                                           map[leadctl.Identity]resumePosition
 	projects                                         []Project
 	leadSelections                                   []int
 	controlUnavailable                               string
@@ -225,7 +237,7 @@ func NewWithOptions(source Source, o Options) *Model {
 		m.startSession()
 		return m
 	}
-	m.apply(source.Snapshot())
+	m.applyKeeping(source.Snapshot())
 	m.initRefresh(source)
 	// A labelled view is not the fixture: no recording is replayed in it.
 	if !m.labelled() {
@@ -236,7 +248,8 @@ func NewWithOptions(source Source, o Options) *Model {
 
 // apply replaces the model's copy of the source's data with a sanitized,
 // bounded copy of in. It does not touch the selection: see applyKeeping.
-func (m *Model) apply(in Projection) {
+func (m *Model) apply(in Projection, room int) {
+	m.directoryOffline = in.Offline
 	m.contract, m.timeline, m.controls, m.facts, m.projects, m.leadSelections = nil, nil, nil, nil, nil, nil
 	m.controlUnavailable = clean(in.ControlUnavailable)
 	if m.controlUnavailable == "" {
@@ -255,17 +268,30 @@ func (m *Model) apply(in Projection) {
 		m.controls = append(m.controls, Control{Name: clean(c.Name), Key: clean(c.Key), Reason: clean(c.Reason), Approval: c.Approval})
 	}
 	ps := in.Projects
-	if len(ps) > maxProjects {
-		ps = ps[:maxProjects]
+	if len(ps) > room {
+		ps = ps[:room]
 	}
 	for _, p := range ps {
-		cp := Project{Name: clean(p.Name), Tasks: bounded(p.Tasks)}
+		if in.Offline || slices.Contains(in.OfflineHomes, p.HomeID) {
+			continue
+		}
+		if len(p.ID) > 256 || len(p.HomeID) > 256 || p.HomeID != "" && p.ID == "" {
+			continue
+		}
+		cp := Project{Name: clean(p.Name), HomeID: p.HomeID, ID: p.ID, Offline: p.Offline, Tasks: bounded(p.Tasks)}
 		ls := p.Leads
 		if len(ls) > maxLeads {
 			ls = ls[:maxLeads]
 		}
 		for _, l := range ls {
-			cp.Leads = append(cp.Leads, Lead{Name: clean(l.Name), State: clean(l.State), Subagents: bounded(l.Subagents), Conversation: bounded(l.Conversation), Session: cleanSession(l.Session)})
+			if len(l.ID) > 256 || len(l.ConversationID) > 256 {
+				continue
+			}
+			cp.Leads = append(cp.Leads, Lead{
+				ID: l.ID, ConversationID: l.ConversationID, Epoch: l.Epoch,
+				Name: clean(l.Name), State: clean(l.State), Subagents: bounded(l.Subagents),
+				Conversation: bounded(l.Conversation), Session: cleanSession(l.Session),
+			})
 		}
 		m.projects = append(m.projects, cp)
 		m.leadSelections = append(m.leadSelections, 0)
@@ -463,9 +489,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) handleFallbackKey(v tea.KeyPressMsg) tea.Cmd {
 	key := v.String()
 	if m.live.on() {
-		// The live session's one page has nothing to navigate.
 		if key == "q" || key == "ctrl+c" {
 			return m.quit()
+		}
+		if pane := m.rep.pane; pane != nil {
+			switch key {
+			case "pgup":
+				pane.PageRecent(-1, m.liveArea().Dy())
+			case "pgdown":
+				pane.PageRecent(1, m.liveArea().Dy())
+			}
 		}
 		return nil
 	}
@@ -491,35 +524,40 @@ func (m *Model) handleFallbackKey(v tea.KeyPressMsg) tea.Cmd {
 	case "up", "k":
 		switch m.page {
 		case "projects":
-			m.projectCursor = max(0, m.projectCursor-1)
+			m.moveProject(-1)
 		case "leads":
 			m.leadCursor = max(0, m.leadCursor-1)
 		default:
 			m.scroll = max(0, m.scroll-1)
+			m.rememberScroll()
 		}
 	case "down", "j":
 		switch m.page {
 		case "projects":
-			m.projectCursor = min(max(0, len(m.projects)-1), m.projectCursor+1)
+			m.moveProject(1)
 		case "leads":
-			if len(m.projects) > 0 {
+			if m.project >= 0 && m.project < len(m.projects) {
 				m.leadCursor = min(max(0, len(m.projects[m.project].Leads)-1), m.leadCursor+1)
 			}
 		default:
 			m.scroll = min(max(0, len(m.lines())-1), m.scroll+1)
+			m.rememberScroll()
 		}
 	case "enter":
-		if m.page == "projects" && len(m.projects) > 0 {
-			m.leadSelections[m.project] = m.leadCursor
+		if m.page == "projects" && m.projectCursor >= 0 && m.projectCursor < len(m.projects) && !m.projects[m.projectCursor].Offline {
+			if m.project >= 0 && m.project < len(m.projects) {
+				m.leadSelections[m.project] = m.leadCursor
+			}
 			m.project = m.projectCursor
 			m.leadCursor = m.leadSelections[m.project]
 			m.lead = m.leadCursor
 			m.page = "leads"
+			m.restoreScroll()
 			m.scroll = 0
-		} else if m.page == "leads" && len(m.projects) > 0 && len(m.projects[m.project].Leads) > 0 {
+		} else if m.page == "leads" && m.project >= 0 && m.project < len(m.projects) && m.leadCursor >= 0 && m.leadCursor < len(m.projects[m.project].Leads) {
 			m.lead = m.leadCursor
 			m.page = "conversation"
-			m.scroll = 0
+			m.restoreScroll()
 		}
 	case "t":
 		if m.page == "leads" {
@@ -572,7 +610,7 @@ func (m *Model) lines() []string {
 		}
 	}
 	var p Project
-	if len(m.projects) > 0 {
+	if m.project >= 0 && m.project < len(m.projects) {
 		p = m.projects[m.project]
 	}
 	switch m.page {
@@ -583,10 +621,10 @@ func (m *Model) lines() []string {
 			if i == m.projectCursor {
 				mark = "> "
 			}
-			lines = append(lines, mark+p.Name)
+			lines = append(lines, mark+p.label())
 		}
 	case "leads":
-		lines = append(lines, "Project: "+p.Name, "Persistent leads"+fixture)
+		lines = append(lines, "Project: "+p.label(), "Persistent leads"+fixture)
 		if len(p.Leads) == 0 {
 			lines = append(lines, "  No leads")
 		}
@@ -601,12 +639,12 @@ func (m *Model) lines() []string {
 			}
 		}
 	case "tasks":
-		lines = append(lines, "Project: "+p.Name, "Tasks"+fixture)
+		lines = append(lines, "Project: "+p.label(), "Tasks"+fixture)
 		lines = append(lines, p.Tasks...)
 	case "conversation":
-		if len(p.Leads) > 0 {
+		if m.lead >= 0 && m.lead < len(p.Leads) {
 			l := p.Leads[m.lead]
-			lines = append(lines, "Project: "+p.Name+" / Lead: "+l.Name, "Conversation"+fixture)
+			lines = append(lines, "Project: "+p.label()+" / Lead: "+l.Name, "Conversation"+fixture)
 			lines = append(lines, l.Conversation...)
 		}
 	case "help":
@@ -676,7 +714,7 @@ func (m *Model) fallbackView() tea.View {
 			start = max(0, 3+m.projectCursor-(room-1))
 		} else if m.page == "leads" {
 			selected := 4
-			if len(m.projects) > 0 {
+			if m.project >= 0 && m.project < len(m.projects) {
 				for i := 0; i < m.leadCursor; i++ {
 					selected += 1 + len(m.projects[m.project].Leads[i].Subagents)
 				}
@@ -749,6 +787,10 @@ func (m *Model) leadsColors() leadctl.Colors {
 // openLeads opens the leads screen. It closes the arrival strip. Without a
 // backend it opens the screen that says there is no lead control.
 func (m *Model) openLeads() tea.Cmd {
+	if m.directoryOffline {
+		m.notice = "The directory is offline."
+		return nil
+	}
 	l := &m.lc
 	m.ap.strip.Dismiss()
 	m.sel = selection{}

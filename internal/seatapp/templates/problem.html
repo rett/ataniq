@@ -1,5 +1,7 @@
 {{define "content"}}
 <h1>{{.Title}}</h1>
+{{if .StandIn}}{{template "standin-chat"}}{{end}}
 <p role="status">{{.Message}}</p>
-<p><a id="back" href="/cards/">Back to the cards</a></p>
+{{if .Retry}}<p><a id="retry" href="">Try this page again</a></p>
+{{end}}<p><a id="back" href="{{mount}}/cards/">Back to the cards</a></p>
 {{end}}

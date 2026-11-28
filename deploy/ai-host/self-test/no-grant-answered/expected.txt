@@ -1,0 +1,16 @@
+== sudo -n -l -U agent (exit 0)
+  | User agent may not run sudo on aihost.
+note: no sudo grant: make sure root can log in another way
+note: you answered that it can (--other-root-login), so agent has no sudo route to root
+== register /etc/ataniq/grants
+  | d 0 755 /
+  | d 0 755 /etc
+  | d 0 755 /etc/ataniq
+  | d 0 755 /etc/ataniq/grants
+  | f 0 644 /etc/ataniq/grants/README
+  | f 0 644 /etc/ataniq/grants/backup-unit
+check: /etc/ataniq/grants and every folder above it are root's and not writable by group or others; its 2 entries are regular files of root's, not writable by group or others
+== summary
+findings: 0; stops: 0
+result: clean: sudo itself shows no way for agent to skip the password, and the register is root's
+exit: 0

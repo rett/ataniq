@@ -342,3 +342,46 @@ esac
 		t.Fatalf("build: %s %v", out, err)
 	}
 }
+
+// Build the Linux home command only after the offline toolchain check.
+// Keep the dry run in a fixture with a failing Go driver.
+func TestHomeBuild(t *testing.T) {
+	dir, _ := fixture(t)
+	makefile, err := os.ReadFile(filepath.Join(root(t), "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Makefile"), makefile, 0644); err != nil {
+		t.Fatal(err)
+	}
+	path := fakePath(t, "exit 10\n")
+	cmd := exec.Command(filepath.Join(path, "make"), "-n", "--no-print-directory", "home-build")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "PATH="+path, "MAKEFLAGS=")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make -n home-build: %v\n%s", err, out)
+	}
+	want := "sh scripts/go-tool.sh doctor\nmkdir -p build/home\nsh scripts/go-tool.sh build -trimpath -o build/home/ataniq-home ./cmd/ataniq-home\n"
+	if string(out) != want {
+		t.Errorf("make -n home-build printed\n%swant\n%s", out, want)
+	}
+	phony := false
+	for line := range strings.Lines(string(makefile)) {
+		if targets, ok := strings.CutPrefix(line, ".PHONY:"); ok && slices.Contains(strings.Fields(targets), "home-build") {
+			phony = true
+		}
+	}
+	if !phony {
+		t.Error("home-build must be phony")
+	}
+	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
+		data, err := os.ReadFile(filepath.Join(root(t), name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "`make home-build`") || !strings.Contains(string(data), "`build/home/`") {
+			t.Errorf("%s must name the home build target and output directory", name)
+		}
+	}
+}

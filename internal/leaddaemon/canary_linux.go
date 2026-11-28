@@ -10,10 +10,14 @@ import (
 	"time"
 
 	"ataniq/internal/clientapi"
+	"ataniq/internal/instanceid"
 	"ataniq/internal/leadcanary"
+	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadlifecycle"
 	"ataniq/internal/leadlock"
 	"ataniq/internal/leadregistry"
+	"ataniq/internal/leadrole"
+	sbprofile "ataniq/internal/leadsandbox/profile"
 )
 
 // CanaryTag is the build tag of canary mode. A binary built with it says so in
@@ -71,6 +75,20 @@ type Canary struct {
 	// DialTimeout bounds the dial of the holder's control socket and the write
 	// of a request frame, the two together; default [DefaultDialTimeout].
 	DialTimeout time.Duration
+	// HolderBuild is the holder build the daemon expects and how it reads a
+	// holder's (see [holderBuildCheck]); nil is the daemon's own build
+	// (buildid.NewChecker).
+	HolderBuild *buildid.Checker
+}
+
+// holderBuildCheck returns the build check of the daemon: the given one, or
+// one that expects the daemon's own build. A daemon whose own build cannot be
+// read does not start (the config step): it could launch no holder.
+func holderBuildCheck(given *buildid.Checker) (*buildid.Checker, error) {
+	if given != nil {
+		return given, nil
+	}
+	return buildid.NewChecker()
 }
 
 // newHolderCommand builds the canary holder command. It is a variable so that a
@@ -96,6 +114,8 @@ type canaryMode struct {
 	idPrefix string
 	// lead is the scratch mode's own parts; nil in canary mode.
 	lead *leadMode
+	// build is the check of a holder's build before a launch or an attach.
+	build *buildid.Checker
 }
 
 // canarySetup checks the canary config and builds the parts that need no file.
@@ -134,7 +154,11 @@ func (d *daemon) canarySetup() (*canaryMode, error) {
 	if err := router.add(&leadInstance{cfg: cfg, preflight: pre, holder: holder}); err != nil {
 		return nil, fail(StepConfig, "canary mode: %v", err)
 	}
-	m := &canaryMode{d: d, router: router, injectFor: c.InjectWait, dialFor: c.DialTimeout}
+	build, err := holderBuildCheck(c.HolderBuild)
+	if err != nil {
+		return nil, fail(StepConfig, "canary mode: %v", err)
+	}
+	m := &canaryMode{d: d, router: router, injectFor: c.InjectWait, dialFor: c.DialTimeout, build: build}
 	if m.injectFor <= 0 {
 		m.injectFor = DefaultInjectWait
 	}
@@ -144,7 +168,15 @@ func (d *daemon) canarySetup() (*canaryMode, error) {
 	return m, nil
 }
 
-// openEvidence opens the evidence file of every instance in the state root and
+func (m *canaryMode) configuredRoles() []leadrole.Role {
+	if m == nil {
+		return nil
+	}
+	return m.router.order
+}
+
+// openState derives the holder launch tag under the daemon lock, then opens
+// the evidence file of every instance in the state root and
 // reads back the epochs whose one message it shows as sent. Both locks are
 // held, so nothing else appends to the files. A file that cannot be read back
 // line by line refuses the start: the daemon admits no message it cannot rule
@@ -152,9 +184,17 @@ func (d *daemon) canarySetup() (*canaryMode, error) {
 // epoch's message, so a lead that still runs in an epoch whose message was sent
 // would be given a second one. The operator stops the role's unit first. When
 // one instance fails, the files already opened are closed.
-func (m *canaryMode) openEvidence() error {
+func (m *canaryMode) openState() error {
 	if m == nil {
 		return nil
+	}
+	id, err := instanceid.Load(m.d.StateDir)
+	if err != nil {
+		return err
+	}
+	m.router.authorityTag, err = sbprofile.ShortAuthorityTag(id.Authority)
+	if err != nil {
+		return err
 	}
 	for _, role := range m.router.order {
 		in := m.router.byRole[role]
@@ -243,20 +283,25 @@ func (m *canaryMode) announce() error {
 }
 
 // extensions returns the canary extension: the router's, over one extension of
-// each role.
-func (m *canaryMode) extensions(ctl *leadlifecycle.Controller, reg *leadregistry.Registry) []clientapi.Extension {
+// each role. Scratch mode's fails when it found the state of a lead it could
+// not record (see leadMode.extension).
+func (m *canaryMode) extensions(ctl *leadlifecycle.Controller, reg *leadregistry.Registry) ([]clientapi.Extension, error) {
 	if m == nil {
-		return nil
+		return nil, nil
 	}
 	// Scratch mode registers the lead.* operations and never the canary's.
 	if m.lead != nil {
-		return []clientapi.Extension{m.lead.extension(ctl, reg)}
+		ext, err := m.lead.extension(ctl, reg)
+		if err != nil {
+			return nil, err
+		}
+		return []clientapi.Extension{ext, m.lead.chatExtension()}, nil
 	}
 	for _, role := range m.router.order {
 		in := m.router.byRole[role]
 		in.ext = m.newExt(in, ctl, reg)
 	}
-	return []clientapi.Extension{&routerExt{router: m.router}}
+	return []clientapi.Extension{&routerExt{router: m.router}}, nil
 }
 
 // startObservers lets the background observers of scratch mode run, under the

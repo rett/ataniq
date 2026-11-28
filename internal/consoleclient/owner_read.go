@@ -160,8 +160,9 @@ func plain(s string) bool { return s != "" && clean(s) == s }
 
 // Open reads one card: the pending record as bytes with its digest, what a
 // card needs beside it, and the earlier card he read, and builds the card from
-// them. It notes the card's review digest, which the pages are asked for, and
-// the connection the card was read over, which its decision must go out on.
+// them. It notes the card's review digest, which the pages are asked for (a
+// prune has none), and the connection the card was read over, which its
+// decision must go out on.
 // A successful Open also ends a doubt about an earlier decision on the card.
 func (o *Owner) Open(id string) (card.Card, error) {
 	o.mu.Lock()
@@ -200,7 +201,13 @@ func (o *Owner) Open(id string) (card.Card, error) {
 	if err != nil {
 		return card.Card{}, err
 	}
-	o.remember(id, c.Diff.ReviewDigest)
+	// A prune changes no file and has no diff, so it has no review: its
+	// pages are refused, and it is still remembered, for its decision.
+	review := ""
+	if c.Diff != nil {
+		review = c.Diff.ReviewDigest
+	}
+	o.remember(id, review)
 	delete(o.doubt, id)
 	return c, nil
 }

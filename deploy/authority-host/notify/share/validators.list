@@ -15,8 +15,7 @@ systemd-analyze verify {release}/etc/systemd/system/ataniq-seat-notify.service
 # The owner's links of the units (README, "Setting the host up for it once by
 # hand", step 5, and "The notifier", step 5). systemd-analyze above verifies
 # the release's own path, so it passes without the links; without a link the
-# reload's restart (and, for the seat, the stop list's stop) fails (exit 5,
-# "Unit not found") after current has moved. A link that dangles passes, as it
+# reload cannot restart the service after current has moved. A link that dangles passes, as it
 # must before the first switch to this release.
 test -L /etc/systemd/system/ataniq-seat.service
 test -L /etc/systemd/system/ataniq-seat-notify.service

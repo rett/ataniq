@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"ataniq/internal/approval/credkind"
+	"ataniq/internal/approval/door"
 	"ataniq/internal/approval/door/doortest"
 	"ataniq/internal/approval/hostadapter"
 	"ataniq/internal/approval/ownerchannel"
@@ -34,27 +35,39 @@ import (
 // request. A test sets a fake; nothing else does.
 var ownerSuite hostadapter.Suite
 
+// ownerDoorWrap, when set, wraps the stand-in door the builder hands the host
+// adapter. It is nil: the adapter gets the stand-in itself. A test sets a
+// wrapper that counts the calls at the door; nothing else does.
+var ownerDoorWrap func(*doortest.Door) door.Door
+
 // ownerNotice receives the host-written lines of the service and the adapter.
 // The default writes them to the standard error, one line each.
 var ownerNotice = func(line string) { fmt.Fprintf(os.Stderr, "ataniqd: owner channel: %s\n", line) }
 
 func init() {
 	ownerServiceBuilder = buildOwnerService
+	ownerBuildFrom = buildOwnerServiceFrom
 	ownerGuard = &ownerGuardSet{
 		check: func(stateDir string, getenv func(string) string) error {
-			sc, err := checkOwnerScratch(stateDir, getenv)
-			if err != nil {
-				return err
-			}
-			// Without a suite of a test, the settings must name the real
-			// one, so that the daemon refuses before it takes a lock.
-			if ownerSuite == nil {
-				_, err = sc.VerifySuiteOf()
-			}
-			return err
+			return checkOwnerSettings(stateDir, stateScratch(stateDir), getenv)
 		},
-		banner: ownerBanner,
+		checkFrom: checkOwnerSettings,
+		banner:    ownerBanner,
 	}
+}
+
+// checkOwnerSettings is the guard of the builder on the settings load reads:
+// the guards of [checkOwnerScratchFrom] and, without a suite of a test, a
+// suite the settings name, so that the daemon refuses before it takes a lock.
+func checkOwnerSettings(stateDir string, load scratchLoad, getenv func(string) string) error {
+	sc, err := checkOwnerScratchFrom(stateDir, load, getenv)
+	if err != nil {
+		return err
+	}
+	if ownerSuite == nil {
+		_, err = sc.VerifySuiteOf()
+	}
+	return err
 }
 
 // openOwnerKeys opens the list of the owner's deciding keys, the file
@@ -88,9 +101,13 @@ func scratchKindPolicy(sc hostadapter.Scratch) func(project string) (credkind.Po
 	}
 }
 
+// withdrawer is the stand-in door's withdraw of a request, which no door
+// interface has.
+type withdrawer interface{ Withdraw(id string) error }
+
 // standInEnder ends a request at the stand-in door, which has a withdraw of
 // its own for it.
-type standInEnder struct{ d *doortest.Door }
+type standInEnder struct{ d withdrawer }
 
 func (e standInEnder) EndRequest(_ context.Context, id string) error { return e.d.Withdraw(id) }
 
@@ -117,10 +134,19 @@ func scratchDoorConfig(sc hostadapter.Scratch, now func() time.Time) doortest.Co
 // building it starts nothing, and the template is read and the sandbox started
 // only when a request is verified.
 func buildOwnerService(stateDir string) (leaddaemon.OwnerService, func() error, error) {
+	return buildOwnerServiceFrom(stateDir, stateScratch(stateDir))
+}
+
+// buildOwnerServiceFrom is [buildOwnerService] on the settings load reads in
+// place of owner/scratch.json of the state folder: the [ownerBuildFrom] of
+// this build, which run --owner-settings uses (a build with both tags). The
+// journal, the list of keys and the records are the state folder's all the
+// same.
+func buildOwnerServiceFrom(stateDir string, load scratchLoad) (leaddaemon.OwnerService, func() error, error) {
 	// The settings select the stand-in door, and the state folder, the roots
 	// and the mirror are not the account's real ones. ownerRun makes the same
 	// check before the daemon starts; this one is the builder's own.
-	sc, err := checkOwnerScratch(stateDir, ownerGetenv)
+	sc, err := checkOwnerScratchFrom(stateDir, load, ownerGetenv)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -143,13 +169,24 @@ func buildOwnerService(stateDir string) (leaddaemon.OwnerService, func() error, 
 	}
 	cfg := scratchDoorConfig(sc, time.Now)
 	standIn := doortest.New(cfg)
+	var d door.Door = standIn
+	if ownerDoorWrap != nil {
+		d = ownerDoorWrap(standIn)
+	}
+	// The ender withdraws through the door the adapter is given, when it
+	// can, so that a test's wrapped door sees every call that changes the
+	// stand-in, the withdraw included.
+	var ender withdrawer = standIn
+	if w, ok := d.(withdrawer); ok {
+		ender = w
+	}
 	keys := openOwnerKeys(stateDir)
 	o, err := hostadapter.Open(context.Background(), hostadapter.OpenConfig{
 		Config: hostadapter.Config{
 			Git: git, Projects: []hostadapter.Project{sc.ProjectOf()}, Suite: suite, Now: time.Now,
 			Notice: func(line string) { ownerNotice(line) },
 		},
-		StateDir: stateDir, Door: standIn, Ender: standInEnder{standIn},
+		StateDir: stateDir, Door: d, Ender: standInEnder{ender},
 		DropDir: sc.Drop, CollectProject: sc.Project,
 		Service: ownerchannel.Config{
 			Keys: keys, KindPolicy: scratchKindPolicy(sc),

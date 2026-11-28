@@ -240,7 +240,12 @@ func (s *envScan) parse(rel string, syn envSyntax) (string, *envParse) {
 	if p == "dev/null" {
 		return p, nil
 	}
-	if r := c.parsed[p]; r != nil {
+	// A systemd file may also be a linked startup file, parsed in another syntax.
+	key := p
+	if syn == syntaxSystemd {
+		key = "systemd\x00" + p
+	}
+	if r := c.parsed[key]; r != nil {
 		return p, r
 	}
 	_, data, err := c.t.readFile(p, maxEnvFile)
@@ -249,9 +254,14 @@ func (s *envScan) parse(rel string, syn envSyntax) (string, *envParse) {
 		return p, nil
 	}
 	r := &envParse{}
-	*r = parseEnv(syn, string(data), strings.HasSuffix(p, ".fish"))
-	if c.t.b.hold(int64(len(p)) + r.cost()) {
-		c.parsed[p] = r
+	text := string(data)
+	if syn == syntaxSystemd && !HostUnitTextSafe(text) {
+		c.hit(KindUnit, show(p), UnitSyntax)
+	} else {
+		*r = parseEnv(syn, text, strings.HasSuffix(p, ".fish"))
+	}
+	if c.t.b.hold(int64(len(key)) + r.cost()) {
+		c.parsed[key] = r
 	}
 	for _, n := range r.names {
 		c.hit(KindEnv, show(p), n)

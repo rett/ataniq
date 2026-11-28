@@ -4,6 +4,7 @@
 // markup.
 "use strict";
 (function () {
+  var mount = document.documentElement.dataset.mount || "";
   var root = document.getElementById("login");
   var statusEl = document.getElementById("status");
   var button = document.getElementById("start");
@@ -58,7 +59,7 @@
   async function post(path, body) {
     var resp;
     try {
-      resp = await fetch(path, {
+      resp = await fetch(mount + path, {
         method: "POST", credentials: "same-origin", cache: "no-store", referrer: "", referrerPolicy: "strict-origin",
         headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
       });
@@ -99,7 +100,7 @@
       signature: b64e(r.signature)
     });
     // Only a path of the seat itself is followed.
-    if (!out || typeof out.next !== "string" || !/^\/[a-z\/]*$/.test(out.next)) { throw "failed"; }
+    if (!out || out.next !== "/cards/") { throw "failed"; }
     return out.next;
   }
 
@@ -110,7 +111,7 @@
     say("Waiting for your phone to ask for your face, finger or passcode.");
     login().then(function (next) {
       say("Logged in.");
-      location.assign(next);
+      location.assign(mount + next);
     }, function (kind) { fail(typeof kind === "string" ? kind : "failed"); });
   });
 

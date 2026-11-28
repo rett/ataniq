@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -266,7 +268,7 @@ func TestLiveStartsAtTheFirstWindowSizeEvenWhenItIsTooSmall(t *testing.T) {
 	if f.starts != 0 {
 		t.Fatal("started before a window size")
 	}
-	r.waiting = r.size(80, 24)
+	r.waiting = r.size(1, 1)
 	if f.starts != 1 || f.start.Cols != liveDefaultCols || f.start.Rows != liveDefaultRows {
 		t.Fatalf("starts %d, %dx%d", f.starts, f.start.Cols, f.start.Rows)
 	}
@@ -1378,11 +1380,15 @@ func TestLiveASourceMayReplaceTheWholePaneAtAnyTime(t *testing.T) {
 	}
 }
 
-func TestLiveSmallWindowShowsOneHonestPage(t *testing.T) {
+func TestNarrowLiveViewportShowsOneLivePane(t *testing.T) {
 	f := newFake(LiveWriter)
 	r := newLiveRig(t, 80, 24, f, Options{})
+	if f.starts != 1 || f.start.Cols != 80 || f.start.Rows != 22 {
+		t.Fatalf("starts %d, %dx%d", f.starts, f.start.Cols, f.start.Rows)
+	}
+	f.emit("first row\x1b[22;80HZ")
 	v := r.view()
-	for _, want := range []string{"needs a window of 100x30 or more", "This window is 80x24", "lead scratch-lead", "writer", "epoch 7"} {
+	for _, want := range []string{"first row", "lead scratch-lead", "writer", "epoch 7", "q detach", "attached"} {
 		if !strings.Contains(v, want) {
 			t.Fatalf("missing %q:\n%s", want, v)
 		}
@@ -1392,10 +1398,14 @@ func TestLiveSmallWindowShowsOneHonestPage(t *testing.T) {
 			t.Fatalf("%q in:\n%s", bad, v)
 		}
 	}
-	// Every page key leaves the same page, and q quits and closes the source.
+	rows := r.rows()
+	if len(rows) != 24 || rows[2] != "first row"+strings.Repeat(" ", 71) || rows[23] != strings.Repeat(" ", 79)+"Z" {
+		t.Fatalf("viewport bounds:\n%s", v)
+	}
+	// Other pages stay closed, and q detaches and closes the source.
 	for _, k := range []tea.KeyPressMsg{{Code: '?', Text: "?"}, ctrlK, enterKey, {Code: 'j', Text: "j"}, escKey} {
 		r.key(k)
-		if !strings.Contains(r.view(), "needs a window of 100x30 or more") {
+		if !strings.Contains(r.view(), "first row") {
 			t.Fatalf("key %v changed the page:\n%s", k, r.view())
 		}
 	}
@@ -1409,6 +1419,162 @@ func TestLiveSmallWindowShowsOneHonestPage(t *testing.T) {
 	r2.pump()
 	if !strings.Contains(r2.view(), "Too slow") {
 		t.Fatalf("no notice:\n%s", r2.view())
+	}
+}
+
+func TestNarrowLiveViewportClipsViewerAndFollowsWriterSize(t *testing.T) {
+	f := newFake(LiveViewer)
+	r := newLiveRig(t, 80, 24, f, Options{})
+	r.size(60, 20)
+	r.settle()
+	if got := f.sizes(); len(got) != 0 {
+		t.Fatalf("viewer resized holder: %v", got)
+	}
+	f.emit("row one\x1b[18;59HXYhidden\x1b[19;1Hhidden")
+	rows := r.rows()
+	if len(rows) != 20 || rows[2] != "row one"+strings.Repeat(" ", 53) || rows[19] != strings.Repeat(" ", 58)+"XY" || strings.Contains(r.view(), "hidden") {
+		t.Fatalf("viewer crop:\n%s", r.view())
+	}
+	for _, conn := range []LiveConn{LiveConnecting, LiveResyncing, LiveWaitingTicket, LiveDisconnected, LiveAttached} {
+		f.set(func(s *LiveStatus) { s.Conn = conn })
+		header := r.rows()[0]
+		for _, want := range []string{"q detach", "read-only viewer", conn.String()} {
+			if !strings.Contains(header, want) {
+				t.Fatalf("%q missing from %q", want, header)
+			}
+		}
+	}
+	f.set(func(s *LiveStatus) { s.Role = LiveWriter })
+	r.pump()
+	if got := f.sizes(); len(got) != 1 || got[0] != [2]int{60, 18} {
+		t.Fatalf("writer did not request viewport size: %v", got)
+	}
+}
+
+func TestNarrowLiveViewportFailureAndEnd(t *testing.T) {
+	f := newFake("")
+	f.startErr = errors.New("refused\x07")
+	r := newLiveRig(t, 60, 20, f, Options{})
+	if v := r.view(); !strings.Contains(v, "q detach") || !strings.Contains(v, "unavailable") || !strings.Contains(v, "refused") || strings.ContainsRune(v, '\a') {
+		t.Fatalf("start failure: %q", v)
+	}
+	f = newFake(LiveViewer)
+	r = newLiveRig(t, 60, 20, f, Options{})
+	f.emit("last screen")
+	f.set(func(s *LiveStatus) { s.Conn, s.Reason = LiveDisconnected, "ticket expired" })
+	if v := r.view(); !strings.Contains(v, "last screen") || !strings.Contains(v, "ticket expired") {
+		t.Fatal(v)
+	}
+	f.set(func(s *LiveStatus) { s.End.Stream = FactYes })
+	if v := r.view(); !strings.Contains(v, "SESSION ENDED") || !strings.Contains(v, "last screen") {
+		t.Fatal(v)
+	}
+}
+
+func TestNarrowLiveViewportKeepsTopRowInShortWindow(t *testing.T) {
+	f := newFake(LiveViewer)
+	r := newLiveRig(t, 60, 3, f, Options{})
+	f.emit("one visible row")
+	if rows := r.rows(); len(rows) != 3 || !strings.Contains(rows[1], "lead scratch-lead") || !strings.HasPrefix(rows[2], "one visible row") {
+		t.Fatalf("%q", rows)
+	}
+}
+
+func TestPagedBackLiveViewportKeepsItsPlaceUntilReturningLive(t *testing.T) {
+	f := newFake(LiveViewer)
+	r := newLiveRig(t, 60, 20, f, Options{})
+	p := f.start.Pane
+	const height = 18
+	if p.PageRecent(-1, height) {
+		t.Fatal("an empty history opened")
+	}
+	for i := 0; i < 80; i++ {
+		f.emit(fmt.Sprintf("line %02d\r\n", i))
+	}
+	r.key(tea.KeyPressMsg{Code: tea.KeyPgUp})
+	rows := r.rows()
+	if !strings.Contains(rows[0], "q detach · read-only viewer · attached") || !strings.Contains(rows[1], "page 1/4") || !strings.HasPrefix(rows[2], "line 45") || !strings.HasPrefix(rows[19], "line 62") {
+		t.Fatalf("first page:\n%s", r.view())
+	}
+	before := r.m.View().Content
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 150 {
+			f.emit("fresh\r\n")
+		}
+	}()
+	for range 5 {
+		if r.m.View().Content != before {
+			t.Error("page changed during a write")
+			break
+		}
+	}
+	<-done
+	if r.m.View().Content != before {
+		t.Fatal("new output moved the page being read")
+	}
+	for range 8 {
+		r.key(tea.KeyPressMsg{Code: tea.KeyPgUp})
+	}
+	rows = r.rows()
+	if !strings.Contains(rows[1], "page 4/4") || !strings.HasPrefix(rows[2], "line 00") || strings.TrimSpace(rows[11]) != "" {
+		t.Fatalf("oldest partial page:\n%s", r.view())
+	}
+	r.key(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if !strings.Contains(r.rows()[1], "page 3/4") {
+		t.Fatalf("page down skipped a page:\n%s", r.view())
+	}
+	for range 3 {
+		r.key(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	}
+	if v := r.view(); !strings.Contains(v, "fresh") || strings.Contains(v, "page ") {
+		t.Fatalf("return to live:\n%s", v)
+	}
+	if len(f.sink.keys)+len(f.sizes()) != 0 {
+		t.Fatal("paging sent input or a resize")
+	}
+}
+
+func TestNarrowLiveViewportContainsHostileOutput(t *testing.T) {
+	corpus := append(hostileSet(), "\x1b]8;;https://example.invalid\x1b\\link\x1b]8;;\x1b\\",
+		"\x1b[6n\x1b[999;999Hcorner\x1b[?1003h\x1b[?2004h")
+	for _, size := range [][2]int{{80, 24}, {60, 20}} {
+		for i, payload := range corpus {
+			t.Run(fmt.Sprintf("%dx%d/%d", size[0], size[1], i), func(t *testing.T) {
+				f := newFake(LiveViewer)
+				r := newLiveRig(t, size[0], size[1], f, Options{})
+				chrome := strings.Split(r.m.View().Content, "\n")[:2]
+				f.emit("visible")
+				f.emit(payload)
+				check := func(detail string) {
+					t.Helper()
+					raw := strings.Split(r.m.View().Content, "\n")
+					if len(raw) != size[1] || raw[0] != chrome[0] || raw[1] != detail {
+						t.Fatalf("session output changed the frame outside the viewport: %q", raw)
+					}
+					for _, row := range raw[2:] {
+						plain := flowSGR.ReplaceAllString(row, "")
+						if !utf8.ValidString(plain) || strings.IndexFunc(plain, unicode.IsControl) >= 0 || ansi.StringWidth(plain) > size[0] {
+							t.Fatalf("unsafe viewport row %q", row)
+						}
+					}
+				}
+				check(chrome[1])
+				// Finish incomplete sequences, return from the alternate
+				// screen, and scroll the cells out of the main screen.
+				f.emit("\x1b\\\x1b[?1049l" + strings.Repeat("\r\n", size[1]))
+				if !f.start.Pane.PageRecent(-1, size[1]-2) {
+					t.Fatal("no recent page to check")
+				}
+				buf := uv.NewBuffer(size[0], size[1]-2)
+				_, pages := f.start.Pane.DrawViewport(buf, buf.Bounds())
+				for page := 1; page <= pages; page++ {
+					check(fmt.Sprintf("Recent output since attach · page %d/%d", page, pages))
+					f.start.Pane.PageRecent(-1, size[1]-2)
+				}
+			})
+		}
 	}
 }
 

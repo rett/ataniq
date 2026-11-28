@@ -61,6 +61,10 @@ func (p *Pane) Draw(dst Canvas, area uv.Rectangle) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	src, cols, rows := p.source()
+	p.draw(dst, area, src, cols, rows)
+}
+
+func (p *Pane) draw(dst Canvas, area uv.Rectangle, src cellSource, cols, rows int) {
 	blank := uv.EmptyCell
 	w, h := min(cols, area.Dx()), min(rows, area.Dy())
 	for y := 0; y < area.Dy(); y++ {

@@ -44,7 +44,7 @@ See [the Codex qualification guide](docs/qualification-codex.md) and
 packages a later managed-lead daemon will use; it starts, stops and manages no
 lead, except in a build with the `ataniq_canary` tag, under `--canary`. See
 [the lead daemon guide](docs/lead-daemon.md).
-Release builds of the daemon contain no owner channel; a build with the `ataniq_ownerchannel` tag has an unqualified scratch one, behind a stand-in door (`make test-ownerchannel` runs its tests, and `make ownerchannel-build` is the one target that builds that daemon, into `build/owner/`, never a release's; see the same guide).
+Release builds of the daemon contain no owner channel; a build with the `ataniq_ownerchannel` tag has an unqualified scratch one, behind a stand-in door (`make test-ownerchannel` runs its tests, and `make ownerchannel-build` is the one target that builds that daemon with that tag alone, into `build/owner/`, never a release's; `make scratch-seat-build` is the one target that builds the daemon with both tags, `ataniq_ownerchannel` and `ataniq_canary`, into `build/scratch-seat/`, for the owner's own trial of real scratch leads with the seat gate, never a release's either; see the same guide).
 The operator guide for the phone approval path, the seat gate of that build, is
 [the seat gate guide](docs/seat-gate.md).
 A provisional scratch-only lead holder and its attach path are described in

@@ -222,6 +222,16 @@
 // head is made right. A head missing for a list that has records is damage; for
 // a list with none it is made.
 //
+// [VerifyKeys] is the same checks read only, for a check from outside the
+// daemon (the scratch daemon's run --check of the key list): the folder, the
+// file and the head under the trust checks above, on the descriptors it
+// holds, and the file's bytes under the replay of the open, with a head that
+// must be exact. It creates, repairs, locks and writes nothing: where the open
+// would make a list or a head, or make a lagging head right, it refuses
+// ([ErrNoKeys], [ErrDamaged], [ErrHeadBehind]). It takes no lock, so it can run
+// while a daemon holds the list; a record appended while it reads is refused,
+// and it is run again.
+//
 // What remains, for the owner to know: whoever can write both files, the user
 // or root, can rewrite them consistently (the digests are not a signature, and
 // the head is a file in the same folder); the checks find damage and loss, not

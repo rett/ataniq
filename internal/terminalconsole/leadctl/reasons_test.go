@@ -132,12 +132,96 @@ func TestEveryReasonCodeHasWords(t *testing.T) {
 	}
 }
 
+// reasonCodesSet returns the value of every Code member of a composite
+// literal in the Go file that names a constant: the reason codes of the
+// states it sets. The constants are looked up in the files of defs.
+func reasonCodesSet(t *testing.T, path string, defs ...string) []string {
+	t.Helper()
+	values := map[string]string{}
+	for _, def := range defs {
+		f, err := parser.ParseFile(token.NewFileSet(), filepath.FromSlash(def), nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range f.Decls {
+			gd, ok := d.(*ast.GenDecl)
+			if !ok || gd.Tok != token.CONST {
+				continue
+			}
+			for _, sp := range gd.Specs {
+				vs := sp.(*ast.ValueSpec)
+				for i, n := range vs.Names {
+					if i < len(vs.Values) {
+						if lit, ok := vs.Values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+							s, err := strconv.Unquote(lit.Value)
+							if err != nil {
+								t.Fatal(err)
+							}
+							values[n.Name] = s
+						}
+					}
+				}
+			}
+		}
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), filepath.FromSlash(path), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		kv, ok := n.(*ast.KeyValueExpr)
+		if !ok {
+			return true
+		}
+		if k, ok := kv.Key.(*ast.Ident); ok && k.Name == "Code" {
+			id, ok := kv.Value.(*ast.Ident)
+			if !ok {
+				t.Errorf("a Code in %s that is not a constant", path)
+				return true
+			}
+			v, ok := values[id.Name]
+			if !ok {
+				t.Errorf("the constant %s of %s is not found", id.Name, path)
+				return true
+			}
+			out = append(out, v)
+		}
+		return true
+	})
+	return out
+}
+
+// TestEveryObserverStateReasonHasWords: every reason code the daemon's ready
+// observer gives a state it sets (each Code of lead_ready_linux.go, with the
+// constants of that file and of the lead extension) has state words, so the
+// line under the cursor says what the state means.
+func TestEveryObserverStateReasonHasWords(t *testing.T) {
+	const dir = "../../leaddaemon/"
+	codes := reasonCodesSet(t, dir+"lead_ready_linux.go", dir+"lead_ready_linux.go", dir+"lead_ext_linux.go")
+	if !slices.Contains(codes, "holder-ready") || !slices.Contains(codes, "holder-version-skew") {
+		t.Fatalf("read %v: the observer's source was not read", codes)
+	}
+	for _, c := range codes {
+		found := false
+		for k := range stateWords {
+			found = found || k[1] == c
+		}
+		if !found {
+			t.Errorf("the observer sets a state with the reason %q and the view has no words for it", c)
+		}
+	}
+}
+
 // TestNoWordsForACodeNothingSends holds that every code of the table is one
 // that is sent: by the daemon, by leadwire's error answers or by the
-// console's adapter (not-listed, conflict and invalid-request, which it makes
-// itself from an error of the client; see refusedCode in cmd/ataniq-console).
+// console's adapter (see refusedCode in cmd/ataniq-console).
 func TestNoWordsForACodeNothingSends(t *testing.T) {
-	sent := map[string]bool{"not-listed": true, "conflict": true, "invalid-request": true}
+	sent := map[string]bool{
+		"not-listed": true, "conflict": true, "invalid-request": true,
+		"define-not-offered": true, "start-not-offered": true, "stop-not-offered": true,
+		"inject-not-offered": true, "viewer-ticket-not-offered": true, "writer-ticket-not-offered": true,
+	}
 	for _, c := range daemonCodes(t) {
 		sent[c] = true
 	}
@@ -556,5 +640,45 @@ func TestUnsettledWordsNameTheWindowAndTheFallback(t *testing.T) {
 	}
 	if len(maxRunningUnknownTail) > 155 {
 		t.Errorf("the tail is %d bytes", len(maxRunningUnknownTail))
+	}
+}
+
+// A holder of another build is refused before a start, a ticket and a
+// message; the words say what the owner does in each case: run the holder and
+// the daemon of one checkout (a refused start leaves the lead stopped, and
+// starting it again alone is refused again), and restart a lead that runs.
+func TestTheVersionSkewWordsSayWhatTheOwnerDoes(t *testing.T) {
+	w := reasonWords["holder-version-skew"]
+	for _, part := range []string{"builds differ", "holder and daemon from one checkout", "restart a running lead"} {
+		if !strings.Contains(w, part) {
+			t.Errorf("holder-version-skew: %q lacks %q", w, part)
+		}
+	}
+	// No way out that does not fit a refused start, whose lead is stopped.
+	for _, part := range []string{"stop the lead", "start it with"} {
+		if strings.Contains(w, part) {
+			t.Errorf("holder-version-skew: %q says %q", w, part)
+		}
+	}
+	for _, op := range []Op{OpStart, OpTicket, OpInject} {
+		line := receiptLine(Receipt{Op: op, Status: Refused, Code: "holder-version-skew"}, heldUnknown)
+		if !strings.HasSuffix(line, w) {
+			t.Errorf("%v: %q", op, line)
+		}
+	}
+}
+
+// A start of a lead whose recorded profile this build does not launch (written
+// by another build, or naming a pack) is refused with its own code, and the
+// words name the way out, a define of the lead, which the words of
+// launch-refused do not.
+func TestTheProfileNotLaunchableWordsSayDefineTheLeadAgain(t *testing.T) {
+	w := reasonWords["profile-not-launchable"]
+	if !strings.Contains(w, "define the lead again") || w == reasonWords["launch-refused"] {
+		t.Errorf("profile-not-launchable: %q", w)
+	}
+	line := receiptLine(Receipt{Op: OpStart, Status: Refused, Code: "profile-not-launchable"}, heldUnknown)
+	if line != "start: refused: "+w {
+		t.Errorf("%q", line)
 	}
 }

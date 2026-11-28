@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"ataniq/internal/clientapi"
+	"ataniq/internal/instanceid"
 	"ataniq/internal/leadcanary"
+	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/canaryroot"
 	"ataniq/internal/leadholder/wire"
 	"ataniq/internal/leadregistry"
@@ -36,6 +38,9 @@ type canaryEnv struct {
 	holder    *fakeHolder
 	running   *running
 	ids       int
+	// build, when set, is the daemon's check of the holder's build; unset
+	// it finds every holder the expected build (sameHolderBuild).
+	build *buildid.Checker
 }
 
 // noEnv is a Getenv with nothing set: the account's own defaults still count.
@@ -45,6 +50,13 @@ func noEnv(string) string { return "" }
 // marker, the runtime root and the holder's folder) and a config for them. The
 // fake manager reads the system clock, so that a stop needs no clock driver.
 func newCanaryEnv(t *testing.T) *canaryEnv {
+	t.Helper()
+	c := newCanaryEnvWithoutHome(t)
+	enrollTestProjects(t, c.state, c.cfg.Role.Project())
+	return c
+}
+
+func newCanaryEnvWithoutHome(t *testing.T) *canaryEnv {
 	t.Helper()
 	e := newEnv(t)
 	e.fake = leadunit.NewFake(leadunit.SystemClock{})
@@ -67,6 +79,7 @@ func newCanaryEnv(t *testing.T) *canaryEnv {
 			t.Fatal(err)
 		}
 	}
+	initTestIdentity(t, e.state)
 	if err := canaryroot.WriteMarker(e.state, role.Project()); err != nil {
 		t.Fatal(err)
 	}
@@ -98,13 +111,30 @@ func newCanaryEnv(t *testing.T) *canaryEnv {
 	return c
 }
 
+func initTestIdentity(t *testing.T, state string) {
+	t.Helper()
+	root, err := instanceid.OpenRoot(state, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if _, err := instanceid.InitAt(root, "sample"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // daemonConfig is the daemon's config for the canary config of c.
 func (c *canaryEnv) daemonConfig() Config {
 	cfg := c.env.config()
 	cfg.Clock = leadunit.SystemClock{}
+	build := c.build
+	if build == nil {
+		build = sameHolderBuild()
+	}
 	cfg.Canary = &Canary{
 		Config: c.cfg, Getenv: noEnv,
 		InjectWait: 300 * time.Millisecond, DialTimeout: 2 * time.Second,
+		HolderBuild: build,
 	}
 	return cfg
 }

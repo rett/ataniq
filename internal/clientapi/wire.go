@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"slices"
+	"strconv"
 	"time"
+	"unicode/utf16"
 	"unicode/utf8"
 )
 
-// Protocol is the protocol name of this version, sent in every request and
-// response.
+// Protocol is the legacy protocol used by Client.
 const Protocol = "ataniq.client/1"
+
+// ProtocolV2 selects managed operations on servers with a ManagedHandler.
+const ProtocolV2 = "ataniq.client/2"
 
 // The limits of the wire. They are advertised in the hello result.
 const (
@@ -33,8 +38,7 @@ const (
 // Operations returns the operations version 1 offers, in a fresh slice.
 func Operations() []string { return []string{OpHello, OpStatus} }
 
-// SupportedProtocols returns the protocol names the server speaks, in a fresh
-// slice.
+// SupportedProtocols returns the legacy protocol advertisement in a fresh slice.
 func SupportedProtocols() []string { return []string{Protocol} }
 
 // ErrorCode is the machine-readable code of an error response. The codes are
@@ -57,6 +61,9 @@ const (
 	// CodeUnauthorized: the peer UID differs from the server's. The
 	// connection is closed after this response.
 	CodeUnauthorized ErrorCode = "unauthorized"
+	// CodeForbidden refuses a wire-supplied principal or a managed request
+	// without current proof and permission for the target and operation.
+	CodeForbidden ErrorCode = "forbidden"
 	// CodeBusy: the server is at its connection cap. The connection is closed
 	// after this response.
 	CodeBusy ErrorCode = "busy"
@@ -72,6 +79,7 @@ const (
 	msgUnsupportedProtocol  = "the protocol is not supported"
 	msgUnsupportedOperation = "the operation is not supported"
 	msgUnauthorized         = "the peer is not authorized"
+	msgForbidden            = "the managed request is not authorized"
 	msgBusy                 = "the server is at its connection limit"
 	msgInternal             = "the request could not be served"
 	msgResponseTooLarge     = "the response exceeds the response limit"
@@ -97,6 +105,9 @@ type Request struct {
 	// Op is "hello" or "status", or the name of an extension operation that
 	// the server's hello result lists.
 	Op string `json:"op"`
+	// Target is the opaque target ID from managed hello, required for a
+	// managed operation other than hello. Version 1 ignores it.
+	Target string `json:"target,omitempty"`
 	// Params is the operation's parameters: optional, and a JSON object when
 	// present. "hello" and "status" ignore it. It lies inside the request
 	// line cap.
@@ -145,6 +156,64 @@ type HelloResult struct {
 	Mutations bool `json:"mutations"`
 	// Version is the daemon's version string.
 	Version string `json:"version"`
+}
+
+// TargetCapabilities maps each visible target ID to the operations the
+// principal may request for it. IDs are nonempty UTF-8 strings, opaque and
+// compared in full. An empty operation list denotes a visible target.
+type TargetCapabilities map[string][]string
+
+// forHello checks that each advertised target and operation can be requested.
+// Encode empty collections as objects and arrays without modifying the policy.
+func (caps TargetCapabilities) forHello() (TargetCapabilities, bool) {
+	view := make(TargetCapabilities, len(caps))
+	for id, ops := range caps {
+		if id == "" || !utf8.ValidString(id) {
+			return nil, false
+		}
+		for _, op := range ops {
+			if !validOperationName(op) {
+				return nil, false
+			}
+		}
+		if ops == nil {
+			ops = []string{}
+		}
+		view[id] = slices.Clone(ops)
+	}
+	return view, true
+}
+
+// permitsView checks every target (including read-only inventory rows with
+// no operations) and operation already encoded into a hello response.
+func (caps TargetCapabilities) permitsView(view TargetCapabilities) bool {
+	for id, advertised := range view {
+		current, ok := caps[id]
+		if !ok {
+			return false
+		}
+		if slices.Equal(current, advertised) {
+			continue
+		}
+		allowed := make(map[string]bool, len(current))
+		for _, op := range current {
+			allowed[op] = true
+		}
+		for _, op := range advertised {
+			if !allowed[op] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// ManagedHelloResult advertises the protocols and effective wire limits of
+// the server, and only the capabilities visible to the authenticated caller.
+type ManagedHelloResult struct {
+	Protocols    []string           `json:"protocols"`
+	Limits       Limits             `json:"limits"`
+	Capabilities TargetCapabilities `json:"capabilities"`
 }
 
 // DaemonStatus is the daemon block of the status result.
@@ -358,8 +427,9 @@ type StatusResult struct {
 	Leads []LeadStatus `json:"leads"`
 }
 
-// Handler supplies the values the server answers with. Both methods are
-// read-only and may be called concurrently from several connections.
+// Handler supplies the scratch inventory for the local version 1 listener.
+// Its status rows and summary must come from scratch state. Both methods
+// are read-only and may be called concurrently from several connections.
 type Handler interface {
 	// Hello returns the hello result. The server fills Protocols, Limits,
 	// Operations and Mutations itself, as they describe the server; the
@@ -428,20 +498,27 @@ func decodeRequest(line []byte) (id, op string, fail *ErrorBody) {
 // nil when the member is absent. For the base operations params is ignored and
 // returned nil, as any unknown field is.
 func decodeRequestExt(line []byte, exts *extensionSet) (id, op string, params json.RawMessage, fail *ErrorBody) {
+	req, fail := parseRequest(line, exts, Protocol)
+	return req.RequestID, req.Op, req.Params, fail
+}
+
+// parseRequest uses the protocol of the endpoint for every response envelope.
+func parseRequest(line []byte, exts *extensionSet, protocol string) (Request, *ErrorBody) {
+	req := Request{Protocol: protocol}
 	invalid := &ErrorBody{Code: CodeInvalidRequest, Message: msgInvalidRequest}
 	if !utf8.Valid(line) {
-		return "", "", nil, invalid
+		return req, invalid
 	}
 	trimmed := bytes.TrimSpace(line)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return "", "", nil, invalid
+		return req, invalid
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(trimmed, &fields); err != nil || fields == nil {
-		return "", "", nil, invalid
+		return req, invalid
 	}
 	if repeatsKey(trimmed) {
-		return "", "", nil, invalid
+		return req, invalid
 	}
 	str := func(name string) (string, bool) {
 		raw, ok := fields[name]
@@ -454,32 +531,76 @@ func decodeRequestExt(line []byte, exts *extensionSet) (id, op string, params js
 		}
 		return s, true
 	}
+	proto, hasProtocol := str("protocol")
 	rid, ok := str("request_id")
 	if !ok || !validRequestID(rid) {
-		return "", "", nil, invalid
+		return req, invalid
 	}
-	proto, ok := str("protocol")
+	req.RequestID = rid
+	if !hasProtocol {
+		return req, invalid
+	}
+	if proto != req.Protocol {
+		return req, &ErrorBody{Code: CodeUnsupportedProtocol, Message: msgUnsupportedProtocol, SupportedProtocols: []string{protocol}}
+	}
+	if _, claim := fields["principal"]; proto == ProtocolV2 && claim {
+		return req, &ErrorBody{Code: CodeForbidden, Message: msgForbidden}
+	}
+	op, ok := str("op")
 	if !ok {
-		return rid, "", nil, invalid
+		return req, invalid
 	}
-	if proto != Protocol {
-		return rid, "", nil, &ErrorBody{Code: CodeUnsupportedProtocol, Message: msgUnsupportedProtocol, SupportedProtocols: SupportedProtocols()}
+	if op == OpHello || (proto == Protocol && op == OpStatus) {
+		req.Op = op
+		return req, nil
 	}
-	op, ok = str("op")
-	if !ok {
-		return rid, "", nil, invalid
-	}
-	if op == OpHello || op == OpStatus {
-		return rid, op, nil, nil
-	}
-	if !exts.has(op) {
-		return rid, "", nil, &ErrorBody{Code: CodeUnsupportedOperation, Message: msgUnsupportedOperation}
+	if proto == ProtocolV2 {
+		if !validOperationName(op) {
+			return req, &ErrorBody{Code: CodeUnsupportedOperation, Message: msgUnsupportedOperation}
+		}
+		req.Target, ok = str("target")
+		if !ok || req.Target == "" || !pairedSurrogates(fields["target"]) {
+			return req, invalid
+		}
+	} else if !exts.has(op) {
+		return req, &ErrorBody{Code: CodeUnsupportedOperation, Message: msgUnsupportedOperation}
 	}
 	if raw, present := fields["params"]; present {
 		if len(raw) == 0 || raw[0] != '{' || repeatsKey(raw) {
-			return rid, "", nil, invalid
+			return req, invalid
 		}
-		params = raw
+		req.Params = raw
 	}
-	return rid, op, params, nil
+	req.Op = op
+	return req, nil
+}
+
+// pairedSurrogates checks a syntactically valid JSON string. encoding/json
+// silently replaces lone UTF-16 surrogates with U+FFFD, which may itself
+// be the ID of a different target.
+func pairedSurrogates(raw []byte) bool {
+	for {
+		i := bytes.IndexByte(raw, '\\')
+		if i < 0 {
+			return true
+		}
+		raw = raw[i+1:]
+		if raw[0] != 'u' {
+			raw = raw[1:]
+			continue
+		}
+		n, _ := strconv.ParseUint(string(raw[1:5]), 16, 16)
+		raw = raw[5:]
+		if !utf16.IsSurrogate(rune(n)) {
+			continue
+		}
+		if n >= 0xdc00 || len(raw) < 6 || !bytes.HasPrefix(raw, []byte(`\u`)) {
+			return false
+		}
+		low, _ := strconv.ParseUint(string(raw[2:6]), 16, 16)
+		if low < 0xdc00 || low > 0xdfff {
+			return false
+		}
+		raw = raw[6:]
+	}
 }

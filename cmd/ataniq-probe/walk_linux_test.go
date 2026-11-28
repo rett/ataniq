@@ -301,6 +301,39 @@ func TestPassFDsWalkRefusals(t *testing.T) {
 	}
 }
 
+func fifoHungUp(t *testing.T, fd int, poll func([]unix.PollFd, int) (int, error)) bool {
+	t.Helper()
+	p := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+	for {
+		_, err := poll(p, 0)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p[0].Revents&unix.POLLHUP != 0
+	}
+}
+
+func TestFIFOHangupAfterInterruptedPoll(t *testing.T) {
+	calls := 0
+	hungUp := fifoHungUp(t, 7, func(p []unix.PollFd, timeout int) (int, error) {
+		calls++
+		if len(p) != 1 || p[0].Fd != 7 || p[0].Events != unix.POLLIN || timeout != 0 {
+			t.Fatalf("unexpected poll(%v, %d)", p, timeout)
+		}
+		if calls == 1 {
+			return -1, unix.EINTR
+		}
+		p[0].Revents = unix.POLLHUP
+		return 1, nil
+	})
+	if !hungUp || calls != 2 {
+		t.Fatalf("hangup %t after %d calls, want true after 2", hungUp, calls)
+	}
+}
+
 // A refused walk ends the step before anything else is done: the report
 // channel is not opened for writing, and a file to append to is not touched.
 func TestPassFDsRefusedWalkOpensNothingElse(t *testing.T) {
@@ -308,20 +341,12 @@ func TestPassFDsRefusedWalkOpensNothingElse(t *testing.T) {
 	if err := os.Symlink(f.outside, filepath.Join(f.state, "leads/a-lead/planted")); err != nil {
 		t.Fatal(err)
 	}
-	rd, err := unix.Open(f.fifo, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	rd, err := openRetry(f.fifo, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_CLOEXEC)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer unix.Close(rd)
-	hungUp := func() bool {
-		t.Helper()
-		p := []unix.PollFd{{Fd: int32(rd), Events: unix.POLLIN}}
-		if _, err := unix.Poll(p, 0); err != nil {
-			t.Fatal(err)
-		}
-		return p[0].Revents&unix.POLLHUP != 0
-	}
-	if hungUp() {
+	if fifoHungUp(t, rd, unix.Poll) {
 		t.Fatal("the FIFO reports a writer that came and went before the test opened one")
 	}
 	r := startPass(t, runOpts{mode: modeFake}, append([]string{"--write", "4=" + f.fifo}, walkOpt(true, 10, f.state, "leads/a-lead/planted")...)...)
@@ -329,17 +354,17 @@ func TestPassFDsRefusedWalkOpensNothingElse(t *testing.T) {
 		t.Fatalf("exit %d, want %d (stderr %s)", code, exitWalk, r.stderr)
 	}
 	r.noAgent()
-	if hungUp() {
+	if fifoHungUp(t, rd, unix.Poll) {
 		t.Error("the report channel was opened for writing though a walk was refused")
 	}
 	// The other way round, to show the question can be answered here: a
 	// writer that came and went is seen.
-	wr, err := unix.Open(f.fifo, unix.O_WRONLY|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	wr, err := openRetry(f.fifo, unix.O_WRONLY|unix.O_NONBLOCK|unix.O_CLOEXEC)
 	if err != nil {
 		t.Fatal(err)
 	}
 	unix.Close(wr)
-	if !hungUp() {
+	if !fifoHungUp(t, rd, unix.Poll) {
 		t.Skip("this kernel does not report a writer that came and went: the check above shows nothing here")
 	}
 }

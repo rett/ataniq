@@ -3,9 +3,11 @@ package release
 import (
 	"os"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 
+	"ataniq/internal/authorityhost/noaicheck"
 	"ataniq/internal/authorityhost/switcher"
 )
 
@@ -78,7 +80,7 @@ type unit struct {
 //     has at least one, which runs a binary of the release
 //     (/opt/authority-host/current/bin/NAME or its own releases/<id>/bin/NAME,
 //     shipped with an execute bit), is stopped in stop.list ("systemctl stop",
-//     but for the units of notStopped, which decide nothing) and restarted in
+//     for every shipped service) and restarted in
 //     reload.list, and no unit gates its start on
 //     decisions.inhibit (the decision inhibit contract in the README: the
 //     inhibit is the one guard file, the journal txn.json never being there
@@ -108,11 +110,34 @@ func (c *checker) coverage(root *os.Root, m switcher.Manifest, id string, files 
 			ok = false
 		}
 	}
-	units := c.units(root, files)
-	if !ok {
+	_, hasWitness := files["bin/ataniq-witness"]
+	_, hasUnit := files[noaicheck.WitnessUnit]
+	if hasWitness != hasUnit {
+		c.add(CodeWitness, noaicheck.WitnessUnit)
+	}
+	units, complete := c.units(root, files, relDir, hasWitness || hasUnit)
+	if !ok || !complete {
 		return
 	}
 
+	if hasWitness {
+		for _, v := range []struct{ script, arg string }{
+			{"share/check-witness-unit-link", "/" + noaicheck.WitnessUnit},
+			{"share/check-witness-stop", "/etc/authority-host/stop.list"},
+		} {
+			_, included := files[v.script]
+			if !included || !slices.ContainsFunc(l.validators, func(args []string) bool {
+				return slices.Equal(args, []string{"sh", relDir + "/" + v.script, v.arg})
+			}) {
+				c.add(CodeWitness, switcher.ValidatorsList)
+			}
+		}
+	}
+	if hasWitness && !slices.ContainsFunc(l.health, func(args []string) bool {
+		return slices.Equal(args, []string{relDir + "/bin/ataniq-witness", "status", "--config", noaicheck.WitnessConfig})
+	}) {
+		c.add(CodeWitness, switcher.HealthCmd)
+	}
 	c.programs(relDir, files, &l)
 
 	if len(l.health) == 0 {
@@ -129,26 +154,10 @@ func (c *checker) coverage(root *os.Root, m switcher.Manifest, id string, files 
 	c.reloadsAndStops(static, relDir, id, files, l, units)
 }
 
-// notStopped names the units that start a program and need no line in
-// stop.list. stop.list stops the decision services (see the README, "Layout");
-// the notifier of the seat's notices decides nothing: it is told how many
-// cards wait and tells the phone, and the decision stays with the seat's
-// own refusals. It is restarted by the reload list like any unit. The key is
-// the unit's name, without ".service"; no other unit is excused. The value is
-// the one binary of the release the unit may run: "decides nothing" is a
-// property of that binary, not of a name, so a unit of this name whose
-// ExecStart runs another program is not excused, and is stopped like any.
-var notStopped = map[string]string{"ataniq-seat-notify": "ataniq-seat-notify"}
-
-// excused reports whether the units of this name, the file and its drop-ins,
-// need no stop line: the name is in notStopped, and every ExecStart of every
-// one of them runs the release's binary that name is excused for, and no
-// other. An ExecStart that runs no binary of the release at all is refused on
-// its own (decision-exec), so it does not need the stop line to be refused
-// again.
-func excused(name string, units []unit, id string, files map[string]entry) bool {
-	bin, ok := notStopped[name]
-	if !ok {
+// The notifier counts separately from decision services only when every
+// executable in its unit and drop-ins is the release's notifier binary.
+func notifierOnly(name string, units []unit, id string) bool {
+	if name != "ataniq-seat-notify" {
 		return false
 	}
 	for _, u := range units {
@@ -156,7 +165,7 @@ func excused(name string, units []unit, id string, files map[string]entry) bool 
 			continue
 		}
 		for _, exec := range u.execs {
-			if n := shippedName(exec, id, files); n != "" && n != bin {
+			if n := noaicheck.ReleaseProgram(exec, hostRelDir+id); n != "" && n != "ataniq-seat-notify" {
 				return false
 			}
 		}
@@ -166,10 +175,16 @@ func excused(name string, units []unit, id string, files map[string]entry) bool 
 
 // units reads every file under etc/systemd and returns those that start a
 // program. It also reports a unit that gates its start on the inhibit.
-func (c *checker) units(root *os.Root, files map[string]entry) []unit {
+func (c *checker) units(root *os.Root, files map[string]entry, relDir string, witness bool) ([]unit, bool) {
 	var out []unit
+	complete := true
 	for _, p := range paths(files) {
 		if !strings.HasPrefix(p, systemdDir) {
+			continue
+		}
+		if noaicheck.ReleaseUserService(p) {
+			c.add(noaicheck.UserService, p)
+			complete = false
 			continue
 		}
 		data, err := readSmall(root, p)
@@ -177,58 +192,45 @@ func (c *checker) units(root *os.Root, files map[string]entry) []unit {
 			c.add(CodeUnitUnreadable, p)
 			continue
 		}
-		if strings.Contains(string(data), ReleasePlaceholder) {
+		text := string(data)
+		if !noaicheck.UnitTextSafe(text) {
+			c.add(noaicheck.UnitSyntax, p)
+			complete = false
+			continue
+		}
+		if strings.Contains(text, ReleasePlaceholder) {
 			// Not built by Build, which replaces it: systemd would run
 			// the words as they are.
 			c.add(CodeUnitPlacehold, p)
 		}
-		execs, gated := parseUnit(string(data))
+		if !noaicheck.ReleaseExecsSafe(text, relDir, func(name string) bool {
+			e, ok := files["bin/"+name]
+			return ok && e.nlink == 1 && e.mode&0o111 != 0
+		}) {
+			c.add(CodeDecisionExec, p)
+		}
+		if witness && !noaicheck.WitnessUnitSafe(p, text, relDir) {
+			c.add(CodeWitness, p)
+		}
+		execs, gated := parseUnit(text)
 		if gated {
 			c.add(CodeInhibitCond, p)
 		}
 		if len(execs) == 0 {
 			continue
 		}
-		out = append(out, unit{path: p, name: unitName(p), execs: execs})
+		name := noaicheck.ReleaseUnitName(p)
+		out = append(out, unit{path: p, name: strings.TrimSuffix(name, ".service"), execs: execs})
 	}
-	return out
+	return out, complete
 }
 
-// unitName is the name of the unit a file under etc/systemd belongs to,
-// without ".service": the file's own, or for a drop-in the folder's
-// ("app.service.d/10-x.conf" belongs to "app").
-func unitName(p string) string {
-	base := path.Base(p)
-	if dir := path.Base(path.Dir(p)); strings.HasSuffix(dir, ".d") {
-		base = strings.TrimSuffix(dir, ".d")
-	}
-	return strings.TrimSuffix(base, ".service")
-}
-
-// parseUnit reads a unit file as systemd does, enough for this check: lines
-// joined at a trailing backslash, comments skipped, sections, and in
-// [Service] the ExecStart values (an empty one resets the list). gated is
-// true for a Condition or Assert line that names the decision inhibit.
+// parseUnit reads the physical lines of a unit that passed UnitTextSafe.
+// It collects ExecStart values and checks for conditions on the inhibit.
 func parseUnit(text string) (execs []string, gated bool) {
-	var joined []string
-	var cur string
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if cur != "" {
-			line = cur + " " + line
-			cur = ""
-		}
-		if strings.HasSuffix(line, `\`) {
-			cur = strings.TrimSpace(strings.TrimSuffix(line, `\`))
-			continue
-		}
-		joined = append(joined, line)
-	}
-	if cur != "" {
-		joined = append(joined, cur)
-	}
 	inService := false
-	for _, line := range joined {
+	for line := range strings.Lines(text) {
+		line = noaicheck.TrimUnitSpace(line)
 		if line == "" || line[0] == '#' || line[0] == ';' {
 			continue
 		}
@@ -240,7 +242,7 @@ func parseUnit(text string) (execs []string, gated bool) {
 		if !ok {
 			continue
 		}
-		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+		key, value = noaicheck.TrimUnitSpace(key), noaicheck.TrimUnitSpace(value)
 		if (strings.HasPrefix(key, "Condition") || strings.HasPrefix(key, "Assert")) && strings.Contains(value, "decisions.inhibit") {
 			gated = true
 		}
@@ -493,59 +495,22 @@ func (c *checker) reloadsAndStops(static bool, relDir, id string, files map[stri
 	// decision service, which the notifier is not.
 	service := false
 	for _, u := range units {
-		service = service || !excused(u.name, units, id, files)
+		service = service || !notifierOnly(u.name, units, id)
 	}
 	if !service {
 		c.add(CodeNoService, "")
 	}
 	seen := map[string]bool{}
 	for _, u := range units {
-		for _, exec := range u.execs {
-			if !shippedBinary(exec, id, files) {
-				c.add(CodeDecisionExec, u.path)
-			}
-		}
 		if seen[u.name] {
 			continue
 		}
 		seen[u.name] = true
-		if !excused(u.name, units, id, files) && !does(l.stops, u.name, "stop") {
+		if !does(l.stops, u.name, "stop") {
 			c.add(CodeStopNone, u.name)
 		}
 		if !does(l.reloads, u.name, "restart") {
 			c.add(CodeReloadNone, u.name)
 		}
 	}
-}
-
-// shippedBinary reports whether the ExecStart value runs a binary of this
-// release: /opt/authority-host/current/bin/NAME, or its own
-// /opt/authority-host/releases/ID/bin/NAME, NAME a file of bin/ with an
-// execute bit. systemd's prefixes (@ - : + !) before the program are
-// skipped.
-func shippedBinary(exec, id string, files map[string]entry) bool {
-	return shippedName(exec, id, files) != ""
-}
-
-// shippedName is the name of the binary of this release that the ExecStart
-// value runs, as shippedBinary reads it, or "" when it runs none.
-func shippedName(exec, id string, files map[string]entry) string {
-	fields := strings.Fields(exec)
-	if len(fields) == 0 {
-		return ""
-	}
-	prog := strings.TrimLeft(fields[0], "@-:+!")
-	var name string
-	for _, prefix := range []string{hostCurrent + "bin/", hostRelDir + id + "/bin/"} {
-		if n, ok := strings.CutPrefix(prog, prefix); ok {
-			name = n
-		}
-	}
-	if !validName(name) {
-		return ""
-	}
-	if e, ok := files["bin/"+name]; ok && e.mode&0o111 != 0 {
-		return name
-	}
-	return ""
 }

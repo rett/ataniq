@@ -111,3 +111,52 @@ func TestTheScratchSettingsNameTheAcceptedKinds(t *testing.T) {
 		}
 	}
 }
+
+// ReadScratch and ParseScratch decode the bytes of a settings file with the
+// rules of LoadScratch, and open nothing: the same text gives the same
+// settings, or the same refusal, by all three; a reader that gives more than
+// MaxScratchBytes is refused without being read further.
+func TestTheScratchSettingsReadFromBytesAsFromTheFile(t *testing.T) {
+	good := scratchJSON(okDoor, okIdentity, okSeat, okGate)
+	for name, text := range map[string]string{
+		"the settings":     good,
+		"a repeated key":   scratchJSON(`"door":"real","door":"stand-in"`, okIdentity, okSeat, okGate),
+		"an unknown key":   strings.TrimSuffix(good, "}") + `,"other":1}`,
+		"text after":       good + " {}",
+		"not the stand-in": scratchJSON(`"door":"real"`, okIdentity, okSeat, okGate),
+		"not JSON":         "not JSON",
+	} {
+		path := filepath.Join(t.TempDir(), ScratchName)
+		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		want, wantErr := LoadScratch(path)
+		got, err := ParseScratch([]byte(text))
+		read, rerr := ReadScratch(strings.NewReader(text))
+		if (err == nil) != (wantErr == nil) || (rerr == nil) != (wantErr == nil) {
+			t.Errorf("%s: LoadScratch %v, ParseScratch %v, ReadScratch %v", name, wantErr, err, rerr)
+			continue
+		}
+		if wantErr != nil {
+			if err.Error() != wantErr.Error() || rerr.Error() != wantErr.Error() {
+				t.Errorf("%s: LoadScratch %q, ParseScratch %q, ReadScratch %q", name, wantErr, err, rerr)
+			}
+			continue
+		}
+		if got.Project != want.Project || read.Project != want.Project || got.Drop != want.Drop || read.Drop != want.Drop {
+			t.Errorf("%s: LoadScratch %+v, ParseScratch %+v, ReadScratch %+v", name, want, got, read)
+		}
+	}
+	big := good + strings.Repeat(" ", MaxScratchBytes)
+	if _, err := ReadScratch(strings.NewReader(big)); err == nil || !strings.Contains(err.Error(), "larger than its cap") {
+		t.Errorf("ReadScratch of %d bytes: %v", len(big), err)
+	}
+	if _, err := ParseScratch([]byte(big)); err == nil || !strings.Contains(err.Error(), "larger than its cap") {
+		t.Errorf("ParseScratch of %d bytes: %v", len(big), err)
+	}
+	// Exactly the cap is read.
+	edge := good + strings.Repeat(" ", MaxScratchBytes-len(good))
+	if _, err := ReadScratch(strings.NewReader(edge)); err != nil {
+		t.Errorf("ReadScratch of exactly %d bytes: %v", len(edge), err)
+	}
+}

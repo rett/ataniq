@@ -156,7 +156,7 @@ func TestAStopOfALeadWithNoEpochMeansTheCurrentOne(t *testing.T) {
 	}
 }
 
-func TestTheStopConfirmationKeepsTheEpochItShowed(t *testing.T) {
+func TestEpochChangeCancelsTheStopConfirmation(t *testing.T) {
 	b := twoLeads(t)
 	r := newRig(t, b, 120, 30)
 	r.key("j")
@@ -164,9 +164,9 @@ func TestTheStopConfirmationKeepsTheEpochItShowed(t *testing.T) {
 	// The list changes while the question is open.
 	b.listing.Leads[1].Epoch = 4
 	r.run(r.m.Refresh())
-	r.seen("Stop beta (epoch 3)?")
+	r.notSeen("Stop beta (epoch 3)?")
 	r.key("y")
-	if cs := b.callsOf("stop"); len(cs) != 1 || cs[0].epoch != 3 {
+	if r.m.FieldOpen() || b.total() != 0 {
 		t.Fatalf("calls %+v", b.calls)
 	}
 }
@@ -397,6 +397,12 @@ func TestAMessageWhoseAnswerWasLostIsNotMadeAgainForTheEpoch(t *testing.T) {
 	b.listing.Leads[1].Epoch = 4
 	r.key("r")
 	r.key("m")
+	if r.m.FieldOpen() {
+		t.Fatal("new epoch took the old selection")
+	}
+	r.key("j")
+	r.key("j")
+	r.key("m")
 	if r.m.edit == nil {
 		t.Fatal("a new epoch is a new message")
 	}
@@ -409,6 +415,7 @@ func TestARefusedMessageMayBeTriedAgainButAnUncertainOneMayNot(t *testing.T) {
 		again bool
 	}{
 		{"refused", Receipt{Status: Refused, Code: "message-in-flight"}, true},
+		{"missing operation", Receipt{Status: Refused, Code: "inject-not-offered"}, true},
 		{"unavailable", Receipt{Status: Unavailable, Code: "holder-unreachable"}, true},
 		{"not now", Receipt{Status: Done, Outcome: OutcomeNotNow}, true},
 		{"lead refused", Receipt{Status: Done, Outcome: OutcomeRefused}, true},

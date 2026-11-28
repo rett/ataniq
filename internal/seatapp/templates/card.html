@@ -1,3 +1,4 @@
+{{define "title"}}Card {{text .Card.ID maxID}}{{end}}
 {{define "content"}}
 {{with .Card}}
 <h1>{{text .Project maxName}} · {{text .Verb maxName}}{{if .Feature}} {{text .Feature maxName}}{{end}}</h1>
@@ -34,7 +35,7 @@
 {{with .Rows}}<ul class="rows">
 {{range .}}<li><span class="lead mono">{{lead .Path maxPath}}</span> <span class="meta">{{text .Status maxID}}, +{{num .Added}} −{{num .Removed}}</span></li>
 {{end}}</ul>
-{{end}}{{if .Truncated}}<p>Only the first paths are on the card. <a id="paths" href="{{pathsHref $.Card.ID 0}}">Read the whole path list</a></p>
+{{end}}{{if .Truncated}}<p>Only the first paths are on the card. <a id="paths" href="{{mount}}{{pathsHref $.Card.ID 0}}">Read the whole path list</a></p>
 {{end}}</section>
 {{end}}{{range .Lists}}{{if .Paths}}<section>
 <h2>{{text .Label maxName}}</h2>
@@ -102,15 +103,15 @@
 <button id="confirm-cancel" type="button" class="quiet">Cancel</button>
 </div>
 <p id="decide-status" role="status"></p>
-<p><a id="look" href="{{cardHref .Card.ID}}" hidden>Look again</a></p>
+<p><a id="look" href="{{mount}}{{cardHref .Card.ID}}" hidden>Look again</a></p>
 <noscript><p>Deciding on the phone needs script. Turn script on for this site, or decide at the desk.</p></noscript>
 </section>
 <script src="/static/decide.js"></script>
 {{else if .Offer.Inhibited}}<p class="readonly" id="decisions-paused">Decisions are paused on this host.</p>
-{{else if .Unsettled}}<p class="held">A decision of this card was sent and its outcome is not known. Look at it again.</p>
-{{else if .Card.OnItsWay}}<p class="held">A decision of this card is on its way to the door. Look at it again in a moment.</p>
+{{else if .Unsettled}}<p class="held">The decision was sent. Its outcome is still unknown.</p><p><a id="look" href="{{mount}}{{cardHref .Card.ID}}">Look again</a></p>
+{{else if .Card.OnItsWay}}<p class="held">The decision is on its way to the door. Check again in a moment.</p><p><a id="look" href="{{mount}}{{cardHref .Card.ID}}">Look again</a></p>
 {{else if not .Card.Ended}}<p class="readonly">This card cannot be decided now{{if .Offer.DenyWhy}}: {{text .Offer.DenyWhy maxLine}}{{end}}. Look at it at the desk.</p>
-{{end}}<p><a id="back" href="/cards/">Back to the cards</a></p>
+{{end}}<p><a id="back" href="{{mount}}/cards/">Back to the cards</a></p>
 {{template "watch" .Watch}}
 {{template "leave"}}
 {{end}}
