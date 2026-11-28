@@ -23,6 +23,12 @@
 //	chat.set     [ChatSetParams]   -> [ChatLead]
 //	chat.purge   [ChatPurgeParams] -> [ChatPurgeResult]
 //
+// The desk's conversation read has one operation of its own, listed apart by
+// [ConversationOperations] (no daemon serves it yet), with strict decoders for
+// its params and its answer:
+//
+//	conversation.read  [ConversationReadParams] -> [ConversationReadResult]
+//
 // Every key of a params struct is required, so no field is omitted when it is
 // empty or zero. A mutating operation's params begin with the client and the
 // command id, then the role, then the rest in the order of the struct; the
@@ -31,8 +37,8 @@
 // client and the command id zeroed. A result's [Receipt.Result] holds the
 // JSON of the result struct of the operation.
 //
-// Nothing here checks a value. The daemon decodes params strictly and judges
-// them; the values below are the shapes and the caps it judges them by. The
-// client string is a namespace the console generates for one run, not an
-// identity.
+// Apart from the decoders of the conversation read, nothing here checks a
+// value. The daemon decodes params strictly and judges them; the values below
+// are the shapes and the caps it judges them by. The client string is a
+// namespace the console generates for one run, not an identity.
 package leadwire
