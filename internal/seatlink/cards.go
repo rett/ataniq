@@ -260,6 +260,7 @@ func viewOf(c card.Card) seatapp.Card {
 		Verb: c.Verb.Name, Feature: c.Verb.Feature, Target: c.Verb.Target, Class: c.Verb.Class,
 		Asked: c.Title.Asked, Expires: c.Title.Expires,
 		BindingSHA256: c.BindingSHA256,
+		BindingTag:    card.BindingTag(c.BindingSHA256),
 		State:         string(c.After.State),
 		Ended:         c.Ended(),
 		Held:          c.After.Held,

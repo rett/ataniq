@@ -189,7 +189,7 @@ func TestSeatCardWithHostileLeadText(t *testing.T) {
 // other way.
 func TestSeatTemplatesShowOnlyThroughText(t *testing.T) {
 	control := map[string]bool{"if": true, "else": true, "end": true, "range": true, "with": true, "define": true, "template": true, "block": true}
-	formatters := map[string]bool{"text": true, "lead": true, "when": true, "until": true, "num": true, "short": true, "cardHref": true, "pathsHref": true,
+	formatters := map[string]bool{"text": true, "lead": true, "when": true, "until": true, "num": true, "short": true, "bindingTag": true, "cardHref": true, "pathsHref": true,
 		// The project pages' addresses (of ids the app checked) and the
 		// names, ids and types of a question's controls (of the app's own
 		// words and numbers).
