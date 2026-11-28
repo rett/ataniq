@@ -11,11 +11,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"syscall"
 
-	"golang.org/x/sys/unix"
+	"ataniq/internal/cgroupsig"
 )
 
 const (
@@ -35,7 +34,10 @@ const (
 
 	// signalBatch is how many pidfds are open at once while the processes of
 	// the group are signalled.
-	signalBatch = 128
+	signalBatch = cgroupsig.Batch
+
+	// maxProcsBytes bounds how much of one cgroup.procs file is read.
+	maxProcsBytes = cgroupsig.MaxProcsBytes
 )
 
 // privateCgroup decides, before the child exists, whether this process runs
@@ -94,21 +96,7 @@ func privateCgroup(procRoot, cgroupRoot string, self, walkLimit int) (procs, not
 // readProcs reads a cgroup.procs file, bounded. truncated is true when the
 // file is longer than the bound (the pids read are then incomplete).
 func readProcs(path string) (pids []int, truncated bool, err error) {
-	b, err := readBounded(path, maxProcsBytes+1)
-	if err != nil {
-		return nil, false, err
-	}
-	if len(b) > maxProcsBytes {
-		return nil, true, nil
-	}
-	for _, line := range strings.Fields(string(b)) {
-		pid, perr := strconv.Atoi(line)
-		if perr != nil || pid <= 0 {
-			return nil, false, fmt.Errorf("unexpected line in cgroup.procs: %q", truncate(line, 32))
-		}
-		pids = append(pids, pid)
-	}
-	return pids, false, nil
+	return cgroupsig.ReadProcs(path)
 }
 
 // childGroups lists the sub-directories of a group directory (its child
@@ -355,50 +343,19 @@ func relistProcs(procs string) map[int]bool {
 // still shows in the file they came from. Failures other than a process that
 // is already gone are counted.
 func (h *Host) signalListed(members []cgroupMember, sig syscall.Signal, relist func(procs string) map[int]bool) {
-	type opened struct {
-		m  cgroupMember
-		fd int
+	listed := make([]cgroupsig.Member, len(members))
+	for i, m := range members {
+		listed[i] = cgroupsig.Member{PID: m.pid, Procs: m.procs}
 	}
-	var fds []opened
-	defer func() {
-		for _, o := range fds {
-			_ = unix.Close(o.fd)
-		}
-	}()
-	for _, m := range members {
-		fd, err := unix.PidfdOpen(m.pid, 0)
-		if err != nil {
-			h.pidfdFailed(err)
-			continue
-		}
-		fds = append(fds, opened{m, fd})
-	}
-	lists := map[string]map[int]bool{}
-	for _, o := range fds {
-		set, seen := lists[o.m.procs]
-		if !seen {
-			set = relist(o.m.procs)
-			lists[o.m.procs] = set
-		}
-		if set == nil {
-			h.cgroupErrors.Add(1) // cannot confirm the membership: not signalled
-			continue
-		}
-		if !set[o.m.pid] {
-			continue
-		}
-		if err := unix.PidfdSendSignal(o.fd, sig, nil, 0); err != nil {
-			h.pidfdFailed(err)
-		}
-	}
+	o := cgroupsig.SignalListed(cgroupsig.HostKernel{}, listed, sig, relist)
+	h.pidfdFailures.Add(uint64(o.PidfdFailures))
+	h.cgroupErrors.Add(uint64(o.Unconfirmed)) // cannot confirm the membership: not signalled
 }
 
-// pidfdFailed counts a pidfd_open or pidfd_send_signal that failed. ESRCH
-// means the process is gone, which is what the caller wanted, and is not a
-// failure; anything else (ENOSYS before Linux 5.3, EPERM, EMFILE) means a
-// process that should have been signalled may not have been.
+// pidfdFailed counts a pidfd_open or pidfd_send_signal that failed; see
+// [cgroupsig.CountsAsFailure].
 func (h *Host) pidfdFailed(err error) {
-	if err != unix.ESRCH {
+	if cgroupsig.CountsAsFailure(err) {
 		h.pidfdFailures.Add(1)
 	}
 }
