@@ -310,6 +310,9 @@ What each does:
   stopped is asked about too. Where a stop could not be proven (a unit that may
   be loaded, a state that is unknown) the answer stays `uncertain` with the code
   `stop-unproven`; `uncertain` means that what the stop did is not known.
+  When the daemon reports a degraded lead, select its row to read the reason.
+  Press `x` and confirm with `y` to stop that epoch. A row the console could
+  not decode shows the data error and offers no commands.
 - **`lead.ticket`** asks the holder for a ticket for the epoch and writes it to
   the lead's ticket file. An `epoch` of 0, or one that is not the lead's current
   one, is refused `stale-epoch`.
@@ -398,8 +401,11 @@ on the holder's word, and in no other way:
   started in its sandbox. The daemon checks neither login nor responsiveness.
   Every 30 seconds it asks the holder for status. If the holder reports that
   the agent exited or its process tree is gone, the desk shows `degraded` with
-  reason `lead-exited`. If contact fails or the holder returns no usable
-  status, the reason is `holder-unreachable`. For these two reasons the phone
+  reason `lead-exited` on that poll. The daemon shows `holder-unreachable`
+  after two consecutive polls in the same epoch fail to obtain a status.
+  A status for another lead or epoch breaks the streak and cannot change
+  the lead's state. Successful status polls add no command lines to the
+  holder's event log. For these two degraded reasons the phone
   overrides its usual `degraded` mapping and shows `unknown`. Polling resumes
   after daemon restart. A fresh status from the matching build, role and epoch
   that reports the agent still running restores `ready`. A late reply cannot

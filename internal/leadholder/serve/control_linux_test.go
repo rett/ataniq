@@ -219,9 +219,21 @@ func TestStatus(t *testing.T) {
 			t.Errorf("no counter %s in the status", name)
 		}
 	}
-	e.waitEvent("the command", func(ev eventlog.Event) bool {
-		return ev.Event == "state" && ev.Reason == "status" && ev.CommandID == "st-2" && ev.Outcome == "ok"
-	})
+}
+
+// The log writer consumes this queue asynchronously on a serving holder.
+// Dispatch directly so the assertion sees everything the polls enqueued.
+func TestStatusPollsDoNotQueueCommandEvents(t *testing.T) {
+	s := newHubRig(t).s
+	for _, id := range []string{"status-1", "status-2", "status-3"} {
+		r := s.dispatch(wire.Request{Op: wire.OpStatus, Epoch: s.cfg.Epoch, CommandID: id})
+		if !r.OK || r.Status == nil || r.Status.Epoch != s.cfg.Epoch {
+			t.Fatalf("status: %+v", r)
+		}
+	}
+	if len(s.evq) != 0 {
+		t.Fatalf("status polls queued %d events", len(s.evq))
+	}
 }
 
 func TestStopAndInject(t *testing.T) {

@@ -104,6 +104,10 @@ func (s *Server) dispatch(req wire.Request) wire.Response {
 		return refusal(wire.CodeWrongEpoch, "the request is for another epoch")
 	}
 	resp := s.execute(req)
+	// Status only reads the session. Its transitions have their own events.
+	if req.Op == wire.OpStatus && resp.OK {
+		return resp
+	}
 	outcome := "ok"
 	if !resp.OK {
 		outcome = resp.Code

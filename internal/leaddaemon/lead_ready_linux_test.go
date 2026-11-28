@@ -302,9 +302,12 @@ func TestLeadHealthObserverWithoutAHolder(t *testing.T) {
 func TestLeadHealthObservations(t *testing.T) {
 	m, lr, epoch := barePromote(t)
 	m.promote(lr, epoch)
+	observer := &readyObserver{epoch: epoch}
 	healthy := wire.Status{Lead: lr.role.String(), Epoch: epoch, Facts: wire.Facts{TUIExited: wire.FactNo}}
 	exited := healthy
 	exited.Facts.TUIExited = wire.FactYes
+	treeGone := healthy
+	treeGone.Facts.TreeGone = wire.FactYes
 	wrongEpoch := healthy
 	wrongEpoch.Epoch++
 	wrongLead := healthy
@@ -313,22 +316,32 @@ func TestLeadHealthObservations(t *testing.T) {
 	unknown.Facts.TUIExited = wire.FactUnknown
 	check := func(s *wire.Status, state leadregistry.State, reason string) {
 		t.Helper()
-		m.recordHealth(t.Context(), lr, epoch, s)
+		m.recordHealth(t.Context(), lr, observer, s)
 		e, err := m.reg.Get(lr.role)
 		if err != nil || e.Shown.State != state || e.Shown.Reason.Code != reason || e.Shown.Evidence != leadregistry.EvidenceObservation {
 			t.Fatalf("after status %+v: %+v, %v", s, e.Shown, err)
 		}
 	}
+	check(nil, leadregistry.StateReady, "holder-ready")
+	check(&healthy, leadregistry.StateReady, "holder-ready")
+	check(nil, leadregistry.StateReady, "holder-ready")
+	check(&wrongEpoch, leadregistry.StateReady, "holder-ready")
+	check(nil, leadregistry.StateReady, "holder-ready")
+	check(nil, leadregistry.StateDegraded, "holder-unreachable")
+	check(&healthy, leadregistry.StateReady, "holder-ready")
 	check(&exited, leadregistry.StateDegraded, "lead-exited")
 	check(&unknown, leadregistry.StateDegraded, "lead-exited")
+	check(nil, leadregistry.StateDegraded, "lead-exited")
 	check(nil, leadregistry.StateDegraded, "holder-unreachable")
-	check(&wrongEpoch, leadregistry.StateDegraded, "holder-unreachable")
-	check(&wrongLead, leadregistry.StateDegraded, "holder-unreachable")
 	prev, _ := m.reg.Get(lr.role)
 	check(nil, leadregistry.StateDegraded, "holder-unreachable")
 	if next, _ := m.reg.Get(lr.role); next.Shown != prev.Shown {
 		t.Fatal("a repeated failure wrote another observation")
 	}
+	check(&wrongEpoch, leadregistry.StateDegraded, "holder-unreachable")
+	check(&wrongLead, leadregistry.StateDegraded, "holder-unreachable")
+	check(&healthy, leadregistry.StateReady, "holder-ready")
+	check(&treeGone, leadregistry.StateDegraded, "lead-exited")
 	check(&healthy, leadregistry.StateReady, "holder-ready")
 	// Build skew remains a refusal even if the holder answers successfully.
 	if err := m.showSkewed(lr, epoch, &opFail{msg: "another build"}); err != nil {
@@ -340,7 +353,9 @@ func TestLeadHealthObservations(t *testing.T) {
 func TestLeadHealthPollRacingStopAndNewEpoch(t *testing.T) {
 	m, lr, epoch := barePromote(t)
 	m.promote(lr, epoch)
-	m.recordHealth(t.Context(), lr, epoch, nil)
+	observer := &readyObserver{epoch: epoch}
+	m.recordHealth(t.Context(), lr, observer, nil)
+	m.recordHealth(t.Context(), lr, observer, nil)
 	// A recovery reply is in flight when stop takes the role lock.
 	reply := &wire.Status{Lead: lr.role.String(), Epoch: epoch, Facts: wire.Facts{TUIExited: wire.FactNo}}
 	build := lr.in.ext.build
@@ -356,7 +371,7 @@ func TestLeadHealthPollRacingStopAndNewEpoch(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		m.recordHealth(t.Context(), lr, epoch, reply)
+		m.recordHealth(t.Context(), lr, observer, reply)
 	}()
 	select {
 	case <-checking:
@@ -387,12 +402,17 @@ func TestLeadHealthPollRacingStopAndNewEpoch(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.promote(lr, next.Epoch)
-	m.recordHealth(t.Context(), lr, epoch, nil) // an earlier poll lost contact
+	m.recordHealth(t.Context(), lr, observer, nil) // an earlier poll lost contact
 	if e, _ := m.reg.Get(lr.role); e.Shown.State != leadregistry.StateReady || e.Epoch != next.Epoch {
 		t.Fatalf("old failure after restart: %+v", e)
 	}
-	m.recordHealth(t.Context(), lr, next.Epoch, nil)
-	m.recordHealth(t.Context(), lr, epoch, reply)
+	nextObserver := &readyObserver{epoch: next.Epoch}
+	m.recordHealth(t.Context(), lr, nextObserver, nil)
+	if e, _ := m.reg.Get(lr.role); e.Shown.State != leadregistry.StateReady {
+		t.Fatalf("first missed poll of new epoch: %+v", e)
+	}
+	m.recordHealth(t.Context(), lr, nextObserver, nil)
+	m.recordHealth(t.Context(), lr, observer, reply)
 	if e, _ := m.reg.Get(lr.role); e.Shown.State != leadregistry.StateDegraded || e.Epoch != next.Epoch {
 		t.Fatalf("old recovery after restart: %+v", e)
 	}

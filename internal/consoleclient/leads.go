@@ -153,7 +153,7 @@ type LeadDelivery struct {
 }
 
 // LeadRow is one lead of a [LeadListing]. Role is exactly as the daemon sent
-// it, because every command is sent with it. A degraded row has no capabilities
+// it, because every command is sent with it. An unreadable row has no capabilities
 // and an empty role if the address could not be read. Its key and state
 // reason are safe to show.
 type LeadRow struct {
@@ -165,7 +165,7 @@ type LeadRow struct {
 	State        string
 	// StateReason is the reason code the registry shows with State, a word of
 	// the closed grammar, empty with none. A row of a daemon built before the
-	// member has none.
+	// member has none. On unreadable rows the client sets a "client/" reason.
 	StateReason string
 	Epoch       uint64
 	Unit        string
@@ -971,7 +971,9 @@ func degradedLead(key, role string, number int, reason string) LeadRow {
 	if key == "" {
 		key = fmt.Sprintf("row-%d", number)
 	}
-	return LeadRow{Key: key, Role: role, State: "degraded", StateReason: reason}
+	// The slash is outside leadWord's grammar, so a decoded daemon reason
+	// cannot be mistaken for a client-side failure by the leads view.
+	return LeadRow{Key: key, Role: role, State: "degraded", StateReason: "client/" + reason}
 }
 
 func nonNegative(n int) int {

@@ -65,17 +65,42 @@ func TestTheTableShowsTheLastReceiptOfEachLead(t *testing.T) {
 	}
 }
 
+func TestDaemonDegradedLeadCanBeStopped(t *testing.T) {
+	for _, tc := range []struct{ reason, words string }{
+		{"holder-version-skew", "stop the lead, then start it again"},
+		{"holder-unreachable", "the holder did not return a usable status"},
+		{"lead-exited", "the holder reports that the agent exited"},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			b := twoLeads(t)
+			r := newRig(t, b, 160, 30)
+			r.key("j")
+			lead := &b.listing.Leads[1]
+			lead.State, lead.StateReason = "degraded", tc.reason
+			r.run(r.m.Refresh())
+			r.seen(tc.words, "[x] stop")
+			r.notSeen("invalid lead data")
+			r.key("x")
+			r.key("y")
+			if calls := b.callsOf("stop"); len(calls) != 1 || calls[0].role != lead.Role || calls[0].epoch != lead.Epoch {
+				t.Fatalf("stop calls = %+v", calls)
+			}
+		})
+	}
+}
+
 func TestDegradedRowsShowReasonsAndRefuseCommands(t *testing.T) {
 	b := twoLeads(t)
 	r := newRig(t, b, 120, 30)
 	r.key("x")
 	b.listing.Leads[0].State = "degraded"
-	b.listing.Leads[0].StateReason = "invalid-last-receipt"
-	b.listing.Leads = append(b.listing.Leads, Lead{Key: "row-3", State: "degraded", StateReason: "invalid-row"})
+	b.listing.Leads[0].StateReason = "client/invalid-last-receipt"
+	b.listing.Leads = append(b.listing.Leads, Lead{Key: "row-3", State: "degraded", StateReason: "client/invalid-row"})
 	r.run(r.m.Refresh())
 	r.seen("degraded", "invalid last receipt", "row-3", "invalid lead data", b.listing.Leads[1].Key)
 	r.key("y")
 	r.key("j")
+	r.notSeen("[x] stop")
 	for _, key := range []string{"s", "d", "m", "x", "v", "w"} {
 		r.key(key)
 		if b.total() != 0 || r.m.FieldOpen() {
@@ -98,7 +123,7 @@ func TestDegradedRowKeepsAnUnconfirmedMessage(t *testing.T) {
 	r.typ("one")
 	r.key("enter")
 	good := b.listing.Leads[1]
-	b.listing.Leads[1] = Lead{Key: good.Key, State: "degraded", StateReason: "invalid-row"}
+	b.listing.Leads[1] = Lead{Key: good.Key, State: "degraded", StateReason: "client/invalid-row"}
 	r.key("r")
 	b.listing.Leads[1] = good
 	r.key("r")

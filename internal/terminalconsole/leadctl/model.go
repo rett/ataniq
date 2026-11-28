@@ -278,7 +278,7 @@ func (m *Model) onListed(v listedMsg) tea.Cmd {
 		if slices.Contains(v.l.OfflineHomes, l.HomeID) {
 			continue
 		}
-		if l.degraded() {
+		if l.unreadable() {
 			unreadable[l.Role] = true
 		} else if !l.validAddress() {
 			m.leftOut++
@@ -409,8 +409,8 @@ func (l Lead) address() Identity {
 	return id
 }
 
-// A degraded scratch row has only display data, possibly without an address.
-func (l Lead) degraded() bool { return l.HomeID == "" && l.State == "degraded" }
+// The client marks a decoding failure with a reason outside the daemon grammar.
+func (l Lead) unreadable() bool { return strings.HasPrefix(l.StateReason, "client/") }
 
 func (l Lead) validAddress() bool {
 	if len(l.ProjectID) > maxRole || len(l.ID) > maxRole || len(l.ConversationID) > maxRole || len(l.Role) > maxRole {
@@ -433,7 +433,7 @@ func (l Lead) identity() Identity {
 func (m *Model) bindingIndex(id Identity) int {
 	found := -1
 	for i, l := range m.leads {
-		if !l.Offline && !l.degraded() && l.identity() == id {
+		if !l.Offline && !l.unreadable() && l.identity() == id {
 			if found >= 0 {
 				return -1
 			}
@@ -580,7 +580,7 @@ func (m *Model) admit() (Lead, bool) {
 	if !ok {
 		return Lead{}, false
 	}
-	if l.degraded() {
+	if l.unreadable() {
 		m.note = "Commands unavailable for this degraded row."
 		return Lead{}, false
 	}
