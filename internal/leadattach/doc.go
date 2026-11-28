@@ -54,12 +54,16 @@
 // including a retry after a failed dial, asks for a fresh viewer ticket.
 // The viewer pins the lead and epoch for its lifetime. [Config.ExpectLead]
 // and [Config.ExpectEpoch] can supply either part of the pin in advance.
-// The first Welcome supplies each missing part. A Welcome that disagrees
+// The first Welcome that passes the role check supplies each missing part,
+// whatever its value (epoch 0 and an empty lead are pinned like any other; a
+// Welcome that fails the role check pins nothing). A Welcome that disagrees
 // with the pin gets a Detach before any snapshot or input. The client keeps
 // its last screen and stops with an epoch-changed notice asking the operator
-// to select the lead again. A ticket service returning [ErrReselect] also
-// stops the client this way. The scratch --attach path uses [New], which
-// enables pinning only when its caller supplies an expected lead or epoch.
+// to select the lead again. A ticket source returning [ErrReselect] also
+// stops the client this way, on every path that asks it: the viewer service
+// before a dial, and the presence check and the ticket read of [New]. The
+// scratch --attach path uses [New], which enables pinning only when its
+// caller supplies an expected lead or epoch.
 //
 // A check mismatch or a gap in the output positions makes the client close the
 // connection, with a Detach, and attach again with a new ticket: the state is

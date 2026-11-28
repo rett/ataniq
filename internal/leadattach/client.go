@@ -31,6 +31,10 @@ type Client struct {
 	// Scratch ticket files are consumed only after the dial succeeds.
 	issueBeforeDial bool
 
+	// pin is the lifetime pin to one lead and epoch; only the attach
+	// goroutine reads or changes it.
+	pin targetPin
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -93,7 +97,7 @@ func New(cfg Config) *Client {
 	if cfg.Dial == nil {
 		cfg.Dial = dialUnix
 	}
-	c := &Client{cfg: cfg, clock: cfg.Clock}
+	c := &Client{cfg: cfg, clock: cfg.Clock, pin: newTargetPin(cfg)}
 	if c.clock == nil {
 		c.clock = realClock{}
 	}
@@ -396,14 +400,16 @@ func (c *Client) run() {
 		var err error
 		if c.issueBeforeDial {
 			ticket, err = c.askTicket()
-			if errors.Is(err, ErrReselect) {
-				c.stopForReselect()
-				return
-			}
 		} else if ready := c.cfg.TicketReady; ready != nil {
 			err = ready()
 		}
 		if err != nil {
+			// A source that says the selection is stale ends the client,
+			// whichever path asked it: polling would never change that.
+			if errors.Is(err, ErrReselect) {
+				c.stopForReselect()
+				return
+			}
 			if c.ctx.Err() != nil {
 				return
 			}
@@ -430,6 +436,10 @@ func (c *Client) run() {
 		}
 		if err != nil {
 			_ = nc.Close()
+			if errors.Is(err, ErrReselect) {
+				c.stopForReselect()
+				return
+			}
 			if c.ctx.Err() != nil {
 				return
 			}

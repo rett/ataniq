@@ -332,7 +332,7 @@ func (s *session) handshake(f wire.Frame) *outcome {
 	if w.Version != wire.ProtocolVersion {
 		return &outcome{kind: outStop, reason: versionReason(w.Version)}
 	}
-	if !c.acceptTarget(w) {
+	if !c.targetMatches(w) {
 		return &outcome{kind: outReselect}
 	}
 	if want := wire.Role(c.cfg.Mode); w.Role != want {
@@ -340,6 +340,9 @@ func (s *session) handshake(f wire.Frame) *outcome {
 		c.mutate(func() { c.addNoticeLocked(liveNotice("role-mismatch", reason)) })
 		return &outcome{kind: outRoleMismatch, reason: reason}
 	}
+	// The pin is completed only now: a Welcome that fails the role check
+	// pins nothing.
+	c.pinTarget(w)
 	s.welcomed = true
 	_ = s.cn.nc.SetReadDeadline(time.Time{})
 	if c.ctx.Err() != nil {
@@ -359,18 +362,49 @@ func (s *session) handshake(f wire.Frame) *outcome {
 	return nil
 }
 
-// acceptTarget checks or completes the lifetime pin before the client uses
-// anything from this Welcome. Only the attach goroutine reads or changes it.
-func (c *Client) acceptTarget(w wire.Welcome) bool {
-	lead, epoch := c.cfg.ExpectLead, c.cfg.ExpectEpoch
-	if !c.issueBeforeDial && lead == "" && epoch == 0 {
+// targetPin is the lifetime pin of a client to one lead and epoch. A part is
+// pinned only when its flag says so: the empty lead and epoch 0 are values
+// like any other once a Welcome has given them. Only the attach goroutine
+// reads or changes it.
+type targetPin struct {
+	leadSet, epochSet bool
+	lead              string
+	epoch             uint64
+}
+
+// newTargetPin returns the pin that Config asks for in advance: a part is
+// preset when it is not the zero value.
+func newTargetPin(cfg Config) targetPin {
+	return targetPin{
+		leadSet: cfg.ExpectLead != "", lead: cfg.ExpectLead,
+		epochSet: cfg.ExpectEpoch != 0, epoch: cfg.ExpectEpoch,
+	}
+}
+
+// pinActive reports whether this client pins its target: a viewer with a ticket
+// service always does, any other client only when Config preset a part.
+func (c *Client) pinActive() bool {
+	return c.issueBeforeDial || c.pin.leadSet || c.pin.epochSet
+}
+
+// targetMatches checks the Welcome against the pin before the client uses
+// anything from it. An unpinned client takes every Welcome.
+func (c *Client) targetMatches(w wire.Welcome) bool {
+	if !c.pinActive() {
 		return true
 	}
-	if (lead != "" && lead != w.Lead) || (epoch != 0 && epoch != w.Epoch) {
-		return false
+	p := c.pin
+	return (!p.leadSet || p.lead == w.Lead) && (!p.epochSet || p.epoch == w.Epoch)
+}
+
+// pinTarget completes the pin from a Welcome that passed targetMatches and
+// the role check: each part not yet pinned is pinned to the Welcome's value,
+// including an empty lead and epoch 0.
+func (c *Client) pinTarget(w wire.Welcome) {
+	if !c.pinActive() {
+		return
 	}
-	c.cfg.ExpectLead, c.cfg.ExpectEpoch = w.Lead, w.Epoch
-	return true
+	c.pin = targetPin{leadSet: true, lead: w.Lead, epochSet: true, epoch: w.Epoch}
 }
 
 func refusal(what, text string) string {

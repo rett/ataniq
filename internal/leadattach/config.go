@@ -54,8 +54,10 @@ type Config struct {
 	// Socket is the path of the holder's attach socket.
 	Socket string
 	// ExpectLead and ExpectEpoch pin this client to one lead and epoch.
-	// Setting either enables the pin. NewViewer always enables it.
-	// Each unspecified value comes from the first Welcome.
+	// Setting either enables the pin (the zero value of a field means it is
+	// not preset). NewViewer always enables it. Each part that was not preset
+	// comes from the first Welcome that passes the role check, whatever its
+	// value: epoch 0 and an empty lead are pinned like any other.
 	ExpectLead  string
 	ExpectEpoch uint64
 	// Mode is the attach role the client wants. The ticket binds the role,
