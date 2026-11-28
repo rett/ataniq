@@ -8,17 +8,20 @@ import (
 	"slices"
 	"strings"
 
-	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/instanceid"
 	"ataniq/internal/leadregistry"
 	"ataniq/internal/leadrole"
 )
 
+// The desk and missing-home reports use the key part of a seat lead ID.
+// The canary tests check this grammar against the seat wire.
+var seatLeadKey = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+
 // A scratch project is named scratch-<key>. The seat limit applies to the
 // key alone, including for a recorded project absent from today's config.
 func hiddenScratchKey(project string) string {
 	key, scratch := strings.CutPrefix(project, leadrole.ScratchPrefix)
-	if scratch && !ownerwire.ValidChatLead(ownerwire.ChatKindDaemon+":"+key) {
+	if scratch && !seatLeadKey.MatchString(key) {
 		return key
 	}
 	return ""

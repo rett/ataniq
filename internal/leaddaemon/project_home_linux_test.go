@@ -12,7 +12,6 @@ import (
 	"strings"
 	"testing"
 
-	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/clientapi"
 	"ataniq/internal/instanceid"
 	"ataniq/internal/leadregistry"
@@ -114,8 +113,8 @@ func TestProjectHomeScratchSocket(t *testing.T) {
 
 func TestMissingHomeReportCountsKeysTooLongToShow(t *testing.T) {
 	l := newLeadEnvWithoutHomes(t)
-	visible := strings.Repeat("a", ownerwire.MaxChatKeyBytes)
-	hidden := strings.Repeat("b", ownerwire.MaxChatKeyBytes+1)
+	visible := strings.Repeat("a", seatKeyBytesForTest)
+	hidden := strings.Repeat("b", seatKeyBytesForTest+1)
 	l.w.Config.Entries[0].Key = visible
 	l.w.Config.Entries[1].Key = hidden
 	l.resetScratch()
@@ -139,7 +138,7 @@ func TestMissingHomePreflightCountsEachHiddenLeadOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer root.Close()
-	key := strings.Repeat("k", ownerwire.MaxChatKeyBytes+1)
+	key := strings.Repeat("k", seatKeyBytesForTest+1)
 	hidden := lead(t, leadrole.ScratchPrefix+key)
 	roles := []leadrole.Role{hidden, hidden, lead(t, leadrole.ScratchPrefix+key+"2"), mustRole(t, "other/coord/"+key)}
 	warnings, err := ReadHomeWarningsAt(root, instanceid.Binding{}, roles)
