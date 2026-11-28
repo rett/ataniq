@@ -581,7 +581,7 @@ func TestAnErrorOfTheClientIsTheViewsFixedLine(t *testing.T) {
 
 func TestTheTerminalAttachIsTheAttachFlagsWithTheRequestsFolder(t *testing.T) {
 	cfg, _, _ := parse([]string{"--daemon", t.TempDir(), "--theme", "light"}, &bytes.Buffer{})
-	got, err := terminalAttachConfig(cfg, terminalconsole.AttachRequest{Role: "r", Epoch: 2, Writer: true, Folder: "/run/lead-alpha", TicketFile: "/run/lead-alpha/ticket"})
+	got, err := terminalAttachConfig(cfg, terminalconsole.AttachRequest{Role: "r", Epoch: 2, Writer: true, Folder: "/run/lead-alpha", TicketFile: "/run/lead-alpha/ticket"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -591,15 +591,15 @@ func TestTheTerminalAttachIsTheAttachFlagsWithTheRequestsFolder(t *testing.T) {
 	if got.attach.shiftEnter != shiftEnters[0] || got.options.Theme != "light" || got.daemon != "" {
 		t.Fatalf("config %+v", got)
 	}
-	got, err = terminalAttachConfig(cfg, terminalconsole.AttachRequest{Writer: false, Folder: "/run/x", TicketFile: "/run/x/t"})
-	if err != nil || !got.attach.viewer {
+	got, err = terminalAttachConfig(cfg, terminalconsole.AttachRequest{Role: "r", Epoch: 2, Writer: false, Folder: "/run/x", TicketFile: "/run/x/t"}, &fakeLeads{})
+	if err != nil || !got.attach.viewer || got.attach.tickets == nil || got.attach.expectLead != "r" || got.attach.expectEpoch != 2 {
 		t.Fatalf("viewer: %+v, %v", got.attach, err)
 	}
 	// The model is the --attach one: the live session is its source.
 	m := attachModel(got)
 	m.Close()
 	long := "/" + strings.Repeat("d", maxSocketPath)
-	_, err = terminalAttachConfig(cfg, terminalconsole.AttachRequest{Folder: long, TicketFile: "/t"})
+	_, err = terminalAttachConfig(cfg, terminalconsole.AttachRequest{Folder: long, TicketFile: "/t"}, nil)
 	if err != errAttachPath || strings.Contains(err.Error(), "ddd") {
 		t.Fatalf("a folder too long: %v", err)
 	}

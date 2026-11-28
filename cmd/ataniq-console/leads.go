@@ -323,23 +323,36 @@ var errAttachPath = errors.New("the lead's attach socket path is too long for a 
 
 // terminalAttachConfig is the --attach configuration for a request of the view:
 // the folder's attach socket and the ticket file, as a writer or as a
-// viewer. The options are the console's own.
-func terminalAttachConfig(cfg config, req terminalconsole.AttachRequest) (config, error) {
+// viewer. The options are the console's own. A writer reads the one ticket
+// the view made from the ticket file. A viewer asks the daemon for a ticket
+// each time it connects, through leads, for the role and epoch of the request,
+// and is pinned to them.
+func terminalAttachConfig(cfg config, req terminalconsole.AttachRequest, leads viewerTicketer) (config, error) {
 	socket := filepath.Join(req.Folder, attachSocketName)
 	if len(socket) > maxSocketPath {
 		return config{}, errAttachPath
 	}
-	return config{
-		attach:  &attachConfig{socket: socket, ticketFile: req.TicketFile, viewer: !req.Writer, shiftEnter: shiftEnters[0]},
-		options: cfg.options,
-	}, nil
+	ac := &attachConfig{socket: socket, ticketFile: req.TicketFile, viewer: !req.Writer, shiftEnter: shiftEnters[0]}
+	if !req.Writer {
+		if leads == nil {
+			return config{}, errNoViewerTickets
+		}
+		ac.tickets = newViewerTickets(leads, req.Role, req.Epoch, req.Folder, req.TicketFile)
+		ac.expectLead, ac.expectEpoch = req.Role, req.Epoch
+	}
+	return config{attach: ac, options: cfg.options}, nil
 }
 
+// errNoViewerTickets is what a viewer attach says when the console has no lead
+// client to ask for tickets.
+var errNoViewerTickets = errors.New("this console cannot ask the daemon for a viewer ticket")
+
 // terminalAttach returns the runner of the terminal attach: the existing
-// --attach console, in the request's folder and with its ticket file.
-func terminalAttach(cfg config, run consoleRunner) attachRunner {
+// --attach console, in the request's folder, with its ticket file for a writer
+// and with leads, the daemon's lead client, as the ticket source of a viewer.
+func terminalAttach(cfg config, run consoleRunner, leads viewerTicketer) attachRunner {
 	return func(req terminalconsole.AttachRequest) error {
-		ac, err := terminalAttachConfig(cfg, req)
+		ac, err := terminalAttachConfig(cfg, req, leads)
 		if err != nil {
 			return err
 		}
