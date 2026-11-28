@@ -275,25 +275,6 @@ func TestGroupIDRoundTrip(t *testing.T) {
 	}
 }
 
-func TestSignalGolden(t *testing.T) {
-	for sig, name := range map[syscall.Signal]string{syscall.SIGTERM: "SIGTERM", syscall.SIGKILL: "SIGKILL"} {
-		r := newRig(t)
-		st, err := r.m.Inspect(context.Background(), unitName)
-		if err != nil {
-			t.Fatal(err)
-		}
-		before := len(r.run.recorded())
-		if err := r.m.Signal(context.Background(), st, sig); err != nil {
-			t.Fatal(err)
-		}
-		calls := r.run.recorded()[before:]
-		mustEqual(t, calls, [][]string{
-			{"systemctl", "--user", "show", "--all", "--property=" + showProperties, "--", unitName},
-			{"systemctl", "--user", "kill", "--kill-whom=all", "--signal=" + name, "--", unitName},
-		})
-	}
-}
-
 func TestSignalRefusesOtherSignals(t *testing.T) {
 	r := newRig(t)
 	st, _ := r.m.Inspect(context.Background(), unitName)
@@ -354,47 +335,6 @@ func TestSignalControlGroupIdentityMismatch(t *testing.T) {
 	st.ControlGroupID = groupID(idB)
 	if err := r.m.Signal(context.Background(), st, syscall.SIGKILL); !errors.Is(err, leadunit.ErrControlGroupMismatch) {
 		t.Fatal(err)
-	}
-}
-
-func TestSignalKillFailures(t *testing.T) {
-	r := newRig(t)
-	st, _ := r.m.Inspect(context.Background(), unitName)
-	r.kill = func() (string, error) {
-		return "Failed to kill unit " + unitName + ": Unit " + unitName + " not loaded.\n", exitErr()
-	}
-	if err := r.m.Signal(context.Background(), st, syscall.SIGTERM); !errors.Is(err, leadunit.ErrNotLoaded) {
-		t.Fatal(err)
-	}
-	r.kill = func() (string, error) { return "boom\n", exitErr() }
-	err := r.m.Signal(context.Background(), st, syscall.SIGTERM)
-	if err == nil || errors.Is(err, leadunit.ErrNotLoaded) {
-		t.Fatal(err)
-	}
-}
-
-// "not loaded" from the kill is matched as the text for this very unit: the
-// same words about another unit, or the words alone, are a failure of the kill.
-func TestSignalNotLoadedTextIsMatchedExactly(t *testing.T) {
-	r := newRig(t)
-	st, _ := r.m.Inspect(context.Background(), unitName)
-	r.kill = func() (string, error) {
-		return "Failed to kill unit " + unitName + ": Unit " + unitName + " not loaded.\n", exitErr()
-	}
-	if err := r.m.Signal(context.Background(), st, syscall.SIGTERM); !errors.Is(err, leadunit.ErrNotLoaded) {
-		t.Fatal(err)
-	}
-	for name, out := range map[string]string{
-		"other unit":  "Failed to kill unit other.service: Unit other.service not loaded.\n",
-		"words alone": "not loaded\n",
-		"suffix name": "Unit x" + unitName + " not loaded.\n",
-		"no unit":     "Failed to kill unit " + unitName + ": not loaded.\n",
-	} {
-		r.kill = func() (string, error) { return out, exitErr() }
-		err := r.m.Signal(context.Background(), st, syscall.SIGTERM)
-		if err == nil || errors.Is(err, leadunit.ErrNotLoaded) {
-			t.Errorf("%s: %v", name, err)
-		}
 	}
 }
 

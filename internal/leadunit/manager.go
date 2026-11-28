@@ -35,6 +35,10 @@ var (
 	// another one than the [State] names. [Manager.Empty] answers false with
 	// it.
 	ErrControlGroupMismatch = errors.New("leadunit: control group identity differs")
+	// ErrNoControlGroupID means the [State] records no control group identity
+	// (or one that cannot be read), so [Manager.Signal] refused to signal: a
+	// signal is sent only to a control group whose identity is checked.
+	ErrNoControlGroupID = errors.New("leadunit: state records no control group identity")
 )
 
 // Manager manages the transient user unit of a lead role. Every method takes
@@ -83,7 +87,9 @@ type Manager interface {
 
 	// Signal sends sig to every process of the control group of the
 	// invocation that st names. It returns [ErrNotLoaded] when the unit is not
-	// loaded and [ErrInvocationChanged] when it has another invocation.
+	// loaded (or its control group is gone), [ErrInvocationChanged] when it
+	// has another invocation and [ErrNoControlGroupID] when st records no
+	// control group identity.
 	Signal(ctx context.Context, st State, sig syscall.Signal) error
 
 	// Empty reports whether the control group of the invocation that st names
