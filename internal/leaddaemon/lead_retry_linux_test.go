@@ -6,6 +6,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -331,11 +332,9 @@ func TestCanaryNotNowStillSpendsTheMessageAndScratchDoesNot(t *testing.T) {
 func TestScratchNotDeliveredMessageStaysSpentWhenItsResultCannotBeWritten(t *testing.T) {
 	f := newExtFixture(t, answersInOrder(answerNotNow), "")
 	f.x.scratch = true
-	// An evidence that is closed takes no line, the sent line and the result
-	// line alike; the message is on its way all the same.
-	if err := f.x.ev.Close(); err != nil {
-		t.Fatal(err)
-	}
+	// An evidence that takes the sent line and no other: the message is on its
+	// way all the same, and its result line cannot be written.
+	f.x.ev = &limitedEvidence{inner: f.x.ev, lines: 1}
 	res, fl := f.x.injectFor(context.Background(), CanaryInjectParams{MessageID: "msg-one", Body: "body text"}, f.epoch)
 	if fl != nil || res.Result.Outcome != wire.InjectOutcomeNotNow {
 		t.Fatalf("%+v %+v", res, fl)
@@ -471,6 +470,15 @@ func TestScratchLeadEvidenceOfAHolderRefusalDecidesWhatARestartAdmits(t *testing
 		"a refusal, then killed after the sent": {[]string{sent("m-1"), refused("m-1", "holder-busy"), sent("m-2")}, true},
 		"killed after the sent line":            {[]string{sent("m-1")}, true},
 		"a refusal and a result of one message": {[]string{sent("m-1"), refused("m-1", "holder-busy"), result}, true},
+		// The daemon's own close: the frame was never written.
+		"sent and unsent":                    {[]string{sent("m-1"), refused("m-1", "unsent")}, false},
+		"unsent, then a second message":      {[]string{sent("m-1"), refused("m-1", "unsent"), sent("m-2"), refused("m-2", "unsent")}, false},
+		"unsent, then killed after a sent":   {[]string{sent("m-1"), refused("m-1", "unsent"), sent("m-2")}, true},
+		"unsent of another message":          {[]string{sent("m-1"), refused("m-2", "unsent")}, true},
+		"unsent of no sent message":          {[]string{refused("m-1", "unsent")}, true},
+		"unsent twice":                       {[]string{sent("m-1"), refused("m-1", "unsent"), refused("m-1", "unsent")}, true},
+		"unsent and a result of one message": {[]string{sent("m-1"), refused("m-1", "unsent"), result}, true},
+		"busy, then an unsent message":       {[]string{sent("m-1"), refused("m-1", "holder-busy"), sent("m-2"), refused("m-2", "unsent")}, true},
 		// Not one of the holder's four: the open message stays open.
 		"sent and holder-unreachable":           {[]string{sent("m-1"), refused("m-1", "holder-unreachable")}, true},
 		"sent and an unknown holder code":       {[]string{sent("m-1"), refused("m-1", "holder-no-such-code")}, true},
@@ -598,13 +606,65 @@ func TestCanaryHolderRefusalMessageStaysSpentAcrossARestart(t *testing.T) {
 func TestScratchHolderRefusalStaysSpentWhenItsLineCannotBeWritten(t *testing.T) {
 	f := newExtFixture(t, respondWith(wire.Response{OK: false, Code: wire.CodeDisabled}), "")
 	f.x.scratch = true
-	if err := f.x.ev.Close(); err != nil {
-		t.Fatal(err)
-	}
+	f.x.ev = &limitedEvidence{inner: f.x.ev, lines: 1} // the sent line, and no other
 	if _, fl := f.x.injectFor(context.Background(), CanaryInjectParams{MessageID: "msg-one", Body: "body text"}, f.epoch); fl == nil || fl.code != "holder-disabled" {
 		t.Fatalf("%+v", fl)
 	}
 	if !f.x.messageSpent(f.epoch) {
 		t.Fatal("a refusal whose line is not written is shown free")
+	}
+}
+
+// A socket that cannot be dialled leaves a sent line and an unsent line, and
+// frees a lead of scratch mode's message, in this daemon and in the one that
+// starts next; the canary's stays spent. The second message of the epoch has
+// an effect id of its own.
+func TestScratchUnsentMessageIsFreeAndTheCanarysIsNot(t *testing.T) {
+	for _, scratch := range []bool{true, false} {
+		f := newExtFixture(t, submitted, "lead-")
+		f.x.scratch = scratch
+		ctx := context.Background()
+		good := f.x.holderDir
+		f.x.holderDir = filepath.Join(good, "no-such-folder")
+		_, fl := f.x.injectFor(ctx, CanaryInjectParams{MessageID: "msg-one", Body: "body text"}, f.epoch)
+		if fl == nil || fl.code != "holder-unreachable" {
+			t.Fatalf("scratch %v: %+v", scratch, fl)
+		}
+		if got := f.x.messageSpent(f.epoch); got == scratch {
+			t.Fatalf("scratch %v: spent %v", scratch, got)
+		}
+		lines := f.evidence()
+		n := len(lines)
+		sent, unsent := lines[n-2], lines[n-1]
+		if sent["event"] != "inject-sent" || unsent["event"] != "inject-refused" || unsent["code"] != "unsent" ||
+			sent["effect_id"] == nil || sent["effect_id"] != unsent["effect_id"] || sent["message_id"] != unsent["message_id"] {
+			t.Fatalf("scratch %v: lines %v %v", scratch, sent, unsent)
+		}
+		// What a daemon that starts next reads.
+		read := spentEpochs
+		if scratch {
+			read = scratchSpentEpochs
+		}
+		spent, err := read(f.cfg.EvidencePath(), canaryRoleText)
+		if err != nil || spent[f.epoch] == scratch {
+			t.Fatalf("scratch %v: spent %v, err %v", scratch, spent, err)
+		}
+		f.x.holderDir = good
+		res, fl := f.x.injectFor(ctx, CanaryInjectParams{MessageID: "msg-two", Body: "body text"}, f.epoch)
+		if !scratch {
+			if fl == nil || fl.code != "second-message" {
+				t.Fatalf("canary: the second message: %+v", fl)
+			}
+			continue
+		}
+		if fl != nil || res.Result.Outcome != wire.InjectOutcomeSubmitted {
+			t.Fatalf("scratch: the second message: %+v %+v", res, fl)
+		}
+		reqs := f.holder.requests(wire.OpInject)
+		lines = f.evidence()
+		second := lines[len(lines)-2]
+		if len(reqs) != 1 || second["event"] != "inject-sent" || second["effect_id"] != reqs[0].CommandID || second["effect_id"] == sent["effect_id"] {
+			t.Fatalf("scratch: the frame %+v, the second sent line %v, the first %v", reqs, second, sent)
+		}
 	}
 }

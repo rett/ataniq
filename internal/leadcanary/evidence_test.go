@@ -212,6 +212,36 @@ func TestEvidenceOneLinePerEventWithItsFields(t *testing.T) {
 	}
 }
 
+// The effect id is written on a line that has one, after the other members, and
+// is left out of one that has none, so that a line of an older writer and one
+// of this are the same but for that member.
+func TestEvidenceEffectIDIsWrittenWhenGiven(t *testing.T) {
+	e := newEvidence(t)
+	if err := e.ev.Append(leadcanary.Entry{Event: leadcanary.EventInjectSent, Epoch: 2, MessageID: "m-1", EffectID: "lead-inject-2-7"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.ev.Append(leadcanary.Entry{Event: leadcanary.EventInjectRefused, Epoch: 2, MessageID: "m-1", Code: "unsent", EffectID: "lead-inject-2-7"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.ev.Append(leadcanary.Entry{Event: leadcanary.EventInjectSent, Epoch: 2, MessageID: "m-2"}); err != nil {
+		t.Fatal(err)
+	}
+	lines := e.lines(t)
+	if len(lines) != 3 || lines[0]["effect_id"] != "lead-inject-2-7" || lines[1]["effect_id"] != "lead-inject-2-7" {
+		t.Fatalf("lines %v", lines)
+	}
+	if _, has := lines[2]["effect_id"]; has {
+		t.Fatalf("a line with no effect id has the member: %v", lines[2])
+	}
+	data, err := os.ReadFile(e.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"message_id":"m-1","agent":`) || !strings.Contains(string(data), `,"effect_id":"lead-inject-2-7"}`) {
+		t.Fatalf("the member is not the last one of the line: %s", data)
+	}
+}
+
 func TestEvidenceKeysAreOnlyTheListedOnes(t *testing.T) {
 	e := newEvidence(t)
 	if err := e.ev.Append(leadcanary.ResultEntry("msg-1", 1, validResults[5])); err != nil {
@@ -221,7 +251,7 @@ func TestEvidenceKeysAreOnlyTheListedOnes(t *testing.T) {
 		t.Fatal(err)
 	}
 	allowed := map[string]bool{}
-	for _, k := range strings.Fields("at event role epoch message_id outcome reason written detail waiver agent code qualification login") {
+	for _, k := range strings.Fields("at event role epoch message_id outcome reason written detail waiver agent code qualification login effect_id") {
 		allowed[k] = true
 	}
 	for _, l := range e.lines(t) {
@@ -385,6 +415,9 @@ func TestEvidenceRefusesAnInvalidEntryAndWritesNothing(t *testing.T) {
 		"code with space":      {Event: leadcanary.EventInjectRefused, Code: "bad code"},
 		"code with upper case": {Event: leadcanary.EventInjectRefused, Code: "Bad"},
 		"code over 64":         {Event: leadcanary.EventInjectRefused, Code: strings.Repeat("a", 65)},
+		"effect id with space": {Event: leadcanary.EventInjectSent, Epoch: 1, MessageID: "m", EffectID: "a b"},
+		"effect id upper case": {Event: leadcanary.EventInjectSent, Epoch: 1, MessageID: "m", EffectID: "Lead-1"},
+		"effect id over 64":    {Event: leadcanary.EventInjectSent, Epoch: 1, MessageID: "m", EffectID: strings.Repeat("a", 65)},
 		"outcome with newline": {Event: leadcanary.EventInjectResult, Epoch: 1, MessageID: "m", Outcome: "a\nb", Written: "whole"},
 		"detail with control":  {Event: leadcanary.EventStop, Detail: "a\x1b[0m"},
 		"detail non-ASCII":     {Event: leadcanary.EventStop, Detail: "caf\u00e9"},
