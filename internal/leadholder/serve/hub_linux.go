@@ -460,7 +460,7 @@ func (s *Server) removeLocked(c *client, reason string, finReason wire.Reason, f
 	delete(s.clients, c)
 	wasWriter := s.writer == c
 	if wasWriter {
-		s.writer = nil
+		s.clearWriterLocked()
 	}
 	if s.viewer == c {
 		s.viewer = nil
@@ -509,22 +509,29 @@ func (s *Server) maybeGoneLocked() {
 	}
 }
 
-// releaseWriterLocked is the release-writer command: the writer becomes the
+// clearWriterLocked frees the writer slot and voids any outstanding writer ticket.
+func (s *Server) clearWriterLocked() {
+	s.writer = nil
+	s.tickets = slices.DeleteFunc(s.tickets, func(t ticketRec) bool { return t.role == wire.RoleWriter })
+}
+
+// releaseWriterLocked voids any writer ticket. An attached writer becomes the
 // viewer when there is none, else it is closed. The result says whether there
-// was a writer.
+// was an attached writer.
 func (s *Server) releaseWriterLocked(cmdID string) bool {
 	w := s.writer
+	if w != nil && s.viewer != nil {
+		s.removeLocked(w, "released", wire.ReasonWriterReleased, "you were released as the writer", cmdID)
+		return true
+	}
+	s.clearWriterLocked()
 	if w == nil {
 		return false
 	}
+	s.viewer = w
+	w.role = wire.RoleViewer
 	text := fmt.Sprintf("the writer %s (pid %d) was released; there is no writer", w.name, w.pid)
-	if s.viewer == nil {
-		s.writer, s.viewer = nil, w
-		w.role = wire.RoleViewer
-		s.writerChangedLocked(w, "release-writer", wire.ReasonWriterReleased, text, cmdID)
-		return true
-	}
-	s.removeLocked(w, "released", wire.ReasonWriterReleased, "you were released as the writer", cmdID)
+	s.writerChangedLocked(w, "release-writer", wire.ReasonWriterReleased, text, cmdID)
 	return true
 }
 

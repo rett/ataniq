@@ -3,6 +3,7 @@
 package serve
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,110 @@ import (
 	"ataniq/internal/leadholder/session"
 	"ataniq/internal/leadholder/wire"
 )
+
+func TestCF05(t *testing.T) {
+	newServer := func() *Server {
+		return &Server{
+			cfg: Config{Epoch: testEpoch, Now: func() time.Time { return time.Unix(1, 0) }, TicketLifetime: time.Minute},
+			evq: make(chan evItem, 4),
+		}
+	}
+	issue := func(t *testing.T, s *Server, role wire.Role) string {
+		t.Helper()
+		ticket, err := wire.NewTicket()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r := s.dispatch(wire.Request{Op: wire.OpTicket, Epoch: testEpoch, Role: role, Ticket: ticket}); !r.OK {
+			t.Fatalf("issue %s ticket: %+v", role, r)
+		}
+		return ticket
+	}
+	release := func(t *testing.T, s *Server) {
+		t.Helper()
+		if r := s.dispatch(wire.Request{Op: wire.OpReleaseWriter, Epoch: testEpoch}); !r.OK {
+			t.Fatalf("release writer: %+v", r)
+		}
+	}
+	t.Run("ReleaseVoidsOutstandingWriterTicket", func(t *testing.T) {
+		s := newServer()
+		old := issue(t, s, wire.RoleWriter)
+		release(t, s)
+		if role, code := s.takeTicket(old); role != "" || code != "attach-ticket-unknown" {
+			t.Fatalf("pre-release ticket: role %q, code %q", role, code)
+		}
+		fresh := issue(t, s, wire.RoleWriter)
+		if role, code := s.takeTicket(fresh); role != wire.RoleWriter || code != "" {
+			t.Fatalf("fresh ticket: role %q, code %q", role, code)
+		}
+	})
+	t.Run("ViewerTicketsKept", func(t *testing.T) {
+		s := newServer()
+		issue(t, s, wire.RoleWriter)
+		viewer := issue(t, s, wire.RoleViewer)
+		release(t, s)
+		if role, code := s.takeTicket(viewer); role != wire.RoleViewer || code != "" {
+			t.Fatalf("viewer ticket: role %q, code %q", role, code)
+		}
+	})
+}
+
+func TestCF05SocketOneRedemption(t *testing.T) {
+	e := newEnv(t, "raw; say READY; wait")
+	waitScreen(t, e.sess, "READY")
+	p, err := wire.EncodeHello(wire.Hello{
+		Version: wire.ProtocolVersion, Ticket: e.newTicket(wire.RoleWriter), Name: "console", Columns: 80, Rows: 24,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conns [MaxHandshakes]*net.UnixConn
+	for i := range conns {
+		conns[i] = e.dialAttach()
+		if err := conns[i].SetDeadline(time.Now().Add(patience)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := make(chan struct{})
+	writes := make(chan error, len(conns))
+	for _, conn := range conns {
+		go func() {
+			<-start
+			writes <- wire.Write(conn, wire.ToHolder, wire.TypeHello, p)
+		}()
+	}
+	close(start)
+	for range conns {
+		if err := <-writes; err != nil {
+			t.Fatal(err)
+		}
+	}
+	welcomed := 0
+	for _, conn := range conns {
+		f, err := wire.NewReader(conn, wire.ToClient).Next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch f.Type {
+		case wire.TypeWelcome:
+			w, err := wire.DecodeWelcome(f.Payload)
+			if err != nil || w.Role != wire.RoleWriter {
+				t.Fatalf("welcome: %+v, %v", w, err)
+			}
+			welcomed++
+		case wire.TypeNotice:
+			n, err := wire.DecodeNotice(f.Payload)
+			if err != nil || n.Reason != wire.ReasonRefusedTicket {
+				t.Fatalf("refusal: %+v, %v", n, err)
+			}
+		default:
+			t.Fatalf("unexpected first frame %s", wire.TypeName(f.Type))
+		}
+	}
+	if welcomed != 1 {
+		t.Fatalf("%d of %d Hellos welcomed, want one", welcomed, len(conns))
+	}
+}
 
 // held reports whether the input mutex is held now.
 func (s *Server) held() bool {
