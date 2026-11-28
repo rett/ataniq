@@ -1,0 +1,6 @@
+fable
+opus
+sonnet
+haiku
+gpt
+chatgpt

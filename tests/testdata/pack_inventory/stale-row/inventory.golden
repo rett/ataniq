@@ -1,0 +1,1 @@
+hook	pulse	internal/agentsession/hookwire.Pulse	-	observe	untagged
