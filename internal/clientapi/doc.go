@@ -61,6 +61,13 @@
 // Each row carries the assigned lead's target ID, also present in hello.
 // Use its display name for presentation and compare the target ID in full.
 // A changed directory can invalidate the list target and require a new hello.
+// A row's Launched is false for a lead never launched; its LaunchEpoch is then
+// a placeholder 0 and not an epoch.
+//
+// [ManagedClient] is the client side over a stream the caller opened: it
+// sends version 2 only, with the limits and error mapping of [Client], and it
+// reads a "unsupported-protocol" answer from a server without version 2 as
+// that refusal, never retrying with version 1.
 //
 // # Wire
 //

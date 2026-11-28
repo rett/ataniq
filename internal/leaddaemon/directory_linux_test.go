@@ -3,6 +3,7 @@ package leaddaemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"slices"
 	"strings"
@@ -20,13 +21,25 @@ type directoryFixture struct {
 	homes   map[string]leadregistry.ProjectAssignment
 	scope   DirectoryScope
 	onList  func()
+	// revision stands for the journal sequence; a test that changes the
+	// fixture between two reads also moves it, as a real change does.
+	revision uint64
+	// afterList runs once List has copied its entries, where a registry change
+	// could fall between List and ProjectHome.
+	afterList func()
 }
+
+func (f *directoryFixture) Revision() (uint64, error) { return f.revision, nil }
 
 func (f *directoryFixture) List() ([]leadregistry.Entry, error) {
 	if f.onList != nil {
 		f.onList()
 	}
-	return f.entries, nil
+	out := slices.Clone(f.entries)
+	if f.afterList != nil {
+		f.afterList()
+	}
+	return out, nil
 }
 
 func (f *directoryFixture) ProjectHome(project string) (leadregistry.ProjectAssignment, error) {
@@ -40,7 +53,12 @@ var directoryReader = clientapi.Principal{Issuer: "fixture", ClientID: "reader"}
 
 func newDirectoryFixture(t *testing.T) (*DirectoryHandler, *directoryFixture) {
 	t.Helper()
-	id := instanceid.Identity{Binding: instanceid.Binding{Authority: strings.Repeat("a", 64)}}
+	return newDirectoryFixtureAt(t, strings.Repeat("a", 64))
+}
+
+func newDirectoryFixtureAt(t *testing.T, authority string) (*DirectoryHandler, *directoryFixture) {
+	t.Helper()
+	id := instanceid.Identity{Binding: instanceid.Binding{Authority: authority}}
 	f := &directoryFixture{homes: map[string]leadregistry.ProjectAssignment{}, scope: DirectoryScope{
 		"alpha": "Lead", "beta": "Lead",
 	}}
@@ -179,10 +197,20 @@ func TestCF02(t *testing.T) {
 	})
 
 	t.Run("EqualNamesDistinctTargets", func(t *testing.T) {
-		h, _ := newDirectoryFixture(t)
-		rows := openDirectoryStream(t, h).list(t)
-		if len(rows) != 2 || rows[0].DisplayName != rows[1].DisplayName || rows[0].Target == rows[1].Target {
-			t.Fatalf("equal display names = %+v", rows)
+		// One project id with one display name at two homes: the names and
+		// ids are equal and only the home tells the rows apart.
+		var rows []clientapi.DirectoryRow
+		for _, authority := range []string{strings.Repeat("a", 64), strings.Repeat("b", 64)} {
+			h, _ := newDirectoryFixtureAt(t, authority)
+			got := openDirectoryStream(t, h).list(t)
+			if len(got) != 2 || got[0].ProjectID != "alpha" {
+				t.Fatalf("home %s lists %+v", authority, got)
+			}
+			rows = append(rows, got[0])
+		}
+		if rows[0].DisplayName != rows[1].DisplayName || rows[0].ProjectID != rows[1].ProjectID ||
+			rows[0].Authority == rows[1].Authority || rows[0].Target == rows[1].Target {
+			t.Fatalf("equal names at two homes = %+v", rows)
 		}
 	})
 
@@ -208,14 +236,93 @@ func TestCF02(t *testing.T) {
 		}
 	})
 
+	// Each of the four checks of a visible row fails alone: the others hold.
 	t.Run("ForeignHomeHidden", func(t *testing.T) {
-		h, f := newDirectoryFixture(t)
-		a := f.homes["beta"]
 		foreign := strings.Repeat("b", 64)
-		a.HomeAuthority, a.Holder.Authority, a.ExecutingInstance = foreign, foreign, foreign
+		for name, change := range map[string]func(*leadregistry.ProjectAssignment){
+			"HomeAuthority":     func(a *leadregistry.ProjectAssignment) { a.HomeAuthority = foreign },
+			"HolderAuthority":   func(a *leadregistry.ProjectAssignment) { a.Holder.Authority = foreign },
+			"ExecutingInstance": func(a *leadregistry.ProjectAssignment) { a.ExecutingInstance = foreign },
+			"NoHolder":          func(a *leadregistry.ProjectAssignment) { a.Holder = nil },
+		} {
+			t.Run(name, func(t *testing.T) {
+				h, f := newDirectoryFixture(t)
+				a := f.homes["beta"]
+				if a.Holder != nil {
+					held := *a.Holder
+					a.Holder = &held
+				}
+				change(&a)
+				f.homes["beta"] = a
+				if rows := openDirectoryStream(t, h).list(t); len(rows) != 1 || rows[0].ProjectID != "alpha" {
+					t.Fatalf("%s: assignment = %+v", name, rows)
+				}
+			})
+		}
+	})
+
+	t.Run("HolderRoleMismatchHidden", func(t *testing.T) {
+		h, f := newDirectoryFixture(t)
+		other, err := leadrole.Lead("alpha")
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := f.homes["beta"]
+		a.Holder = &leadregistry.LeadRef{Authority: h.authority, Role: other}
 		f.homes["beta"] = a
 		if rows := openDirectoryStream(t, h).list(t); len(rows) != 1 || rows[0].ProjectID != "alpha" {
-			t.Fatalf("foreign assignment = %+v", rows)
+			t.Fatalf("holder of another role = %+v", rows)
+		}
+	})
+
+	t.Run("OnlyLeadKindListed", func(t *testing.T) {
+		h, f := newDirectoryFixture(t)
+		coordinator, err := leadrole.Coordinator("alpha", "feature")
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.entries = append(f.entries, leadregistry.Entry{Role: coordinator, Epoch: 4}, leadregistry.Entry{Role: leadrole.Supervisor(), Epoch: 1})
+		// The coordinator shares its project's home, which is visible.
+		rows := openDirectoryStream(t, h).list(t)
+		if len(rows) != 2 || rows[0].LeadRole != "alpha/lead" || rows[1].LeadRole != "beta/lead" {
+			t.Fatalf("kinds listed = %+v", rows)
+		}
+	})
+
+	t.Run("NeverLaunchedLeadIsNotEpochZero", func(t *testing.T) {
+		h, f := newDirectoryFixture(t)
+		f.entries[1].Epoch = 0
+		rows := openDirectoryStream(t, h).list(t)
+		if len(rows) != 2 || !rows[0].Launched || rows[0].LaunchEpoch != 7 || rows[1].Launched || rows[1].LaunchEpoch != 0 {
+			t.Fatalf("launched and never launched = %+v", rows)
+		}
+	})
+
+	t.Run("RowsFromOneRegistryState", func(t *testing.T) {
+		h, f := newDirectoryFixture(t)
+		// A launch of alpha and a new revision of its assignment land between
+		// List and ProjectHome, once. The first read has the old epoch with
+		// the new revision; the handler must not return that row.
+		moved := false
+		f.afterList = func() {
+			if moved {
+				return
+			}
+			moved = true
+			f.revision++
+			f.entries[0].Epoch = 8
+			a := f.homes["alpha"]
+			a.Revision = 4
+			f.homes["alpha"] = a
+		}
+		rows := openDirectoryStream(t, h).list(t)
+		if !moved || len(rows) != 2 || rows[0].LaunchEpoch != 8 || rows[0].Revision != 4 {
+			t.Fatalf("rows after a change between the reads = %+v", rows)
+		}
+		// A registry that changes during every attempt gives no rows.
+		f.afterList = func() { f.revision++ }
+		if _, err := h.rows(f.scope); !errors.Is(err, errDirectoryMoving) {
+			t.Fatalf("rows of a moving registry: %v", err)
 		}
 	})
 

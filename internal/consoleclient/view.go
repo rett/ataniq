@@ -74,8 +74,12 @@ type Result struct {
 // View is the daemon's answer as the console shows it. Every string in it is
 // cleaned and bounded.
 type View struct {
-	// OfflineHomes identifies homes whose directory could not be refreshed.
+	// OfflineHomes identifies, by [HomeID], the homes whose directory could
+	// not be refreshed. Their rows stay in Projects, marked Stale.
 	OfflineHomes []string
+	// Homes are the managed homes the view was read from, in the order they
+	// were first read. It is empty for the local scratch inventory.
+	Homes []Home
 	// OwnerChannel tells whether the daemon's hello lists every operation of
 	// the owner channel: the console can then show and decide approvals
 	// through it. It is false for a daemon that lists none or only some.
@@ -118,6 +122,9 @@ type Project struct {
 	HomeID, ID string
 	// Name is the project's name.
 	Name string
+	// Stale tells that the project's home could not be refreshed, so that the
+	// project is what the last good read of the home showed.
+	Stale bool
 	// HasLead tells whether the daemon listed a lead for the project. A
 	// project can be here for its coordinators alone.
 	HasLead bool
@@ -193,8 +200,18 @@ type Entry struct {
 	Detail string
 	// Since is when the entry entered the state.
 	Since time.Time
-	// Epoch is the entry's epoch; for a coordinator, its instance number.
+	// Epoch is the entry's epoch; for a coordinator, its instance number. It
+	// means something unless NeverLaunched is true.
 	Epoch uint64
+	// NeverLaunched tells that the managed home says the lead was never
+	// launched: it has no epoch, and the 0 in Epoch is a placeholder, not
+	// the epoch 0. It is false for an entry read from the local scratch
+	// inventory, which does not say.
+	NeverLaunched bool
+	// Target is the managed target ID of the entry, kept whole and as the
+	// home sent it, for a request about the entry. It is empty for the local
+	// scratch inventory. It is an identifier and not for showing.
+	Target string
 	// Manager is the manager of the entry's unit.
 	Manager string
 	// Provider, Model and Effort are the requested profile: what the entry

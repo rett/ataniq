@@ -10,6 +10,15 @@
 // one-line text and a next step that a person can follow, such as "start the
 // daemon with: ataniqd run".
 //
+// [ReadManaged] reads one managed home's directory over a stream the caller
+// opened, with the managed protocol alone: no fallback to version 1 or to the
+// local scratch inventory, and no request but "hello" and the directory's
+// list. [View.WithHome] puts the read of one home into a view of several,
+// keeping the rows of a home it could not read, marked Stale and listed in
+// OfflineHomes. A row's identity ([HomeID], project ID, lead ID) is made from
+// the whole strings the home sent before they are cleaned for showing; a lead
+// never launched has [Entry].NeverLaunched set and no epoch.
+//
 // This package is provisional and unqualified, like the client protocol it
 // reads through.
 //
