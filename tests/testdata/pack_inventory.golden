@@ -22,6 +22,7 @@ desk-lead	canary.stop	internal/leaddaemon.OpCanaryStop	-	lifecycle	ataniq_canary
 desk-lead	canary.stop	internal/leaddaemon.routerExt	internal/leaddaemon.decodeOp	lifecycle	ataniq_canary ataniq_ownerchannel,ataniq_canary
 desk-lead	canary.ticket	internal/leaddaemon.OpCanaryTicket	-	attach	ataniq_canary ataniq_ownerchannel,ataniq_canary
 desk-lead	canary.ticket	internal/leaddaemon.routerExt	internal/leaddaemon.decodeOp	attach	ataniq_canary ataniq_ownerchannel,ataniq_canary
+desk-lead	conversation.read	internal/leadwire.OpConversationRead	-	read	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
 desk-lead	lead.define	internal/leaddaemon.leadExt	internal/leaddaemon.decodeCommand	lifecycle	ataniq_canary ataniq_ownerchannel,ataniq_canary
 desk-lead	lead.define	internal/leadwire.OpDefine	-	lifecycle	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
 desk-lead	lead.inject	internal/leaddaemon.leadExt	internal/leaddaemon.decodeCommand	deliver	ataniq_canary ataniq_ownerchannel,ataniq_canary

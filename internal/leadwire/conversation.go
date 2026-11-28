@@ -31,16 +31,15 @@ import (
 // user on the Unix socket; the seat gate does not serve it, so its answers are
 // not bound by [MaxRelayBytes] but by [MaxConversationResultBytes].
 //
-// The constant is named ConversationReadOp, not OpConversationRead, on
-// purpose: tests/pack_inventory_test.go binds every Op* string constant of
-// this package to the desk's operation inventory and demands a classified row
-// in its golden. This package has no daemon handler yet, so no row is made;
-// the change that adds the handler renames the constant and adds the row.
-const ConversationReadOp = "conversation.read"
+// The constant is an Op* constant like the others, so that
+// tests/pack_inventory_test.go binds it to the desk's operation inventory and
+// holds a classified row for it in its golden; the row is classed read and
+// names no handler until the daemon adds one.
+const OpConversationRead = "conversation.read"
 
 // ConversationOperations returns the conversation operations, in a new slice:
 // conversation.read.
-func ConversationOperations() []string { return []string{ConversationReadOp} }
+func ConversationOperations() []string { return []string{OpConversationRead} }
 
 // The directions of a read.
 const (

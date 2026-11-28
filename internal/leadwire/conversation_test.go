@@ -19,11 +19,11 @@ func TestConversationOperations(t *testing.T) {
 		t.Error("ConversationOperations returned a shared slice")
 	}
 	for _, list := range [][]string{Operations(), ChatOperations()} {
-		if slices.Contains(list, ConversationReadOp) {
+		if slices.Contains(list, OpConversationRead) {
 			t.Errorf("conversation.read is in %v", list)
 		}
 	}
-	if Mutating(ConversationReadOp) {
+	if Mutating(OpConversationRead) {
 		t.Error("a read takes no command id and keeps no receipt")
 	}
 	if !reflect.DeepEqual(PageStates(), []string{"more", "end", "gap", "reset"}) {
