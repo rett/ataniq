@@ -1,0 +1,171 @@
+# Linux/amd64. Columns: binding, operation, registration or definition, handler, class, build configurations.
+# Regenerate with: sh scripts/go-tool.sh test ./tests/ -run '^TestPackInventory$' -update-pack-inventory
+# owner-desk is reachable by processes of the owner's user until SH-10. chat.set can turn a lead's chat to read.
+# Classes describe reviewed effects. Review handler bodies and wiring when changing this file.
+contract	Decode	internal/agentsession/protocol.Codec	internal/agentsession/protocol.Codec.Decode	observe	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+contract	Encode	internal/agentsession/protocol.Codec	internal/agentsession/protocol.Codec.Encode	deliver	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+contract	Forget	internal/agentsession/protocol.Session.Forget.interface	internal/agentsession/protocol.interface{Forget(string)}.Forget	lifecycle	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+contract	Framing	internal/agentsession/protocol.Codec	internal/agentsession/protocol.Codec.Framing	read	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+contract	Manifest	internal/pack.Pack	internal/pack.Pack.Manifest	read	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+contract	Name	internal/pack.Pack	internal/pack.Pack.Name	read	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+contract	ProtocolCodec	internal/agentsession/protocol.Source	internal/agentsession/protocol.Source.ProtocolCodec	read	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+contract	Read	internal/inject/screen.Recogniser	internal/inject/screen.Recogniser.Read	observe	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+contract	Timeout	internal/agentsession/hookwire.Extract.interface	internal/agentsession/hookwire.interface{Timeout() bool}.Timeout	read	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+contract	Valid	internal/agentsession.enum.interface	internal/agentsession.interface{Valid() bool; ~string}.Valid	read	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+desk-lead	canary.define	internal/leaddaemon.OpCanaryDefine	-	lifecycle	ataniq_canary ataniq_ownerchannel,ataniq_canary
+desk-lead	canary.define	internal/leaddaemon.routerExt	internal/leaddaemon.decodeOp	lifecycle	ataniq_canary ataniq_ownerchannel,ataniq_canary
+desk-lead	canary.inject	internal/leaddaemon.OpCanaryInject	-	deliver	ataniq_canary ataniq_ownerchannel,ataniq_canary
+desk-lead	canary.inject	internal/leaddaemon.routerExt	internal/leaddaemon.decodeOp	deliver	ataniq_canary ataniq_ownerchannel,ataniq_canary
+desk-lead	canary.start	internal/leaddaemon.OpCanaryStart	-	lifecycle	ataniq_canary ataniq_ownerchannel,ataniq_canary
+desk-lead	canary.start	internal/leaddaemon.routerExt	internal/leaddaemon.decodeOp	lifecycle	ataniq_canary ataniq_ownerchannel,ataniq_canary
+desk-lead	canary.stop	internal/leaddaemon.OpCanaryStop	-	lifecycle	ataniq_canary ataniq_ownerchannel,ataniq_canary
+desk-lead	canary.stop	internal/leaddaemon.routerExt	internal/leaddaemon.decodeOp	lifecycle	ataniq_canary ataniq_ownerchannel,ataniq_canary
+desk-lead	canary.ticket	internal/leaddaemon.OpCanaryTicket	-	attach	ataniq_canary ataniq_ownerchannel,ataniq_canary
+desk-lead	canary.ticket	internal/leaddaemon.routerExt	internal/leaddaemon.decodeOp	attach	ataniq_canary ataniq_ownerchannel,ataniq_canary
+desk-lead	lead.define	internal/leaddaemon.leadExt	internal/leaddaemon.decodeCommand	lifecycle	ataniq_canary ataniq_ownerchannel,ataniq_canary
+desk-lead	lead.define	internal/leadwire.OpDefine	-	lifecycle	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+desk-lead	lead.inject	internal/leaddaemon.leadExt	internal/leaddaemon.decodeCommand	deliver	ataniq_canary ataniq_ownerchannel,ataniq_canary
+desk-lead	lead.inject	internal/leadwire.OpInject	-	deliver	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+desk-lead	lead.list	internal/leaddaemon.leadExt	internal/leaddaemon.leadExt.Handle	read	ataniq_canary ataniq_ownerchannel,ataniq_canary
+desk-lead	lead.list	internal/leadwire.OpList	-	read	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+desk-lead	lead.start	internal/leaddaemon.leadExt	internal/leaddaemon.decodeCommand	lifecycle	ataniq_canary ataniq_ownerchannel,ataniq_canary
+desk-lead	lead.start	internal/leadwire.OpStart	-	lifecycle	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+desk-lead	lead.stop	internal/leaddaemon.leadExt	internal/leaddaemon.decodeCommand	lifecycle	ataniq_canary ataniq_ownerchannel,ataniq_canary
+desk-lead	lead.stop	internal/leadwire.OpStop	-	lifecycle	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+desk-lead	lead.ticket	internal/leaddaemon.leadExt	internal/leaddaemon.decodeCommand	attach	ataniq_canary ataniq_ownerchannel,ataniq_canary
+desk-lead	lead.ticket	internal/leadwire.OpTicket	-	attach	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+holder	inject	decoder	internal/leadholder/wire.Operation.check	deliver	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+holder	inject	internal/leadholder/wire.OpInject	-	deliver	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+holder	release-writer	decoder	internal/leadholder/wire.Operation.check	attach	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+holder	release-writer	internal/leadholder/wire.OpReleaseWriter	-	attach	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+holder	status	decoder	internal/leadholder/wire.Operation.check	read	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+holder	status	internal/leadholder/wire.OpStatus	-	read	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+holder	stop	decoder	internal/leadholder/wire.Operation.check	lifecycle	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+holder	stop	internal/leadholder/wire.OpStop	-	lifecycle	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+holder	ticket	decoder	internal/leadholder/wire.Operation.check	attach	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+holder	ticket	internal/leadholder/wire.OpTicket	-	attach	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+hook	event	decoder	internal/agentsession/hookwire.Request.validate	report	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+hook	event	internal/agentsession/hookwire.Event	-	report	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+hook	fetch	decoder	internal/agentsession/hookwire.Request.validate	read	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+hook	fetch	internal/agentsession/hookwire.Fetch	-	read	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+hook	message	decoder	internal/agentsession/hookwire.Reply.validate	deliver	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+hook	message	internal/agentsession/hookwire.Message	-	deliver	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+hook	none	decoder	internal/agentsession/hookwire.Reply.validate	report	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+hook	none	internal/agentsession/hookwire.None	-	report	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+narrowing:	internal/launchpolicy	-	-	-	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+narrowing:	packs/claude/launchpolicy	-	-	-	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+narrowing:	packs/codex/launchpolicy	-	-	-	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+nested-module:	third_party/patched/x-ansi	-	-	-	-
+nested-module:	third_party/patched/x-vt	-	-	-	-
+owner-channel	owner.list	internal/approval/gatehost.Handler	internal/approval/gatehost.Handler.serve	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	owner.list	internal/approval/gatehost.Handler	map:internal/approval/gatehost.opCaps=read	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	owner.patch	internal/approval/gatehost.Handler	internal/approval/gatehost.Handler.serve	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	owner.patch	internal/approval/gatehost.Handler	map:internal/approval/gatehost.opCaps=read	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	owner.paths	internal/approval/gatehost.Handler	internal/approval/gatehost.Handler.serve	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	owner.paths	internal/approval/gatehost.Handler	map:internal/approval/gatehost.opCaps=read	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	owner.show	internal/approval/gatehost.Handler	internal/approval/gatehost.Handler.serve	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	owner.show	internal/approval/gatehost.Handler	map:internal/approval/gatehost.opCaps=read	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.challenge	internal/approval/gatehost.Handler	internal/approval/gatehost.Handler.serve	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.challenge	internal/approval/gatehost.Handler	map:internal/approval/gatehost.opCaps=decide	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.challenge	internal/approval/ownerwire.GateOperations	-	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.challenge	internal/approval/ownerwire.OpSeatChallenge	-	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.chat	internal/approval/gatehost.Handler	internal/approval/gatehost.Handler.serve	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.chat	internal/approval/gatehost.Handler	map:internal/approval/gatehost.opCaps=chat	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.chat	internal/approval/ownerwire.GateOperations	-	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.chat	internal/approval/ownerwire.OpSeatChat	-	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.decide	internal/approval/gatehost.Handler	internal/approval/gatehost.Handler.serve	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.decide	internal/approval/gatehost.Handler	map:internal/approval/gatehost.opCaps=decide	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.decide	internal/approval/ownerwire.GateOperations	-	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.decide	internal/approval/ownerwire.OpSeatDecide	-	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.genesis	internal/approval/gatehost.Handler	internal/approval/gatehost.Handler.serve	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.genesis	internal/approval/gatehost.Handler	map:internal/approval/gatehost.opCaps=genesis	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.genesis	internal/approval/ownerwire.GateOperations	-	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.genesis	internal/approval/ownerwire.OpSeatGenesis	-	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.hello	internal/seatgate.OpHello	-	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.hello	transport	internal/seatgate.srvConn.handle	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.login	internal/approval/gatehost.Handler	internal/approval/gatehost.Handler.serve	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.login	internal/approval/gatehost.Handler	map:internal/approval/gatehost.opCaps=login	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.login	internal/approval/ownerwire.GateOperations	-	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.login	internal/approval/ownerwire.OpSeatLogin	-	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.login-challenge	internal/approval/gatehost.Handler	internal/approval/gatehost.Handler.serve	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.login-challenge	internal/approval/gatehost.Handler	map:internal/approval/gatehost.opCaps=login	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.login-challenge	internal/approval/ownerwire.GateOperations	-	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.login-challenge	internal/approval/ownerwire.OpSeatLoginChallenge	-	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.pair	internal/approval/gatehost.Handler	internal/approval/gatehost.Handler.serve	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.pair	internal/approval/gatehost.Handler	map:internal/approval/gatehost.opCaps=pair	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.ping	internal/seatgate.OpPing	-	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.ping	transport	internal/seatgate.srvConn.handle	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.wait	internal/approval/gatehost.Handler	internal/approval/gatehost.Handler.serve	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.wait	internal/approval/gatehost.Handler	map:internal/approval/gatehost.opCaps=watch	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.wait	internal/approval/ownerwire.GateOperations	-	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-channel	seat.wait	internal/approval/ownerwire.OpSeatWait	-	owner	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	chat.list	internal/leaddaemon.chatExt	internal/leaddaemon.chatExt.Handle	owner-desk	ataniq_canary ataniq_ownerchannel,ataniq_canary
+owner-desk	chat.list	internal/leadwire.OpChatList	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	chat.purge	internal/leaddaemon.chatExt	internal/leaddaemon.chatExt.Handle	owner-desk	ataniq_canary ataniq_ownerchannel,ataniq_canary
+owner-desk	chat.purge	internal/leadwire.OpChatPurge	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	chat.set	internal/leaddaemon.chatExt	internal/leaddaemon.chatExt.Handle	owner-desk	ataniq_canary ataniq_ownerchannel,ataniq_canary
+owner-desk	chat.set	internal/leadwire.OpChatSet	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.beat	internal/approval/ownerwire.OpBeat	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.beat	internal/approval/ownerwire.Operations	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.beat	internal/leaddaemon.ownerExt	internal/leaddaemon.ownerExt.Handle	owner-desk	ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.decide	internal/approval/ownerwire.OpDecide	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.decide	internal/approval/ownerwire.Operations	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.decide	internal/leaddaemon.ownerExt	internal/leaddaemon.ownerExt.Handle	owner-desk	ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.decider	internal/approval/ownerwire.OpDecider	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.decider	internal/approval/ownerwire.Operations	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.decider	internal/leaddaemon.ownerExt	internal/leaddaemon.ownerExt.Handle	owner-desk	ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.key-revoke	internal/approval/ownerwire.OpKeyRevoke	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.key-revoke	internal/approval/ownerwire.Operations	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.key-revoke	internal/leaddaemon.ownerExt	internal/leaddaemon.ownerExt.Handle	owner-desk	ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.keys	internal/approval/ownerwire.OpKeys	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.keys	internal/approval/ownerwire.Operations	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.keys	internal/leaddaemon.ownerExt	internal/leaddaemon.ownerExt.Handle	owner-desk	ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.keys-off	internal/approval/ownerwire.OpKeysOff	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.keys-off	internal/approval/ownerwire.Operations	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.keys-off	internal/leaddaemon.ownerExt	internal/leaddaemon.ownerExt.Handle	owner-desk	ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.limit	internal/approval/ownerwire.OpLimit	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.limit	internal/approval/ownerwire.Operations	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.limit	internal/leaddaemon.ownerExt	internal/leaddaemon.ownerExt.Handle	owner-desk	ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.limit-set	internal/approval/ownerwire.OpLimitSet	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.limit-set	internal/approval/ownerwire.Operations	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.limit-set	internal/leaddaemon.ownerExt	internal/leaddaemon.ownerExt.Handle	owner-desk	ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.list	internal/approval/ownerwire.OpList	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.list	internal/approval/ownerwire.Operations	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.list	internal/leaddaemon.ownerExt	internal/leaddaemon.ownerExt.Handle	owner-desk	ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.looked	internal/approval/ownerwire.OpLooked	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.looked	internal/approval/ownerwire.Operations	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.looked	internal/leaddaemon.ownerExt	internal/leaddaemon.ownerExt.Handle	owner-desk	ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.pair-confirm	internal/approval/ownerwire.OpPairConfirm	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.pair-confirm	internal/approval/ownerwire.Operations	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.pair-confirm	internal/leaddaemon.ownerExt	internal/leaddaemon.ownerExt.Handle	owner-desk	ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.pair-reject	internal/approval/ownerwire.OpPairReject	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.pair-reject	internal/approval/ownerwire.Operations	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.pair-reject	internal/leaddaemon.ownerExt	internal/leaddaemon.ownerExt.Handle	owner-desk	ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.pair-start	internal/approval/ownerwire.OpPairStart	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.pair-start	internal/approval/ownerwire.Operations	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.pair-start	internal/leaddaemon.ownerExt	internal/leaddaemon.ownerExt.Handle	owner-desk	ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.pair-status	internal/approval/ownerwire.OpPairStatus	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.pair-status	internal/approval/ownerwire.Operations	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.pair-status	internal/leaddaemon.ownerExt	internal/leaddaemon.ownerExt.Handle	owner-desk	ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.patch	internal/approval/ownerwire.OpPatch	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.patch	internal/approval/ownerwire.Operations	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.patch	internal/leaddaemon.ownerExt	internal/leaddaemon.ownerExt.Handle	owner-desk	ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.paths	internal/approval/ownerwire.OpPaths	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.paths	internal/approval/ownerwire.Operations	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.paths	internal/leaddaemon.ownerExt	internal/leaddaemon.ownerExt.Handle	owner-desk	ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.show	internal/approval/ownerwire.OpShow	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.show	internal/approval/ownerwire.Operations	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	owner.show	internal/leaddaemon.ownerExt	internal/leaddaemon.ownerExt.Handle	owner-desk	ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	seat.pair	internal/approval/ownerwire.OpSeatPair	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	seat.pair	internal/approval/ownerwire.Operations	-	owner-desk	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	seat.pair	internal/leaddaemon.ownerExt	internal/leaddaemon.ownerExt.Handle [registered, refused by source]	owner-desk	ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	trial.submit	cmd/ataniqd.trialExt	cmd/ataniqd.trialExt.Handle	owner-desk	ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+owner-desk	trial.submit	cmd/ataniqd.trialOpSubmit	-	owner-desk	ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+widening:	cmd/ataniqd	-	-	-	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+widening:	internal/leadcanary	-	-	-	ataniq_canary ataniq_ownerchannel,ataniq_canary
+widening:	internal/leadcanary/provision	-	-	-	ataniq_canary ataniq_ownerchannel,ataniq_canary
+widening:	internal/leadcanary/provision/provisiontest	-	-	-	ataniq_canary ataniq_ownerchannel,ataniq_canary
+widening:	internal/leadcanary/standin	-	-	-	ataniq_canary ataniq_ownerchannel,ataniq_canary
+widening:	internal/leadchat	-	-	-	ataniq_canary ataniq_ownerchannel,ataniq_canary
+widening:	internal/leaddaemon	-	-	-	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
+widening:	internal/leadregistry	-	-	-	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
