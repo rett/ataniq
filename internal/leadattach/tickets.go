@@ -19,11 +19,16 @@ import (
 // is not a failure: the client waits and asks again.
 var ErrNoTicket = errors.New("leadattach: no ticket yet")
 
+// ErrReselect means the selected attach target is stale. The viewer stops
+// requesting tickets until the operator selects a lead again.
+var ErrReselect = errors.New("leadattach: select the lead again")
+
 // TicketSource obtains single-use viewer tickets for one attach target.
 type TicketSource interface {
 	// ViewerTicket authorizes a fresh viewer ticket for this connection.
 	// It must honor cancellation and return any refusal as a display-safe
-	// error. ErrNoTicket means that a ticket is not yet available.
+	// error. ErrNoTicket means that a ticket is not yet available. Return
+	// ErrReselect, optionally wrapped, when the selection is stale.
 	ViewerTicket(ctx context.Context) (string, error)
 }
 

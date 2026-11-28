@@ -53,6 +53,11 @@ func dialUnix(ctx context.Context, path string) (net.Conn, error) {
 type Config struct {
 	// Socket is the path of the holder's attach socket.
 	Socket string
+	// ExpectLead and ExpectEpoch pin this client to one lead and epoch.
+	// Setting either enables the pin. NewViewer always enables it.
+	// Each unspecified value comes from the first Welcome.
+	ExpectLead  string
+	ExpectEpoch uint64
 	// Mode is the attach role the client wants. The ticket binds the role,
 	// not this field: the client sends input only when it wants to write and
 	// the holder granted it.

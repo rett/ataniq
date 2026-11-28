@@ -57,8 +57,7 @@ type LiveSource interface {
 	// holder's answer in the pane.
 	//
 	// The rule: the cockpit calls Resize whenever it is the writer (Role is
-	// LiveWriter), the connection is up (Conn is neither LiveDisconnected
-	// nor LiveWaitingTicket), and the size it wants differs from the
+	// LiveWriter), the connection is up, and the size it wants differs from the
 	// holder's reported size (LiveStatus.Cols and Rows, when known) or from
 	// the size it last asked for. It checks this when the window size
 	// settles (after its 120 ms debounce), at once for zoom, when the role
@@ -118,6 +117,7 @@ const (
 	LiveResyncing
 	LiveWaitingTicket
 	LiveDisconnected
+	LiveStoppedReselect
 )
 
 func (c LiveConn) String() string {
@@ -130,6 +130,8 @@ func (c LiveConn) String() string {
 		return "waiting for a ticket"
 	case LiveDisconnected:
 		return "disconnected"
+	case LiveStoppedReselect:
+		return "stopped, reselect"
 	}
 	return "connecting"
 }
@@ -168,10 +170,9 @@ type LiveStatus struct {
 	Epoch            uint64
 	Runtime, Version string
 	// Role is the role granted: LiveWriter, LiveViewer, or empty. The source
-	// keeps the role as last granted while the connection is down
-	// (LiveDisconnected, LiveWaitingTicket) and clears it only when the
-	// holder says so; the cockpit takes no input and asks for no size while
-	// the connection is down, whatever the role says.
+	// keeps the last role while disconnected, waiting for a ticket or stopped
+	// for reselection. In those states the cockpit takes no input and asks
+	// for no size, whatever the role says.
 	Role LiveRole
 	// Cols and Rows are the holder's screen size; zero when unknown.
 	Cols, Rows int
@@ -185,7 +186,7 @@ type LiveStatus struct {
 	// a source that encodes keys keeps its own copy of it.
 	Modes sessionpane.Modes
 	// Conn is the connection state. Reason says why when the state is
-	// LiveWaitingTicket or LiveDisconnected.
+	// LiveWaitingTicket, LiveDisconnected or LiveStoppedReselect.
 	Conn   LiveConn
 	Reason string
 	// End holds the end facts.
@@ -480,7 +481,7 @@ func (m *Model) refreshLive() {
 		st.Role = ""
 	}
 	st.Cols, st.Rows = min(max(st.Cols, 0), 4096), min(max(st.Rows, 0), 4096)
-	if st.Conn < LiveConnecting || st.Conn > LiveDisconnected {
+	if st.Conn < LiveConnecting || st.Conn > LiveStoppedReselect {
 		st.Conn = LiveConnecting
 	}
 	st.Idle, st.Title = cut(clean(st.Idle), maxLiveIdle), cut(clean(st.Title), maxLiveTitle)
@@ -590,7 +591,7 @@ func (m *Model) liveWriter() bool {
 // liveDown reports whether the holder connection is gone or waiting for a
 // ticket: the last screen stays, dimmed.
 func (m *Model) liveDown() bool {
-	return m.live.st.Conn == LiveDisconnected || m.live.st.Conn == LiveWaitingTicket
+	return m.live.st.Conn == LiveDisconnected || m.live.st.Conn == LiveWaitingTicket || m.live.st.Conn == LiveStoppedReselect
 }
 
 // syncLive asks the source for the size the layout gives the session, while
@@ -785,6 +786,8 @@ func (m *Model) liveBanner(ended bool) (title string, ls []line, ok bool) {
 		}
 		ls = append(ls, line{"As the holder reported them: the three are separate facts. Nothing is replayed.", lnDim}, line{hint, lnWarn})
 		return "SESSION ENDED", ls, true
+	case m.live.st.Conn == LiveStoppedReselect:
+		return "STOPPED, RESELECT", []line{{m.live.st.Reason, lnText}, {hint, lnWarn}}, true
 	case m.live.st.Conn == LiveDisconnected, m.live.st.Conn == LiveWaitingTicket:
 		title, what := "DISCONNECTED", "The connection to the holder is closed."
 		if m.live.st.Conn == LiveWaitingTicket {
