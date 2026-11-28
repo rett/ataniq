@@ -392,6 +392,18 @@ func sessionGraphViolations(list string, canary bool) []string {
 	return violations
 }
 
+func sessionSourceImportOK(name, imp string, std []string, migrations migrationUses) bool {
+	dir := path.Dir(name)
+	isTest := strings.HasSuffix(name, "_test.go")
+	if dir == sessionPkg {
+		return slices.Contains(std, imp) || imp == "ataniq/internal/pack" || (isTest && imp == "ataniq/"+dir)
+	}
+	if !neutralImportOK(dir, imp) {
+		return migrations.use(name, imp)
+	}
+	return driverImportOK(dir, strings.TrimPrefix(imp, "ataniq/"), isTest)
+}
+
 func TestPackBoundarySessionNeutral(t *testing.T) {
 	std := strings.Fields(goListOnce(t, []string{"list", "std"}))
 	// Direct imports of production, in-package tests and external tests.
@@ -411,13 +423,7 @@ func TestPackBoundarySessionNeutral(t *testing.T) {
 		dir := path.Dir(name)
 		isTest := strings.HasSuffix(name, "_test.go")
 		packBoundaryImports(t, name, func(_, imp string) bool {
-			if dir == sessionPkg {
-				return slices.Contains(std, imp) || imp == "ataniq/internal/pack" || (isTest && imp == "ataniq/"+dir)
-			}
-			if !neutralImportOK(dir, imp) {
-				return migrations.use(name, imp)
-			}
-			return driverImportOK(dir, strings.TrimPrefix(imp, "ataniq/"), isTest)
+			return sessionSourceImportOK(name, imp, std, migrations)
 		})
 		if (dir == sessionPkg || dir == sessionPkg+"/command") && !isTest {
 			file := packBoundaryParse(t, name, 0)
@@ -613,5 +619,24 @@ func TestPackBoundaryImportRetirement(t *testing.T) {
 		if err == nil {
 			t.Errorf("accepted import without a retirement task and condition: %q", reason)
 		}
+	}
+}
+
+func TestPackBoundarySessionSourceImports(t *testing.T) {
+	const header = "ataniq/internal/inject/command"
+	migrations := migrationUses{{"internal/leadcanary/admission.go", header}: false}
+	for _, tc := range []struct{ file, imp string }{
+		{sessionPkg + "/model.go", "ataniq/internal/leadregistry"},
+		{sessionPkg + "/model_test.go", "ataniq/internal/leadregistry"},
+		{"internal/worker/start.go", "ataniq/" + sessionPkg + "/protocol"},
+		{"internal/leadholder/wire/frame.go", "ataniq/packs/holder"},
+		{"internal/leadcanary/another.go", header},
+	} {
+		if sessionSourceImportOK(tc.file, tc.imp, nil, migrations) {
+			t.Errorf("%s accepted %s", tc.file, tc.imp)
+		}
+	}
+	if !sessionSourceImportOK("internal/leadcanary/admission.go", header, nil, migrations) {
+		t.Error("refused the exact migration")
 	}
 }
