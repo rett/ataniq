@@ -31,6 +31,10 @@ The [application command contracts](application-contracts.md) document the
 implemented pure typed model, bounded JSON codec and canonical binary bindings,
 with authentication and durable admission kept as explicit service contracts.
 
+The [conversation and terminal history design](conversation-history.md) defines
+what desk and seat can read from a conversation and how the desk recovers
+recent terminal output after a disconnect.
+
 The [seat gate](seat-gate.md) specifies version 1 of the link between the seat
 app on the authority host and the daemon: pairing a phone, reading the cards,
 a login, and the owner's decisions by passkey. Its handler for pairing and
