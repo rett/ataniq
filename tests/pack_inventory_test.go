@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -80,12 +81,7 @@ const (
 )
 
 func contractPackage(pkg string) bool {
-	switch pkg {
-	case "internal/pack", "internal/agentlaunch", "internal/inject/screen", "internal/inject/title",
-		"internal/inject/status", "internal/inject/idle", "internal/leadsandbox/profile", "internal/intake/execconfig", capHandlers:
-		return true
-	}
-	return within(pkg, sessionPkg)
+	return packContracts[pkg] != "" || pkg == capHandlers || within(pkg, sessionPkg)
 }
 
 func packSide(pkg string) bool {
@@ -572,7 +568,7 @@ func (b *inventoryBuild) enumerate() {
 					}
 				}
 			case *types.TypeName:
-				if dir == capHandlers || dir == sessionPkg && name == "SessionRef" || dir == hookWire && (name == "Request" || name == "Reply") {
+				if dir == capHandlers || (dir == sessionPkg || dir == hookWire) && o.Exported() {
 					b.checkFields(o.Type(), b.symbol(o))
 				}
 				if dir == sessionPkg && name == "Lowering" {
@@ -631,7 +627,9 @@ func (b *inventoryBuild) enumerate() {
 					}
 				}
 			}
-		case dir == hookWire && (f.Name() == "DecodeRequest" || f.Name() == "DecodeReply"):
+		case (dir == hookWire || dir == sessionPkg) && strings.HasPrefix(f.Name(), "Decode"):
+			// A decoder can also use imported frames and local wire structs.
+			b.checkFields(f.Signature(), b.symbol(f))
 			for n := range ast.Preorder(body) {
 				if st, ok := n.(*ast.StructType); ok {
 					b.checkFields(b.info.TypeOf(st), b.symbol(f))
@@ -752,17 +750,44 @@ func (b *inventoryBuild) interfaceMethods(dir, reg string, it *types.Interface) 
 	}
 }
 
-const sensitiveWords = "decision decide verdict approve approval assertion challenge grant token ticket signature credential pair key"
-const wideningWords = "allow enable raise policy set on switch mode permit unlock trust widen bypass escalate elevate"
+// JSON names can join words without delimiters (apikey, authtoken). These
+// stems cover those compounds as well as inflected field and operation names.
+func hasDecidingWord(name string) bool {
+	const stems = "decision decid verdict approv assertion challeng grant token ticket signatur credential pair key"
+	lower := strings.ToLower(name)
+	for stem := range strings.FieldsSeq(stems) {
+		if strings.Contains(lower, stem) {
+			return true
+		}
+	}
+	return false
+}
+
+const wideningStems = "allow enabl rais polic set on switch mode permit unlock trust widen bypass escalat elevat"
 
 var inventoryWords = regexp.MustCompile("[A-Z]+[a-z]*|[a-z]+")
 var initialismEnd = regexp.MustCompile("([A-Z])([A-Z][a-z])")
 
+func nameParts(name string) []string {
+	return inventoryWords.FindAllString(initialismEnd.ReplaceAllString(name, "$1 $2"), -1)
+}
+
 func hasWord(name, words string) bool {
-	parts := inventoryWords.FindAllString(initialismEnd.ReplaceAllString(name, "$1 $2"), -1)
-	for _, p := range parts {
-		if slices.Contains(strings.Fields(words), strings.ToLower(p)) {
+	for _, part := range nameParts(name) {
+		if slices.Contains(strings.Fields(words), strings.ToLower(part)) {
 			return true
+		}
+	}
+	return false
+}
+
+func hasWordStem(name, stems string) bool {
+	parts := nameParts(name)
+	for _, p := range parts {
+		for stem := range strings.FieldsSeq(stems) {
+			if strings.HasPrefix(strings.ToLower(p), stem) {
+				return true
+			}
 		}
 	}
 	return false
@@ -807,7 +832,7 @@ func inventoryFields(t types.Type, seen map[types.Type]bool, visit func(*types.V
 
 func (b *inventoryBuild) checkFields(t types.Type, name string) {
 	inventoryFields(t, map[types.Type]bool{}, func(f *types.Var, tag string) {
-		if f.Exported() && hasWord(f.Name(), sensitiveWords) || hasWord(tag, sensitiveWords) {
+		if f.Exported() && hasDecidingWord(f.Name()) || hasDecidingWord(tag) {
 			b.refuse("forbidden wire field: %s.%s", name, f.Name())
 		}
 	})
@@ -1062,6 +1087,19 @@ func (b *inventoryBuild) registrations() {
 				continue
 			}
 			ptr := types.NewPointer(o.Type())
+			method := func(n string) *types.Func {
+				m, _, _ := types.LookupFieldOrMethod(ptr, false, o.Pkg(), n)
+				fn, _ := m.(*types.Func)
+				return fn
+			}
+			// Implements is unspecified for an uninstantiated generic type.
+			// Refuse possible handlers, including promoted pointer methods.
+			if named, ok := o.Type().(*types.Named); ok && named.TypeParams().Len() > 0 {
+				if method("Operations") != nil || method("Handle") != nil {
+					b.refuse("generic registration requires review: %s", b.symbol(o))
+				}
+				continue
+			}
 			if !types.Implements(ptr, it) {
 				continue
 			}
@@ -1069,11 +1107,6 @@ func (b *inventoryBuild) registrations() {
 			reg := b.symbol(o)
 			if o.Pkg().Path()+"."+o.Name() == b.interfaces.adapter {
 				continue
-			}
-			method := func(n string) *types.Func {
-				m, _, _ := types.LookupFieldOrMethod(ptr, false, o.Pkg(), n)
-				fn, _ := m.(*types.Func)
-				return fn
 			}
 			var list *types.Func
 			if name == b.interfaces.extension {
@@ -1225,7 +1258,7 @@ func (b *inventoryBuild) record() {
 					b.refuse("ticket class must be attach: %s", item.name)
 				}
 				class = "attach"
-			} else if hasWord(item.name, sensitiveWords+" "+wideningWords) {
+			} else if hasDecidingWord(item.name) || hasWordStem(item.name, wideningStems) {
 				b.refuse("forbidden operation name: %s %s", item.binding, item.name)
 			}
 			if class == "" {
@@ -1244,11 +1277,11 @@ func (b *inventoryBuild) record() {
 }
 
 func widensDesk(op string) bool {
-	if hasWord(op, "lowering") && hasWord(op, "clear remove reset") {
+	if hasWordStem(op, "lowering") && hasWordStem(op, "clear remove reset") {
 		return true
 	}
-	return hasWord(op, "hook remote chat permission transport delivery send policy") &&
-		hasWord(op, "on enable allow switch set raise unlock widen bypass escalate elevate")
+	return hasWordStem(op, "hook remote chat permission transport delivery send policy") &&
+		hasWordStem(op, "on enabl allow switch set rais unlock widen bypass escalat elevat")
 }
 
 // Read the parameter type from the decoder called in this operation's
@@ -1410,6 +1443,17 @@ func TestPackInventory(t *testing.T) {
 	}
 }
 
+func TestPackInventoryDecidingWords(t *testing.T) {
+	for word := range strings.FieldsSeq("Approved Approves Approval Grant Grants Granted Token Tokens Key Keys Decisions Paired apikey api_key approvalToken authtoken") {
+		if !hasDecidingWord(word) {
+			t.Errorf("accepted deciding word %q", word)
+		}
+	}
+	if !widensDesk("owner.hooks-enabled") {
+		t.Error("accepted widening desk operation")
+	}
+}
+
 func TestPackInventoryRefusals(t *testing.T) {
 	folder := filepath.Join(root(t), inventoryFixtures)
 	cases, err := os.ReadDir(folder)
@@ -1419,14 +1463,20 @@ func TestPackInventoryRefusals(t *testing.T) {
 	// Each design case is a separate required input. Removing a tree must
 	// not silently turn its check green.
 	for _, required := range strings.Fields("seat-capability seat-dispatch computed-operations bool-configure capability-mode " +
-		"widening-import both-only desk-hook-on withdraw-body four-calls handler-func unknown-tag other-os nested-module excluded-capability") {
+		"widening-import both-only desk-hook-on withdraw-body four-calls handler-func unknown-tag other-os nested-module excluded-capability hook-field session-tag plural-operation generic-extension multi-build grid-method") {
 		if !slices.ContainsFunc(cases, func(e fs.DirEntry) bool { return e.IsDir() && e.Name() == required }) {
 			t.Errorf("missing refusal fixture %s", required)
 		}
 	}
 	tool := canaryGoTool(t)
+	// Each fixture runs its tag sets in golden order. Limit the number of
+	// concurrent go list processes even on hosts with a high -parallel.
+	slots := make(chan struct{}, min(4, runtime.GOMAXPROCS(0)))
 	for _, entry := range cases {
 		t.Run(entry.Name(), func(t *testing.T) {
+			t.Parallel()
+			slots <- struct{}{}
+			defer func() { <-slots }()
 			src := filepath.Join(folder, entry.Name())
 			// Materialize tagged .go.in files outside testdata. The tag
 			// placement guards intentionally forbid tagged Go files there.

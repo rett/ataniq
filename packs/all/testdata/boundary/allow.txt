@@ -1,5 +1,5 @@
 # Current file and words, followed by the reason and removal point.
-cmd/ah-noaicheck/main_test.go anthropic claude codex openai # Migration: D36 checker detection data and examples; remove with the authority-host release that ships the prefix list.
+cmd/ah-noaicheck/main_test.go anthropic claude codex openai # Migration: D36 authority-host prefix-list release: convert the command output fixtures and expected hits to names from the shipped list.
 cmd/ataniq-canary/show_test.go claude # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
 cmd/ataniq-console/pairing_test.go fable # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
 cmd/ataniq-intake/flow_test.go claude # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
@@ -8,24 +8,24 @@ cmd/ataniq-intake/paths_test.go claude # Migration: Replace existing runtime-spe
 cmd/ataniq-probe/helpers_linux_test.go claude # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
 cmd/ataniq-probe/plan_linux_test.go claude codex # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
 cmd/ataniqd/scratch_seat_proof_linux_test.go claude codex # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
-internal/authorityhost/noaicheck/binaries_test.go claude codex # Migration: D36 checker detection data and examples; remove with the authority-host release that ships the prefix list.
-internal/authorityhost/noaicheck/bounds_test.go openai # Migration: D36 checker detection data and examples; remove with the authority-host release that ships the prefix list.
-internal/authorityhost/noaicheck/caddyimport_test.go codex openai # Migration: D36 checker detection data and examples; remove with the authority-host release that ships the prefix list.
-internal/authorityhost/noaicheck/credentials.go claude # Migration: D36 checker detection data and examples; remove with the authority-host release that ships the prefix list.
-internal/authorityhost/noaicheck/env.go anthropic claude codex openai # Migration: D36 checker detection data and examples; remove with the authority-host release that ships the prefix list.
-internal/authorityhost/noaicheck/env_test.go anthropic claude codex openai # Migration: D36 checker detection data and examples; remove with the authority-host release that ships the prefix list.
-internal/authorityhost/noaicheck/helpers_test.go claude codex # Migration: D36 checker detection data and examples; remove with the authority-host release that ships the prefix list.
-internal/authorityhost/noaicheck/lists.go claude # Migration: D36 checker detection data and examples; remove with the authority-host release that ships the prefix list.
-internal/authorityhost/noaicheck/lists_test.go claude codex # Migration: D36 checker detection data and examples; remove with the authority-host release that ships the prefix list.
-internal/authorityhost/noaicheck/notify_test.go anthropic claude openai # Migration: D36 checker detection data and examples; remove with the authority-host release that ships the prefix list.
-internal/authorityhost/noaicheck/procs_test.go claude codex # Migration: D36 checker detection data and examples; remove with the authority-host release that ships the prefix list.
-internal/authorityhost/noaicheck/release_test.go anthropic claude codex openai # Migration: D36 checker detection data and examples; remove with the authority-host release that ships the prefix list.
-internal/authorityhost/noaicheck/run_test.go claude codex openai # Migration: D36 checker detection data and examples; remove with the authority-host release that ships the prefix list.
-internal/authorityhost/noaicheck/seat_test.go openai # Migration: D36 checker detection data and examples; remove with the authority-host release that ships the prefix list.
-internal/authorityhost/noaicheck/tree_test.go claude # Migration: D36 checker detection data and examples; remove with the authority-host release that ships the prefix list.
-internal/authorityhost/noaicheck/units_test.go anthropic codex openai # Migration: D36 checker detection data and examples; remove with the authority-host release that ships the prefix list.
-internal/authorityhost/noaicheck/witness_test.go openai # Migration: D36 checker detection data and examples; remove with the authority-host release that ships the prefix list.
-internal/authorityhost/release/noai_test.go anthropic claude # Migration: D36 checker detection data and examples; remove with the authority-host release that ships the prefix list.
+internal/authorityhost/noaicheck/binaries_test.go claude codex # Migration: D36 authority-host prefix-list release: use synthetic binary names in the executable search and symlink cases.
+internal/authorityhost/noaicheck/bounds_test.go openai # Migration: D36 authority-host prefix-list release: derive the environment name in the nesting-limit case from the shipped prefix list.
+internal/authorityhost/noaicheck/caddyimport_test.go codex openai # Migration: D36 authority-host prefix-list release: use a listed prefix in imported Caddy environment references and expected hits.
+internal/authorityhost/noaicheck/credentials.go claude # Migration: D36 authority-host prefix-list release: replace the credential-folder examples in the lookup comment with neutral examples.
+internal/authorityhost/noaicheck/env.go anthropic claude codex openai # Migration: D36 authority-host prefix-list release: read the environment prefixes from release data and update the matching comment.
+internal/authorityhost/noaicheck/env_test.go anthropic claude codex openai # Migration: D36 authority-host prefix-list release: build the environment name cases from the shipped prefixes.
+internal/authorityhost/noaicheck/helpers_test.go claude codex # Migration: D36 authority-host prefix-list release: seed the shared binary and home-path fixture lists with synthetic names.
+internal/authorityhost/noaicheck/lists.go claude # Migration: D36 authority-host prefix-list release: replace the vendor home-path example in the list field comment.
+internal/authorityhost/noaicheck/lists_test.go claude codex # Migration: D36 authority-host prefix-list release: use synthetic entries in the malformed-list cases.
+internal/authorityhost/noaicheck/notify_test.go anthropic claude openai # Migration: D36 authority-host prefix-list release: derive the notifier environment fixture and its expected hit from the shipped list.
+internal/authorityhost/noaicheck/procs_test.go claude codex # Migration: D36 authority-host prefix-list release: use synthetic executable names for the process command and symlink cases.
+internal/authorityhost/noaicheck/release_test.go anthropic claude codex openai # Migration: D36 authority-host prefix-list release: generate release tree inputs and expected findings from the shipped lists.
+internal/authorityhost/noaicheck/run_test.go claude codex openai # Migration: D36 authority-host prefix-list release: build the end-to-end checker tree and expected hits from the fixture lists.
+internal/authorityhost/noaicheck/seat_test.go openai # Migration: D36 authority-host prefix-list release: derive the seat environment and Caddy examples from the shipped prefix list.
+internal/authorityhost/noaicheck/tree_test.go claude # Migration: D36 authority-host prefix-list release: use synthetic binary and credential paths in the read-only tree fixture.
+internal/authorityhost/noaicheck/units_test.go anthropic codex openai # Migration: D36 authority-host prefix-list release: generate unit environment assignments and expected hits from the shipped prefixes.
+internal/authorityhost/noaicheck/witness_test.go openai # Migration: D36 authority-host prefix-list release: derive the continued assignment and its witness from the shipped prefix list.
+internal/authorityhost/release/noai_test.go anthropic claude # Migration: D36 authority-host prefix-list release: use synthetic checker findings and a listed prefix for the environment isolation case.
 internal/clientapi/server_linux_test.go claude fable # Migration: Replace existing runtime-specific test inputs and expectations at cutover.
 internal/genesis/brief/secrets_test.go openai # Migration: Replace provider and model examples in the genesis fixtures at cutover.
 internal/genesis/handoff/handoff_test.go claude codex # Migration: Replace provider and model examples in the genesis fixtures at cutover.
