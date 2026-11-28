@@ -1,10 +1,15 @@
 // Package marshaljson reads Qargi J1 evidence. It does not run Qargi.
-// Free text in a document is display data, including warnings and handoff notes.
+// Free text in a document is display data, including warning text and handoff
+// notes. A warning's severity is a typed field and is read instead of its text.
+//
+// Status and check documents are read at schema 2 (Qargi 0.3.10) and at schema
+// 1 (Qargi 0.3.9), each against its own registry; the other kinds have schema 1.
 package marshaljson
 
 import (
 	"bytes"
 	"errors"
+	"slices"
 )
 
 // Kind selects the expected contract before reading a document.
@@ -29,18 +34,57 @@ type Revision struct {
 	observed bool
 }
 
+// Severity is how seriously a warning of a check document asks to be taken.
+type Severity string
+
+const (
+	// SeverityInfo is an ordinary warning: a stale or absent lead, an abandoned
+	// feature, files that another open feature also changes.
+	SeverityInfo Severity = "info"
+	// SeverityDamaging means the record's evidence cannot be trusted as stated,
+	// for instance because its shared ref vanished from the remote.
+	SeverityDamaging Severity = "damaging"
+	// SeverityUnclassified marks a schema 1 warning, which carries text only.
+	SeverityUnclassified Severity = "unclassified"
+)
+
+// Warning is one warning of a check document. Feature names the feature it
+// concerns, or is empty when the document names none. Text is display data.
+type Warning struct {
+	Feature  string
+	Text     string
+	Severity Severity
+}
+
 // Document holds the known fields of a snapshot. Its zero value is unusable.
 // Objects are map[string]any, arrays are []any and integers are int64,
 // except for rev, which is a Revision.
 type Document struct {
 	kind                       Kind
+	schema                     int64
 	fields                     map[string]any
 	revisions                  map[string]Revision
+	warnings                   []Warning
 	unknown, stale, incomplete bool
 }
 
 func (d Document) Kind() Kind    { return d.kind }
 func (d Document) Unknown() bool { return d.unknown }
+
+// Schema is the integer the document was read at (0 for an oversize capture
+// and for the zero document).
+func (d Document) Schema() int { return int(d.schema) }
+
+// Warnings returns the warnings of a check document, the document's own first
+// and then those of each feature row, as a copy. A schema 1 warning has the
+// severity SeverityUnclassified.
+func (d Document) Warnings() []Warning { return slices.Clone(d.warnings) }
+
+// Damaging reports whether any warning has the severity SeverityDamaging. Such
+// a document also reports Incomplete, so it never gives usable evidence.
+func (d Document) Damaging() bool {
+	return slices.ContainsFunc(d.warnings, func(w Warning) bool { return w.Severity == SeverityDamaging })
+}
 
 // Stale reports document-wide staleness, including a stale named check.
 func (d Document) Stale() bool { return d.stale }
@@ -117,8 +161,7 @@ func (d Document) RefusalReason() string {
 // An oversized document yields incomplete evidence with no decoded fields.
 // An error always returns the zero document. Use DecodeResult for verb output.
 func Decode(expected Kind, data []byte) (Document, error) {
-	s := schemas[expected]
-	if s == nil {
+	if schemas[expected] == nil {
 		return Document{}, errors.New("unsupported J1 kind")
 	}
 	if expected == Refusal {
@@ -135,11 +178,13 @@ func Decode(expected Kind, data []byte) (Document, error) {
 	if err != nil {
 		return Document{}, err
 	}
-	// These two markers are the only const fields in the four registries.
-	if fields["kind"] != string(expected) || fields["schema"] != int64(1) {
+	// These two markers are the only const fields in the registries.
+	schema, _ := fields["schema"].(int64)
+	s := schemas[expected][schema]
+	if fields["kind"] != string(expected) || s == nil {
 		return Document{}, errors.New("unexpected kind or unsupported schema")
 	}
-	d := Document{kind: expected, fields: fields}
+	d := Document{kind: expected, schema: schema, fields: fields}
 	if err := s.check(fields, s.Defs, &d.unknown); err != nil {
 		return Document{}, err
 	}
@@ -203,8 +248,28 @@ func nonemptyList(v any) bool {
 	return len(items) != 0
 }
 
+// collectWarnings records the warnings of one object, a document or a row.
+// The shape check has already fixed their type: strings at schema 1 and
+// {text, severity} objects at schema 2.
+func (d *Document) collectWarnings(feature string, v any) {
+	items, _ := v.([]any)
+	for _, item := range items {
+		w := Warning{Feature: feature, Severity: SeverityUnclassified}
+		switch item := item.(type) {
+		case string:
+			w.Text = item
+		case map[string]any:
+			w.Text, _ = item["text"].(string)
+			w.Severity = Severity(item["severity"].(string))
+		}
+		d.warnings = append(d.warnings, w)
+	}
+}
+
 func (d *Document) assess() {
 	f := d.fields
+	name, _ := f["feature"].(string)
+	d.collectWarnings(name, f["warnings"])
 	remote := f["remote"]
 	d.stale = remote == "unchecked" || remote == "not-asked" || f["answer"] == "free-stale"
 	d.incomplete = f["backend_fallback"] == true || f["truncated"] == true ||
@@ -229,6 +294,7 @@ func (d *Document) assess() {
 		name, _ := row["feature"].(string)
 		record := row
 		incomplete := nonemptyList(row["warnings"])
+		d.collectWarnings(name, row["warnings"])
 		if d.kind == Handoff {
 			name = row["name"].(string)
 			record = row["record"].(map[string]any)
