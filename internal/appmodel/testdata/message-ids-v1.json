@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "Whole conversation message IDs: {authority, lead, conversation, segment generation, seq} and their canonical text. Desk and seat must reproduce the text from the tuple. Synthetic names only.",
+  "note": "Whole conversation message IDs: {authority, lead, conversation, segment generation, seq} and their canonical text. The seq is the entry's number among those its viewer's projection does not hide, so a hidden entry leaves no gap; the text form does not depend on that rule. Desk and seat must reproduce the text from the tuple. Synthetic names only.",
   "valid": [
     {"name": "first-entry", "id": {"authority": "auth-a", "lead": "lead-a", "conversation": "conv-a", "generation": 1, "seq": 1}, "text": "m1/auth-a/lead-a/conv-a/1/1"},
     {"name": "later-segment", "id": {"authority": "auth-a", "lead": "lead-a", "conversation": "conv-a", "generation": 2, "seq": 1}, "text": "m1/auth-a/lead-a/conv-a/2/1"},

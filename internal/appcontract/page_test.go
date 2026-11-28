@@ -289,15 +289,15 @@ func TestCF04Page(t *testing.T) {
 			}
 			cursor = p.Older
 		}
-		if !reflect.DeepEqual(order, []uint64{1, 2, 3, 5}) {
-			t.Errorf("viewer-b saw sequences %v, want [1 2 3 5]: withheld stays, hidden vanishes", order)
+		if !reflect.DeepEqual(order, []uint64{1, 2, 3, 4}) {
+			t.Errorf("viewer-b saw numbers %v, want [1 2 3 4]: withheld stays, hidden vanishes and leaves no gap", order)
 		}
 		wantMarker := PageEntry{ID: appmodel.MessageID{Authority: "auth-a", Lead: "lead-a", Conversation: "conv-a", Generation: 1, Seq: 2}, Kind: KindWithheld}
 		if !reflect.DeepEqual(marker, wantMarker) {
 			t.Errorf("withheld marker %+v, want only %+v", marker, wantMarker)
 		}
 		if gotAll := mustRead(t, w.reader, pageReq("viewer-b", Backward, "", 10)); gotAll.State != PageEnd {
-			t.Errorf("a hidden entry made a %s page; visible IDs may skip without a gap", gotAll.State)
+			t.Errorf("a hidden entry made a %s page", gotAll.State)
 		}
 		full := mustRead(t, w.reader, pageReq("viewer-a", Backward, "", 10))
 		if len(full.Entries) != 5 {
@@ -547,11 +547,14 @@ func TestPageRefusesInvalidSnapshots(t *testing.T) {
 		return s
 	}
 	for name, s := range map[string]Snapshot{
-		"no segment":         edit(func(s *Snapshot) { s.Segment = 0 }),
-		"no start":           edit(func(s *Snapshot) { s.Start = 0 }),
-		"floor below start":  edit(func(s *Snapshot) { s.Start = 2 }),
-		"floor above head":   edit(func(s *Snapshot) { s.Floor = 4 }),
-		"entry below floor":  edit(func(s *Snapshot) { s.Floor = 2 }),
+		"no segment":        edit(func(s *Snapshot) { s.Segment = 0 }),
+		"no start":          edit(func(s *Snapshot) { s.Start = 0 }),
+		"floor below start": edit(func(s *Snapshot) { s.Start = 2 }),
+		"floor above head":  edit(func(s *Snapshot) { s.Floor = 4 }),
+		"entry below floor": edit(func(s *Snapshot) { s.Floor = 2 }),
+		"hidden pruned more than pruned": edit(func(s *Snapshot) {
+			s.Start, s.Floor, s.HiddenBelowFloor = 1, 1, 1
+		}),
 		"entry above head":   edit(func(s *Snapshot) { s.Head = 1 }),
 		"repeated sequence":  edit(func(s *Snapshot) { s.Entries[1].Seq = 1 }),
 		"unordered":          edit(func(s *Snapshot) { s.Entries[0], s.Entries[1] = s.Entries[1], s.Entries[0] }),
@@ -649,4 +652,107 @@ func TestPageCursorContexts(t *testing.T) {
 	if _, err := codec.decode(pageInstance, fwd, tok, 2, 0); err == nil {
 		t.Error("another segment generation decoded")
 	}
+}
+
+// TestHiddenEntriesLeaveNoTraceInIDs holds that the message IDs a viewer reads
+// are consecutive whatever the projection hides: a hidden entry consumes no
+// number, in either direction, by cursor, after retention pruned entries and
+// after a new one is appended, so neither a gap nor a count shows through.
+func TestHiddenEntriesLeaveNoTraceInIDs(t *testing.T) {
+	// The viewer's rule: every entry whose text starts with "x" is hidden.
+	hideX := func(e Entry) Disclosure {
+		if strings.HasPrefix(e.Text, "x") {
+			return Hidden
+		}
+		return Disclosed
+	}
+	setup := func(retention Retention) *pageFixture {
+		f := newPageFixture(t, retention)
+		f.source.Grant("viewer-b", hideX)
+		return f
+	}
+	add := func(f *pageFixture, texts ...string) {
+		for _, tx := range texts {
+			f.clock.Advance(time.Second)
+			f.source.Append(Entry{Kind: KindReply, Text: tx})
+		}
+	}
+	texts := func(p Page) []string {
+		out := []string{}
+		for _, e := range p.Entries {
+			out = append(out, e.Text)
+		}
+		return out
+	}
+
+	t.Run("NoGapWhateverIsHidden", func(t *testing.T) {
+		f := setup(Retention{})
+		add(f, "x1", "a", "x2", "x3", "b", "x4", "c", "x5")
+		whole := mustRead(t, f.reader, pageReq("viewer-b", Backward, "", 50))
+		wantSeqs(t, "backward", whole, 1, 2, 3)
+		if !reflect.DeepEqual(texts(whole), []string{"a", "b", "c"}) || whole.State != PageEnd {
+			t.Errorf("page %v, state %s", texts(whole), whole.State)
+		}
+		// One entry per page, newest first, past hidden entries by cursor.
+		var got []uint64
+		cursor := ""
+		for i := 0; i < 8; i++ {
+			p := mustRead(t, f.reader, pageReq("viewer-b", Backward, cursor, 1))
+			got = append(append([]uint64{}, seqs(p)...), got...)
+			if p.State == PageEnd {
+				break
+			}
+			cursor = p.Older
+		}
+		if !reflect.DeepEqual(got, []uint64{1, 2, 3}) {
+			t.Errorf("by cursor %v", got)
+		}
+		// Forward from before the first visible entry.
+		fwd := mustRead(t, f.reader, pageReq("viewer-b", Forward, whole.Newer, 50))
+		if len(fwd.Entries) != 0 {
+			t.Errorf("forward from the head: %v", texts(fwd))
+		}
+		first := mustRead(t, f.reader, pageReq("viewer-b", Backward, "", 1))
+		add(f, "x6", "d", "x7", "e")
+		f.source.Grant("viewer-b", hideX) // moves the projection: tokens reset
+		again := mustRead(t, f.reader, pageReq("viewer-b", Backward, "", 50))
+		wantSeqs(t, "after appends", again, 1, 2, 3, 4, 5)
+		if first.Entries[0].ID.Seq != 3 || again.Entries[2].ID != first.Entries[0].ID {
+			t.Errorf("an entry's ID changed with later appends: %+v then %+v", first.Entries[0].ID, again.Entries[2].ID)
+		}
+		// A viewer who hides nothing sees the authority's own sequence.
+		full := mustRead(t, f.reader, pageReq("viewer-a", Backward, "", 50))
+		wantSeqs(t, "full", full, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+	})
+
+	t.Run("ForwardKeepsTheNumbers", func(t *testing.T) {
+		f := setup(Retention{})
+		add(f, "a", "x1", "x2", "b")
+		start := mustRead(t, f.reader, pageReq("viewer-b", Backward, "", 50))
+		add(f, "x3", "c", "x4", "d")
+		next := mustRead(t, f.reader, pageReq("viewer-b", Forward, start.Newer, 50))
+		wantSeqs(t, "forward", next, 3, 4)
+		if !reflect.DeepEqual(texts(next), []string{"c", "d"}) {
+			t.Errorf("forward %v", texts(next))
+		}
+	})
+
+	t.Run("PruningKeepsTheNumbers", func(t *testing.T) {
+		f := setup(Retention{MaxEntries: 4})
+		add(f, "x1", "a", "b")
+		before := mustRead(t, f.reader, pageReq("viewer-b", Backward, "", 50))
+		wantSeqs(t, "before", before, 1, 2)
+		add(f, "x2", "c") // prunes x1 (hidden), then "a" is still kept
+		mid := mustRead(t, f.reader, pageReq("viewer-b", Backward, "", 50))
+		wantSeqs(t, "after one hidden pruned", mid, 1, 2, 3)
+		add(f, "d") // prunes "a"; the first visible number is still 2
+		after := mustRead(t, f.reader, pageReq("viewer-b", Backward, "", 50))
+		if !reflect.DeepEqual(texts(after), []string{"b", "c", "d"}) {
+			t.Fatalf("retained %v", texts(after))
+		}
+		wantSeqs(t, "after pruning", after, 2, 3, 4)
+		if after.State != PageGap {
+			t.Errorf("state %s", after.State)
+		}
+	})
 }

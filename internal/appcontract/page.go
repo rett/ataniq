@@ -33,6 +33,9 @@ const (
 	// the page shows a content-free marker in its place.
 	Withheld
 	// Hidden: even existence is hidden; the page shows nothing and no count.
+	// A hidden entry consumes no sequence number of the page's message IDs: the
+	// reader numbers the entries the projection does not hide without a gap (see
+	// Snapshot.HiddenBelowFloor), so the visible IDs leave no trace of it.
 	Hidden
 )
 
@@ -55,9 +58,18 @@ type Entry struct {
 // so Floor > Start is a known loss. Entries holds the retained records,
 // ascending, each with sequence from Floor through Head. Statuses holds the
 // current status of the commands the entries name, under the viewer's rights.
+//
+// Entry sequences are the authority's, across every entry of the segment. The
+// message ID of a page entry carries instead the entry's number among the
+// entries the viewer's projection does not hide: its sequence less the entries
+// hidden below it. HiddenBelowFloor is how many of the entries below Floor (the
+// pruned ones) were hidden for this viewer, so that retention pruning leaves
+// every ID as it was; it is at most Floor-Start. A viewer whose projection hides
+// nothing sees the authority's sequence in its IDs.
 type Snapshot struct {
 	Segment, Projection uint64
 	Start, Floor, Head  uint64
+	HiddenBelowFloor    uint64
 	Entries             []Entry
 	Statuses            map[appmodel.CommandKey]appmodel.CurrentStatus
 }
@@ -204,6 +216,7 @@ func (r *PageReader) Read(req PageRequest) (Page, error) {
 	}
 	ctx := pageCursor{viewer: req.Viewer, project: req.Project.ID, conversation: req.Conversation.ID, lead: req.Lead,
 		forward: req.Direction == Forward, projection: snap.Projection}
+	vseq := visibleSeqs(snap)
 	var position uint64
 	if req.Cursor != "" {
 		position, err = r.codec.decode(r.instance, ctx, req.Cursor, snap.Segment, snap.Head)
@@ -215,11 +228,11 @@ func (r *PageReader) Read(req PageRequest) (Page, error) {
 	switch {
 	case req.Direction == Forward:
 		var next uint64
-		page.Entries, page.State, next = r.forward(req, snap, position, limit)
+		page.Entries, page.State, next = r.forward(req, snap, vseq, position, limit)
 		return r.withNewer(req, snap, page, next)
 	case req.Cursor == "":
 		var exhausted bool
-		page.Entries, exhausted, position = r.backward(req, snap, snap.Head+1, limit)
+		page.Entries, exhausted, position = r.backward(req, snap, vseq, snap.Head+1, limit)
 		page.State = r.olderState(snap, exhausted)
 		if page, err = r.withOlder(req, snap, page, position); err != nil {
 			return Page{}, err
@@ -227,7 +240,7 @@ func (r *PageReader) Read(req PageRequest) (Page, error) {
 		return r.withNewer(req, snap, page, snap.Head)
 	default:
 		var exhausted bool
-		page.Entries, exhausted, position = r.backward(req, snap, position, limit)
+		page.Entries, exhausted, position = r.backward(req, snap, vseq, position, limit)
 		page.State = r.olderState(snap, exhausted)
 		return r.withOlder(req, snap, page, position)
 	}
@@ -271,7 +284,8 @@ func (r *PageReader) withNewer(req PageRequest, s Snapshot, p Page, position uin
 
 func (r *PageReader) validSnapshot(s Snapshot) error {
 	if s.Segment == 0 || s.Segment > math.MaxInt64 || s.Projection > math.MaxInt64 ||
-		s.Start == 0 || s.Head > math.MaxInt64 || s.Floor < s.Start || s.Floor > s.Head+1 {
+		s.Start == 0 || s.Head > math.MaxInt64 || s.Floor < s.Start || s.Floor > s.Head+1 ||
+		s.HiddenBelowFloor > s.Floor-s.Start {
 		return errInvalid
 	}
 	prev := s.Floor - 1
@@ -305,8 +319,26 @@ func (r *PageReader) validCommand(k appmodel.CommandKey) bool {
 	return k.Authority == r.instance.Authority && validID(k.EnrolledClientID) && validID(string(k.CommandID))
 }
 
-func (r *PageReader) entry(req PageRequest, s Snapshot, e Entry) PageEntry {
-	id := appmodel.MessageID{Authority: r.instance.Authority, Lead: req.Lead, Conversation: req.Conversation.ID, Generation: s.Segment, Seq: e.Seq}
+// visibleSeqs numbers the snapshot's entries for their message IDs, parallel to
+// s.Entries: an entry's sequence less the entries hidden below it, counting the
+// pruned ones through HiddenBelowFloor. A hidden entry has no number of its own
+// and is never shown, so the numbers of the others have no gap where it was.
+// validSnapshot has checked that no number falls below Start.
+func visibleSeqs(s Snapshot) []uint64 {
+	out := make([]uint64, len(s.Entries))
+	hidden := s.HiddenBelowFloor
+	for i, e := range s.Entries {
+		if e.Disclosure == Hidden {
+			hidden++
+			continue
+		}
+		out[i] = e.Seq - hidden
+	}
+	return out
+}
+
+func (r *PageReader) entry(req PageRequest, s Snapshot, e Entry, seq uint64) PageEntry {
+	id := appmodel.MessageID{Authority: r.instance.Authority, Lead: req.Lead, Conversation: req.Conversation.ID, Generation: s.Segment, Seq: seq}
 	if e.Disclosure == Withheld {
 		return PageEntry{ID: id, Kind: KindWithheld}
 	}
@@ -332,7 +364,7 @@ func cost(p PageEntry) int { return EntryOverhead + len(p.Text) }
 // so the boundary passes it, but it is neither shown nor counted. exhausted
 // reports that nothing retained lies below the returned boundary, which is the
 // lowest sequence examined.
-func (r *PageReader) backward(req PageRequest, s Snapshot, before uint64, limit int) (entries []PageEntry, exhausted bool, lowest uint64) {
+func (r *PageReader) backward(req PageRequest, s Snapshot, vseq []uint64, before uint64, limit int) (entries []PageEntry, exhausted bool, lowest uint64) {
 	var rev []PageEntry
 	bytes := 0
 	lowest = before
@@ -343,7 +375,7 @@ func (r *PageReader) backward(req PageRequest, s Snapshot, before uint64, limit 
 	for ; i >= 0; i-- {
 		e := s.Entries[i]
 		if e.Disclosure != Hidden {
-			p := r.entry(req, s, e)
+			p := r.entry(req, s, e, vseq[i])
 			if len(rev) == limit || (len(rev) > 0 && bytes+cost(p) > MaxPageBytes) {
 				break
 			}
@@ -363,7 +395,7 @@ func (r *PageReader) backward(req PageRequest, s Snapshot, before uint64, limit 
 // the same bounds, and the position the next forward read resumes from: the
 // newest sequence examined. Its state is PageGap when retention pruned entries
 // the reader never saw (after+1 is below the oldest retained), else PageMore.
-func (r *PageReader) forward(req PageRequest, s Snapshot, after uint64, limit int) (entries []PageEntry, state PageState, next uint64) {
+func (r *PageReader) forward(req PageRequest, s Snapshot, vseq []uint64, after uint64, limit int) (entries []PageEntry, state PageState, next uint64) {
 	state = PageMore
 	if after+1 < s.Floor {
 		state = PageGap
@@ -371,12 +403,12 @@ func (r *PageReader) forward(req PageRequest, s Snapshot, after uint64, limit in
 	entries = []PageEntry{}
 	bytes := 0
 	next = s.Head
-	for _, e := range s.Entries {
+	for i, e := range s.Entries {
 		if e.Seq <= after {
 			continue
 		}
 		if e.Disclosure != Hidden {
-			p := r.entry(req, s, e)
+			p := r.entry(req, s, e, vseq[i])
 			if len(entries) == limit || (len(entries) > 0 && bytes+cost(p) > MaxPageBytes) {
 				return entries, state, e.Seq - 1
 			}

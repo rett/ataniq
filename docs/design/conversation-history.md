@@ -34,8 +34,13 @@ Address the existing `appcontract.ConversationResource` by its project and
 admission. The authority gives each entry one stable message ID
 **{authority, lead, conversation, segment generation, seq}**. Lead identifies
 the stable lead role, conversation is the ID from that ref, and seq orders
-entries within the segment. A fresh readable segment gets a fresh generation.
-An attach, a page refresh or a change of viewer preserves the ID. Desk and seat
+entries within the segment. It counts the entries the reading viewer's
+disclosure projection does not hide, so a hidden entry consumes no number and
+the IDs of what a viewer sees run without a gap; the snapshot carries how many
+pruned entries were hidden, so retention never renumbers. For a projection that
+hides nothing it is the authority's sequence. A fresh readable segment gets a
+fresh generation. An attach or a page refresh preserves the ID, and so does a
+change of viewer whose projection hides the same entries below it. Desk and seat
 deduplicate by the whole tuple. Preserve existing event and cause IDs when an
 entry refers to those events. [Resource definition](../../internal/appcontract/resource.go)
 and [event identities](../../internal/appcontract/projection.go).
@@ -68,7 +73,7 @@ and [replay contract](client-protocol.md#events-replay-and-snapshots).
 | **end** | The authority can account for the start of the readable segment. Show its beginning and stop paging. An empty new segment can end here. |
 | **gap** | A valid read reaches a known loss, such as entries pruned by retention. Mark the break at the oldest retained boundary. Never infer loss or its size from nonconsecutive visible IDs. |
 | **reset** | An expired or invalid continuation, changed segment, instance or disclosure projection requires `reset_required` for an authorized reader. Discard the old page and cursor and obtain a fresh authorized snapshot. Show a gap there if retention cut off older entries. |
-| **withheld** | Render an authorized omission as a content-free marker. Continue paging past it if a cursor is supplied. When even existence is hidden, suppress the marker and any identifying counts. |
+| **withheld** | Render an authorized omission as a content-free marker. Continue paging past it if a cursor is supplied. When even existence is hidden, suppress the marker and any identifying counts, including a gap in the visible numbers: the reader numbers the visible entries consecutively. |
 
 Proposed retention per conversation is the newest **500 entries** within
 **14 days**, whichever limit removes an entry first. Evicting a display entry
