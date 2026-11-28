@@ -54,9 +54,11 @@ const (
 	// was already carried out, and the text says to check the role's status.
 	CodeRefused clientapi.ErrorCode = "refused"
 	// CodeUnavailable: the operation could not be carried out: nothing reached
-	// the holder (the control socket could not be dialled or the request frame
-	// could not be written), the holder refused an inject with disabled,
-	// wrong-epoch, busy or bad-request, or the unit manager could not do it.
+	// the holder (the evidence took no line, or the control socket could not be
+	// dialled or its write deadline set; a frame that failed to write is an
+	// uncertain result, not this code), the holder refused an inject with
+	// disabled, wrong-epoch, busy or bad-request, or the unit manager could not
+	// do it.
 	CodeUnavailable clientapi.ErrorCode = "unavailable"
 )
 

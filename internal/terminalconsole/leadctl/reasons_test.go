@@ -488,7 +488,8 @@ func TestResultWordsAreShortASCIIAndSayWhetherTheEpochIsSpent(t *testing.T) {
 // in three cases, each once the line that says so is in the evidence: the
 // holder answered not delivered (a result of not-now or refused with nothing
 // written), the holder refused the request itself (not busy), or the request
-// was never sent (the holder's socket could not be dialled). The name of the
+// was never sent (the holder's socket could not be dialled, or its write
+// deadline could not be set). The name of the
 // test keeps the first words of the older rule. It reads the daemon's source; a
 // change there is a change of the view's words.
 func TestTheDaemonSpendsTheMessageWhenTheRequestIsWrittenUnlessItWasNotDelivered(t *testing.T) {
