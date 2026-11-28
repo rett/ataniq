@@ -30,6 +30,16 @@ type causesCursor struct {
 }
 type adminCursor struct{ viewer, actor, command string }
 
+// pageCursor scopes a conversation page read to the viewer, project,
+// conversation, lead, direction and the disclosure projection generation. The
+// segment generation travels as the token's generation, so a changed segment
+// fails to decode; the snapshot boundary is the sealed position.
+type pageCursor struct {
+	viewer, project, conversation, lead string
+	forward                             bool
+	projection                          uint64
+}
+
 func (c eventsCursor) cursorFields(i Instance) ([][]byte, error) {
 	if !validID(c.viewer) || !validID(c.project) || !validID(c.conversation) {
 		return nil, errInvalid
@@ -48,6 +58,16 @@ func (c adminCursor) cursorFields(i Instance) ([][]byte, error) {
 	}
 	return [][]byte{byteField(2), []byte(c.viewer), []byte("admin-lookup"), nil, nil, []byte(c.actor), []byte(c.command)}, nil
 }
+func (c pageCursor) cursorFields(i Instance) ([][]byte, error) {
+	if !validID(c.viewer) || !validID(c.project) || !validID(c.conversation) || !validID(c.lead) || c.projection > math.MaxInt64 {
+		return nil, errInvalid
+	}
+	kind := "page-backward"
+	if c.forward {
+		kind = "page-forward"
+	}
+	return [][]byte{byteField(2), []byte(c.viewer), []byte(kind), []byte(c.project), []byte(c.conversation), []byte(c.lead), number(c.projection)}, nil
+}
 func cursorDigest(i Instance, c cursorContext) ([32]byte, error) {
 	if !validID(i.Authority) || c == nil {
 		return [32]byte{}, errInvalid
@@ -60,6 +80,8 @@ func cursorDigest(i Instance, c cursorContext) ([32]byte, error) {
 	case causesCursor:
 		f, err = v.cursorFields(i)
 	case adminCursor:
+		f, err = v.cursorFields(i)
+	case pageCursor:
 		f, err = v.cursorFields(i)
 	default:
 		return [32]byte{}, errInvalid
@@ -153,6 +175,11 @@ func cursorBounds(c cursorContext, position, generation, tail uint64) bool {
 		return generation == 0 && tail == v.head && position >= v.ack
 	case adminCursor:
 		return generation == 0 && position > 0
+	case pageCursor:
+		// The generation is the segment's; a backward position names the
+		// oldest entry already read, a forward one the newest examined, which
+		// is 0 only while the segment holds nothing.
+		return generation > 0 && (v.forward || position > 0)
 	default:
 		return false
 	}
@@ -196,6 +223,10 @@ func (codec *cursorCodec) decode(i Instance, c cursorContext, token string, gene
 		probe = v.ack
 	case adminCursor:
 		probe = 1
+	case pageCursor:
+		if v.forward {
+			probe = 0
+		}
 	}
 	if !cursorBounds(c, probe, generation, tail) {
 		return 0, errCursor
