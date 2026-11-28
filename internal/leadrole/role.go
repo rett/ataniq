@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-
-	"ataniq/internal/leadsandbox/profile"
 )
 
 // MaxProjectLen is the longest accepted project name, in bytes.
@@ -198,6 +196,30 @@ func (r Role) UnitName() string {
 	return r.unitName("")
 }
 
+// authorityLen is the length of a public authority fingerprint, in hex digits
+// of a SHA-256 digest, and authorityTagLen the length of its short tag.
+const (
+	authorityLen    = 64
+	authorityTagLen = 16
+)
+
+// ShortAuthorityTag takes the first sixteen hex digits of a public authority
+// fingerprint, which must be 64 lower-case hex digits. The error wraps
+// ErrInvalid. It lives here because the launch matcher depends on this package
+// and may not depend on the sandbox profile.
+func ShortAuthorityTag(authority string) (string, error) {
+	if len(authority) != authorityLen {
+		return "", fmt.Errorf("%w: instance authority must be %d lower-case hex digits", ErrInvalid, authorityLen)
+	}
+	for i := 0; i < len(authority); i++ {
+		c := authority[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return "", fmt.Errorf("%w: instance authority must be %d lower-case hex digits", ErrInvalid, authorityLen)
+		}
+	}
+	return authority[:authorityTagLen], nil
+}
+
 // QualifiedUnitName inserts the instance's short authority tag before
 // ".service". A dot separates the tag from the role because neither a project
 // nor a feature can contain one. Their 63-byte limits keep even a qualified
@@ -208,7 +230,7 @@ func (r Role) UnitName() string {
 // is a collision, even if both fingerprints have the same short tag. Pass nil
 // to derive a name without checking occupancy.
 func (r Role) QualifiedUnitName(authority string, owners map[string]string) (string, error) {
-	tag, err := profile.ShortAuthorityTag(authority)
+	tag, err := ShortAuthorityTag(authority)
 	if err != nil {
 		return "", err
 	}

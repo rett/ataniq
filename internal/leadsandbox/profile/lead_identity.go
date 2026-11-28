@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"regexp"
+
+	"ataniq/internal/leadrole"
 )
 
 const authorityTagLen = 16
@@ -12,10 +14,11 @@ var authorityTagChars = regexp.MustCompile(`^[0-9a-f]+$`)
 
 // ShortAuthorityTag takes the first sixteen hex digits of a public authority fingerprint.
 func ShortAuthorityTag(authority string) (string, error) {
-	if err := checkSHA256("instance authority", authority); err != nil {
-		return "", err
+	tag, err := leadrole.ShortAuthorityTag(authority)
+	if err != nil {
+		return "", refuse("instance authority", "must be 64 lower-case hex digits")
 	}
-	return authority[:authorityTagLen], nil
+	return tag, nil
 }
 
 // QualifiedLeadIdentity names a managed lead from the public tag in its launch inputs.
