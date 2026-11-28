@@ -82,7 +82,7 @@ func TestRevokeClosesEveryLinkForOnePrincipal(t *testing.T) {
 		raw, done := serve(t, &r, server, HandlerFunc(func(context.Context, Peer, net.Conn) error {
 			return nil
 		}))
-		c, err := Connect(t.Context(), raw, id, server.Fingerprint())
+		c, err := Connect(t.Context(), raw, id, server.Fingerprint(), testHomeID)
 		if err == nil {
 			c.Read(make([]byte, 1)) // take the server's TLS alert
 		}
@@ -121,7 +121,7 @@ func TestRevokeDuringHandshakeCannotInheritNewRole(t *testing.T) {
 	c := &handshakeStarted{Conn: raw, read: make(chan struct{})}
 	done := make(chan error, 1)
 	go func() {
-		done <- ServeConn(t.Context(), c, server, &r, HandlerFunc(func(context.Context, Peer, net.Conn) error {
+		done <- ServeConn(t.Context(), c, server, testHomeID, &r, HandlerFunc(func(context.Context, Peer, net.Conn) error {
 			return nil
 		}))
 	}()

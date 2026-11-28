@@ -53,23 +53,35 @@ func handshake(ctx context.Context, c *tls.Conn) error {
 	return c.HandshakeContext(ctx)
 }
 
+// Conn is the authenticated client stream and its session-specific binding.
+type Conn struct {
+	*tls.Conn
+	ChannelBinding ChannelBinding
+}
+
 // Connect authenticates the server's pinned key and presents the device key
-// over raw. The caller owns the resulting TLS stream. On error Connect closes
+// over raw. Both ends supply the same configured home ID for the channel binding.
+// The caller owns the resulting TLS stream. On error Connect closes
 // raw. As in TLS 1.3 generally, the first read may report rejection of the
 // client certificate after the client-side handshake has completed.
-func Connect(ctx context.Context, raw net.Conn, device seatgate.Identity, pinnedServer string) (*tls.Conn, error) {
+func Connect(ctx context.Context, raw net.Conn, device seatgate.Identity, pinnedServer, homeID string) (*Conn, error) {
 	c := tls.Client(raw, deskTLS(seatgate.ClientTLS(device, pinnedServer, "")))
 	if err := handshake(ctx, c); err != nil {
 		raw.Close()
 		return nil, err
 	}
-	return c, nil
+	binding, err := channelBinding(c.ConnectionState(), homeID)
+	if err != nil {
+		raw.Close()
+		return nil, err
+	}
+	return &Conn{Conn: c, ChannelBinding: binding}, nil
 }
 
 // ServeConn owns raw and closes it on return. It authenticates the device and
 // registers the session for revocation before giving h any application bytes.
 // It returns the handshake, admission or handler error to the local caller.
-func ServeConn(ctx context.Context, raw net.Conn, server seatgate.Identity, r *Registry, h Handler) error {
+func ServeConn(ctx context.Context, raw net.Conn, server seatgate.Identity, homeID string, r *Registry, h Handler) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	s := &session{raw: raw, cancel: cancel}
@@ -89,8 +101,13 @@ func ServeConn(ctx context.Context, raw net.Conn, server seatgate.Identity, r *R
 	if err := handshake(ctx, c); err != nil {
 		return err
 	}
+	state := c.ConnectionState()
+	binding, err := channelBinding(state, homeID)
+	if err != nil {
+		return err
+	}
 	// ServerTLS requires exactly one verified client certificate.
-	sum := sha256.Sum256(c.ConnectionState().PeerCertificates[0].RawSubjectPublicKeyInfo)
+	sum := sha256.Sum256(state.PeerCertificates[0].RawSubjectPublicKeyInfo)
 	pin := hex.EncodeToString(sum[:])
 	d := enrolled[pin]
 	if !r.attach(pin, d, s) {
@@ -102,5 +119,5 @@ func ServeConn(ctx context.Context, raw net.Conn, server seatgate.Identity, r *R
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return h.ServeDesk(ctx, Peer{Fingerprint: pin, Principal: d.principal}, c)
+	return h.ServeDesk(ctx, Peer{Fingerprint: pin, Principal: d.principal, ChannelBinding: binding}, c)
 }
