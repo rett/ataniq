@@ -115,6 +115,8 @@ type readyObserver struct {
 	gen    uint64
 	epoch  uint64
 	cancel context.CancelFunc
+	// Only this observer's polling goroutine reads and writes missedStatus.
+	missedStatus bool
 }
 
 // startObservers lets observers run, under ctx (the server's: it ends when the
@@ -228,7 +230,7 @@ func (l *leadMode) observeReady(lr *leadRole, epoch uint64) {
 			}
 		}()
 		l.watchReady(ctx, lr, epoch)
-		l.watchHealth(ctx, lr, epoch)
+		l.watchHealth(ctx, lr, me)
 	}()
 }
 
@@ -364,7 +366,8 @@ func watchesHealth(e leadregistry.Entry) bool {
 	return e.Shown.State == leadregistry.StateReady || healthDegraded(e)
 }
 
-func (l *leadMode) watchHealth(ctx context.Context, lr *leadRole, epoch uint64) {
+func (l *leadMode) watchHealth(ctx context.Context, lr *leadRole, observer *readyObserver) {
+	epoch := observer.epoch
 	every := l.healthEvery
 	if every <= 0 {
 		every = DefaultHealthEvery
@@ -386,22 +389,30 @@ func (l *leadMode) watchHealth(ctx context.Context, lr *leadRole, epoch uint64) 
 		if err == nil && resp.OK {
 			status = resp.Status
 		}
-		l.recordHealth(ctx, lr, epoch, status)
+		l.recordHealth(ctx, lr, observer, status)
 		t.Reset(every)
 	}
 }
 
 // recordHealth applies one poll under the same operation lock as stop and
 // start. A busy role discards the sample and gets a fresh one next time.
-func (l *leadMode) recordHealth(ctx context.Context, lr *leadRole, epoch uint64, status *wire.Status) {
+func (l *leadMode) recordHealth(ctx context.Context, lr *leadRole, observer *readyObserver, status *wire.Status) {
+	epoch := observer.epoch
 	e, ok := lr.in.ext.runningEntry()
 	if ctx.Err() != nil || !ok || e.Epoch != epoch || !watchesHealth(e) {
 		return
 	}
+	// Any status breaks the streak of missed replies. A status for another
+	// role or epoch still supplies no evidence about this lead.
+	missedBefore := observer.missedStatus
+	observer.missedStatus = status == nil
 	state := leadregistry.StateDegraded
 	var reason leadregistry.Reason
 	switch {
 	case status == nil:
+		if !missedBefore {
+			return
+		}
 		reason = leadregistry.Reason{Code: codeHolderUnreachable, Detail: "the holder did not return a usable status"}
 	case status.Epoch != epoch || status.Lead != lr.role.String():
 		return

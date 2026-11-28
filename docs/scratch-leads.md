@@ -401,8 +401,11 @@ on the holder's word, and in no other way:
   started in its sandbox. The daemon checks neither login nor responsiveness.
   Every 30 seconds it asks the holder for status. If the holder reports that
   the agent exited or its process tree is gone, the desk shows `degraded` with
-  reason `lead-exited`. If contact fails or the holder returns no usable
-  status, the reason is `holder-unreachable`. For these two reasons the phone
+  reason `lead-exited` on that poll. The daemon shows `holder-unreachable`
+  after two consecutive polls in the same epoch fail to obtain a status.
+  A status for another lead or epoch breaks the streak and cannot change
+  the lead's state. Successful status polls add no command lines to the
+  holder's event log. For these two degraded reasons the phone
   overrides its usual `degraded` mapping and shows `unknown`. Polling resumes
   after daemon restart. A fresh status from the matching build, role and epoch
   that reports the agent still running restores `ready`. A late reply cannot
