@@ -1091,6 +1091,19 @@ func (b *inventoryBuild) registrations() {
 				continue
 			}
 			ptr := types.NewPointer(o.Type())
+			method := func(n string) *types.Func {
+				m, _, _ := types.LookupFieldOrMethod(ptr, false, o.Pkg(), n)
+				fn, _ := m.(*types.Func)
+				return fn
+			}
+			// Implements is unspecified for an uninstantiated generic type.
+			// Refuse possible handlers, including promoted pointer methods.
+			if named, ok := o.Type().(*types.Named); ok && named.TypeParams().Len() > 0 {
+				if method("Operations") != nil || method("Handle") != nil {
+					b.refuse("generic registration requires review: %s", b.symbol(o))
+				}
+				continue
+			}
 			if !types.Implements(ptr, it) {
 				continue
 			}
@@ -1098,11 +1111,6 @@ func (b *inventoryBuild) registrations() {
 			reg := b.symbol(o)
 			if o.Pkg().Path()+"."+o.Name() == b.interfaces.adapter {
 				continue
-			}
-			method := func(n string) *types.Func {
-				m, _, _ := types.LookupFieldOrMethod(ptr, false, o.Pkg(), n)
-				fn, _ := m.(*types.Func)
-				return fn
 			}
 			var list *types.Func
 			if name == b.interfaces.extension {
@@ -1459,7 +1467,7 @@ func TestPackInventoryRefusals(t *testing.T) {
 	// Each design case is a separate required input. Removing a tree must
 	// not silently turn its check green.
 	for _, required := range strings.Fields("seat-capability seat-dispatch computed-operations bool-configure capability-mode " +
-		"widening-import both-only desk-hook-on withdraw-body four-calls handler-func unknown-tag other-os nested-module excluded-capability hook-field session-tag plural-operation") {
+		"widening-import both-only desk-hook-on withdraw-body four-calls handler-func unknown-tag other-os nested-module excluded-capability hook-field session-tag plural-operation generic-extension") {
 		if !slices.ContainsFunc(cases, func(e fs.DirEntry) bool { return e.IsDir() && e.Name() == required }) {
 			t.Errorf("missing refusal fixture %s", required)
 		}
