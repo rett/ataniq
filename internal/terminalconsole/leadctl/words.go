@@ -78,6 +78,7 @@ var reasonWords = map[string]string{
 	"inject-not-offered":        "the daemon does not offer sending a message to this lead",
 	"viewer-ticket-not-offered": "the daemon does not offer a viewer ticket for this lead",
 	"writer-ticket-not-offered": "the daemon does not offer a writer ticket for this lead",
+	"writer-off":                "writer off: start with --scratch-writer",
 
 	// The control plane's own (leadwire).
 	"max-running":       "the limit of running leads is reached",

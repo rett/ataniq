@@ -225,7 +225,7 @@ func newDaemonRig(cfg config, mk newLeadsFunc) (*daemonRig, error) {
 	r := &daemonRig{cfg: cfg, read: consoleclient.Read, closes: []func(){closeOwner}}
 	r.cfg.options.Backend = owner
 	r.cfg.options = r.cfg.options.WithPairing(newPairAdapter(owner), pairOrigin(os.Getenv))
-	if r.leads = detectLeads(cfg.daemon, mk); r.leads != nil {
+	if r.leads = detectLeads(cfg.daemon, cfg.scratchWriter, mk); r.leads != nil {
 		r.cfg.options.Leads = r.leads
 		c := r.leads.c
 		r.closes = append(r.closes, func() { c.Close() })

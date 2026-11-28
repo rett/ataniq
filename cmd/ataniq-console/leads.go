@@ -62,13 +62,14 @@ type leadsClient interface {
 var _ leadsClient = (*consoleclient.Leads)(nil)
 
 // newLeadsFunc makes the lead client for a daemon: newLeadsClient, or a
-// test's own.
-type newLeadsFunc func(dir string) (leadsClient, error)
+// test's own. scratchWriter is the console's --scratch-writer.
+type newLeadsFunc func(dir string, scratchWriter bool) (leadsClient, error)
 
 // newLeadsClient makes consoleclient's client for the daemon whose socket is
-// in dir. It opens no connection.
-func newLeadsClient(dir string) (leadsClient, error) {
-	l, err := consoleclient.NewLeads(consoleclient.LeadsConfig{Dir: dir, Client: clientName})
+// in dir, offering the writer attach only when scratchWriter is true. It opens
+// no connection.
+func newLeadsClient(dir string, scratchWriter bool) (leadsClient, error) {
+	l, err := consoleclient.NewLeads(consoleclient.LeadsConfig{Dir: dir, Client: clientName, ScratchWriter: scratchWriter})
 	if err != nil {
 		return nil, err
 	}
@@ -88,6 +89,9 @@ const maxKinds = 64
 // remembers the kind of every done ticket, for the loop to read.
 type leadsAdapter struct {
 	c leadsClient
+	// scratchWriter is --scratch-writer: the leads view offers the writer
+	// attach, and this adapter asks for a writer ticket, only with it.
+	scratchWriter bool
 	// kindOf reads the attach kind of a done ticket: attachKindOf.
 	kindOf func(consoleclient.LeadReceipt) attachKind
 
@@ -97,8 +101,8 @@ type leadsAdapter struct {
 
 var _ leadctl.Backend = (*leadsAdapter)(nil)
 
-func newLeadsAdapter(c leadsClient) *leadsAdapter {
-	return &leadsAdapter{c: c, kindOf: attachKindOf, kinds: map[attachTarget]attachKind{}}
+func newLeadsAdapter(c leadsClient, scratchWriter bool) *leadsAdapter {
+	return &leadsAdapter{c: c, scratchWriter: scratchWriter, kindOf: attachKindOf, kinds: map[attachTarget]attachKind{}}
 }
 
 // List reads the leads.
@@ -110,7 +114,7 @@ func (a *leadsAdapter) List() (leadctl.Listing, error) {
 	out := leadctl.Listing{MaxRunning: l.MaxRunning, Running: l.Running, LeftOut: l.LeftOut}
 	for _, r := range l.Leads {
 		lead := leadctl.Lead{
-			Actions: rowActions(r),
+			Actions: rowActions(r, a.scratchWriter),
 			Key:     r.Key, Role: r.Role, Defined: r.Defined, Provision: r.Provision,
 			State: r.State, StateReason: r.StateReason, Epoch: r.Epoch, Unit: r.Unit, Inject: r.MessagesEnabled, MessageSpent: r.MessageSpent,
 			MessageResult: leadctl.Delivery{Outcome: r.MessageResult.Outcome, Reason: r.MessageResult.Reason, Written: r.MessageResult.Written},
@@ -127,7 +131,10 @@ func (a *leadsAdapter) List() (leadctl.Listing, error) {
 	return out, nil
 }
 
-func rowActions(row consoleclient.LeadRow) map[leadctl.Control]leadctl.Availability {
+// rowActions is the offer for a row. The writer ticket is offered only with
+// the flag, and then only as far as the daemon offers it: without the flag its
+// reason is the one that says how to turn it on, whatever the daemon offers.
+func rowActions(row consoleclient.LeadRow, scratchWriter bool) map[leadctl.Control]leadctl.Availability {
 	actions := make(map[leadctl.Control]leadctl.Availability, 6)
 	for _, c := range [...]leadctl.Control{
 		{Op: leadctl.OpDefine}, {Op: leadctl.OpStart}, {Op: leadctl.OpStop},
@@ -140,6 +147,9 @@ func rowActions(row consoleclient.LeadRow) map[leadctl.Control]leadctl.Availabil
 		}
 		if c.Op == leadctl.OpInject && !row.MessagesEnabled {
 			offer = leadctl.Availability{Reason: "messages-off"}
+		}
+		if c.Op == leadctl.OpTicket && c.Writer && !scratchWriter {
+			offer = leadctl.Availability{Reason: leadctl.ReasonWriterOff}
 		}
 		actions[c] = offer
 	}
@@ -167,6 +177,11 @@ func (a *leadsAdapter) Stop(role string, epoch uint64) (leadctl.Receipt, error) 
 // Ticket asks for an attach ticket. A done ticket's attach kind is
 // remembered for the loop.
 func (a *leadsAdapter) Ticket(role string, epoch uint64, writer bool) (leadctl.Receipt, error) {
+	if writer && !a.scratchWriter {
+		// The view does not offer it; a request that arrives all the same is
+		// refused here, and the lead client is not asked.
+		return leadctl.Receipt{Op: leadctl.OpTicket, Status: leadctl.Refused, Code: leadctl.ReasonWriterOff}, nil
+	}
 	cr, err := a.c.Ticket(role, epoch, writer)
 	r, err := a.answer(leadctl.Control{Op: leadctl.OpTicket, Writer: writer}, cr, err)
 	if err == nil && r.Status == leadctl.Done {
@@ -294,8 +309,8 @@ func viewReceipt(r consoleclient.LeadReceipt) (leadctl.Receipt, bool) {
 // nil otherwise, so that the console runs as it does without them. A daemon
 // that could not be asked is "otherwise" too; the console is started again to
 // ask again. The client is closed when it is not used.
-func detectLeads(dir string, mk newLeadsFunc) *leadsAdapter {
-	c, err := mk(dir)
+func detectLeads(dir string, scratchWriter bool, mk newLeadsFunc) *leadsAdapter {
+	c, err := mk(dir, scratchWriter)
 	if err != nil {
 		return nil
 	}
@@ -303,7 +318,7 @@ func detectLeads(dir string, mk newLeadsFunc) *leadsAdapter {
 		c.Close()
 		return nil
 	}
-	return newLeadsAdapter(c)
+	return newLeadsAdapter(c, scratchWriter)
 }
 
 // openLeadsKey is the key that opens the leads view, which the loop sends to
@@ -324,7 +339,8 @@ var errAttachPath = errors.New("the lead's attach socket path is too long for a 
 // terminalAttachConfig is the --attach configuration for a request of the view:
 // the folder's attach socket and the ticket file, as a writer or as a
 // viewer. The options are the console's own. A writer reads the one ticket
-// the view made from the ticket file. A viewer asks the daemon for a ticket
+// the view made from the ticket file, and, once it loses the writer role,
+// becomes a viewer with tickets from leads. A viewer asks the daemon for a ticket
 // each time it connects, through leads, for the role and epoch of the request,
 // and is pinned to them.
 func terminalAttachConfig(cfg config, req terminalconsole.AttachRequest, leads viewerTicketer) (config, error) {
@@ -332,7 +348,16 @@ func terminalAttachConfig(cfg config, req terminalconsole.AttachRequest, leads v
 	if len(socket) > maxSocketPath {
 		return config{}, errAttachPath
 	}
+	if req.Writer && !cfg.scratchWriter {
+		return config{}, errWriterOff
+	}
 	ac := &attachConfig{socket: socket, ticketFile: req.TicketFile, viewer: !req.Writer, shiftEnter: shiftEnters[0]}
+	if req.Writer && leads != nil {
+		// Once the writer role is lost the attach is a viewer for good, with
+		// viewer tickets for this lead and epoch; the first is a command of its
+		// own, as the ticket file holds a writer ticket.
+		ac.writerFallback = newViewerTickets(leads, req.Role, req.Epoch, req.Folder, "")
+	}
 	if !req.Writer {
 		if leads == nil {
 			return config{}, errNoViewerTickets
@@ -342,6 +367,10 @@ func terminalAttachConfig(cfg config, req terminalconsole.AttachRequest, leads v
 	}
 	return config{attach: ac, options: cfg.options}, nil
 }
+
+// errWriterOff is what a writer attach says when the console was not started
+// with --scratch-writer: the leads view does not offer one, so this is a guard.
+var errWriterOff = errors.New("writer off: start with --scratch-writer")
 
 // errNoViewerTickets is what a viewer attach says when the console has no lead
 // client to ask for tickets.

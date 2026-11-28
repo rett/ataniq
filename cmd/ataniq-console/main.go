@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -33,7 +34,7 @@ const defaultLinger = 30 * time.Second
 
 const usageLine = "Usage: ataniq-console --demo [--theme dark|light] [--return-key ctrl+KEY] [--recording NAME] [--linger DURATION] [--no-bell]\n" +
 	"       ataniq-console --attach DIR --ticket-file FILE [--viewer] [--shift-enter esc-cr|lf|csi-u|backslash-cr] [--theme dark|light] [--return-key ctrl+KEY]\n" +
-	"       ataniq-console --daemon DIR [--theme dark|light] [--no-bell]\n" +
+	"       ataniq-console --daemon DIR [--scratch-writer] [--theme dark|light] [--no-bell]\n" +
 	"--demo, --attach and --daemon exclude each other."
 
 // clientName is the name the console gives the holder, which shows it to the
@@ -68,6 +69,12 @@ type attachConfig struct {
 	tickets     leadattach.TicketSource
 	expectLead  string
 	expectEpoch uint64
+	// writerFallback, when set on a writer attach made from the leads view
+	// (--scratch-writer), is where the viewer tickets come from once the writer
+	// role is lost: the attach then stays a viewer for good (see
+	// leadattach.Config.ReconnectAsViewer) and never asks for a writer ticket
+	// again. With --attach it is nil: the ticket file is the one source.
+	writerFallback leadattach.TicketSource
 }
 
 // config is what the flags select.
@@ -77,8 +84,11 @@ type config struct {
 	attach *attachConfig
 	// daemon is the folder of the daemon's socket; empty unless --daemon was
 	// given.
-	daemon  string
-	options terminalconsole.Options
+	daemon string
+	// scratchWriter is --daemon's --scratch-writer: the leads view offers the
+	// writer attach for scratch leads. Without it the view is viewer-only.
+	scratchWriter bool
+	options       terminalconsole.Options
 }
 
 // parse reads the flags. On failure it has printed the diagnostic and usage to
@@ -98,6 +108,7 @@ func parse(args []string, errout io.Writer) (cfg config, code int, ok bool) {
 	viewer := flags.Bool("viewer", false, "with --attach: ask for the read-only place; the ticket decides which place the holder grants")
 	shiftEnter := flags.String("shift-enter", shiftEnters[0].String(), "with --attach: what Shift+Enter sends: "+strings.Join(shiftEnterNames(), ", "))
 	noBell := flags.Bool("no-bell", false, "with --demo or --daemon: do not ring the terminal's bell when a card arrives while you are away (the bell is on by default)")
+	scratchWriter := flags.Bool("scratch-writer", false, "with --daemon: offer the writer attach (key w) for scratch leads in the leads view; without it the leads view is viewer-only and never asks the daemon for a writer ticket (the managed directory never offers a writer)")
 	daemon := flags.String("daemon", "", "show the daemon's leads, its approvals when it serves the owner channel, and its lead control (key L) when it has one: the folder that holds the daemon's socket (provisional; not with --demo or --attach)")
 	usage := func() {
 		fmt.Fprintln(errout, usageLine)
@@ -146,6 +157,9 @@ func parse(args []string, errout io.Writer) (cfg config, code int, ok bool) {
 	if *linger < 0 || *linger > maxLinger {
 		return usageError("--linger must be between 0 and 1h")
 	}
+	if given["scratch-writer"] && !given["daemon"] {
+		return usageError("--scratch-writer needs --daemon")
+	}
 	if given["no-bell"] && !*demo && !given["daemon"] {
 		// The bell rings for a card, and only the sample backend of --demo
 		// and the daemon's approvals have cards.
@@ -168,7 +182,7 @@ func parse(args []string, errout io.Writer) (cfg config, code int, ok bool) {
 		case strings.ContainsRune(*daemon, 0):
 			return usageError("--daemon needs a path without a NUL byte")
 		}
-		cfg.daemon = *daemon
+		cfg.daemon, cfg.scratchWriter = *daemon, *scratchWriter
 		return cfg, 0, true
 	}
 	if !given["attach"] && !given["ticket-file"] {
@@ -230,19 +244,31 @@ func attachModel(cfg config) *terminalconsole.Model {
 		})
 		return terminalconsole.NewWithOptions(nil, o)
 	}
-	// The presence check keeps the console from dialling the holder while the
-	// ticket file is empty or refused, and gives the status the reason of a
-	// refusal.
+	o.Live = leadattach.New(fileTicketConfig(a, mode))
+	return terminalconsole.NewWithOptions(nil, o)
+}
+
+// fileTicketConfig is the attach client's configuration for an attach whose
+// ticket comes from a file: --attach, and a writer made from the leads view.
+// The presence check keeps the console from dialling the holder while the
+// ticket file is empty or refused, and gives the status the reason of a
+// refusal. With a writerFallback the writer that loses its role is a viewer
+// for good, with viewer tickets from the daemon.
+func fileTicketConfig(a *attachConfig, mode leadattach.Mode) leadattach.Config {
 	tickets, ready := leadattach.FileTicketSource(a.ticketFile)
-	o.Live = leadattach.New(leadattach.Config{
+	lc := leadattach.Config{
 		Socket:      a.socket,
 		Mode:        mode,
 		Name:        clientName,
 		Tickets:     tickets,
 		TicketReady: ready,
 		ShiftEnter:  a.shiftEnter,
-	})
-	return terminalconsole.NewWithOptions(nil, o)
+	}
+	if a.writerFallback != nil && mode == leadattach.ModeWriter {
+		lc.ReconnectAsViewer = true
+		lc.ViewerTickets = func() (string, error) { return a.writerFallback.ViewerTicket(context.Background()) }
+	}
+	return lc
 }
 
 // viewerLive returns the attach client of a viewer attach with a ticket

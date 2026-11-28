@@ -9,11 +9,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"ataniq/internal/consoleclient"
 	"ataniq/internal/terminalconsole"
 	"ataniq/internal/terminalconsole/leadctl"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // fakeLeads is a lead client with no daemon: it answers with what the test
@@ -127,7 +129,7 @@ func TestCFCapsAdapterPartialOffer(t *testing.T) {
 	other.Role, other.MessagesEnabled = "lead-beta", false
 	other.Capabilities.Viewer, other.Capabilities.Writer = false, true
 	f := &fakeLeads{list: consoleclient.LeadListing{Leads: []consoleclient.LeadRow{row, other}}}
-	list, err := newLeadsAdapter(f).List()
+	list, err := newLeadsAdapter(f, true).List()
 	if err != nil || len(list.Leads) != 2 {
 		t.Fatalf("list = %+v, err = %v", list, err)
 	}
@@ -156,7 +158,7 @@ func TestTheAdapterMapsAFreeMessageWithTheWordsOfTheLastOne(t *testing.T) {
 	r.MessageSpent = false
 	r.MessageResult = consoleclient.LeadDelivery{Outcome: "refused", Reason: "text", Written: "nothing"}
 	f := &fakeLeads{list: consoleclient.LeadListing{Leads: []consoleclient.LeadRow{r}}}
-	got, err := newLeadsAdapter(f).List()
+	got, err := newLeadsAdapter(f, true).List()
 	if err != nil || len(got.Leads) != 1 {
 		t.Fatalf("%+v %v", got, err)
 	}
@@ -180,7 +182,7 @@ func TestTheAdapterMapsTheListing(t *testing.T) {
 			{Key: "beta", Role: "lead-beta"},
 		},
 	}}
-	got, err := newLeadsAdapter(f).List()
+	got, err := newLeadsAdapter(f, true).List()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +224,7 @@ func TestTheAdapterMapsEveryReceipt(t *testing.T) {
 				CommandID: "c1", Op: cop, Role: "r", Status: cst, Code: "stale-epoch", Epoch: 7, Outcome: "not-now", Reason: "not-ready", Written: "nothing",
 				Folder: "/f", TicketFile: "/f/t",
 			}}
-			a := newLeadsAdapter(f)
+			a := newLeadsAdapter(f, true)
 			for name, call := range map[string]func() (leadctl.Receipt, error){
 				"define": func() (leadctl.Receipt, error) { return a.Define("r") },
 				"start":  func() (leadctl.Receipt, error) { return a.Start("r") },
@@ -243,7 +245,7 @@ func TestTheAdapterMapsEveryReceipt(t *testing.T) {
 	}
 	// The arguments reach the client as given.
 	f := &fakeLeads{receipt: doneTicket()}
-	a := newLeadsAdapter(f)
+	a := newLeadsAdapter(f, true)
 	a.Define("r1")
 	a.Start("r2")
 	a.Stop("r3", 4)
@@ -268,7 +270,7 @@ func TestTheAdapterShowsEveryErrorAsOneFixedLine(t *testing.T) {
 	}
 	for _, e := range errs {
 		f := &fakeLeads{err: e}
-		a := newLeadsAdapter(f)
+		a := newLeadsAdapter(f, true)
 		for name, call := range map[string]func() (leadctl.Receipt, error){
 			"define": func() (leadctl.Receipt, error) { return a.Define("r") },
 			"start":  func() (leadctl.Receipt, error) { return a.Start("r") },
@@ -292,7 +294,7 @@ func TestTheAdapterShowsEveryErrorAsOneFixedLine(t *testing.T) {
 
 func TestTheAdapterGivesAnEarlierReceiptToTheViewWithTheFlag(t *testing.T) {
 	f := &fakeLeads{}
-	a := newLeadsAdapter(f)
+	a := newLeadsAdapter(f, true)
 	for _, r := range []consoleclient.LeadReceipt{
 		{CommandID: "c1", Op: consoleclient.LeadOpTicket, Role: "r", Status: consoleclient.LeadDone, Epoch: 1, Folder: "/f", TicketFile: "/f/t", Earlier: true},
 		{CommandID: "c2", Op: consoleclient.LeadOpStart, Role: "r", Status: consoleclient.LeadDone, Epoch: 1, Earlier: true},
@@ -341,7 +343,7 @@ func TestTheAdapterGivesARefusalBeforeAdmissionAsARefusedReceipt(t *testing.T) {
 		{fmt.Errorf("wrapped: %w", consoleclient.ErrLeadNotListed), "not-listed"},
 	} {
 		f := &fakeLeads{err: c.err}
-		a := newLeadsAdapter(f)
+		a := newLeadsAdapter(f, true)
 		for name, call := range map[string]struct {
 			do func() (leadctl.Receipt, error)
 			op leadctl.Op
@@ -368,7 +370,7 @@ func TestTheAdapterGivesARefusalBeforeAdmissionAsARefusedReceipt(t *testing.T) {
 func TestAdapterCapabilityRefusals(t *testing.T) {
 	caps := consoleclient.LeadCapabilities{Directory: true}
 	f := &fakeLeads{}
-	a := newLeadsAdapter(f)
+	a := newLeadsAdapter(f, true)
 	for _, tc := range []struct {
 		op     consoleclient.LeadOp
 		writer bool
@@ -393,7 +395,7 @@ func TestAdapterCapabilityRefusals(t *testing.T) {
 
 func TestTheAdapterRemembersTheKindOfADoneTicketOnly(t *testing.T) {
 	f := &fakeLeads{receipt: doneTicket()}
-	a := newLeadsAdapter(f)
+	a := newLeadsAdapter(f, true)
 	req := terminalconsole.AttachRequest{Role: "lead-alpha", Epoch: 3, Writer: true, Folder: "/run/lead-alpha", TicketFile: "/run/lead-alpha/ticket"}
 	if k := a.attachKind(req); k != "" {
 		t.Fatalf("before a ticket: %q", k)
@@ -429,15 +431,23 @@ func TestTheAdapterRemembersTheKindOfADoneTicketOnly(t *testing.T) {
 }
 
 // rigFor makes a daemon rig with the given lead client.
-func rigFor(t *testing.T, f leadsClient) *daemonRig {
+// rigFor is the rig of a console started with --scratch-writer.
+func rigFor(t *testing.T, f leadsClient) *daemonRig { return rigForWriter(t, f, true) }
+
+// rigForWriter is the rig of a console started with or without --scratch-writer.
+func rigForWriter(t *testing.T, f leadsClient, scratchWriter bool) *daemonRig {
 	t.Helper()
-	cfg, _, ok := parse([]string{"--daemon", t.TempDir()}, &bytes.Buffer{})
+	args := []string{"--daemon", t.TempDir()}
+	if scratchWriter {
+		args = append(args, "--scratch-writer")
+	}
+	cfg, _, ok := parse(args, &bytes.Buffer{})
 	if !ok {
 		t.Fatal("parse")
 	}
 	cfg.options.Refresh = -1
 	cfg.options.ApprovalsRefresh = -1
-	rig, err := newDaemonRig(cfg, func(string) (leadsClient, error) { return f, nil })
+	rig, err := newDaemonRig(cfg, func(string, bool) (leadsClient, error) { return f, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +471,7 @@ func TestTheLeadsViewIsGivenOnlyToADaemonWithLeadControl(t *testing.T) {
 	} {
 		f := &fakeLeads{detect: c.detect, list: consoleclient.LeadListing{Leads: []consoleclient.LeadRow{aLead()}}}
 		cfg, _, _ := parse([]string{"--daemon", t.TempDir()}, &bytes.Buffer{})
-		rig, err := newDaemonRig(cfg, func(string) (leadsClient, error) {
+		rig, err := newDaemonRig(cfg, func(string, bool) (leadsClient, error) {
 			if c.new != nil {
 				return nil, c.new
 			}
@@ -580,7 +590,7 @@ func TestAnErrorOfTheClientIsTheViewsFixedLine(t *testing.T) {
 }
 
 func TestTheTerminalAttachIsTheAttachFlagsWithTheRequestsFolder(t *testing.T) {
-	cfg, _, _ := parse([]string{"--daemon", t.TempDir(), "--theme", "light"}, &bytes.Buffer{})
+	cfg, _, _ := parse([]string{"--daemon", t.TempDir(), "--scratch-writer", "--theme", "light"}, &bytes.Buffer{})
 	got, err := terminalAttachConfig(cfg, terminalconsole.AttachRequest{Role: "r", Epoch: 2, Writer: true, Folder: "/run/lead-alpha", TicketFile: "/run/lead-alpha/ticket"}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -866,5 +876,116 @@ func TestTheOpenLeadsKeyIsTheKeyThatOpensTheView(t *testing.T) {
 	m.Update(openLeadsKey())
 	if v := viewOf(m, 80, 24); !strings.Contains(v, terminalconsole.NoLeadControl) {
 		t.Fatalf("the key did not open the leads screen:\n%s", v)
+	}
+}
+
+// --scratch-writer is the writer attach's only switch. Without it the offer
+// for the writer ticket is the one that says how to turn it on, whatever the
+// daemon offers; with it, the daemon's offer decides.
+func TestRowActionsOfferTheWriterOnlyWithTheFlag(t *testing.T) {
+	writer := leadctl.Control{Op: leadctl.OpTicket, Writer: true}
+	viewer := leadctl.Control{Op: leadctl.OpTicket}
+	for _, tc := range []struct {
+		name          string
+		scratchWriter bool
+		daemonWriter  bool
+		want          leadctl.Availability
+	}{
+		{"flag and offer", true, true, leadctl.Availability{Offered: true}},
+		{"flag, no offer", true, false, leadctl.Availability{Reason: "writer-ticket-not-offered"}},
+		{"no flag, offer", false, true, leadctl.Availability{Reason: leadctl.ReasonWriterOff}},
+		{"no flag, no offer", false, false, leadctl.Availability{Reason: leadctl.ReasonWriterOff}},
+	} {
+		row := aLead()
+		row.Capabilities.Writer = tc.daemonWriter
+		got := rowActions(row, tc.scratchWriter)
+		if got[writer] != tc.want {
+			t.Errorf("%s: writer %+v, want %+v", tc.name, got[writer], tc.want)
+		}
+		if got[viewer] != (leadctl.Availability{Offered: true}) || !got[leadctl.Control{Op: leadctl.OpStart}].Offered {
+			t.Errorf("%s: the other controls changed: %+v", tc.name, got)
+		}
+	}
+}
+
+// Without the flag a writer ticket request that reaches the adapter all the
+// same is refused there: the lead client is not asked, and a viewer ticket is.
+func TestTheAdapterNeverAsksForAWriterTicketWithoutTheFlag(t *testing.T) {
+	f := &fakeLeads{receipt: doneTicket()}
+	a := newLeadsAdapter(f, false)
+	r, err := a.Ticket("lead-alpha", 3, true)
+	if err != nil || r.Status != leadctl.Refused || r.Op != leadctl.OpTicket || r.Code != leadctl.ReasonWriterOff {
+		t.Fatalf("writer ticket: %+v, %v", r, err)
+	}
+	if got := f.callList(); len(got) != 0 {
+		t.Fatalf("the lead client was asked: %v", got)
+	}
+	if r, err := a.Ticket("lead-alpha", 3, false); err != nil || r.Status != leadctl.Done {
+		t.Fatalf("viewer ticket: %+v, %v", r, err)
+	}
+	if got := f.callList(); !reflect.DeepEqual(got, []string{"ticket lead-alpha viewer"}) {
+		t.Fatalf("calls %v", got)
+	}
+}
+
+// The leads view without --scratch-writer: the hint has no [w] and says how to
+// turn it on, w shows the same words and calls nothing, and v still attaches.
+func TestTheLeadsViewIsViewerOnlyWithoutTheFlag(t *testing.T) {
+	f := &fakeLeads{list: consoleclient.LeadListing{Leads: []consoleclient.LeadRow{aLead()}}, receipt: doneTicket()}
+	rig := rigForWriter(t, f, false)
+	d := newViewDriver(t, rig.model())
+	d.send(tea.WindowSizeMsg{Width: 140, Height: 45})
+	d.send(openLeadsKey())
+	listShown(d)
+	view := d.until("the writer-off hint", func(v string) bool { return strings.Contains(v, "writer off: start with --scratch-writer") })
+	if strings.Contains(view, "[w]") || strings.Contains(view, "attach as writer") || !strings.Contains(view, "[v] attach as viewer") {
+		t.Fatalf("the hint:\n%s", view)
+	}
+	d.send(tea.KeyPressMsg{Code: 'w', Text: "w"})
+	// The key's own answer is a line of its own, set before any command runs.
+	var noted bool
+	for _, line := range strings.Split(ansi.Strip(d.m.View().Content), "\n") {
+		noted = noted || strings.TrimSpace(line) == "writer off: start with --scratch-writer"
+	}
+	if !noted {
+		t.Fatalf("w did not say why:\n%s", ansi.Strip(d.m.View().Content))
+	}
+	if _, ok := d.m.Attach(); ok {
+		t.Fatal("w asked for an attach")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := f.callList(); len(got) != 0 {
+		t.Fatalf("w reached the lead client: %v", got)
+	}
+}
+
+// --scratch-writer belongs to --daemon.
+func TestScratchWriterFlag(t *testing.T) {
+	var errout bytes.Buffer
+	for _, args := range [][]string{
+		{"--scratch-writer"}, {"--demo", "--scratch-writer"}, {"--attach", t.TempDir(), "--ticket-file", "/t", "--scratch-writer"},
+	} {
+		errout.Reset()
+		if _, code, ok := parse(args, &errout); ok || code != 2 || !strings.Contains(errout.String(), "--scratch-writer needs --daemon") {
+			t.Errorf("%v: ok %t, code %d, %q", args, ok, code, errout.String())
+		}
+	}
+	cfg, _, ok := parse([]string{"--daemon", t.TempDir()}, &errout)
+	if !ok || cfg.scratchWriter {
+		t.Fatalf("--daemon alone: %+v, ok %t", cfg, ok)
+	}
+	cfg, _, ok = parse([]string{"--daemon", t.TempDir(), "--scratch-writer"}, &errout)
+	if !ok || !cfg.scratchWriter {
+		t.Fatalf("--daemon --scratch-writer: %+v, ok %t", cfg, ok)
+	}
+	// A writer attach without the flag is refused where the attach is made.
+	cfg, _, _ = parse([]string{"--daemon", t.TempDir()}, &errout)
+	req := terminalconsole.AttachRequest{Role: "r", Epoch: 2, Writer: true, Folder: "/run/x", TicketFile: "/run/x/t"}
+	if _, err := terminalAttachConfig(cfg, req, &fakeLeads{}); !errors.Is(err, errWriterOff) {
+		t.Fatalf("a writer attach without the flag: %v", err)
+	}
+	req.Writer = false
+	if _, err := terminalAttachConfig(cfg, req, &fakeLeads{}); err != nil {
+		t.Fatalf("a viewer attach without the flag: %v", err)
 	}
 }

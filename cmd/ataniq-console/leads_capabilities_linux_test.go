@@ -49,7 +49,7 @@ func TestLeadsCapabilityRefusal(t *testing.T) {
 		}
 	})
 
-	client, err := newLeadsClient(dir)
+	client, err := newLeadsClient(dir, true)
 	if err != nil {
 		t.Fatal(err)
 	}

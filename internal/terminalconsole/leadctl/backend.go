@@ -159,6 +159,11 @@ func (c Control) NotOfferedReason() string {
 	return string(c.Op) + "-not-offered"
 }
 
+// ReasonWriterOff is the reason of a writer ticket that the console was not
+// started to offer: the writer attach is off unless its flag was given. The
+// hint then shows the reason in place of the key.
+const ReasonWriterOff = "writer-off"
+
 // OfferAll returns a new offer map in which every control of the view is
 // offered, for a backend that does not negotiate.
 func OfferAll() map[Control]Availability {

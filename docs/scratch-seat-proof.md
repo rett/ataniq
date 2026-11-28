@@ -595,8 +595,11 @@ large (100 by 30 or more) and do not resize it while attached.
 3. **OWNER ONLY (B): the console, and the seat's Leads pages.**
 
    ```sh
-   $C/ataniq-console --daemon "$ROOT/runtime"
+   $C/ataniq-console --daemon "$ROOT/runtime" --scratch-writer
    ```
+
+   `--scratch-writer` is what lets `w` attach as the writer in the steps
+   below; without it the leads view is viewer-only.
 
    `L` opens the leads view ([the console guide](terminal-console.md#lead-control-scratch-daemon-only)):
    the rows `standin-N` and `live-N` (`standin-N` alone without claude),
