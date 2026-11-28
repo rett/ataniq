@@ -179,6 +179,7 @@ type Fake struct {
 	late        map[string][]Spec
 	leftover    map[string]bool
 	lastCG      map[string]string
+	hideCG      map[string]bool
 	scripts     map[string]*unitScript
 	unavailable map[Method]int
 	calls       []Call
@@ -249,6 +250,7 @@ func NewFake(clock Clock) *Fake {
 		late:        map[string][]Spec{},
 		leftover:    map[string]bool{},
 		lastCG:      map[string]string{},
+		hideCG:      map[string]bool{},
 		scripts:     map[string]*unitScript{},
 		unavailable: map[Method]int{},
 	}
@@ -380,6 +382,23 @@ func (f *Fake) LeaveControlGroup(unit string, left bool) {
 		f.leftover[unit] = true
 	} else {
 		delete(f.leftover, unit)
+	}
+}
+
+// HideControlGroupID says whether the State that Start and Inspect return for
+// unit carries no control group identity, as a real manager's does when it
+// cannot read one. While it is set, a State of that unit names its control
+// group path and invocation but has an empty ControlGroupID, so that
+// [Fake.Signal] refuses it with [ErrNoControlGroupID] and signals nothing. The
+// unit itself is unchanged, and a State taken while the option was off is
+// still signalled. It is kept by a reboot.
+func (f *Fake) HideControlGroupID(unit string, hidden bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if hidden {
+		f.hideCG[unit] = true
+	} else {
+		delete(f.hideCG, unit)
 	}
 }
 
@@ -880,6 +899,9 @@ func (f *Fake) state(unit string) State {
 	st.InvocationID = u.invocation
 	st.ControlGroup = u.cgroup
 	st.ControlGroupID = u.cgroupID
+	if f.hideCG[unit] {
+		st.ControlGroupID = ""
+	}
 	st.SetDescription(u.desc)
 	return st
 }

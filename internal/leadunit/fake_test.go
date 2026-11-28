@@ -538,6 +538,35 @@ func TestFakeSignalControlGroupContract(t *testing.T) {
 	}
 }
 
+// TestFakeHideControlGroupID: while it is set the State of a unit has no
+// control group identity, and Signal refuses it without effect; a State taken
+// before still works, and the option can be cleared.
+func TestFakeHideControlGroupID(t *testing.T) {
+	r := newRig(t)
+	r.fake.SetProcs(unitA, ProcScript{Behavior: IgnoreTerm})
+	whole := r.start(unitA, 1)
+	r.fake.HideControlGroupID(unitA, true)
+	hidden := r.inspect(unitA)
+	if hidden.ControlGroupID != "" || hidden.ControlGroup != whole.ControlGroup || hidden.InvocationID != whole.InvocationID || !hidden.Live() {
+		t.Fatalf("hidden State %+v, whole %+v", hidden, whole)
+	}
+	if err := r.fake.Signal(r.ctx, hidden, syscall.SIGKILL); !errors.Is(err, ErrNoControlGroupID) {
+		t.Fatalf("Signal of a State without an identity: %v", err)
+	}
+	if !r.inspect(unitA).Live() {
+		t.Fatal("the refused signal reached the unit")
+	}
+	r.fake.HideControlGroupID(unitA, false)
+	if got := r.inspect(unitA); got.ControlGroupID != whole.ControlGroupID {
+		t.Fatalf("after clearing: %+v", got)
+	}
+	r.fake.HideControlGroupID(unitA, true)
+	r.signal(whole, syscall.SIGKILL) // a State taken before the option still works
+	if r.fake.Loaded(unitA) {
+		t.Fatal("the kill did not end the unit")
+	}
+}
+
 func TestFakeSignalReachesEveryProcess(t *testing.T) {
 	r := newRig(t)
 	r.fake.SetProcs(unitA, ProcScript{}, ProcScript{}, ProcScript{Behavior: ExitOnTermAfter, Delay: time.Second})

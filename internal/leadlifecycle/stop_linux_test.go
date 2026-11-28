@@ -56,6 +56,52 @@ func TestStopCleanExit(t *testing.T) {
 	r.auditClean()
 }
 
+// A unit whose State records no control group identity is never signalled: the
+// manager refuses (ErrNoControlGroupID) and nothing proves the group empty, so
+// the stop ends as stop-unproven with the processes untouched.
+func TestStopOfAStateWithoutControlGroupIdentityIsUnproven(t *testing.T) {
+	r := newRig(t)
+	role := r.define("alpha")
+	r.fake.SetProcs(unitOf(role), leadunit.ProcScript{Behavior: leadunit.ExitOnTerm})
+	r.mustStart(role)
+	r.fake.HideControlGroupID(unitOf(role), true)
+	begin := r.clock.Now()
+	e, err := r.stop(role)
+	isErr(t, err, ErrStopUnproven)
+	if e.Shown.State != leadregistry.StateUnknown || e.Shown.Reason.Code != "stop-unproven" {
+		t.Fatalf("entry %+v", e)
+	}
+	if took := r.clock.Now().Sub(begin); took != TermWait+DefaultProofBound {
+		t.Fatalf("gave up after %v", took)
+	}
+	// Every signal the controller tried was refused by the manager, so none
+	// was sent, and the unit still runs.
+	if got := signalsOf(r.signalCalls()); len(got) != 0 {
+		t.Fatalf("signals sent: %v", got)
+	}
+	tried := r.signalCalls()
+	if len(tried) == 0 {
+		t.Fatal("the controller never tried to signal, so the refusal is not what ended the stop")
+	}
+	for _, c := range tried {
+		if !errors.Is(c.Err, leadunit.ErrNoControlGroupID) {
+			t.Fatalf("signal call %+v was not refused for the missing identity", c)
+		}
+	}
+	if !strings.Contains(e.Shown.Reason.Detail, leadunit.ErrNoControlGroupID.Error()) {
+		t.Fatalf("detail %q does not name the refusal", e.Shown.Reason.Detail)
+	}
+	if len(r.fake.Processes(unitOf(role))) == 0 {
+		t.Fatal("the unit's processes are gone")
+	}
+	r.auditClean()
+	// With the identity back the same stop proceeds and is proven.
+	r.fake.HideControlGroupID(unitOf(role), false)
+	_, err = r.stop(role)
+	noErr(t, err)
+	r.expectState(role, leadregistry.StateStopped, "stopped")
+}
+
 func TestStopSigkillOnlyAfterTwoSeconds(t *testing.T) {
 	r := newRig(t)
 	role := r.define("alpha")
