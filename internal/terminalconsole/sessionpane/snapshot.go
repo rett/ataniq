@@ -93,6 +93,11 @@ func (p *Pane) Restore(snapshot []byte) error {
 	}
 	// SetState starts a new local scrollback at the snapshot.
 	p.recent = recentPage{}
+	if p.ring != nil {
+		// The rows of the ring belong to the screen that was replaced.
+		p.ring.reset()
+		p.sens = sensitiveState{}
+	}
 	p.cols, p.rows = st.Width, st.Height
 	p.title = title
 	p.dec = decModes{}

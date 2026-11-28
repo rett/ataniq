@@ -30,6 +30,21 @@ type Options struct {
 	// paging. Only a live attach client enables it.
 	RecentOutput bool
 
+	// RecentRows, when above zero, makes the pane keep a ring of the rows
+	// that scroll off the main screen, up to that many rows (at most
+	// MaxRecentRows), for the holder to give to a console that attaches
+	// later; see Pane.Recent and the notes on the ring in recentring.go.
+	// The ring has a bound in bytes too (RecentBytes). Zero keeps no ring.
+	// The ring takes the emulator's scrollback for itself, so a pane with a
+	// ring has no local paging: RecentOutput is then ignored and PageRecent
+	// reports no history. The alternate screen never adds to it.
+	RecentRows int
+
+	// RecentBytes is the byte budget of the ring: the encoded rows and a
+	// small charge for each entry. Zero means DefaultRecentBytes. It has no
+	// effect without RecentRows.
+	RecentBytes int
+
 	// Replies receives each chunk of the emulator's answers to the session's
 	// queries, as a copy the receiver may keep. It is called on the pane's
 	// drain goroutine, never under the pane's lock. It must return promptly
@@ -68,9 +83,13 @@ type Pane struct {
 	cols, rows int
 	graphemes  bool
 
-	dec       decModes
-	syncOut   syncState
-	recent    recentPage
+	dec     decModes
+	syncOut syncState
+	recent  recentPage
+	// ring is the ring of recent output, nil when the pane keeps none, and
+	// sens the sensitive switch that decides which rows it records.
+	ring      *recentRing
+	sens      sensitiveState
 	title     string
 	clipboard int
 	// titlesCut counts the titles that lost characters to the length cap.
@@ -110,7 +129,10 @@ func New(cols, rows int, o Options) *Pane {
 		p.input = Discard{}
 	}
 	rowsToKeep := 0
-	if o.RecentOutput {
+	if o.RecentRows > 0 {
+		p.ring = newRecentRing(o.RecentRows, o.RecentBytes)
+		rowsToKeep = p.ring.window
+	} else if o.RecentOutput {
 		rowsToKeep = RecentRowLimit
 	}
 	p.emu.SetScrollbackSize(rowsToKeep)
@@ -188,7 +210,15 @@ func (p *Pane) feed(b []byte) (rest []byte, ok bool) {
 		return nil, false
 	}
 	n := min(len(b), writeSlice)
+	if p.ring != nil {
+		// A line feed scrolls one row, so a slice of fewer bytes than the
+		// ring's window cannot scroll more rows than the window holds, and
+		// the pane counts every row it takes out of it (only a sequence that
+		// scrolls many rows at once can still overflow it).
+		n = min(n, max(1, p.ring.window-1))
+	}
 	p.write(b[:n])
+	p.harvest()
 	return b[n:], true
 }
 
@@ -204,6 +234,7 @@ func (p *Pane) Resize(cols, rows int) {
 	}
 	p.emu.Resize(cols, rows)
 	p.cols, p.rows = cols, rows
+	p.harvest()
 	p.syncOut.held = false
 }
 
@@ -251,6 +282,7 @@ func (p *Pane) Close() {
 		p.closed = true
 		p.recent = recentPage{}
 		p.emu.SetScrollbackSize(0)
+		p.ring, p.sens = nil, sensitiveState{}
 		_ = p.pipe.Close()
 	}
 	p.mu.Unlock()
