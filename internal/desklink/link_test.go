@@ -15,6 +15,8 @@ import (
 	"ataniq/internal/seatgate"
 )
 
+const testHomeID = "test-home"
+
 // A TLS server flight can contain several records in one Write. Read the
 // flight off the synchronous pipe so the client can send a certificate alert
 // midway through it, while some records are still in the client's buffer.
@@ -55,7 +57,7 @@ func serve(t *testing.T, r *Registry, server seatgate.Identity, h Handler) (net.
 	client.SetDeadline(deadline)
 	raw.SetDeadline(deadline)
 	done := make(chan error, 1)
-	go func() { done <- ServeConn(t.Context(), raw, server, r, h) }()
+	go func() { done <- ServeConn(t.Context(), raw, server, testHomeID, r, h) }()
 	return client, done
 }
 
@@ -71,9 +73,9 @@ func receive[T any](t *testing.T, ch <-chan T) T {
 	}
 }
 
-func connect(t *testing.T, raw net.Conn, device, server seatgate.Identity) *tls.Conn {
+func connect(t *testing.T, raw net.Conn, device, server seatgate.Identity) *Conn {
 	t.Helper()
-	conn, err := Connect(t.Context(), raw, device, server.Fingerprint())
+	conn, err := Connect(t.Context(), raw, device, server.Fingerprint(), testHomeID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,8 +104,8 @@ func TestDeskLinkAuthenticatedStream(t *testing.T) {
 	if cs := c.ConnectionState(); cs.Version != tls.VersionTLS13 || cs.NegotiatedProtocol != "ataniq-desk/1" {
 		t.Fatalf("wrong TLS version %x or ALPN %q", cs.Version, cs.NegotiatedProtocol)
 	}
-	if peer := receive(t, peers); peer != (Peer{Fingerprint: device.Fingerprint(), Principal: p}) {
-		t.Fatalf("unexpected peer %+v", peer)
+	if peer := receive(t, peers); peer.Fingerprint != device.Fingerprint() || peer.Principal != p {
+		t.Fatalf("unexpected peer %s %+v", peer.Fingerprint, peer.Principal)
 	}
 	if _, err := io.WriteString(c, "hello"); err != nil {
 		t.Fatal(err)
@@ -192,7 +194,7 @@ func TestDeskLinkClientRefusesUnpinnedServerOrAbsentProtocol(t *testing.T) {
 			cfg.NextProtos, cfg.VerifyConnection = tc.protos, nil
 			done := make(chan error, 1)
 			go func() { done <- handshake(t.Context(), tls.Server(raw, cfg)) }()
-			c, err := Connect(t.Context(), bufferedConn{client, bufio.NewReaderSize(client, 16384)}, device, tc.pin)
+			c, err := Connect(t.Context(), bufferedConn{client, bufio.NewReaderSize(client, 16384)}, device, tc.pin, testHomeID)
 			if c != nil || err == nil || errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("client refusal: conn %v, error %v", c != nil, err)
 			}
@@ -214,7 +216,7 @@ func TestDeskLinkServerCancellation(t *testing.T) {
 	ready := make(chan bool, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- ServeConn(ctx, raw, server, &r, HandlerFunc(func(ctx context.Context, _ Peer, c net.Conn) error {
+		done <- ServeConn(ctx, raw, server, testHomeID, &r, HandlerFunc(func(ctx context.Context, _ Peer, c net.Conn) error {
 			ready <- true
 			_, err := c.Read(make([]byte, 1))
 			if err == nil {
@@ -243,7 +245,7 @@ func TestDeskLinkServerRequiresRegistryAndHandler(t *testing.T) {
 		{new(Registry), nil},
 	} {
 		raw, client := net.Pipe()
-		if err := ServeConn(t.Context(), raw, seatgate.Identity{}, tc.r, tc.h); err == nil {
+		if err := ServeConn(t.Context(), raw, seatgate.Identity{}, testHomeID, tc.r, tc.h); err == nil {
 			t.Fatal("server accepted incomplete configuration")
 		}
 		if _, err := client.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
