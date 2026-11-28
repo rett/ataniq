@@ -3,6 +3,7 @@ package all_test
 import (
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -66,7 +67,11 @@ func boundaryAllow(t *testing.T) map[wordHit]bool {
 			t.Fatalf("allow.txt:%d: want file, words and migration reason", i+1)
 		}
 		for _, word := range f[1:] {
-			allow[wordHit{f[0], word}] = true
+			hit := wordHit{f[0], word}
+			if allow[hit] {
+				t.Fatalf("allow.txt:%d: duplicate entry for %s %s", i+1, f[0], word)
+			}
+			allow[hit] = true
 		}
 	}
 	return allow
@@ -96,6 +101,7 @@ func wordTokens(src string) map[string]bool {
 }
 
 func findBoundaryWords(repo fs.FS, words []pack.Word, allow map[wordHit]bool) ([]wordHit, error) {
+	unused := maps.Clone(allow)
 	var hits []wordHit
 	err := fs.WalkDir(repo, ".", func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -130,12 +136,24 @@ func findBoundaryWords(repo fs.FS, words []pack.Word, allow map[wordHit]bool) ([
 				return fmt.Errorf("unknown match mode %q for %q", w.Match, w.Text)
 			}
 			hit := wordHit{name, w.Text}
-			if match && !allow[hit] {
+			if match {
+				if allow[hit] {
+					delete(unused, hit)
+					continue
+				}
 				hits = append(hits, hit)
 			}
 		}
 		return nil
 	})
+	if err == nil && len(unused) > 0 {
+		var entries []string
+		for hit := range unused {
+			entries = append(entries, hit.file+" "+hit.word)
+		}
+		slices.Sort(entries)
+		err = fmt.Errorf("unused allow.txt entries: %s", strings.Join(entries, ", "))
+	}
 	return hits, err
 }
 
@@ -166,5 +184,15 @@ func TestBoundaryWordsOutsidePacks(t *testing.T) {
 	want := []wordHit{{"core/old.go", ".cursor/"}, {"core/old_extra.go", "codex"}, {"core/view_test.go", "amp"}}
 	if !slices.Equal(hits, want) {
 		t.Fatalf("violations = %v, want %v", hits, want)
+	}
+}
+
+func TestBoundaryWordsUnusedAllow(t *testing.T) {
+	repo := fstest.MapFS{"core/live.go": {Data: []byte("package core // amp")}}
+	allow := map[wordHit]bool{{"core/live.go", "amp"}: true, {"core/live.go", "codex"}: true, {"core/gone.go", "amp"}: true}
+	words := []pack.Word{{Text: "amp", Match: "token"}, {Text: "codex", Match: "substring"}}
+	_, err := findBoundaryWords(repo, words, allow)
+	if err == nil || err.Error() != "unused allow.txt entries: core/gone.go amp, core/live.go codex" {
+		t.Fatalf("stale allowances: %v", err)
 	}
 }

@@ -90,25 +90,66 @@ func packBoundaryImports(t *testing.T, name string, check func(pkg, imp string) 
 
 // Provider-specific entries live with the packs. Key each exception to the
 // exact file/import or package/declaration so a second offender is visible.
-func packMigrations(t *testing.T, list string) map[[2]string]bool {
+type migrationUses map[[2]string]bool
+
+func (m migrationUses) use(source, target string) bool {
+	key := [2]string{source, target}
+	if _, ok := m[key]; !ok {
+		return false
+	}
+	m[key] = true
+	return true
+}
+
+func (m migrationUses) unused() []string {
+	var unused []string
+	for pair, used := range m {
+		if !used {
+			unused = append(unused, pair[0]+" "+pair[1])
+		}
+	}
+	slices.Sort(unused)
+	return unused
+}
+
+func (m migrationUses) check(t *testing.T, list string) {
+	t.Helper()
+	for _, entry := range m.unused() {
+		t.Errorf("%s: unused migration: %s", list, entry)
+	}
+}
+
+func packMigrations(t *testing.T, list string) migrationUses {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(root(t), "packs/all/testdata/boundary", list))
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := map[[2]string]bool{}
-	for i, line := range strings.Split(string(b), "\n") {
+	entries, err := parsePackMigrations(list, string(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
+}
+
+func parsePackMigrations(list, data string) (migrationUses, error) {
+	result := migrationUses{}
+	for i, line := range strings.Split(data, "\n") {
 		entry, reason, _ := strings.Cut(line, "#")
 		if strings.TrimSpace(entry) == "" {
 			continue
 		}
 		f := strings.Fields(entry)
 		if len(f) != 2 || !strings.HasPrefix(reason, " Migration: ") || strings.TrimSpace(strings.TrimPrefix(reason, " Migration: ")) == "" {
-			t.Fatalf("%s:%d: want two names and a migration reason", list, i+1)
+			return nil, fmt.Errorf("%s:%d: want two names and a migration reason", list, i+1)
 		}
-		result[[2]string{f[0], f[1]}] = true
+		key := [2]string{f[0], f[1]}
+		if _, ok := result[key]; ok {
+			return nil, fmt.Errorf("%s:%d: duplicate migration: %s %s", list, i+1, f[0], f[1])
+		}
+		result[key] = false
 	}
-	return result
+	return result, nil
 }
 
 func holderSide(dir string) bool {
@@ -153,11 +194,11 @@ var packContracts = map[string]string{
 	"internal/agentlaunch":         "launch and credentials",
 }
 
-func packImportOK(name, imp string, std, migration bool) bool {
+func packImportOK(name, imp string, std bool) bool {
 	dir := path.Dir(name)
 	isTest := strings.HasSuffix(name, "_test.go")
 	target, local := strings.CutPrefix(imp, "ataniq/")
-	if std || migration || (isTest && dir == target) {
+	if std || (isTest && dir == target) {
 		return true
 	}
 	if !local {
@@ -195,9 +236,10 @@ func TestPackBoundaryPackImports(t *testing.T) {
 	migrations := packMigrations(t, "imports.txt")
 	packBoundaryFiles(t, "packs", func(name string) {
 		packBoundaryImports(t, name, func(_, imp string) bool {
-			return packImportOK(name, imp, slices.Contains(std, imp), migrations[[2]string{name, imp}])
+			return packImportOK(name, imp, slices.Contains(std, imp)) || migrations.use(name, imp)
 		})
 	})
+	migrations.check(t, "imports.txt")
 }
 
 // Use the compiler's exported constants: an inferred type, or a type inherited
@@ -224,7 +266,7 @@ func TestPackBoundaryNoEnum(t *testing.T) {
 			t.Fatal(err)
 		}
 		ast.Inspect(f, func(n ast.Node) bool {
-			if id, ok := n.(*ast.Ident); ok && strings.HasPrefix(id.Name, "DefaultCoordinator") && !allowed[[2]string{name, id.Name}] {
+			if id, ok := n.(*ast.Ident); ok && strings.HasPrefix(id.Name, "DefaultCoordinator") && !allowed.use(name, id.Name) {
 				t.Errorf("%s: forbidden identifier %s", name, id.Name)
 			}
 			return true
@@ -245,7 +287,7 @@ func TestPackBoundaryNoEnum(t *testing.T) {
 			}
 			dir := strings.TrimPrefix(pkgPath, "ataniq/")
 			check := func(name string) {
-				if !allowed[[2]string{dir, name}] {
+				if !allowed.use(dir, name) {
 					t.Errorf("tags %q: forbidden enum declaration %s.%s", tags, dir, name)
 				}
 			}
@@ -273,6 +315,7 @@ func TestPackBoundaryNoEnum(t *testing.T) {
 			}
 		}
 	}
+	allowed.check(t, "enums.txt")
 }
 
 func isEnumType(typ *types.Named, pkg *types.Package, name string) bool {
@@ -354,6 +397,10 @@ func TestPackBoundarySessionNeutral(t *testing.T) {
 		}
 	}
 
+	migrations := migrationUses{}
+	for file, imp := range sessionMigrations {
+		migrations[[2]string{file, imp}] = false
+	}
 	packBoundaryFiles(t, ".", func(name string) {
 		dir := path.Dir(name)
 		isTest := strings.HasSuffix(name, "_test.go")
@@ -362,7 +409,7 @@ func TestPackBoundarySessionNeutral(t *testing.T) {
 				return slices.Contains(std, imp) || imp == "ataniq/internal/pack" || (isTest && imp == "ataniq/"+dir)
 			}
 			if !neutralImportOK(dir, imp) {
-				return sessionMigrations[name] == imp
+				return migrations.use(name, imp)
 			}
 			return driverImportOK(dir, strings.TrimPrefix(imp, "ataniq/"), isTest)
 		})
@@ -371,6 +418,7 @@ func TestPackBoundarySessionNeutral(t *testing.T) {
 			checkSessionNames(file, func(id string) { t.Errorf("%s: terminal vocabulary in %s", name, id) })
 		}
 	})
+	migrations.check(t, "sessionMigrations")
 }
 
 // Inspect declarations and their types, including anonymous structs in an API.
@@ -496,7 +544,7 @@ func TestPackBoundaryForbiddenImports(t *testing.T) {
 		{"packs/holder/list_test.go", "ataniq/packs/beta/hook"},
 		{"packs/alpha/part.go", "example.org/driver"},
 	} {
-		if packImportOK(tc.file, tc.imp, false, false) {
+		if packImportOK(tc.file, tc.imp, false) {
 			t.Errorf("%s accepted %s", tc.file, tc.imp)
 		}
 	}
@@ -525,5 +573,30 @@ func NewFence() { _ = driver.Title }`, parser.SkipObjectResolution)
 	checkSessionNames(f, func(name string) { got = append(got, name) })
 	if want := []string{"PTYReader", "lastCursor", "RecordOSC", "NewFence"}; !slices.Equal(got, want) {
 		t.Errorf("terminal names = %v, want %v", got, want)
+	}
+}
+
+func TestPackBoundaryMigrationEntries(t *testing.T) {
+	for _, line := range []string{
+		"source target",
+		"source target # Migration:  ",
+		"source target # explanation",
+		"source # Migration: retire",
+		"source target extra # Migration: retire",
+		"source target # Migration: retire\nsource target # Migration: retire",
+	} {
+		if _, err := parsePackMigrations("list", line); err == nil {
+			t.Errorf("accepted malformed migration %q", line)
+		}
+	}
+	m, err := parsePackMigrations("list", "old.go wire # Migration: retire\nstill.go wire # Migration: retire")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.use("new.go", "wire") || !m.use("still.go", "wire") || !m.use("still.go", "wire") {
+		t.Fatal("migration must match its exact pair across builds")
+	}
+	if got := m.unused(); !slices.Equal(got, []string{"old.go wire"}) {
+		t.Errorf("unused migrations = %q", got)
 	}
 }
