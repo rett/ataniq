@@ -2314,16 +2314,12 @@ over it; see "The seat app".
 
 `ataniq-seat` (command `cmd/ataniq-seat`) is the page the owner's phone
 uses: pairing, login, the cards and the decisions, relayed to the daemon
-on an AI host through the seat gate. On the authority host it runs as its
-own user, `seat`, behind Caddy, on a Unix socket, and reaches nothing on
-the network but the gate. It starts no model and calls no provider: it
-talks to Caddy through its socket and to the gate's one address, and
-nothing else, but for one more thing when the owner turns it on: it dials a
-local Unix socket, the notifier's (see [The notifier](#the-notifier)), to
-tell it how many cards wait. That socket is not a network address and gives
-the seat no way out: the seat's network stays denied (`IPAddressDeny=any`)
-but for the gate's one address. The push to the phone is the notifier's, a
-separate unit.
+on each AI host through its seat gate. On the authority host the seat runs
+as its own user, `seat`, behind Caddy on a Unix socket. Its only network
+destinations are the configured gates. Seat notices are off while the
+seat serves more than one gate. With the single `--gate` form, the seat
+can send a count of waiting cards to a separate notifier over a local
+Unix socket. See [The notifier](#the-notifier).
 
 ### What it ships
 
@@ -2338,18 +2334,17 @@ folder's alone.
   builder", `--src`) as user and group `seat`, with
   `--origin-file /etc/authority-host/seat/origin`,
   `--socket /run/seat/http.sock --socket-mode 0660`,
-  `--client-addr-header X-Seat-Client-Addr`, `--gate ${SEAT_GATE}` (from
-  the owner's `EnvironmentFile=/etc/authority-host/seat/seat.env`),
-  `--gate-pin-file /etc/authority-host/seat/gate.pin`,
+  `--client-addr-header X-Seat-Client-Addr`,
   `--identity /var/lib/seat/identity` and
-  `--decision-guard /var/lib/authority-host`, and `$SEAT_NOTIFY_ARGS`, the
-  notifier's optional flag from the same environment file (empty or absent
-  by default, so no flag: see [The notifier](#the-notifier); the word is
-  split at spaces, so an empty value is no argument). `RuntimeDirectory=seat`
+  `--decision-guard /var/lib/authority-host`. systemd expands
+  `$SEAT_GATE_ARGS` from the owner's `/etc/authority-host/seat/seat.env`
+  into separate arguments, one `--gate-entry NAME,ADDR:PORT,PIN_FILE`
+  pair per gate. Leave `SEAT_NOTIFY_ARGS` empty or absent with entries.
+  `RuntimeDirectory=seat`
   makes `/run/seat` (`seat:seat`, 0750) for the socket, and
   `StateDirectory=seat` makes `/var/lib/seat` (0700) for the seat's gate
   key. The network: `IPAddressDeny=any` (the owner's drop-in allows the
-  gate's address, below), `SocketBindDeny=any` (no listener on any
+  gates' addresses, below), `SocketBindDeny=any` (no listener on any
   address) and `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`. The
   hardening is that of the design: `NoNewPrivileges`, an empty capability
   set, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`,
@@ -2484,12 +2479,20 @@ release or in this repository.
    group or others:
    - `origin`: `https://seat.example`, the seat's origin (the name the
      phone uses, served on 443 by the proxy in front);
-   - `gate.pin`: the gate key's fingerprint, carried from the AI host;
-   - `seat.env` (mode 0600 is enough, systemd reads it):
-     `SEAT_GATE=203.0.113.20:GATEPORT`, the gate's address as an IP
-     literal (the seat reaches no resolver), and, only once the notifier
-     is set up, the line
-     `SEAT_NOTIFY_ARGS=--notify-socket /run/seat-notify/notify.sock`;
+   - `gate.pin` holds the gate key's fingerprint, carried from the AI host.
+     Give each additional gate its own pin file.
+   - For `seat.env` (mode 0600), start from [seat.env.example](seat.env.example).
+     On upgrade, put the address from the old `SEAT_GATE` and the existing
+     pin file in one named entry before switching releases:
+     ```ini
+     SEAT_GATE_ARGS="--gate-entry first,203.0.113.20:GATEPORT,/etc/authority-host/seat/gate.pin"
+     ```
+     To serve another gate, append a space and another
+     `--gate-entry NAME,ADDR:PORT,PIN_FILE` inside the same quotes. Use a
+     unique gate name, a literal IP address (the seat reaches no resolver)
+     and the absolute path of that gate's pin file. Clear any existing
+     `SEAT_NOTIFY_ARGS` when using entries, even with just one entry.
+     Keep the old `SEAT_GATE` value if you need to roll back to an older unit.
    - `site.caddy`: the seat's site,
      ```
      http://seat.example {
@@ -2502,17 +2505,17 @@ release or in this repository.
    [Service]
    IPAddressAllow=203.0.113.20
    ```
-   `IPAddressAllow=` allows an address, not a port: the host firewall
-   (the owner's) keeps the `seat` user to the gate's port, for example
-   with an output rule on `meta skuid`.
+   Add one `IPAddressAllow=` line per gate address. In the host firewall
+   allow the `seat` user to reach only the gate port on each address,
+   for example with nftables output rules on `meta skuid`.
 4. The seat's gate key, before the first switch: as root,
    `install -d -o seat -g seat -m 0700 /var/lib/seat`, then run the
    release's `ataniq-seat gate-init --identity /var/lib/seat/identity` from
    a root-owned copy of the release you verified, as "Filling the
    allowlists" verifies one (`RELEASE/bin/ataniq-seat`, never a file of the
    incoming folder), then `chown -R seat:seat /var/lib/seat/identity`. It
-   prints the key's fingerprint, which you carry to the gate's pin list on
-   the AI host. Without the key the seat does not start, and the switch's
+   prints the key's fingerprint, which you carry to each gate's pin list on
+   its AI host. Without the key the seat does not start, and the switch's
    health check fails.
 5. The unit's link, which `daemon-reload` follows into `current`:
    `ln -s /opt/authority-host/current/etc/systemd/system/ataniq-seat.service /etc/systemd/system/ataniq-seat.service`.
@@ -2681,10 +2684,9 @@ and this folder's.
   still cannot satisfy a release's requirement for a decision service.
 
 `units.allow` and `ports.allow` are not changed either: the unit is never
-enabled, and it listens on no TCP port. The seat's unit gets one optional
-word, `$SEAT_NOTIFY_ARGS`, which is nothing unless the owner's `seat.env`
-sets it to `--notify-socket /run/seat-notify/notify.sock` (setup step 6);
-`ataniq-seat` then tells the notifier how many cards wait, and nothing else.
+enabled, and it listens on no TCP port. The seat accepts `--notify-socket`
+only with the single `--gate` form. A gate directory, including a directory
+with one entry, has no notices. For single-gate notices use setup step 6.
 
 The no-AI check reads the notifier's unit and its environment file as it
 reads the seat's, and the binary's name is looked up with the others: a
@@ -2816,10 +2818,14 @@ repository.
    to `/etc/authority-host/stop.list` before activation. On an existing
    deployment add it before the next switch or rollback, so the notifier can
    be stopped even if the departing release omitted it.
-6. Tell the seat where the socket is: add
-   `SEAT_NOTIFY_ARGS=--notify-socket /run/seat-notify/notify.sock` to
-   `/etc/authority-host/seat/seat.env`. The seat reads it when it starts, at
-   the switch. Leave it out, or empty, and the seat tells no one anything.
+6. For notices on one gate, set both lines in
+   `/etc/authority-host/seat/seat.env` using the gate's address and pin file:
+   ```ini
+   SEAT_GATE_ARGS="--gate 203.0.113.20:GATEPORT --gate-pin-file /etc/authority-host/seat/gate.pin"
+   SEAT_NOTIFY_ARGS="--notify-socket /run/seat-notify/notify.sock"
+   ```
+   The seat reads them when it starts at the switch. With any
+   `--gate-entry`, leave `SEAT_NOTIFY_ARGS` empty or absent.
 7. The host firewall (the owner's own rule, like the seat's): the user
    `seat-notify` may open outbound TCP connections to port 443 of the push
    range and to the resolver, and nothing else; the seat's rule is not

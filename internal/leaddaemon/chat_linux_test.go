@@ -27,6 +27,21 @@ import (
 	"ataniq/internal/leadwire"
 )
 
+// The missing-home tests exercise the report at the seat's wire limit.
+const seatKeyBytesForTest = ownerwire.MaxChatKeyBytes
+
+func TestHomeAndChatSeatKeyMatchesWire(t *testing.T) {
+	for _, key := range []string{
+		"", "0", "a-9", "-a", "a-", "A", "a:b", "a\n", "é",
+		strings.Repeat("a", seatKeyBytesForTest), strings.Repeat("a", seatKeyBytesForTest+1),
+	} {
+		want := ownerwire.ValidChatLead(ownerwire.ChatKindDaemon + ":" + key)
+		if got := seatLeadKey.MatchString(key); got != want {
+			t.Errorf("seat key %q: got %t, wire accepts %t", key, got, want)
+		}
+	}
+}
+
 // ---- the port alone ---------------------------------------------------------
 
 // fakeSource is a chat source that counts its calls, answers fixed rows and

@@ -333,3 +333,17 @@ func readBody(path string) (string, error) {
 // maxBodyRead is how much of a body file is read: one byte more than the
 // admission accepts, which is enough for the daemon to see that it is too long.
 const maxBodyRead = leadcanary.MaxBodyBytes + 1
+
+func checkInstancePlace(cfg leaddaemon.Config, getenv func(string) string) error {
+	if cfg.Canary != nil {
+		return cfg.Canary.Config.CheckRoots(getenv)
+	}
+	if cfg.Scratch != nil {
+		leads, err := cfg.Scratch.Config.Leads()
+		if err != nil {
+			return err
+		}
+		return leads[0].CheckRoots(getenv)
+	}
+	return nil
+}

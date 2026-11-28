@@ -231,9 +231,9 @@ func newChatDesk(logf func(string, ...any), every time.Duration, now func() time
 // identifier.
 func (d *chatDesk) add(key string, role leadrole.Role, layout string) {
 	cl := &chatLead{key: key, role: role, layout: layout}
-	if id := ownerwire.ChatKindDaemon + ":" + key; ownerwire.ValidChatLead(id) && len(d.bySeat) < ownerwire.MaxChatLeads {
-		cl.seatID = id
-		d.bySeat[id] = cl
+	if seatLeadKey.MatchString(key) && len(d.bySeat) < ownerwire.MaxChatLeads {
+		cl.seatID = ownerwire.ChatKindDaemon + ":" + key
+		d.bySeat[cl.seatID] = cl
 	}
 	d.leads = append(d.leads, cl)
 	d.byKey[key] = cl

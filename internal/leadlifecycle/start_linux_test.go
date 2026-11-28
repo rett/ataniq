@@ -78,6 +78,7 @@ func TestStartLaunchesAndNeverSetsReady(t *testing.T) {
 
 func TestStartRefusals(t *testing.T) {
 	r := newRig(t)
+	r.enroll("nobody")
 	if _, err := r.start(mkRole(t, "nobody")); !errors.Is(err, leadregistry.ErrNoRole) {
 		t.Fatalf("undefined role: %v", err)
 	}

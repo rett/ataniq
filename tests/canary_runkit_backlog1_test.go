@@ -264,6 +264,12 @@ func TestCanaryRunKitBacklog1DaemonAtStep10(t *testing.T) {
 		if !strings.Contains(string(b), "marker") {
 			t.Errorf("%s does not say why the daemon waits for step 8", name)
 		}
+		// The template wraps the enrollment command to fit on the owner's page.
+		commands := strings.Join(strings.Fields(strings.ReplaceAll(string(b), "\\\n", " ")), " ")
+		want := "ataniqd init --state-dir \"@ROOT@/state\" @BIN@/ataniqd project-home --state-dir \"@ROOT@/state\" --home self throwaway-one @BIN@/ataniqd run --canary @CONFIG@"
+		if !strings.Contains(commands, want) {
+			t.Errorf("%s lacks the ordered init, enrollment and start commands", name)
+		}
 	}
 	b, err := os.ReadFile(filepath.Join(root(t), "qualification/canary/run/checklist-b.txt.in"))
 	if err != nil {

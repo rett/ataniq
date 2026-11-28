@@ -112,6 +112,36 @@ func (e *env) config() Config {
 // socket is the socket path of the runtime folder.
 func (e *env) socket() string { return clientapi.SocketPath(e.runtime) }
 
+func closeTestRegistry(t *testing.T, reg *leadregistry.Registry) {
+	t.Helper()
+	if err := reg.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// enrollTestProjects explicitly places the named fixture projects at this root.
+func enrollTestProjects(t *testing.T, root string, projects ...string) {
+	t.Helper()
+	id, err := leadregistry.InitInstance(root, RegistryDirName, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := leadregistry.Open(filepath.Join(root, RegistryDirName), leadregistry.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestRegistry(t, reg)
+	for _, project := range projects {
+		if _, err := reg.ProjectHome(project); errors.Is(err, leadregistry.ErrHomeMissing) {
+			if err := reg.SetProjectAssignment(project, id.Authority, leadregistry.ProjectVersion{}, true); err != nil {
+				t.Fatal(err)
+			}
+		} else if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // prepare opens the registry of the state folder, creating the folder as the
 // daemon would, runs fn and closes it again.
 func (e *env) prepare(fn func(reg *leadregistry.Registry)) {

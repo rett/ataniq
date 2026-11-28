@@ -45,8 +45,8 @@ type definition struct {
 	Binds          []Bind
 	// EnvNames is every name the profile defines, sorted. EnvValues holds
 	// the names and values of the variables whose value the profile defines
-	// (not the host-terminal ones, the lead identity and, in owner mode, the
-	// user name), sorted by name.
+	// (the lead identity by its naming rule), sorted by name. Host terminal
+	// values and the user name in owner mode are left out.
 	EnvNames  []string
 	EnvValues []EnvVar
 	Seccomp   string
@@ -163,10 +163,11 @@ func (d definition) digest() string {
 // The state
 // root, the role, the project and every host path are not in it, nor are the
 // values the host terminal or the lead gives (TERM, COLORTERM, LANG, TZ,
-// QARGI_LEAD, and USER and LOGNAME in owner mode, which are in it by name
+// and USER and LOGNAME in owner mode, which are in it by name
 // only) or the owner's ids, so the same profile on two hosts, for two roles
 // or for two projects gives the same digest, and a changed flag, bind, name,
-// profile-defined value or seccomp digest changes it.
+// profile-defined value or seccomp digest changes it. QARGI_LEAD is encoded
+// by its naming rule and a declared QARGI_ACTOR by its input label.
 func (in Inputs) Digest() (string, error) {
 	if err := in.Validate(); err != nil {
 		return "", err

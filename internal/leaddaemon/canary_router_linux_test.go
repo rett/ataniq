@@ -67,6 +67,7 @@ func TestRouterRefusesARoleThatIsNotListed(t *testing.T) {
 	pre1, pre2 := &seamPreflight{}, &seamPreflight{}
 	hold1, hold2 := &seamHolder{}, &seamHolder{}
 	r := newLeadRouter("not here")
+	r.authorityTag = "0123456789abcdef"
 	if err := r.add(&leadInstance{cfg: c.cfg, preflight: pre1, holder: hold1}); err != nil {
 		t.Fatal(err)
 	}
@@ -216,11 +217,12 @@ func newTwoRoles(t *testing.T, c *canaryEnv) *twoRoles {
 		w.holders[i] = dir
 	}
 	w.mode = w.buildMode()
-	if err := w.mode.openEvidence(); err != nil {
+	if err := w.mode.openState(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = w.mode.closeEvidence() })
 
+	enrollTestProjects(t, c.state, mustRole(t, routerRoleTwo).Project(), mustRole(t, routerRoleOther).Project())
 	reg, err := leadregistry.Open(filepath.Join(c.state, RegistryDirName), leadregistry.Options{Now: time.Now})
 	if err != nil {
 		t.Fatal(err)
@@ -444,7 +446,7 @@ func TestRouterSpentEpochsArePerRole(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := w.buildMode()
-	if err := next.openEvidence(); err != nil {
+	if err := next.openState(); err != nil {
 		t.Fatal(err)
 	}
 	defer next.closeEvidence()
@@ -469,7 +471,7 @@ func TestRouterOpenEvidenceClosesWhatItOpenedOnAFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := w.buildMode()
-	if err := next.openEvidence(); err == nil {
+	if err := next.openState(); err == nil {
 		t.Fatal("a damaged file was read back")
 	}
 	for _, cfg := range w.cfgs {

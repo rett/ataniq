@@ -17,6 +17,7 @@ func fixture(rt profile.Runtime) profile.Inputs {
 		StateRoot:             "/state",
 		Role:                  "arc-lead",
 		Project:               "demo",
+		LeadIdentity:          "demo-lead-0123456789abcdef",
 		Runtime:               rt,
 		RuntimeVersion:        "2.1.0",
 		Identity:              profile.IdentityRoot,

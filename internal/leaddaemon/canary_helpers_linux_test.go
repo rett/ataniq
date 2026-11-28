@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ataniq/internal/clientapi"
+	"ataniq/internal/instanceid"
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/canaryroot"
@@ -50,6 +51,13 @@ func noEnv(string) string { return "" }
 // fake manager reads the system clock, so that a stop needs no clock driver.
 func newCanaryEnv(t *testing.T) *canaryEnv {
 	t.Helper()
+	c := newCanaryEnvWithoutHome(t)
+	enrollTestProjects(t, c.state, c.cfg.Role.Project())
+	return c
+}
+
+func newCanaryEnvWithoutHome(t *testing.T) *canaryEnv {
+	t.Helper()
 	e := newEnv(t)
 	e.fake = leadunit.NewFake(leadunit.SystemClock{})
 	role, err := leadrole.Parse(canaryRoleText)
@@ -71,6 +79,7 @@ func newCanaryEnv(t *testing.T) *canaryEnv {
 			t.Fatal(err)
 		}
 	}
+	initTestIdentity(t, e.state)
 	if err := canaryroot.WriteMarker(e.state, role.Project()); err != nil {
 		t.Fatal(err)
 	}
@@ -100,6 +109,18 @@ func newCanaryEnv(t *testing.T) *canaryEnv {
 		},
 	}
 	return c
+}
+
+func initTestIdentity(t *testing.T, state string) {
+	t.Helper()
+	root, err := instanceid.OpenRoot(state, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if _, err := instanceid.InitAt(root, "sample"); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // daemonConfig is the daemon's config for the canary config of c.

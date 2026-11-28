@@ -92,6 +92,7 @@ func newCanaryRig(t *testing.T) *canaryRig {
 			t.Fatal(err)
 		}
 	}
+	t.Setenv(sandboxstart.AuthorityTagEnv, "0123456789abcdef")
 	if err := canaryroot.WriteMarker(c.stateRoot, canaryProject); err != nil {
 		t.Fatal(err)
 	}
