@@ -111,6 +111,9 @@ func (s *Server) handshake(conn *net.UnixConn, cred PeerCred) (*client, *wire.Re
 	// Release must see either the outstanding ticket or the claimed slot.
 	s.mu.Lock()
 	role, status := s.takeTicketLocked(hello.Ticket)
+	if s.cfg.afterTicketTake != nil {
+		s.cfg.afterTicketTake()
+	}
 	ok := status == "" && !s.closed && !s.finishing && s.claimLocked(c, role)
 	s.mu.Unlock()
 	if status != "" {

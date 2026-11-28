@@ -209,6 +209,13 @@ type Config struct {
 	// Tests can substitute a different build or protocol range.
 	holderHello func() (wire.ControlHello, error)
 
+	// afterTicketTake is a test seam: a handshake calls it after it redeemed
+	// the ticket and before it claims the slot, with the hub lock held, so it
+	// must not take that lock. A test starts a release-writer there and sees
+	// it wait for the claim; with the redemption and the claim under two
+	// locks, the release would run between them and miss the handshake.
+	afterTicketTake func()
+
 	// InjectConfig is the injection's seam: empty in a release build, and in
 	// a build with the ataniq_canary tag the deliverer that opens the gate.
 	InjectConfig
