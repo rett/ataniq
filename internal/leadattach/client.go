@@ -540,7 +540,8 @@ func (c *Client) askTicket() (string, error) {
 	get := c.cfg.Tickets
 	c.mu.Lock()
 	if c.viewerOnly && c.cfg.ViewerTickets != nil {
-		get = c.cfg.ViewerTickets
+		source := c.cfg.ViewerTickets
+		get = func() (string, error) { return source.ViewerTicket(c.ctx) }
 	}
 	c.mu.Unlock()
 	t, err := get()

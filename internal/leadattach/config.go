@@ -104,9 +104,10 @@ type Config struct {
 	ReconnectAsViewer bool
 	// ViewerTickets gives the viewer tickets of the connections made after
 	// ReconnectAsViewer took effect, in place of Tickets and TicketReady. It
-	// is asked before each dial, as the service of NewViewer is, and an
-	// ErrNoTicket means there is none yet. Nil keeps Tickets and TicketReady.
-	ViewerTickets func() (string, error)
+	// is asked before each dial, as the service of NewViewer is, with the
+	// client's context, which Close cancels, and an ErrNoTicket means there is
+	// none yet. Nil keeps Tickets and TicketReady.
+	ViewerTickets TicketSource
 	// Dial connects to Socket. Nil dials the unix socket.
 	Dial DialFunc
 	// Clock times the wait for a ticket. Nil is the real clock.

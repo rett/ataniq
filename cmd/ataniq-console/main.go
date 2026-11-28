@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -266,7 +265,7 @@ func fileTicketConfig(a *attachConfig, mode leadattach.Mode) leadattach.Config {
 	}
 	if a.writerFallback != nil && mode == leadattach.ModeWriter {
 		lc.ReconnectAsViewer = true
-		lc.ViewerTickets = func() (string, error) { return a.writerFallback.ViewerTicket(context.Background()) }
+		lc.ViewerTickets = a.writerFallback
 	}
 	return lc
 }

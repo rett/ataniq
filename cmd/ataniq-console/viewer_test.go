@@ -465,12 +465,19 @@ func TestCF03ViewerRenewal(t *testing.T) {
 		if n := leads.count(); n != 0 {
 			t.Fatalf("%d ticket commands before the writer role was lost", n)
 		}
-		tk, err := lc.ViewerTickets()
+		tk, err := lc.ViewerTickets.ViewerTicket(context.Background())
 		if err != nil || tk == writerTicket || len(minted) != 1 || tk != minted[0] {
 			t.Fatalf("viewer ticket %q, %v; minted %v, writer ticket %q", tk, err, minted, writerTicket)
 		}
 		if asked := leads.asked(); len(asked) != 1 || asked[0] != (ticketCall{"lead-alpha", 3, false}) {
 			t.Fatalf("asked %+v, want one viewer ticket for the lead and epoch", asked)
+		}
+		// The client hands it its own context, which Close cancels: a
+		// cancelled ask makes no command.
+		cancelled, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := lc.ViewerTickets.ViewerTicket(cancelled); !errors.Is(err, context.Canceled) || leads.count() != 1 {
+			t.Fatalf("a cancelled ask was %v after %d commands", err, leads.count())
 		}
 	})
 
