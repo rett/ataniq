@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -147,8 +148,44 @@ func TestBaselineIsDeterministic(t *testing.T) {
 	host, _ := os.Hostname()
 	for _, f := range []string{"units.allow", "ports.allow", "packages.allow", "nft.digest"} {
 		text := readOut(t, a, "share/"+f)
-		if strings.Contains(text, "host (") || (host != "" && strings.Contains(text, host)) {
+		if strings.Contains(text, "host (") || containsHostname(text, host) {
 			t.Errorf("%s holds a stamp or a host name:\n%s", f, text)
+		}
+	}
+}
+
+func containsHostname(text, host string) bool {
+	if host == "" {
+		return false
+	}
+	names := regexp.QuoteMeta(host)
+	if short, _, dotted := strings.Cut(host, "."); dotted && short != "" {
+		names += "|" + regexp.QuoteMeta(short)
+	}
+	return regexp.MustCompile(`(^|[^A-Za-z0-9-])(?i:` + names + `)($|[^A-Za-z0-9-])`).MatchString(text)
+}
+
+func TestContainsHostname(t *testing.T) {
+	for _, tc := range []struct {
+		text, host string
+		want       bool
+	}{
+		{"forward", "rwa", false},
+		{"name", "name", true},
+		{"name.", "name", true},
+		{"name.example", "name", true},
+		{"(name)", "name", true},
+		{"name:", "name", true},
+		{"(NAME.Example)", "name.example", true},
+		{"_NaMe_", "name.example", true},
+		{"pre-name", "name.example", false},
+		{"name-other", "name", false},
+		{"name2", "name", false},
+		{"nameXexample", "name.example", false},
+		{"()", "", false},
+	} {
+		if got := containsHostname(tc.text, tc.host); got != tc.want {
+			t.Errorf("containsHostname(%q, %q) = %t, want %t", tc.text, tc.host, got, tc.want)
 		}
 	}
 }
