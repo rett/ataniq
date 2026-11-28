@@ -13,7 +13,7 @@ import (
 )
 
 // The legacy hello offers a directory and viewer tickets. The lead itself
-// has messages enabled, so the editor can open for this epoch.
+// has messages enabled, but this connection does not offer injection.
 type viewerDirectory struct{ t *testing.T }
 
 func (viewerDirectory) Operations() []string { return []string{leadwire.OpList, leadwire.OpTicket} }
@@ -57,26 +57,31 @@ func TestLeadsCapabilityRefusal(t *testing.T) {
 	d.send(tea.WindowSizeMsg{Width: 140, Height: 45})
 	d.send(openLeadsKey())
 	listShown(d)
+	// The hint also names the reason. Match the separate note from the keypress.
+	hasPrompt := func(view, reason string) bool {
+		for _, line := range strings.Split(view, "\n") {
+			if strings.TrimSpace(line) == reason {
+				return true
+			}
+		}
+		return false
+	}
 	d.send(tea.KeyPressMsg{Code: 'w', Text: "w"})
 	d.until("writer ticket refusal", func(v string) bool {
-		return strings.Contains(v, "attach ticket: refused: the daemon does not offer a writer ticket for this lead")
+		return hasPrompt(v, "the daemon does not offer a writer ticket for this lead")
 	})
 	if _, ok := d.m.Attach(); ok {
 		t.Fatal("refused writer ticket requested an attach")
 	}
 
-	openEditor := func() {
-		d.send(tea.KeyPressMsg{Code: 'm', Text: "m"})
-		d.until("message editor", func(v string) bool { return strings.Contains(v, "message to alpha (epoch 3)>") })
-	}
-	openEditor()
-	d.send(tea.KeyPressMsg{Code: 'h', Text: "h"})
-	d.send(tea.KeyPressMsg{Code: tea.KeyEnter})
-	d.until("message refusal", func(v string) bool {
-		return strings.Contains(v, "message: refused: the daemon does not offer sending a message to this lead")
+	d.send(tea.KeyPressMsg{Code: 'm', Text: "m"})
+	view := d.until("message refusal", func(v string) bool {
+		return hasPrompt(v, "the daemon does not offer sending a message to this lead")
 	})
-	openEditor()
-	if s := counters.Snapshot(); s.Unsupported != 0 || s.Served[leadwire.OpTicket] != 0 {
+	if strings.Contains(view, "message to alpha (epoch 3)>") {
+		t.Fatal("unavailable message opened the editor")
+	}
+	if s := counters.Snapshot(); s.Unsupported != 0 || s.Served[leadwire.OpTicket] != 0 || s.Served[leadwire.OpInject] != 0 {
 		t.Fatalf("refused command reached the daemon: %+v", s)
 	}
 }

@@ -142,8 +142,35 @@ type Identity struct {
 	Epoch                             uint64
 }
 
+// Control identifies one scratch action. Writer distinguishes the two ticket roles.
+type Control struct {
+	Op     Op
+	Writer bool
+}
+
+// NotOfferedReason is the refusal code for a missing command or ticket role.
+func (c Control) NotOfferedReason() string {
+	if c.Op == OpTicket {
+		if c.Writer {
+			return "writer-ticket-not-offered"
+		}
+		return "viewer-ticket-not-offered"
+	}
+	return string(c.Op) + "-not-offered"
+}
+
+// Availability is the negotiated offer for a control on one lead. Reason is a
+// local code for an unavailable control, translated through the view's words.
+type Availability struct {
+	Offered bool
+	Reason  string
+}
+
 // Lead is one lead of the listing.
 type Lead struct {
+	// Actions holds the negotiated offer. A backend without negotiation may
+	// leave it nil to use the original local scratch controls.
+	Actions map[Control]Availability
 	// HomeID is empty for the local scratch backend. A row from a named
 	// home is for display only on this role-addressed backend.
 	HomeID, ProjectID, ID, ConversationID string

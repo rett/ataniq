@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -88,7 +89,7 @@ type Model struct {
 type pendingCommand struct {
 	seq     int
 	target  Identity
-	op      Op
+	control Control
 	invalid atomic.Bool
 }
 
@@ -294,7 +295,8 @@ func (m *Model) onListed(v listedMsg) tea.Cmd {
 			continue
 		}
 		c := Lead{
-			HomeID: l.HomeID, ProjectID: l.ProjectID, ID: l.ID, ConversationID: l.ConversationID, Offline: l.Offline,
+			Actions: maps.Clone(l.Actions),
+			HomeID:  l.HomeID, ProjectID: l.ProjectID, ID: l.ID, ConversationID: l.ConversationID, Offline: l.Offline,
 			Key: safeID(l.Key, 64), Role: l.Role, Defined: l.Defined,
 			Provision: safeID(l.Provision, 16), State: safeID(l.State, 16), StateReason: safeID(l.StateReason, 64),
 			Epoch: l.Epoch, Unit: safeID(l.Unit, 96), Inject: l.Inject, MessageSpent: l.MessageSpent, MessageResult: l.MessageResult,
@@ -332,7 +334,8 @@ func (m *Model) onListed(v listedMsg) tea.Cmd {
 		}
 	}
 	for role, pending := range m.busy {
-		if i := m.bindingIndex(pending.target); i < 0 || m.leads[i].Role != role {
+		i := m.bindingIndex(pending.target)
+		if i < 0 || m.leads[i].Role != role || !m.leads[i].availability(pending.control).Offered {
 			pending.invalid.Store(true)
 		}
 	}
@@ -567,25 +570,43 @@ func (m *Model) move(delta int) {
 	}
 	m.clamp()
 	if ok && m.cursor != before {
-		if pending := m.busy[previous.Role]; pending != nil && pending.op == OpTicket {
+		if pending := m.busy[previous.Role]; pending != nil && pending.control.Op == OpTicket {
 			pending.invalid.Store(true)
 		}
 	}
 }
 
-// admit checks what every command needs: a lead under the cursor and no
-// command of that lead still waiting for its answer.
-func (m *Model) admit() (Lead, bool) {
+func (l Lead) availability(c Control) Availability {
+	switch {
+	case l.Offline || l.unreadable():
+		return Availability{Reason: "offline"}
+	case c.Op == OpInject && !l.Inject:
+		return Availability{Reason: "messages-off"}
+	case l.Actions == nil:
+		return Availability{Offered: true}
+	}
+	if offer, ok := l.Actions[c]; ok {
+		return offer
+	}
+	return Availability{Reason: c.NotOfferedReason()}
+}
+
+// admit checks the selected scratch lead, its offer and its outstanding command.
+func (m *Model) admit(op Op, writer bool) (Lead, bool) {
+	if m.listErr {
+		m.note = reasonText("offline")
+		return Lead{}, false
+	}
 	l, ok := m.current()
 	if !ok {
 		return Lead{}, false
 	}
-	if l.unreadable() {
-		m.note = "Commands unavailable for this degraded row."
+	if l.HomeID != "" {
+		m.note = "No scratch commands for this directory row."
 		return Lead{}, false
 	}
-	if l.Offline || l.HomeID != "" {
-		m.note = "No scratch commands for this directory row."
+	if a := l.availability(Control{Op: op, Writer: writer}); !a.Offered {
+		m.note = reasonText(a.Reason)
 		return Lead{}, false
 	}
 	if _, busy := m.busy[l.Role]; busy {
@@ -597,7 +618,7 @@ func (m *Model) admit() (Lead, bool) {
 
 // simple sends define or start for the lead under the cursor.
 func (m *Model) simple(op Op, call func(Backend, string, uint64) (Receipt, error)) tea.Cmd {
-	l, ok := m.admit()
+	l, ok := m.admit(op, false)
 	if !ok {
 		return nil
 	}
@@ -609,7 +630,7 @@ func (m *Model) simple(op Op, call func(Backend, string, uint64) (Receipt, error
 func (m *Model) command(l Lead, op Op, epoch uint64, writer bool, call func(Backend) (Receipt, error)) tea.Cmd {
 	m.seq++
 	seq, b, role, key := m.seq, m.b, l.Role, l.Key
-	pending := &pendingCommand{seq: seq, target: l.identity(), op: op}
+	pending := &pendingCommand{seq: seq, target: l.identity(), control: Control{Op: op, Writer: writer}}
 	m.busy[role] = pending
 	m.status, m.statusListed, m.note = nil, false, "sending: "+opWords(op)+" for "+key
 	return func() tea.Msg {
@@ -625,7 +646,7 @@ func (m *Model) command(l Lead, op Op, epoch uint64, writer bool, call func(Back
 
 // startStop opens the confirmation of a stop.
 func (m *Model) startStop() {
-	l, ok := m.admit()
+	l, ok := m.admit(OpStop, false)
 	if !ok {
 		return
 	}
@@ -641,8 +662,7 @@ func (m *Model) confirmKey(name string) (tea.Cmd, Action) {
 		m.note = "stop cancelled"
 		return nil, Action{}
 	}
-	if _, busy := m.busy[c.Role]; busy {
-		m.note = busyLine
+	if _, ok := m.admit(OpStop, false); !ok {
 		return nil, Action{}
 	}
 	return m.command(*c, OpStop, c.Epoch, false,
@@ -652,15 +672,13 @@ func (m *Model) confirmKey(name string) (tea.Cmd, Action) {
 // startMessage opens the message editor for the lead under the cursor, for
 // the epoch the row shows.
 func (m *Model) startMessage() {
-	l, ok := m.admit()
+	l, ok := m.admit(OpInject, false)
 	if !ok {
 		return
 	}
 	switch {
 	case l.Epoch == 0:
 		m.note = notRunning
-	case !l.Inject:
-		m.note = injectOffLine
 	case l.MessageSpent:
 		m.note = spentLine
 	case m.unconfirmed[l.identity()]:
@@ -735,8 +753,7 @@ func (m *Model) submit() tea.Cmd {
 		m.note = blankLine
 		return nil
 	}
-	if _, busy := m.busy[e.Role]; busy {
-		m.note = busyLine
+	if _, ok := m.admit(OpInject, false); !ok {
 		return nil
 	}
 	id, ok := m.messageID()
@@ -770,7 +787,7 @@ func (m *Model) messageID() (string, bool) {
 // ticket asks for an attach ticket for the lead under the cursor, in the
 // epoch the row shows.
 func (m *Model) ticket(writer bool) tea.Cmd {
-	l, ok := m.admit()
+	l, ok := m.admit(OpTicket, writer)
 	if !ok {
 		return nil
 	}
@@ -793,7 +810,7 @@ func (m *Model) onDone(v doneMsg) (tea.Cmd, Action) {
 		if v.op == OpInject {
 			delete(m.unconfirmed, pending.target)
 		}
-		m.note = "Selection changed before the command was sent."
+		m.note = "The lead or its available actions changed before the command was sent."
 		return m.listCmd(), Action{}
 	}
 	m.note, m.status, m.statusListed = "", nil, false
