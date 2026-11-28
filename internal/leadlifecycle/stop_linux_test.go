@@ -124,6 +124,69 @@ func TestStopSigkillOnlyAfterTwoSeconds(t *testing.T) {
 	r.auditClean()
 }
 
+// A SIGTERM that reached some processes of the group and not others
+// (ErrPartialSignal) is a TERM that was sent: it is not sent again to every
+// process on each poll, and the stop goes on to the proof and, after TermWait,
+// to the kill. A TERM that sent nothing stays an error and is retried (see
+// TestStopManagerUnavailable).
+func TestStopPartialTermCountsAsSent(t *testing.T) {
+	termsOf := func(r *rig) (n int) {
+		for _, c := range r.signalCalls() {
+			if c.Signal == syscall.SIGTERM {
+				n++
+			}
+		}
+		return n
+	}
+	t.Run("the rest is killed after TermWait", func(t *testing.T) {
+		r := newRig(t)
+		role := r.define("alpha")
+		r.fake.SetProcs(unitOf(role), leadunit.ProcScript{Behavior: leadunit.ExitOnTerm}, leadunit.ProcScript{Behavior: leadunit.IgnoreTerm})
+		r.mustStart(role)
+		begin := r.clock.Now()
+		r.fake.SignalPartly(unitOf(role), 1)
+		_, err := r.stop(role)
+		noErr(t, err)
+		r.expectState(role, leadregistry.StateStopped, "stopped")
+		sig := r.signalCalls()
+		if len(sig) != 2 || sig[0].Signal != syscall.SIGTERM || !errors.Is(sig[0].Err, leadunit.ErrPartialSignal) ||
+			sig[1].Signal != syscall.SIGKILL || sig[1].Err != nil {
+			t.Fatalf("signals %+v, want one partial TERM and then the KILL", sig)
+		}
+		if !sig[1].At.Equal(begin.Add(TermWait)) {
+			t.Fatalf("KILL at %v, want %v", sig[1].At, begin.Add(TermWait))
+		}
+		r.auditClean()
+	})
+	t.Run("an unproven stop names the partial send", func(t *testing.T) {
+		r := newRig(t)
+		role := r.define("alpha")
+		r.fake.SetProcs(unitOf(role), leadunit.ProcScript{Behavior: leadunit.SurviveKill})
+		r.mustStart(role)
+		r.fake.SignalPartly(unitOf(role), 1)
+		_, err := r.stop(role)
+		isErr(t, err, ErrStopUnproven)
+		e := r.expectState(role, leadregistry.StateUnknown, "stop-unproven")
+		if !strings.Contains(e.Shown.Reason.Detail, leadunit.ErrPartialSignal.Error()) {
+			t.Fatalf("detail %q does not name the partial send", e.Shown.Reason.Detail)
+		}
+		if n := termsOf(r); n != 1 {
+			t.Fatalf("%d TERM calls, want 1", n)
+		}
+	})
+	t.Run("a TERM that sent nothing is still retried", func(t *testing.T) {
+		r := newRig(t)
+		role := r.define("alpha")
+		r.mustStart(role)
+		r.fake.MakeUnavailable(leadunit.MethodSignal, 2)
+		_, err := r.stop(role)
+		noErr(t, err)
+		if n := termsOf(r); n != 3 {
+			t.Fatalf("%d TERM calls, want the two refused and the one sent", n)
+		}
+	})
+}
+
 func TestStopTermHonouredBeforeTheDeadline(t *testing.T) {
 	r := newRig(t)
 	role := r.define("alpha")
