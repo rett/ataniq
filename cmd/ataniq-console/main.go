@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -73,7 +72,9 @@ type attachConfig struct {
 	// (--scratch-writer), is where the viewer tickets come from once the writer
 	// role is lost: the attach then stays a viewer for good (see
 	// leadattach.Config.ReconnectAsViewer) and never asks for a writer ticket
-	// again. With --attach it is nil: the ticket file is the one source.
+	// again; that attach pins expectLead and expectEpoch as well, for the
+	// writer and for the viewer it becomes. With --attach it is nil: the ticket
+	// file is the one source.
 	writerFallback leadattach.TicketSource
 }
 
@@ -265,8 +266,9 @@ func fileTicketConfig(a *attachConfig, mode leadattach.Mode) leadattach.Config {
 		ShiftEnter:  a.shiftEnter,
 	}
 	if a.writerFallback != nil && mode == leadattach.ModeWriter {
+		lc.ExpectLead, lc.ExpectEpoch = a.expectLead, a.expectEpoch
 		lc.ReconnectAsViewer = true
-		lc.ViewerTickets = func() (string, error) { return a.writerFallback.ViewerTicket(context.Background()) }
+		lc.ViewerTickets = a.writerFallback
 	}
 	return lc
 }

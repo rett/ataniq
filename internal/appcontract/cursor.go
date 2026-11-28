@@ -177,8 +177,8 @@ func cursorBounds(c cursorContext, position, generation, tail uint64) bool {
 		return generation == 0 && position > 0
 	case pageCursor:
 		// The generation is the segment's; a backward position names the
-		// oldest entry already read, a forward one the newest examined, which
-		// is 0 only while the segment holds nothing.
+		// oldest entry already read, a forward one the number of the newest
+		// entry read (see PageReader.forward).
 		return generation > 0 && (v.forward || position > 0)
 	default:
 		return false

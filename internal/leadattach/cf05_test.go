@@ -1,6 +1,7 @@
 package leadattach_test
 
 import (
+	"context"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -167,11 +168,11 @@ func TestCF05Client(t *testing.T) {
 			v := &viewers{}
 			return v, func(cfg *leadattach.Config) {
 				cfg.ReconnectAsViewer = true
-				cfg.ViewerTickets = func() (string, error) {
+				cfg.ViewerTickets = viewerTicketFunc(func(context.Context) (string, error) {
 					v.calls.Add(1)
 					v.given.give(1)
 					return v.given.get()
-				}
+				})
 			}
 		}
 		// reconnectsAsViewer drops the connection and checks that the next one
@@ -243,6 +244,56 @@ func TestCF05Client(t *testing.T) {
 			e := newEnv(t, setup{pipe: true, mode: leadattach.ModeWriter, mutate: set})
 			hc := e.attach(wire.RoleWriter)
 			reconnectsAsViewer(t, e, hc, v)
+		})
+
+		t.Run("PinCoversTheViewerFallback", func(t *testing.T) {
+			// A writer pinned to a lead and epoch stops for reselection when
+			// its viewer fallback finds another epoch behind the socket.
+			v, set := newViewers()
+			e := newEnv(t, setup{pipe: true, mode: leadattach.ModeWriter, mutate: func(cfg *leadattach.Config) {
+				set(cfg)
+				cfg.ExpectLead, cfg.ExpectEpoch = "lead-one", 3
+			}})
+			hc := e.attach(wire.RoleWriter)
+			hc.nc.Close()
+			next := e.h.accept()
+			next.welcomeTarget(wire.RoleViewer, "lead-one", 4)
+			requireDetach(t, next)
+			requireReselect(t, e)
+			if v.calls.Load() != 1 {
+				t.Fatalf("viewer tickets asked %d times", v.calls.Load())
+			}
+		})
+
+		t.Run("CloseCancelsASlowViewerTicket", func(t *testing.T) {
+			// The source honors only its context, as a daemon command in
+			// flight does: Close must cancel it and not wait for it.
+			asking := make(chan struct{})
+			var once atomic.Bool
+			e := newEnv(t, setup{pipe: true, mode: leadattach.ModeWriter, mutate: func(cfg *leadattach.Config) {
+				cfg.ReconnectAsViewer = true
+				cfg.ViewerTickets = viewerTicketFunc(func(ctx context.Context) (string, error) {
+					if once.CompareAndSwap(false, true) {
+						close(asking)
+					}
+					<-ctx.Done()
+					return "", ctx.Err()
+				})
+			}})
+			hc := e.attach(wire.RoleWriter)
+			hc.nc.Close()
+			select {
+			case <-asking:
+			case <-time.After(wait):
+				t.Fatal("the client never asked for a viewer ticket")
+			}
+			closed := make(chan struct{})
+			go func() { e.c.Close(); close(closed) }()
+			select {
+			case <-closed:
+			case <-time.After(wait):
+				t.Fatal("Close waited for the viewer ticket source instead of cancelling it")
+			}
 		})
 
 		t.Run("WithoutViewerTickets", func(t *testing.T) {

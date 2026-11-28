@@ -746,6 +746,9 @@ func TestHiddenEntriesLeaveNoTraceInIDs(t *testing.T) {
 		add(f, "x2", "c") // prunes x1 (hidden), then "a" is still kept
 		mid := mustRead(t, f.reader, pageReq("viewer-b", Backward, "", 50))
 		wantSeqs(t, "after one hidden pruned", mid, 1, 2, 3)
+		if mid.State != PageEnd {
+			t.Errorf("only a hidden entry was pruned, but the state is %s", mid.State)
+		}
 		add(f, "d") // prunes "a"; the first visible number is still 2
 		after := mustRead(t, f.reader, pageReq("viewer-b", Backward, "", 50))
 		if !reflect.DeepEqual(texts(after), []string{"b", "c", "d"}) {
@@ -754,6 +757,57 @@ func TestHiddenEntriesLeaveNoTraceInIDs(t *testing.T) {
 		wantSeqs(t, "after pruning", after, 2, 3, 4)
 		if after.State != PageGap {
 			t.Errorf("state %s", after.State)
+		}
+	})
+
+	// A page cut only by hidden entries is not a loss to the viewer: it lost
+	// nothing it could see, so "gap" would show that a hidden entry existed.
+	t.Run("OnlyHiddenPrunedIsNoGap", func(t *testing.T) {
+		f := setup(Retention{MaxEntries: 2})
+		add(f, "x1", "a", "b")
+		p := mustRead(t, f.reader, pageReq("viewer-b", Backward, "", 50))
+		wantSeqs(t, "backward", p, 1, 2)
+		if p.State != PageEnd {
+			t.Errorf("viewer-b lost nothing it could see, but the state is %s", p.State)
+		}
+		// The viewer that sees everything did lose an entry.
+		full := mustRead(t, f.reader, pageReq("viewer-a", Backward, "", 50))
+		if full.State != PageGap {
+			t.Errorf("viewer-a state %s", full.State)
+		}
+	})
+
+	// A forward read reports a gap only when a pruned entry the viewer had not
+	// yet read was visible to it, even when hidden and visible entries are
+	// mixed below the cursor.
+	t.Run("ForwardGapIsExact", func(t *testing.T) {
+		f := setup(Retention{MaxEntries: 2})
+		add(f, "a")
+		start := mustRead(t, f.reader, pageReq("viewer-b", Backward, "", 50))
+		wantSeqs(t, "start", start, 1)
+		// "a" (read) and the hidden x1 are pruned; nothing unread was lost.
+		add(f, "x1", "x2", "x3")
+		next := mustRead(t, f.reader, pageReq("viewer-b", Forward, start.Newer, 50))
+		if next.State != PageMore || len(next.Entries) != 0 {
+			t.Errorf("only read and hidden entries were pruned: state %s, %v", next.State, texts(next))
+		}
+		// Now "b" is pruned before it was read: a loss.
+		g := setup(Retention{MaxEntries: 2})
+		add(g, "a")
+		start = mustRead(t, g.reader, pageReq("viewer-b", Backward, "", 50))
+		add(g, "x1", "b", "x2", "x3")
+		next = mustRead(t, g.reader, pageReq("viewer-b", Forward, start.Newer, 50))
+		if next.State != PageGap {
+			t.Errorf("an unread visible entry was pruned: state %s", next.State)
+		}
+		// With only hidden entries pruned past the cursor, there is none.
+		h := setup(Retention{MaxEntries: 2})
+		add(h, "a", "x1", "x2")
+		start = mustRead(t, h.reader, pageReq("viewer-b", Backward, "", 50))
+		add(h, "x3", "x4")
+		next = mustRead(t, h.reader, pageReq("viewer-b", Forward, start.Newer, 50))
+		if next.State != PageMore {
+			t.Errorf("only hidden entries were pruned past the cursor: state %s", next.State)
 		}
 	})
 }

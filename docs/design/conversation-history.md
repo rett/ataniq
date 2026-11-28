@@ -41,7 +41,10 @@ pruned entries were hidden, so retention never renumbers. For a projection that
 hides nothing it is the authority's sequence. A fresh readable segment gets a
 fresh generation. An attach or a page refresh preserves the ID, and so does a
 change of viewer whose projection hides the same entries below it. Desk and seat
-deduplicate by the whole tuple. Preserve existing event and cause IDs when an
+deduplicate by the whole tuple within one viewer's projection only: two
+projections that hide different entries can give one tuple to different entries,
+and a change of grant can renumber a viewer's own entries. A reset
+(`reset_required`) discards the IDs with the page. Preserve existing event and cause IDs when an
 entry refers to those events. [Resource definition](../../internal/appcontract/resource.go)
 and [event identities](../../internal/appcontract/projection.go).
 
@@ -71,7 +74,7 @@ and [replay contract](client-protocol.md#events-replay-and-snapshots).
 | Page state | What the reader does |
 | --- | --- |
 | **end** | The authority can account for the start of the readable segment. Show its beginning and stop paging. An empty new segment can end here. |
-| **gap** | A valid read reaches a known loss, such as entries pruned by retention. Mark the break at the oldest retained boundary. Never infer loss or its size from nonconsecutive visible IDs. |
+| **gap** | A valid read reaches a known loss to this viewer, such as visible entries pruned by retention; entries pruned that the viewer's projection hides are no loss to it and show no gap. Mark the break at the oldest retained boundary. Never infer loss or its size from nonconsecutive visible IDs. |
 | **reset** | An expired or invalid continuation, changed segment, instance or disclosure projection requires `reset_required` for an authorized reader. Discard the old page and cursor and obtain a fresh authorized snapshot. Show a gap there if retention cut off older entries. |
 | **withheld** | Render an authorized omission as a content-free marker. Continue paging past it if a cursor is supplied. When even existence is hidden, suppress the marker and any identifying counts, including a gap in the visible numbers: the reader numbers the visible entries consecutively. |
 

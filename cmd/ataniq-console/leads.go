@@ -357,6 +357,9 @@ func terminalAttachConfig(cfg config, req terminalconsole.AttachRequest, leads v
 		// viewer tickets for this lead and epoch; the first is a command of its
 		// own, as the ticket file holds a writer ticket.
 		ac.writerFallback = newViewerTickets(leads, req.Role, req.Epoch, req.Folder, "")
+		// The writer and the viewer it falls back to are pinned to the
+		// selected row, as a viewer attach is: the reselect stop covers both.
+		ac.expectLead, ac.expectEpoch = req.Role, req.Epoch
 	}
 	if !req.Writer {
 		if leads == nil {

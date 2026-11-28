@@ -122,9 +122,11 @@ type (
 		Newer   string              `json:"newer"`
 	}
 
-	// ConversationMessageID is the stable identity of an entry: the tuple of
-	// internal/appmodel's MessageID. Desk and seat compare whole values; the
-	// shared vectors are internal/appmodel/testdata/message-ids-v1.json.
+	// ConversationMessageID is the identity of an entry as one viewer's
+	// disclosure projection reads it: the tuple of internal/appmodel's
+	// MessageID. Compare whole values only within one viewer and projection, and
+	// drop them with the page on reset_required; the shared vectors are
+	// internal/appmodel/testdata/message-ids-v1.json.
 	ConversationMessageID struct {
 		Authority    string `json:"authority"`
 		Lead         string `json:"lead"`
