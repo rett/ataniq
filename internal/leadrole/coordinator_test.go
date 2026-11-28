@@ -458,3 +458,16 @@ func TestUnitAndLockUnambiguous(t *testing.T) {
 		}
 	})
 }
+
+func TestShortAuthorityTag(t *testing.T) {
+	const tag = "0123456789abcdef"
+	authority := tag + strings.Repeat("f", 48)
+	if got, err := ShortAuthorityTag(authority); err != nil || got != tag {
+		t.Fatalf("short tag = %q, %v, want %q", got, err, tag)
+	}
+	for _, bad := range []string{"", tag, strings.ToUpper(authority), authority + "0", authority[:63] + "z"} {
+		if got, err := ShortAuthorityTag(bad); got != "" || !errors.Is(err, ErrInvalid) {
+			t.Errorf("invalid authority %q: got %q, %v", bad, got, err)
+		}
+	}
+}

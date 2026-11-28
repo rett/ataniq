@@ -268,14 +268,19 @@ var outcomeOnlyWords = map[string]deliveryText{
 
 const unknownResult = "the result is not known to this console"
 
-// What the daemon does with the epoch's message once a request was written to
-// the holder (internal/leaddaemon/canary_ext_linux.go injectFor): it is spent,
-// unless the holder answered that nothing was written (not-now or refused), when
-// it is free again and the lead may send another. The receipt does not say
-// which: the daemon holds the epoch spent all the same when it could not write
-// the result down, and only the list's row (message_spent) knows. So the tail
-// of a message that was not delivered is drawn from the row when the view has
-// read it since the answer, and says what it does not know otherwise.
+// What the daemon does with the epoch's message (internal/leaddaemon/
+// canary_ext_linux.go injectFor): it is spent from the moment its inject-sent
+// line is in the evidence, which is written before the request frame, whether
+// or not a frame then leaves. A lead of scratch mode takes it back in three
+// cases only, each once the line that says so is in the evidence: the holder
+// answered that nothing was written (not-now or refused), the holder refused the
+// request itself (disabled, wrong-epoch or bad-request, not busy), or the
+// request was never sent (the holder's socket could not be dialled). The
+// receipt does not say which: the daemon holds the epoch spent all the same when
+// it could not write that line down, and only the list's row (message_spent)
+// knows. So the tail of a message that was not delivered is drawn from the row
+// when the view has read it since the answer, and says what it does not know
+// otherwise.
 const (
 	spentTail = ". This epoch's one message is spent"
 	freeTail  = ". The epoch's message is free"
