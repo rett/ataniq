@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"ataniq/internal/consoleclient"
 	"ataniq/internal/terminalconsole"
@@ -941,7 +940,11 @@ func TestTheLeadsViewIsViewerOnlyWithoutTheFlag(t *testing.T) {
 	if strings.Contains(view, "[w]") || strings.Contains(view, "attach as writer") || !strings.Contains(view, "[v] attach as viewer") {
 		t.Fatalf("the hint:\n%s", view)
 	}
-	d.send(tea.KeyPressMsg{Code: 'w', Text: "w"})
+	// The refused key makes no command at all: nothing runs that could reach
+	// the lead client, so there is nothing to wait for.
+	if _, cmd := d.m.Update(tea.KeyPressMsg{Code: 'w', Text: "w"}); cmd != nil {
+		t.Fatal("w made a command")
+	}
 	// The key's own answer is a line of its own, set before any command runs.
 	var noted bool
 	for _, line := range strings.Split(ansi.Strip(d.m.View().Content), "\n") {
@@ -953,7 +956,6 @@ func TestTheLeadsViewIsViewerOnlyWithoutTheFlag(t *testing.T) {
 	if _, ok := d.m.Attach(); ok {
 		t.Fatal("w asked for an attach")
 	}
-	time.Sleep(50 * time.Millisecond)
 	if got := f.callList(); len(got) != 0 {
 		t.Fatalf("w reached the lead client: %v", got)
 	}
