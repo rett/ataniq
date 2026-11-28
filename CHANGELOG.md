@@ -854,8 +854,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   The console shows the reason on that row and keeps other leads usable.
 - A key from the pre-release instance format now reports its origin and
   directs the owner to run init on a fresh root.
-- A malformed `--home` prints the accepted format and exits with usage status
-  2. Missing-home refusals explain that enrollment needs a stopped daemon.
+- A malformed `--home` prints the accepted format and exits with usage
+  status 2. Missing-home refusals explain that enrollment needs a stopped daemon.
 - Init validates the legacy journal under the migration lock and removes stale
   `.registry-check-*` replay copies left by earlier builds.
 - Restoring an incarnation with a journal in place now requires explicit
@@ -2343,8 +2343,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Correct the terminals the attended canary run's page and its preflight name:
   the daemon stays in front of its terminal until Ctrl-C at step 26, so the
   owner needs four, T1 for the script, T2 for the daemon, T3 for the console
-  and T4 for the second console of step 14 and the integrate command of step
-  20. `CHECKLIST.txt`, the preflight's READY text, the run's own prompts at
+  and T4 for the second console of step 14 and the integrate command of
+  step 20. `CHECKLIST.txt`, the preflight's READY text, the run's own prompts at
   steps 10 and 14 and the guide now agree.
 - Make the attended canary run say why a holder ended at its start. The holder
   reports a refused start on its standard error, which is the unit's journal;
@@ -3005,7 +3005,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `ataniq-qualify-<random>-child.service`, never under the name of a role,
   checks the manager against them, prints one JSON report and cleans its units
   up. It is run by hand: no test and no make target runs it, and no run of it
-  is recorded. See [the lead daemon guide](docs/lead-daemon.md).
+  is recorded. See [the lead daemon guide](https://github.com/rett/ataniq/blob/master/docs/lead-daemon.md).
 - `ataniq-console --attach DIR --ticket-file FILE [--viewer]` shows a live
   scratch session from a holder in the cockpit: one writer, one read-only
   viewer, no takeover. A console that waits for a ticket does not connect, so
@@ -3032,7 +3032,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   queue and delivers nothing, and the holder answers an `inject` request with
   `disabled`), nothing reads delivery from the conversation file, and no live
   agent was used.
-  See [lead injection](docs/lead-injection.md).
+  See [lead injection](https://github.com/rett/ataniq/blob/master/docs/lead-injection.md).
 - Add `docs/lead-sandbox.md`, a guide to the lead sandbox proposal: the launch
   plan, nested sandboxes under owner decision R17, the file-system view, the
   clone rules, the environment allowlist, network and DNS, the probe, the ten
@@ -3053,7 +3053,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   target. It works in a scratch state root and writes one JSON report of facts
   with no pass, supported or qualified field: a person reads the facts and
   decides. It qualifies no sandbox by itself. See
-  [the lead mirror qualification manual](docs/qualification-lead-mirror.md).
+  [the lead mirror qualification manual](https://github.com/rett/ataniq/blob/master/docs/qualification-lead-mirror.md).
 
 ### Changed
 
