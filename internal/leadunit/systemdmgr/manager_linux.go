@@ -321,7 +321,10 @@ func parseGroupID(s string) (systemd.FileIdentity, bool) {
 //     sub-groups), each through a pidfd opened before the file is listed again,
 //     the main process first; a pid that is no longer listed is skipped.
 //
-// A group that was removed is [leadunit.ErrNotLoaded]. A kernel without
+// A SIGTERM that reached some processes and not others (a pidfd call that
+// failed, say with EPERM) is [leadunit.ErrPartialSignal], which a caller reads
+// as a signal that is out. A group that was removed is
+// [leadunit.ErrNotLoaded]. A kernel without
 // cgroup.kill fails SIGKILL ([cgroupsig.ErrNoKill]); nothing else is tried, in
 // particular no "systemctl kill", which names the unit and not the invocation.
 func (m *Manager) Signal(ctx context.Context, st leadunit.State, sig syscall.Signal) error {
@@ -378,6 +381,8 @@ func signalError(unit string, err error) error {
 		return leadunit.ErrNotLoaded
 	case errors.Is(err, cgroupsig.ErrIdentity):
 		return leadunit.ErrControlGroupMismatch
+	case errors.Is(err, cgroupsig.ErrPartial):
+		return fmt.Errorf("systemdmgr: signal %s: %w: %w", unit, leadunit.ErrPartialSignal, err)
 	}
 	return fmt.Errorf("systemdmgr: signal %s: %w", unit, err)
 }

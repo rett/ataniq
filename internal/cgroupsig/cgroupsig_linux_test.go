@@ -277,6 +277,39 @@ func TestCgroupSignal(t *testing.T) {
 		if err == nil || o.PidfdFailures != 2 || o.Signalled != 0 {
 			t.Fatalf("%+v %v", o, err)
 		}
+		// Nothing was sent: not a partial signal, so a caller may try again.
+		if errors.Is(err, ErrPartial) {
+			t.Fatalf("a signal that sent nothing is partial: %v", err)
+		}
+	})
+
+	t.Run("PartialSignalIsDistinct", func(t *testing.T) {
+		tr := newTree(t, "321\n400\n500\n")
+		k := newFakeKernel()
+		k.failOpen[400] = unix.EPERM // a process the caller cannot signal
+		g, err := Open(k, tr.root, groupPath, tr.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer g.Close()
+		o, err := g.Signal(syscall.SIGTERM, 321)
+		if !errors.Is(err, ErrPartial) || errors.Is(err, ErrGone) || o.Signalled != 2 || o.PidfdFailures != 1 {
+			t.Fatalf("%+v %v, want the others signalled and an error that wraps ErrPartial", o, err)
+		}
+		if want := []int{321, 500}; !reflect.DeepEqual(k.sent, want) {
+			t.Fatalf("signalled %v, want %v", k.sent, want)
+		}
+		// The same with a failure of the send.
+		k = newFakeKernel()
+		k.failSend[500] = unix.EPERM
+		g2, err := Open(k, tr.root, groupPath, tr.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer g2.Close()
+		if o, err := g2.Signal(syscall.SIGTERM, 321); !errors.Is(err, ErrPartial) || o.Signalled != 2 {
+			t.Fatalf("a failed send: %+v %v", o, err)
+		}
 	})
 }
 
