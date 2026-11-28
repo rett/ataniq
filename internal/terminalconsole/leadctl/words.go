@@ -382,8 +382,8 @@ func running(l Lead) bool {
 // knows, and when the daemon holds the epoch spent and there are no words at
 // all (a message whose answer was lost, one sent before the console started or
 // by another client, a daemon that was restarted since, a holder answer the
-// daemon could not use), the word is "sent-unsure": the frame was written, and
-// nothing says the lead has the message.
+// daemon could not use), the word is "sent-unsure": the message was recorded, a
+// frame may have left, and nothing says the lead has the message.
 func msgWord(l Lead, d Delivery) string {
 	f := deliveryOf(d.Outcome, d.Reason, d.Written).fate
 	switch {
