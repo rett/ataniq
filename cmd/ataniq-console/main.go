@@ -61,6 +61,13 @@ type attachConfig struct {
 	socket, ticketFile string
 	viewer             bool
 	shiftEnter         leadattach.ShiftEnter
+	// tickets, when set, is the daemon-backed source of a viewer attach made
+	// from the leads view, and the attach pins expectLead and expectEpoch,
+	// the lead and epoch of the selected row. With --attach it is nil: the
+	// ticket file is the one source.
+	tickets     leadattach.TicketSource
+	expectLead  string
+	expectEpoch uint64
 }
 
 // config is what the flags select.
@@ -215,6 +222,14 @@ func attachModel(cfg config) *terminalconsole.Model {
 		mode = leadattach.ModeViewer
 	}
 	o := cfg.options
+	if a.tickets != nil {
+		o.Live = viewerLive(a, leadattach.Config{
+			Socket:     a.socket,
+			Name:       clientName,
+			ShiftEnter: a.shiftEnter,
+		})
+		return terminalconsole.NewWithOptions(nil, o)
+	}
 	// The presence check keeps the console from dialling the holder while the
 	// ticket file is empty or refused, and gives the status the reason of a
 	// refusal.
@@ -228,6 +243,16 @@ func attachModel(cfg config) *terminalconsole.Model {
 		ShiftEnter:  a.shiftEnter,
 	})
 	return terminalconsole.NewWithOptions(nil, o)
+}
+
+// viewerLive returns the attach client of a viewer attach with a ticket
+// source of its own: it asks a.tickets before each connection, so that a
+// viewer that the holder dropped connects again with a new ticket, and it stops
+// for the owner to select the lead again when the source says the selection is
+// stale. The lead and epoch of the selected row are its pin.
+func viewerLive(a *attachConfig, c leadattach.Config) *leadattach.Client {
+	c.ExpectLead, c.ExpectEpoch = a.expectLead, a.expectEpoch
+	return leadattach.NewViewer(c, a.tickets)
 }
 
 // demoModel returns the console for --demo: the fixture cockpit with the
@@ -296,10 +321,16 @@ func runDaemon(cfg config, out, errout io.Writer) int {
 	}
 	defer rig.Close()
 	run := runProgram(out)
+	// A viewer attach asks the daemon for its tickets through the lead client;
+	// with no lead control there is no attach to carry out.
+	var tickets viewerTicketer
+	if rig.leads != nil {
+		tickets = rig.leads.c
+	}
 	return daemonLoop{
 		rig:    rig,
 		run:    run,
-		attach: map[attachKind]attachRunner{attachTerminal: terminalAttach(cfg, run)},
+		attach: map[attachKind]attachRunner{attachTerminal: terminalAttach(cfg, run, tickets)},
 		errout: errout,
 	}.loop()
 }
