@@ -143,6 +143,12 @@ func parsePackMigrations(list, data string) (migrationUses, error) {
 		if len(f) != 2 || !strings.HasPrefix(reason, " Migration: ") || strings.TrimSpace(strings.TrimPrefix(reason, " Migration: ")) == "" {
 			return nil, fmt.Errorf("%s:%d: want two names and a migration reason", list, i+1)
 		}
+		if list == "imports.txt" {
+			task, ok := strings.CutPrefix(reason, " Migration: task ")
+			if !ok || len(strings.Fields(task)) < 2 {
+				return nil, fmt.Errorf("%s:%d: name the task and how it retires the import", list, i+1)
+			}
+		}
 		key := [2]string{f[0], f[1]}
 		if _, ok := result[key]; ok {
 			return nil, fmt.Errorf("%s:%d: duplicate migration: %s %s", list, i+1, f[0], f[1])
@@ -598,5 +604,14 @@ func TestPackBoundaryMigrationEntries(t *testing.T) {
 	}
 	if got := m.unused(); !slices.Equal(got, []string{"old.go wire"}) {
 		t.Errorf("unused migrations = %q", got)
+	}
+}
+
+func TestPackBoundaryImportRetirement(t *testing.T) {
+	for _, reason := range []string{"until a neutral validator exists", "task", "task neutral-validator"} {
+		_, err := parsePackMigrations("imports.txt", "codec.go example/wire # Migration: "+reason)
+		if err == nil {
+			t.Errorf("accepted import without a retirement task and condition: %q", reason)
+		}
 	}
 }
