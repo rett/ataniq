@@ -1,6 +1,7 @@
 package leadregistry
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -506,6 +507,66 @@ func TestStaleEpochRefused(t *testing.T) {
 	if e, _ := r.Get(role); e.Unit != (UnitEvidence{}) {
 		t.Fatalf("evidence carried into a new epoch: %+v", e.Unit)
 	}
+
+	starting := ok(r.Get(role))
+	ready := ok(r.SetState(role, setState(StateReady, starting.Epoch)))
+	obs := Observed{Model: Seen("model-seen")}
+	t.Run("SameEpochStaleObservedStateAppendsNothing", func(t *testing.T) {
+		path := filepath.Join(dir, FileName)
+		before, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantStale := func(writer string, err error) {
+			t.Helper()
+			var stale *StaleStateError
+			if !errors.Is(err, ErrStaleState) || !errors.As(err, &stale) ||
+				stale.Expected != starting.Shown.State || stale.Current != ready.Shown.State {
+				t.Errorf("%s returned %v, want stale state (expected starting, current ready)", writer, err)
+			}
+		}
+		c := setState(StateDegraded, starting.Epoch)
+		c.ExpectedState = starting.Shown.State
+		_, err = r.SetState(role, c)
+		wantStale("SetState", err)
+		_, err = r.SetObservedAt(role, starting.Epoch, obs, starting.Shown.State)
+		wantStale("SetObservedAt", err)
+		_, err = r.RecordOutcomeAt(role, starting.Intent.ID, starting.Epoch, OutcomeLaunched, ev, starting.Shown.State)
+		wantStale("RecordOutcomeAt", err)
+		c.Epoch = in2.Epoch
+		if _, err := r.SetState(role, c); !errors.Is(err, ErrStaleEpoch) {
+			t.Errorf("stale epoch and state returned %v, want ErrStaleEpoch", err)
+		}
+		if size := journalSize(t, dir); size != int64(len(before)) {
+			t.Errorf("journal size after refusal = %d, want %d", size, len(before))
+		}
+		after, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(before, after) {
+			t.Error("refused writes changed journal bytes")
+		}
+		if got := okf(t)(r.Get(role)); !reflect.DeepEqual(got, ready) {
+			t.Errorf("entry after refusal = %+v, want %+v", got, ready)
+		}
+	})
+	t.Run("SameEpochMatchingStateWrites", func(t *testing.T) {
+		ok := okf(t)
+		c := setState(StateDegraded, ready.Epoch)
+		c.ExpectedState = ready.Shown.State
+		e := ok(r.SetState(role, c))
+		if e.Shown.State != StateDegraded {
+			t.Fatalf("shown state = %s, want degraded", e.Shown.State)
+		}
+		ok(r.SetObservedAt(role, e.Epoch, obs, e.Shown.State))
+		ok(r.RecordOutcomeAt(role, e.Intent.ID, e.Epoch, OutcomeLaunched, ev, e.Shown.State))
+		replayed := ok(openReg(t, copyJournal(t, dir)).Get(role))
+		if replayed.Epoch != ready.Epoch || replayed.Shown.State != StateDegraded ||
+			replayed.Observed != obs || replayed.Intent.Outcome != OutcomeLaunched || replayed.Unit != ev {
+			t.Fatalf("replayed entry after matching writes = %+v", replayed)
+		}
+	})
 }
 
 func TestProofRules(t *testing.T) {

@@ -809,15 +809,22 @@ func (r *Registry) BeginLaunchWith(role leadrole.Role, opts LaunchOptions) (Inte
 // intentID is not the current intent, and ErrIntentResolved when the intent
 // already has an outcome. It does not change the shown state.
 func (r *Registry) RecordOutcome(role leadrole.Role, intentID string, epoch uint64, outcome Outcome, unit UnitEvidence) (Entry, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.mutate(kindLaunchOutcome, role, &outcomePayload{IntentID: intentID, Epoch: epoch, Outcome: outcome, Unit: unit})
+	return r.RecordOutcomeAt(role, intentID, epoch, outcome, unit, "")
+}
+
+// RecordOutcomeAt also requires the role's shown state to match expected
+// when supplied. A mismatch in the current epoch returns *StaleStateError.
+func (r *Registry) RecordOutcomeAt(role leadrole.Role, intentID string, epoch uint64, outcome Outcome, unit UnitEvidence, expected State) (Entry, error) {
+	return r.mutateAtState(kindLaunchOutcome, role, epoch, expected, &outcomePayload{IntentID: intentID, Epoch: epoch, Outcome: outcome, Unit: unit})
 }
 
 // StateChange is one change of the shown state.
 type StateChange struct {
 	// Epoch must be the role's current epoch.
 	Epoch uint64
+	// ExpectedState is the shown state the caller observed in Epoch.
+	// The empty string omits the state comparison.
+	ExpectedState State
 	// State is the new shown state. starting is set by BeginLaunch only.
 	State State
 	// Evidence is the record kind of the evidence behind the state.
@@ -839,11 +846,10 @@ type StateChange struct {
 // a coordinator and for a coordinator that is not starting, ready or
 // degraded; and, as ErrOutcomePending, stopped or ended while the launch
 // intent is pending. unknown is accepted for the current epoch from every
-// state.
+// state. If ExpectedState is supplied and differs in the current epoch,
+// SetState returns *StaleStateError without appending a record.
 func (r *Registry) SetState(role leadrole.Role, c StateChange) (Entry, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.mutate(kindState, role, &statePayload{
+	return r.mutateAtState(kindState, role, c.Epoch, c.ExpectedState, &statePayload{
 		Epoch: c.Epoch, State: c.State, Evidence: c.Evidence, Reason: c.Reason, Proof: c.Proof,
 	})
 }
@@ -882,9 +888,39 @@ func (r *Registry) ResolveUnknown(role leadrole.Role, d OwnerDecision) (Entry, e
 // are left alone. At least one field must be observed. The observed profile
 // starts empty in every epoch.
 func (r *Registry) SetObserved(role leadrole.Role, epoch uint64, obs Observed) (Entry, error) {
+	return r.SetObservedAt(role, epoch, obs, "")
+}
+
+// SetObservedAt also requires the role's shown state to match expected
+// when supplied. A mismatch in the current epoch returns *StaleStateError.
+func (r *Registry) SetObservedAt(role leadrole.Role, epoch uint64, obs Observed, expected State) (Entry, error) {
+	return r.mutateAtState(kindObserved, role, epoch, expected, &observedPayload{Epoch: epoch, Observed: obs})
+}
+
+// mutateAtState compares the caller's observation under the write lock.
+// The expectation is a precondition of the live call only.
+func (r *Registry) mutateAtState(kind string, role leadrole.Role, epoch uint64, expected State, body payload) (Entry, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.mutate(kindObserved, role, &observedPayload{Epoch: epoch, Observed: obs})
+	if expected != "" {
+		if err := r.usable(); err != nil {
+			return Entry{}, err
+		}
+		if err := expected.validate(); err != nil {
+			return Entry{}, err
+		}
+		cur, err := r.existing(role)
+		if err != nil {
+			return Entry{}, err
+		}
+		if cur.Epoch != epoch {
+			return Entry{}, ErrStaleEpoch
+		}
+		if cur.Shown.State != expected {
+			return Entry{}, &StaleStateError{Expected: expected, Current: cur.Shown.State}
+		}
+	}
+	return r.mutate(kind, role, body)
 }
 
 // Get returns a deep copy of one role, or ErrNoRole.

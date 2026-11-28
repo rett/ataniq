@@ -49,6 +49,8 @@ var (
 	ErrTooLarge = errors.New("leadregistry: journal line too large")
 	// ErrStaleEpoch means the call named an epoch other than the role's current one.
 	ErrStaleEpoch = errors.New("leadregistry: stale epoch")
+	// ErrStaleState means the shown state differs from the caller's expectation.
+	ErrStaleState = errors.New("leadregistry: stale shown state")
 	// ErrEpochExhausted means the epoch counter cannot grow.
 	ErrEpochExhausted = errors.New("leadregistry: epoch exhausted")
 	// ErrLaunchRefused is matched by every refusal of BeginLaunch.
@@ -88,8 +90,7 @@ var (
 	ErrIntentResolved = errors.New("leadregistry: launch intent already resolved")
 	// ErrProofRequired means stopped and ended need a non-empty proof text.
 	ErrProofRequired = errors.New("leadregistry: proof required")
-	// ErrStateTransition is matched by every refusal of SetState or
-	// ResolveUnknown for the shown state the role is in.
+	// ErrStateTransition means SetState or ResolveUnknown refused the transition.
 	ErrStateTransition = errors.New("leadregistry: state change refused")
 	// ErrOutcomePending is a state refusal: stopped, ended and an owner
 	// decision are refused while the launch intent is pending. The caller
@@ -191,6 +192,18 @@ func (d Desired) validate() error {
 	}
 	return nil
 }
+
+// StaleStateError reports the same-epoch state mismatch that refused a write.
+type StaleStateError struct {
+	Expected State
+	Current  State
+}
+
+func (e *StaleStateError) Error() string {
+	return fmt.Sprintf("%v: expected %s, current %s", ErrStaleState, e.Expected, e.Current)
+}
+
+func (e *StaleStateError) Unwrap() error { return ErrStaleState }
 
 // State is the shown state of a role.
 type State string
