@@ -492,6 +492,52 @@ func TestFakeSignalRefusals(t *testing.T) {
 	r.signal(second, syscall.SIGKILL)
 }
 
+// TestFakeSignalControlGroupContract: the fake refuses as Manager.Signal does a
+// State that records no control group identity or path (ErrNoControlGroupID),
+// and another group than the one the State names (ErrControlGroupMismatch),
+// and signals nothing then.
+func TestFakeSignalControlGroupContract(t *testing.T) {
+	r := newRig(t)
+	r.fake.SetProcs(unitA, ProcScript{Behavior: IgnoreTerm})
+	st := r.start(unitA, 1)
+	for name, tc := range map[string]struct {
+		mut  func(*State)
+		want error
+	}{
+		"no identity":      {func(s *State) { s.ControlGroupID = "" }, ErrNoControlGroupID},
+		"no path":          {func(s *State) { s.ControlGroup = "" }, ErrNoControlGroupID},
+		"another identity": {func(s *State) { s.ControlGroupID += "-other" }, ErrControlGroupMismatch},
+		"another path":     {func(s *State) { s.ControlGroup += "/other" }, ErrControlGroupMismatch},
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := st
+			tc.mut(&bad)
+			for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL} {
+				if err := r.fake.Signal(r.ctx, bad, sig); !errors.Is(err, tc.want) {
+					t.Fatalf("Signal %v = %v, want %v", sig, err, tc.want)
+				}
+			}
+			if got := r.inspect(unitA); !got.Live() || got.InvocationID != st.InvocationID {
+				t.Fatalf("a refused signal reached the unit: %+v", got)
+			}
+			if r.empty(st) {
+				t.Fatal("the group is empty after refused signals")
+			}
+		})
+	}
+	// The invocation is judged first, as the real manager does, so a stale
+	// State without an identity is the invocation's refusal.
+	stale := st
+	stale.InvocationID, stale.ControlGroupID = "other", ""
+	if err := r.fake.Signal(r.ctx, stale, syscall.SIGKILL); !errors.Is(err, ErrInvocationChanged) {
+		t.Fatalf("stale invocation without an identity: %v", err)
+	}
+	r.signal(st, syscall.SIGKILL) // the State as Start returned it still works
+	if r.fake.Loaded(unitA) {
+		t.Fatal("the kill of the named group did not end the unit")
+	}
+}
+
 func TestFakeSignalReachesEveryProcess(t *testing.T) {
 	r := newRig(t)
 	r.fake.SetProcs(unitA, ProcScript{}, ProcScript{}, ProcScript{Behavior: ExitOnTermAfter, Delay: time.Second})

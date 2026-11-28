@@ -33,27 +33,39 @@ func snapshot() Snapshot {
 	return Snapshot{
 		Row: assignment.Row{Head: head(), Holder: holder(), PublicDigest: "digest"},
 		Live: assignment.LiveFacts{
-			Activation: true, Session: "s1", BoundSession: "s1", RoleEpoch: 3,
-			RequiredRoutes: []string{"r1"}, LiveRoutes: []string{"r1"},
+			// BoundSession and RequiredRoutes are the request's to name: the
+			// boundary overwrites whatever a source puts there, so set them
+			// to values that would admit nothing if they were believed.
+			Activation: true, Session: "s1", BoundSession: "ignored", RoleEpoch: 3,
+			RequiredRoutes: nil, LiveRoutes: []string{"r1"},
 		},
 	}
 }
 
-func bound(ctx context.Context) context.Context {
-	return WithRequest(ctx, Request{Expected: head(), Holder: holder(), PublicDigest: "digest"})
+func request() Request {
+	return Request{
+		Expected: head(), Holder: holder(), PublicDigest: "digest",
+		Session: "s1", Routes: []string{"r1"}, Authority: "auth", Epoch: "e1",
+	}
 }
 
-func intent(id string) dispatch.Intent { return dispatch.Intent{ID: id, Attempt: "1", Project: "p"} }
+func bound(ctx context.Context) context.Context { return WithRequest(ctx, request()) }
+
+func intent(id string) dispatch.Intent {
+	return dispatch.Intent{ID: id, Attempt: "1", Project: "p", Authority: "auth", Epoch: "e1"}
+}
 
 type source struct {
 	mu   sync.Mutex
 	snap Snapshot
 	err  error
 	// hook runs inside Snapshot, under the boundary's lock.
-	hook func()
+	hook  func()
+	reads atomic.Int32
 }
 
 func (s *source) Snapshot(context.Context) (Snapshot, error) {
+	s.reads.Add(1)
 	s.mu.Lock()
 	snap, err, hook := s.snap, s.err, s.hook
 	s.mu.Unlock()
@@ -119,6 +131,91 @@ func notYet[T any](t *testing.T, c <-chan T, what string) {
 		t.Fatalf("%s happened too early", what)
 	case <-time.After(50 * time.Millisecond):
 	}
+}
+
+// TestAdmissionBindsTheIntentAndTheFencesToTheRequest: what the boundary
+// compares the live read against comes from the request, never from the
+// source, and an intent that is not the request's never reaches the snapshot.
+func TestAdmissionBindsTheIntentAndTheFencesToTheRequest(t *testing.T) {
+	refused := func(t *testing.T, name string, req func(*Request), in func(*dispatch.Intent), live func(*Snapshot), want string, wantReads int32) {
+		t.Run(name, func(t *testing.T) {
+			inn, src := &inner{}, &source{snap: snapshot()}
+			if live != nil {
+				live(&src.snap)
+			}
+			r := request()
+			if req != nil {
+				req(&r)
+			}
+			it := intent("x")
+			if in != nil {
+				in(&it)
+			}
+			s, d, err := New(inn, src).Start(WithRequest(context.Background(), r), it)
+			if s != dispatch.StartDenied || err != nil || !strings.Contains(d, want) {
+				t.Fatalf("Start = %v %q %v, want denied containing %q", s, d, err, want)
+			}
+			if c := inn.calls.Load(); c != 0 {
+				t.Fatalf("inner started %d times", c)
+			}
+			if n := src.reads.Load(); n != wantReads {
+				t.Fatalf("snapshot read %d times, want %d", n, wantReads)
+			}
+		})
+	}
+	const foreign = "intent is not the bound request's"
+	refused(t, "intent of another project", nil, func(i *dispatch.Intent) { i.Project = "other-project" }, nil, foreign, 0)
+	refused(t, "intent of another authority", nil, func(i *dispatch.Intent) { i.Authority = "other-authority" }, nil, foreign, 0)
+	refused(t, "intent of another epoch", nil, func(i *dispatch.Intent) { i.Epoch = "99" }, nil, foreign, 0)
+	refused(t, "all three foreign", nil, func(i *dispatch.Intent) {
+		i.Project, i.Authority, i.Epoch = "other-project", "other-authority", "99"
+	}, nil, foreign, 0)
+	refused(t, "request names no authority", func(r *Request) { r.Authority = "" }, func(i *dispatch.Intent) { i.Authority = "" }, nil, foreign, 0)
+	refused(t, "request names no epoch", func(r *Request) { r.Epoch = "" }, func(i *dispatch.Intent) { i.Epoch = "" }, nil, foreign, 0)
+	// The ledger holder's authority and role epoch are not the intent's: an
+	// intent spelled from them is not the request's.
+	refused(t, "holder identity is not the intent identity", nil, func(i *dispatch.Intent) {
+		i.Authority, i.Epoch = holder().Authority, "3"
+	}, nil, foreign, 0)
+
+	// A release replaced session s1 with s2 at the same head, and the source
+	// reports the new session as the bound one too: only the request knows s1.
+	refused(t, "session replaced, source vouches for the new one", nil, nil, func(s *Snapshot) {
+		s.Live.Session, s.Live.BoundSession = "s2", "s2"
+	}, assignment.ReasonSessionChanged.Error(), 1)
+	refused(t, "request bound to no session", func(r *Request) { r.Session = "" }, nil, nil, assignment.ReasonSessionChanged.Error(), 1)
+	refused(t, "no live session", nil, nil, func(s *Snapshot) {
+		s.Live.Session, s.Live.BoundSession = "", ""
+	}, assignment.ReasonSessionLost.Error(), 1)
+
+	// An empty route list names no route: it is refused, not vacuously met,
+	// whatever the source lists as required.
+	refused(t, "no route named", func(r *Request) { r.Routes = nil }, nil, func(s *Snapshot) {
+		s.Live.RequiredRoutes = []string{"r1"}
+	}, "no required route named", 0)
+	refused(t, "empty route list", func(r *Request) { r.Routes = []string{} }, nil, nil, "no required route named", 0)
+	// A route only the request needs is checked, though the source lists
+	// none as required.
+	refused(t, "required route not live", func(r *Request) { r.Routes = []string{"r1", "r2"} }, nil, nil, assignment.ReasonRouteMissing.Error(), 1)
+
+	t.Run("a source cannot widen what the request needs", func(t *testing.T) {
+		inn, src := &inner{}, &source{snap: snapshot()}
+		src.snap.Live.RequiredRoutes = []string{"elsewhere"}
+		s, d, err := New(inn, src).Start(bound(context.Background()), intent("ok"))
+		if s != dispatch.StartAcknowledged || err != nil || inn.calls.Load() != 1 {
+			t.Fatalf("Start = %v %q %v, inner calls %d", s, d, err, inn.calls.Load())
+		}
+	})
+
+	t.Run("the request's routes are copied at binding", func(t *testing.T) {
+		inn, src := &inner{}, &source{snap: snapshot()}
+		r := request()
+		ctx := WithRequest(context.Background(), r)
+		r.Routes[0] = "r2" // after binding: must not change the bound request
+		if s, d, err := New(inn, src).Start(ctx, intent("ok")); s != dispatch.StartAcknowledged || err != nil {
+			t.Fatalf("Start = %v %q %v, want the bound routes to hold", s, d, err)
+		}
+	})
 }
 
 func TestAdmissionBoundary(t *testing.T) {

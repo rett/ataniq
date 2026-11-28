@@ -35,6 +35,12 @@ var (
 	// ErrNoKill means the group exists but has no cgroup.kill file (a kernel
 	// before 5.14). Nothing was sent, and nothing else is tried.
 	ErrNoKill = errors.New("cgroupsig: cgroup.kill is not available")
+	// ErrPartial means Signal sent the signal to some processes of the group
+	// and could not send it to others (a pidfd call failed, or a membership
+	// could not be confirmed). It is not returned when nothing was sent, so
+	// a caller that sees it knows the signal is out and need not send it to
+	// the same processes again.
+	ErrPartial = errors.New("cgroupsig: signal sent to some processes only")
 )
 
 // Identity names a directory object by device, inode and owner.
@@ -332,7 +338,8 @@ func (g *Group) relist(string) map[int]bool {
 // it is listed, goes first; a number that is not listed is skipped. A group
 // that is gone is [ErrGone]. A failure of a pidfd call, or a process whose
 // membership could not be confirmed, is an error after the others were
-// signalled.
+// signalled: it wraps [ErrPartial] when at least one process was signalled, so
+// the caller can tell a signal that is out from one that sent nothing.
 func (g *Group) Signal(sig syscall.Signal, mainPID int) (Outcome, error) {
 	pids, err := g.list()
 	if err != nil {
@@ -363,7 +370,11 @@ func (g *Group) Signal(sig syscall.Signal, mainPID int) (Outcome, error) {
 		return total, fmt.Errorf("%w: %s", ErrGone, g.path)
 	}
 	if total.PidfdFailures > 0 || total.Unconfirmed > 0 {
-		return total, fmt.Errorf("cgroupsig: signal %d of %s: %d pidfd failure(s), %d unconfirmed", int(sig), g.path, total.PidfdFailures, total.Unconfirmed)
+		err := fmt.Errorf("cgroupsig: signal %d of %s: %d pidfd failure(s), %d unconfirmed", int(sig), g.path, total.PidfdFailures, total.Unconfirmed)
+		if total.Signalled > 0 {
+			err = fmt.Errorf("%w: %w", ErrPartial, err)
+		}
+		return total, err
 	}
 	return total, nil
 }

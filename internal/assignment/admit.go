@@ -39,12 +39,16 @@ type LiveFacts struct {
 	// Session identifies the live session and witness fence now held, empty
 	// when none is held. BoundSession is the one the request was bound to.
 	// A release that replaces the session leaves the head unchanged, so the
-	// two must match exactly.
+	// two must match exactly. A caller takes Session from the live read and
+	// BoundSession from the request, never both from the live read: the
+	// comparison is vacuous when one source sets both.
 	Session, BoundSession string
 	// RoleEpoch is the live role epoch the holder must still carry.
 	RoleEpoch uint64
-	// RequiredRoutes are the routes the effect needs. LiveRoutes are the
-	// routes with a live fence now. Every required route must be live.
+	// RequiredRoutes are the routes the effect needs, taken from the request.
+	// LiveRoutes are the routes with a live fence now. Every required route
+	// must be live; an empty list requires none, so a caller that needs a
+	// route must refuse an empty list itself.
 	RequiredRoutes, LiveRoutes []string
 }
 

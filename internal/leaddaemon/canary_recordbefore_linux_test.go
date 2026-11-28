@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -296,10 +297,13 @@ func TestRecordBeforeWrite(t *testing.T) {
 			t.Fatalf("a request that does not encode: stage %v, err %v", st, err)
 		}
 
-		// And through the extension: an evidence that takes no line gives the
-		// answer failed, with a record that was refused and no
-		// state spent. The holder's folder is not there, so a frame that was
-		// tried would show as holder-unreachable.
+		// And through the record callback of callHolderThen as injectFor
+		// builds it (appendSent on an evidence that takes no line): the call
+		// ends at sendNotRecorded with the append's error logged and nothing
+		// in the file. The holder's folder is not there, so a frame that was
+		// tried would show as sendUnsent. The whole injectFor path, with its
+		// answer failed and its message not spent, is
+		// TestCanaryInjectWhoseSentLineCannotBeWritten.
 		c := newCanaryEnv(t)
 		path := c.cfg.EvidencePath()
 		inner, err := leadcanary.OpenEvidence(c.cfg, time.Now)
@@ -321,6 +325,54 @@ func TestRecordBeforeWrite(t *testing.T) {
 			t.Fatalf("the evidence holds %q (%v)", data, err)
 		}
 	})
+}
+
+// TestCanaryEffectIDsContinueAcrossADaemonRestart goes through the daemon's own
+// wiring of the effect-id counter, which the extension-level test above sets by
+// hand: openState reads the largest counter of an effect id the evidence holds
+// into the instance, and newExt hands it to the extension. A daemon started on
+// an evidence that already holds canary-inject-7-41 must not make that id, or
+// any smaller one, for its first inject, and the id of the frame is the one of
+// the inject-sent line.
+func TestCanaryEffectIDsContinueAcrossADaemonRestart(t *testing.T) {
+	const earlier = 41
+	c := newCanaryEnv(t)
+	// An earlier daemon's lines, of an earlier epoch (7) than the one this
+	// daemon's start makes (1), so that the epoch of the test stays free.
+	old := strings.Join([]string{
+		evidenceLineOf("daemon-start", canaryRoleText, ""),
+		evidenceLineOf("inject-sent", canaryRoleText, `,"epoch":7,"message_id":"m-old","effect_id":"canary-inject-7-41"`),
+		evidenceLineOf("inject-refused", canaryRoleText, `,"epoch":7,"message_id":"m-old","code":"unsent","effect_id":"canary-inject-7-41"`),
+	}, "\n") + "\n"
+	if err := os.WriteFile(c.cfg.EvidencePath(), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	started := c.up(submitted)
+	if started.Epoch != 1 {
+		t.Fatalf("the role started in epoch %d, want 1", started.Epoch)
+	}
+	if got, err := c.inject("msg-one", "body text\n"); err != nil || got.Result.Outcome != wire.InjectOutcomeSubmitted {
+		t.Fatalf("%+v %v", got, err)
+	}
+	reqs := c.holder.requests(wire.OpInject)
+	if len(reqs) != 1 {
+		t.Fatalf("%d inject requests, want 1", len(reqs))
+	}
+	id := reqs[0].CommandID
+	prefix := "canary-inject-1-"
+	n, err := strconv.ParseUint(strings.TrimPrefix(id, prefix), 10, 64)
+	if !strings.HasPrefix(id, prefix) || err != nil || n <= earlier {
+		t.Fatalf("the first inject of the restarted daemon has the command id %q, want %sN with N > %d", id, prefix, earlier)
+	}
+	var sentID string
+	for _, l := range c.evidence() {
+		if l["event"] == "inject-sent" && l["message_id"] == "msg-one" {
+			sentID, _ = l["effect_id"].(string)
+		}
+	}
+	if sentID != id {
+		t.Fatalf("the inject-sent line has the effect id %q, the frame %q", sentID, id)
+	}
 }
 
 func refusedLine(id, code string) string {

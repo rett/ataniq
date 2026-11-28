@@ -25,6 +25,8 @@ type fakePidfds struct {
 	sent   []int // pids signalled, in order
 	sigs   []syscall.Signal
 	onOpen func(pid int)
+	// failSend maps a pid to the error its pidfd_send_signal returns.
+	failSend map[int]error
 }
 
 func newFakePidfds() *fakePidfds { return &fakePidfds{next: 100, pids: map[int]int{}} }
@@ -47,6 +49,9 @@ func (f *fakePidfds) PidfdOpen(pid int) (int, error) {
 func (f *fakePidfds) PidfdSendSignal(fd int, sig syscall.Signal) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.failSend[f.pids[fd]]; err != nil {
+		return err
+	}
 	f.sent = append(f.sent, f.pids[fd])
 	f.sigs = append(f.sigs, sig)
 	return nil
@@ -161,6 +166,27 @@ func TestCgroupSignal(t *testing.T) {
 			t.Fatalf("a term wrote %q to cgroup.kill", got)
 		}
 		s.noSystemctlKill()
+	})
+
+	// A term that reached some processes and not others is a signal that is
+	// out: the caller must not read it as a call that sent nothing.
+	t.Run("TermPartialIsErrPartialSignal", func(t *testing.T) {
+		s := newSignalRig(t, "400\n321\n500\n")
+		s.pf.failSend = map[int]error{400: syscall.EPERM}
+		err := s.m.Signal(ctx, s.st, syscall.SIGTERM)
+		if !errors.Is(err, leadunit.ErrPartialSignal) || errors.Is(err, leadunit.ErrNotLoaded) {
+			t.Fatalf("Signal: %v, want ErrPartialSignal", err)
+		}
+		if want := []int{321, 500}; !reflect.DeepEqual(s.pf.sent, want) {
+			t.Fatalf("signalled %v, want %v", s.pf.sent, want)
+		}
+		// Nothing signalled is a plain failure, which a caller may retry.
+		s = newSignalRig(t, "400\n")
+		s.pf.failSend = map[int]error{400: syscall.EPERM}
+		err = s.m.Signal(ctx, s.st, syscall.SIGTERM)
+		if err == nil || errors.Is(err, leadunit.ErrPartialSignal) {
+			t.Fatalf("a term that sent nothing: %v", err)
+		}
 	})
 
 	t.Run("EmptyRecordedIDRefused", func(t *testing.T) {

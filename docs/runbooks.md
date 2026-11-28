@@ -315,6 +315,13 @@ of it. The words come from the holder. The MSG column of the row agrees.
   it.
 - All four leave the epoch's message **free**: the MSG column says `free (not
   delivered)` and `m` works again, with the same message id or another.
+- "the lead's holder could not be reached" (`holder-unreachable`): the daemon
+  could not connect to the holder, so nothing was written to the lead, and the
+  message is **free** again once the daemon has noted it in the lead's evidence
+  (when its log says it could not, the message stays spent).
+  Run step 1.1 and press `m` again. If the daemon says the operation `failed` and
+  its log names the evidence file, nothing was sent and the message is free too:
+  go to section 6 for the evidence file.
 
 What proves the message reached the lead is `sent`, shown only when the holder
 said the whole message was submitted. Everything else that may have reached the
@@ -332,10 +339,7 @@ lead leaves the epoch's one message **spent**.
   After a `died` result, do not press anything: the input may hold an open
   paste. Decide from what you see.
 - If it does not work: if you want a fresh message, stop the lead (step 1.7) and
-  start it (`s`). The new epoch has a new message. A message the daemon lost
-  between the frame and the evidence line (a window of a few milliseconds)
-  leaves the epoch free after a daemon restart although the message is on its
-  way: read the screen before sending again.
+  start it (`s`). The new epoch has a new message.
 
 ### 2.5 Attach is refused: "a writer may already be attached"
 

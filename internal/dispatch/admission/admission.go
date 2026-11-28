@@ -18,17 +18,37 @@ import (
 )
 
 // Request is the admission a start is bound to: the head it was submitted
-// against, the submitting holder and the public digest it relied on.
+// against, the submitting holder, the public digest it relied on, the session
+// it was bound to, the routes its effect needs and the identity of the one
+// dispatch.Intent it may start. Everything the boundary compares a live read
+// against comes from the Request, never from the LiveSource, so a source
+// cannot vouch for a start it cannot see.
 type Request struct {
 	Expected     assignment.Head
 	Holder       assignment.Binding
 	PublicDigest string
+	// Session is the session and witness fence the request was bound to. A
+	// live session that differs from it, even at the same head, refuses the
+	// start.
+	Session string
+	// Routes are the routes the effect needs; every one must be live. An
+	// empty list names no route and refuses the start.
+	Routes []string
+	// Authority and Epoch are the Authority and Epoch of the one
+	// dispatch.Intent this request admits. The dispatch package treats both
+	// as opaque, nonempty identity strings that the boundary compares with
+	// the authority and epoch it observes, so neither is the ledger
+	// holder's authority or its role epoch, and both are carried here as
+	// the intent spells them. The intent's Project must be the project of
+	// Expected.Key.
+	Authority, Epoch string
 }
 
 type requestKey struct{}
 
 // WithRequest returns a context whose Start calls are bound to r.
 func WithRequest(ctx context.Context, r Request) context.Context {
+	r.Routes = slices.Clone(r.Routes)
 	return context.WithValue(ctx, requestKey{}, r)
 }
 
@@ -39,7 +59,9 @@ type Snapshot struct {
 }
 
 // LiveSource reads a fresh snapshot. It is called under the boundary's lock
-// at every start and must not call back into the boundary.
+// at every start and must not call back into the boundary. It reports the
+// live facts only: the boundary overwrites Live.BoundSession and
+// Live.RequiredRoutes with the Request's, so a source sets neither.
 type LiveSource interface {
 	Snapshot(context.Context) (Snapshot, error)
 }
@@ -79,8 +101,10 @@ func denied(format string, args ...any) (dispatch.StartStatus, string, error) {
 }
 
 // Start returns StartDenied, without any call to the inner boundary, when the
-// boundary is sealed, the context is done or carries no Request, the
-// snapshot cannot be read, or assignment.Admit refuses. Otherwise it returns
+// boundary is sealed, the context is done or carries no Request, the intent is
+// not the one the Request admits (its project, authority or epoch differs, or
+// the Request names none), the Request names no route, the snapshot cannot be
+// read, or assignment.Admit refuses. Otherwise it returns
 // the inner boundary's result unchanged.
 func (b *Boundary) Start(ctx context.Context, in dispatch.Intent) (dispatch.StartStatus, string, error) {
 	if b == nil || b.inner == nil || b.src == nil {
@@ -100,12 +124,23 @@ func (b *Boundary) Start(ctx context.Context, in dispatch.Intent) (dispatch.Star
 		b.mu.Unlock()
 		return denied("no bound request")
 	}
+	if req.Authority == "" || req.Epoch == "" || in.Project != req.Expected.Key.Project ||
+		in.Authority != req.Authority || in.Epoch != req.Epoch {
+		b.mu.Unlock()
+		return denied("intent is not the bound request's")
+	}
+	if len(req.Routes) == 0 {
+		b.mu.Unlock()
+		return denied("no required route named")
+	}
 	snap, err := b.src.Snapshot(ctx)
 	if err != nil {
 		b.mu.Unlock()
 		return denied("live snapshot unavailable")
 	}
-	if err := assignment.Admit(snap.Row, req.Expected, req.Holder, req.PublicDigest, snap.Live); err != nil {
+	live := snap.Live
+	live.BoundSession, live.RequiredRoutes = req.Session, req.Routes
+	if err := assignment.Admit(snap.Row, req.Expected, req.Holder, req.PublicDigest, live); err != nil {
 		b.mu.Unlock()
 		return denied("%v", err)
 	}
