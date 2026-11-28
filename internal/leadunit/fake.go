@@ -180,6 +180,7 @@ type Fake struct {
 	leftover    map[string]bool
 	lastCG      map[string]string
 	hideCG      map[string]bool
+	partial     map[string]int
 	scripts     map[string]*unitScript
 	unavailable map[Method]int
 	calls       []Call
@@ -251,6 +252,7 @@ func NewFake(clock Clock) *Fake {
 		leftover:    map[string]bool{},
 		lastCG:      map[string]string{},
 		hideCG:      map[string]bool{},
+		partial:     map[string]int{},
 		scripts:     map[string]*unitScript{},
 		unavailable: map[Method]int{},
 	}
@@ -402,6 +404,22 @@ func (f *Fake) HideControlGroupID(unit string, hidden bool) {
 	}
 }
 
+// SignalPartly scripts the next n Signal calls for unit that pass every check
+// to reach only the main process of the group (the first one), and to return
+// [ErrPartialSignal], as a manager does when it signalled some processes and a
+// pidfd call failed for the others. The call is logged with that error, and the
+// signal has its effect on the main process only. The count replaces an
+// earlier one; n of 0 clears it. A reboot clears it.
+func (f *Fake) SignalPartly(unit string, n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if n <= 0 {
+		delete(f.partial, unit)
+		return
+	}
+	f.partial[unit] = n
+}
+
 // SetBoundStop chooses when the units bound to a parent are stopped: see
 // [BoundStop]. The default is [BoundStopOnDeactivating]. It applies from the
 // next call on and is kept by a reboot; a unit that is already stopping stays
@@ -551,6 +569,7 @@ func (f *Fake) Reboot() string {
 	f.late = map[string][]Spec{}
 	f.leftover = map[string]bool{}
 	f.lastCG = map[string]string{}
+	f.partial = map[string]int{}
 	f.bootN++
 	return f.bootID()
 }
@@ -751,8 +770,18 @@ func (f *Fake) runEvents(t time.Time) {
 // deliver sends sig to every process of u at time at, each acting as its
 // script says. Only SIGTERM and SIGKILL do anything.
 func (f *Fake) deliver(u *fakeUnit, sig syscall.Signal, at time.Time) {
+	f.deliverTo(u, sig, at, nil)
+}
+
+// deliverTo is deliver for the process only, or for every process when only is
+// nil; the others of the unit are left as they are.
+func (f *Fake) deliverTo(u *fakeUnit, sig syscall.Signal, at time.Time, only *fakeProc) {
 	kept := u.procs[:0]
 	for _, p := range u.procs {
+		if only != nil && p != only {
+			kept = append(kept, p)
+			continue
+		}
 		dies := false
 		switch sig {
 		case syscall.SIGTERM:
@@ -1102,8 +1131,20 @@ func (f *Fake) Signal(ctx context.Context, st State, sig syscall.Signal) (err er
 	// The call is logged before its effect, so that the stops it causes in
 	// bound units follow it in the log.
 	logged = true
-	f.log(call)
 	now := f.clock.Now()
+	if n := f.partial[st.Unit]; n > 0 && len(u.procs) > 0 {
+		if n == 1 {
+			delete(f.partial, st.Unit)
+		} else {
+			f.partial[st.Unit] = n - 1
+		}
+		call.Err = ErrPartialSignal
+		f.log(call)
+		f.deliverTo(u, sig, now, u.procs[0])
+		f.collect(u, now)
+		return ErrPartialSignal
+	}
+	f.log(call)
 	f.deliver(u, sig, now)
 	f.collect(u, now)
 	return nil
