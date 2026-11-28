@@ -117,7 +117,16 @@ After a **reboot** of the host:
 
 ### 1.3 Start the scratch daemon
 
-Only if step 1.2 found none.
+Only if step 1.2 found none. For a new scratch root, provision the marker with
+`build/canary/ataniq-canary scratch-init --config <config>`. With the daemon
+stopped, initialize a new or pre-identity root once with
+`build/canary/ataniqd init --state-dir <state root>` using the config's
+`state_root`. Record the authority and incarnation. Back up an existing root
+before init if you may need to run the older build again.
+Then run
+`build/canary/ataniqd project-home --state-dir <state root> --home self scratch-<key>`
+for each local lead in the config. Use the same enrollment for new lead keys
+added later, while the daemon is stopped. A restart keeps the recorded homes.
 
 - Do: `build/canary/ataniqd run --scratch <config>` in the daemon's terminal.
   Leave it there. Do not run it in the background of a terminal you will close.
@@ -130,7 +139,7 @@ Only if step 1.2 found none.
 | Exit | Meaning and what to do |
 | --- | --- |
 | 10 | The config, a root or the root marker is wrong. Read the line it printed. A new place needs `build/canary/ataniq-canary scratch-init --config <config>` first (it keeps what is right and writes the marker). |
-| 11 | An evidence file, a lead's record or the command table cannot be read. Nothing is repaired. Do not set the file aside while any lead's unit runs (step 1.1): a new file forgets what was sent or admitted. Go to section 6. |
+| 11 | Read the named file and reason. The instance identity, an evidence file, a lead's record or the command table could not be loaded. Nothing is repaired. Do not set the file aside while any lead's unit runs (step 1.1): a new file forgets what was sent or admitted. Go to section 6. |
 | 12 or 17 | Another daemon holds the lock or serves the runtime folder. Run step 1.2. Do not start another. The pid in the lock file is a hint, not proof. |
 | 13 | The daemon lock could not be taken, for a reason other than another daemon holding it. Read the line it printed; if it is not plain, go to section 6. |
 | 14 | The registry is damaged or locked by another writer. Nothing is repaired. Go to section 6. |

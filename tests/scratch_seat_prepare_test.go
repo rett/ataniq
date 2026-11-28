@@ -294,7 +294,9 @@ func TestScratchSeatPrepareSelfTest(t *testing.T) {
 	k := newScratchSeatKit(t)
 	before := scratchSeatFiles(t, k.dir)
 	out, code := k.run(t, nil, "--self-test")
-	if code != 0 || !strings.Contains(out, "checks passed; nothing was read, written or run") || strings.Count(out, "\n") != 1 {
+	if code != 0 || !strings.Contains(out, "checks passed; nothing was read, written or run") ||
+		!strings.Contains(out, " init --state-dir /srv/sample/trial-state") ||
+		!strings.Contains(out, "then ataniqd project-home for each configured project before restarting the trial") || strings.Count(out, "\n") != 1 {
 		t.Fatalf("--self-test: exit %d:\n%s", code, out)
 	}
 	for _, c := range []struct {
@@ -436,6 +438,7 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root, daemon string, live
 		"Nothing of the trial is renamed, moved or masked: the proof's daemon reads its settings from " + root + "/owner-settings.",
 		"OWNER ONLY (starts pasta, bubblewrap, curl and a throwaway user unit): { sh " + root + "/netcheck.sh; echo \"netcheck: exit status $?\"; } 2>&1 | tee -a " + root + "/evidence/netcheck.txt",
 		"scratch-init --config " + root + "/scratch.json",
+		daemon + " init --state-dir \"" + state + "\"",
 		"--status" + prep + " --record   (the daemon's check, which must end \"check: no refusal\", then the baseline: it must end \"status: recorded\")",
 		"--status" + prep + " --compare   (the daemon's check; the trial's files against the record of g, which lists all six; the daemon's check of the key list since g)",
 		"OWNER ONLY: systemctl --user stop -- \"$TRIAL_UNIT\"",
@@ -484,15 +487,30 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root, daemon string, live
 	if live && !strings.Contains(out, "chat set live-3 off") || !live && !strings.Contains(out, "chat set standin-3 off") {
 		t.Errorf("the off step, live %v:\n%s", live, out)
 	}
-	order := []string{"scratch-init", "--status", " --record ", "systemctl --user stop", "--owner-settings " + root + "/owner-settings |",
-		"d on standin-3", "--compare", "key list since g", "start the trial again"}
+	init := daemon + " init --state-dir " + state
+	enroll := daemon + " project-home --state-dir " + state + " --home self scratch-"
+	order := []string{"scratch-init", daemon + " init --state-dir \"" + state + "\"", enroll + "standin-3"}
 	if live {
-		order = append(order[:6], append([]string{"The drop rule", "d on live-3"}, order[6:]...)...)
+		order = append(order, enroll+"live-3")
 	}
-	for i := 1; i < len(order); i++ {
-		if strings.Index(out, order[i-1]) > strings.Index(out, order[i]) {
-			t.Errorf("%q comes after %q:\n%s", order[i-1], order[i], out)
+	order = append(order, "Restart the trial", "--status", " --record ", "systemctl --user stop", init, enroll+"standin-3")
+	if live {
+		order = append(order, enroll+"live-3")
+	} else if strings.Contains(out, enroll+"live-3") {
+		t.Error("the stand-in-only sitting enrolls a live project")
+	}
+	order = append(order, "--owner-settings "+root+"/owner-settings |", "d on standin-3")
+	if live {
+		order = append(order, "The drop rule", "d on live-3")
+	}
+	order = append(order, "--compare", "key list since g", "start the trial again")
+	remaining := out
+	for _, step := range order {
+		_, rest, ok := strings.Cut(remaining, step)
+		if !ok {
+			t.Fatalf("missing or out-of-order step %q", step)
 		}
+		remaining = rest
 	}
 	if strings.Contains(out, "sha256sum") || strings.Contains(out, "keys-before.log") || strings.Contains(out, "--keys-prefix") {
 		t.Errorf("a step takes a digest by hand, records the prefix apart from the baseline or copies the key list:\n%s", out)
@@ -508,7 +526,7 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root, daemon string, live
 		if strings.Contains(line, "KEY") {
 			t.Errorf("a step names a lead KEY: %q", line)
 		}
-		for _, starts := range []string{"systemctl --user stop", "systemctl --user start", "run --scratch", "ataniq-console", "--version", "d on ", "s on ", "netcheck.sh"} {
+		for _, starts := range []string{"systemctl --user stop", "systemctl --user start", "run --scratch", "ataniq-console", "--version", "d on ", "s on ", "netcheck.sh", " init --state-dir ", " project-home "} {
 			if strings.Contains(line, starts) && !strings.Contains(line, "OWNER ONLY") {
 				t.Errorf("a step starts a process, changes a unit or defines a lead and is not marked OWNER ONLY: %q", line)
 			}
@@ -1443,6 +1461,8 @@ func TestScratchSeatProofRunbookShellIsSafe(t *testing.T) {
 	}
 	flat := strings.Join(strings.Fields(text), " ")
 	for _, want := range []string{
+		`$D init --state-dir "$S" $D project-home --state-dir "$S" --home self "scratch-standin-$SITTING"`,
+		`$D project-home --state-dir "$S" --home self "scratch-live-$SITTING"`,
 		"**OWNER ONLY (B): define it;", "**OWNER ONLY (B):** `d` on `live-N`", "**OWNER ONLY (C): stop the trial**, by your own command; nothing is masked or moved",
 		"**OWNER ONLY (C): start the trial again**, by your own command", "A full quarantine ends the sitting",
 		"the state folder's lock refuses whichever daemon comes second (exit 12)", "A transient trial does not come back after a reboot", "never archive the state folder",
@@ -1465,6 +1485,8 @@ func TestScratchSeatProofRunbookShellIsSafe(t *testing.T) {
 		"Stay attached: claude asks next.",
 		"`cannot-identify:`", "`uncertain delivery:`",
 		"in the leads view (not attached), `x` and `y` on `live-N`",
+		"Preflight reads the header without locking or repairing the journal.",
+		"At startup the daemon checks the registry when it takes the exclusive journal lock.",
 		"the socket paths of the leads' holders are checked only here, before the sitting, since the daemon's start does not look at them",
 	} {
 		if !strings.Contains(flat, want) {

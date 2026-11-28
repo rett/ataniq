@@ -1,11 +1,189 @@
 # Permissions-based federation
 
-Status: required architecture; not implemented or interoperability-tested.
+Daemon state roots have local instance identities and enforce project lead assignments.
+Peer federation is planned.
 
 Ataniq instances can coordinate projects, exchange tasks, and communicate in
 both directions over authenticated MCP connections. Each instance remains an
 independent authority for its projects, workers, credentials, and resources.
 Federation does not require a central instance or a shared provider.
+
+## Instance identity
+
+Before the first run, use `ataniqd init --state-dir DIR [--label TEXT]` as the
+daemon user. Then, while the daemon is stopped, enroll each project with
+`ataniqd project-home --state-dir DIR --home self PROJECT` on its chosen home.
+Use that instance's full authority ID in place of `self` on each executor.
+
+Omitting `--state-dir` from `init` selects the same default as `run`. The
+command creates `DIR/instance.key`, a singly linked, user-owned 0600 file in
+the private state root. The authority ID is 64 lowercase hexadecimal digits
+encoding SHA-256 over the ASCII bytes of `ataniq-instance-authority/1` immediately followed by the
+32 raw bytes of the Ed25519 public key (no separator or trailing newline). The
+store incarnation is an independent random 16-byte value kept in the
+private file `DIR/store.incarnation` and displayed as 32 lowercase
+hexadecimal digits. Recreating and initializing the root generates
+both values afresh. The optional label is for display only.
+
+For an existing scratch root, stop the daemon and run the same init command
+with the configuration's `state_root`. Before creating a key, init replays
+the existing journal under its exclusive lock and holds the lock through migration. The
+next init removes and reports any stale `.registry-check-*` replay directories
+left in the root by an interrupted earlier build. A corrupt record leaves the
+original journal and identity untouched. After validation, init atomically replaces the old journal with
+a version 2 journal bound to the authority and incarnation, preserving its
+records. Init prints `journal=created` for a new journal,
+`journal=existing` for an already bound journal, or `journal=migrated` with
+the number of complete records after the header and the backup path.
+Before binding a v1 journal, init saves its exact bytes, including an
+unfinished tail, as `registry/registry.jsonl.v1` (0600). Allow space for
+the backup and the replacement journal. A retry can reuse an identical
+backup. If an earlier backup differs, move that backup offline first.
+
+Older builds cannot open the migrated journal. The daemon reads only
+`registry/registry.jsonl` and refuses the v1 backup if copied into its place.
+Repeating init keeps the original key and label. Supply `--label` only on the first init. Any later `--label`,
+including an empty or identical value, is refused. On startup the daemon
+refuses a missing, damaged or unsafe identity, an unbound journal, or a
+journal from another instance or incarnation. If the key was made by the
+pre-release build that embedded the incarnation in `instance.key`, keep
+that root offline and re-run init on a fresh root.
+
+A backup of `instance.key` holds the private Ed25519 seed. Protect it as a
+credential. A copied root (including a copy made with `cp -a`) is the same
+instance and must never run beside the original.
+
+### Files in the state root
+
+Paths are relative to the daemon user's 0700 state root. Init creates both
+identity files with mode 0600. Each magic string below ends with a newline.
+Each identity file ends with the 32 raw bytes of SHA-256 over all preceding
+bytes in that file.
+
+| File | Contents and use |
+| --- | --- |
+| `instance.key` | `ataniq-instance-key/2`, 32-byte Ed25519 seed, optional UTF-8 display label (up to 128 bytes), checksum. Its public key determines the authority. |
+| `store.incarnation` | `ataniq-store-incarnation/1`, 16 random bytes, checksum. Restore replaces this file. |
+| `registry/registry.jsonl` | Active journal in the private `registry/` directory. Its v2 header binds the authority and incarnation. The daemon locks this file and replays the hash-chained records that follow. |
+| `registry/registry.jsonl.v1` | Private, byte-for-byte v1 backup saved during migration. Keep it offline with the old root when restoring. |
+| `daemon.lock` | Daemon singleton lock, also held during restore. Its PID text is a hint about the holder. |
+
+Init stages writes under temporary names. These include `.instance-*` in
+the state root, and `.registry-*` and `.registry.jsonl.v1.tmp` inside
+`registry/`. Use the published names in the table for recovery.
+
+### Restore an instance
+
+If only the key was lost and the root is intact, put the original key back as
+`instance.key` and start normally. The missing-key diagnostic checks the
+surviving incarnation against the journal header and names the authority
+whose key is needed. A backup restore needs a fresh incarnation even when it
+includes all the files.
+
+If the daemon reports a damaged `store.incarnation`, stop the daemon, retain
+the old journal offline, delete the damaged `store.incarnation` and follow
+the restore steps below with the original key.
+
+To restore, stop the daemon and keep the old root and journal offline. In a
+private 0700 state directory, restore the original `instance.key` as a
+singly linked 0600 file owned by the daemon user. Run
+`ataniqd init --restored --state-dir DIR` once and record the printed
+incarnation. It preserves the authority and draws a new incarnation each
+time. If a journal is still in place, the command warns and refuses before
+changing the incarnation. Move the journal offline first, or explicitly use
+`--restored --leave-old-journal` to acknowledge that the old journal will
+remain in place and fail its binding check. Both run and scratch
+`run --check` report exit 14 for that journal. Retain it
+offline for recovery and move it out of the registry directory before
+running ordinary `ataniqd init --state-dir DIR` to bind a **new, empty**
+registry. Reconcile the old lead history and enroll each project in the new
+registry before resuming work. Only the lead registry carries this binding today.
+
+### Sandbox identity
+
+At startup the daemon reads the identity from its state root. At managed
+sandbox launch it passes the holder only the short tag in
+`ATANIQ_AUTHORITY_TAG`, from which the holder sets
+`QARGI_LEAD` to `<project>-lead-<tag>`; the holder never reads the key. The tag is the first 16 hex
+digits of the authority ID. Two independently generated keys have a 1 in
+2⁶⁴ chance of sharing that prefix. The full fingerprint identifies the
+authority. For project names over 42 bytes, the holder uses the first 25
+bytes, a hyphen and the first 16 hex digits of SHA-256 of the full project
+name. This keeps the lead name within 64 bytes while distinguishing long
+projects with the same prefix. A missing, damaged or unsafe key refuses
+daemon startup. The layout role used for directories and locks stays
+`<project>-lead`.
+
+When the agent environment declares a coordinator label, the sandbox derives
+`QARGI_ACTOR` from the qualified parent. For example, a declaration of
+`demo-lead@e7:coord:topic:1` becomes
+`demo-lead-<tag>@e7:coord:topic:1`. An ordinary lead has no coordinator
+label. The profile digest now includes the lead naming rule. Recompute
+existing profile digest pins before the next managed start.
+
+## Enroll a project home
+
+Choose one home instance for the project and its long-lived branches. Its lead
+owns coordination and integration. The other instance runs offered work, such
+as member runs and suites, and returns results and patches to the home lead.
+V1 does not detect two instances claiming the same project. The owner keeps
+one home per project by running `--home self` on exactly one instance and
+comparing the printed `home_authority` on every participating instance.
+If this registry has ever recorded the project as executor-only (a foreign
+home), claiming the local authority prints a warning and requires
+`--confirm-self`. Check the designation with the other instance first.
+The executor-only rule and its `project-home-foreign` refusal are spelled out
+in the [scratch lead instructions](../internal/leadcanary/provision/instructions.go).
+
+For a new or existing root, run both commands as the daemon user while the
+daemon is stopped. Use the same state directory for both.
+
+```sh
+ataniqd init --state-dir DIR
+ataniqd project-home --state-dir DIR --home self PROJECT
+```
+
+Use the exact registry project name, for example `scratch-alpha` for the
+role `scratch-alpha/lead`. On the executor, use
+`ataniqd project-home --state-dir DIR --home AUTHORITY PROJECT`, with the
+home's full authority ID from `ataniqd init`. The ID is 64 lowercase hex
+digits. A malformed `--home` argument exits with status 2 before the command
+reads the state root. A conflict with the recorded state exits with status 11.
+The subcommand takes the registry's
+exclusive lock. It prints the project and recorded home. Repeating the same
+enrollment confirms it. A conflicting enrollment prints the recorded home.
+
+To correct an erroneous designation, stop the daemon and run
+`ataniqd project-home --state-dir DIR --home self|AUTHORITY --replace PROJECT`
+with the intended home. Add `--confirm-self` when claiming a former executor
+project. Replacement requires an existing home and no defined project lead
+or coordinator, including stopped roles. The journal records the old and new
+authorities and increments both home generation and assignment revision.
+Repeating a successful correction confirms the row at the same generation.
+
+The journal records the home authority, home generation, assignment revision,
+qualified holder (authority and role), and executing instance together. At
+enrollment the generation and revision are both 1 and the home holds and
+executes its project lead. Assignment writes compare the expected generation
+and revision. Define and launch record the assignment version they admitted.
+A partial final assignment record is discarded on replay. A committed one
+survives a lost acknowledgement.
+
+Daemon startup and scratch-seat `run --check` list each configured or recorded
+project missing a home and the roles whose definition or start it blocks. An
+empty enrollment list still permits daemon startup. The check reads complete
+journal records without taking the registry lock or repairing a partial tail.
+
+Both new and migrated projects require explicit enrollment. Define, start and
+coordinator admission return `project-home-unset` when the row is missing,
+`project-home-foreign` when another authority is home, and `project-unassigned`
+when the row has no holder. Scratch clients receive a refused receipt and
+canary clients receive the code in the error reply. The canary CLI exits
+with refusal status 30 for `project-assignment-busy` as well. A mismatched generation
+or revision yields `stale-home-generation` or `stale-assignment-revision`.
+Existing launch epochs, recovery, and stop operations retain their meanings.
+This version supports initial designation. Transferring the home to another
+instance requires a future re-homing protocol.
 
 ## Peer identity and directional grants
 

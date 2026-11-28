@@ -559,15 +559,25 @@ repository: the placeholders below are `seat.example` for the seat's name and
    says: the user `seat` and Caddy in its group, and the group `seat-notify`
    (`groupadd --system seat-notify`, which the seat's unit names as a
    supplementary group, so it must exist before the first switch even
-   without the notifier); the folder
-   `/etc/authority-host/seat` with `origin` (`https://seat.example`),
-   `gate.pin`, `seat.env` (`SEAT_GATE=203.0.113.20:GATEPORT`) and
-   `site.caddy` (the site `http://seat.example` that imports `seat`); the
-   drop-in `/etc/systemd/system/ataniq-seat.service.d/gate.conf` with
-   `IPAddressAllow=203.0.113.20`, and your firewall's rule that keeps the
-   user `seat` to the gate's port; the seat's key, made with `gate-init`
-   from a root-owned copy of the release you verified, and its fingerprint
-   carried to the gate's pin list; and the unit's link,
+   without the notifier). In `/etc/authority-host/seat`, write `origin`
+   (`https://seat.example`), `site.caddy` (the site `http://seat.example`
+   that imports `seat`), and one pin file per gate. Start `seat.env` (mode
+   0600) from [seat.env.example](seat.env.example). For one named gate use
+
+   ```ini
+   SEAT_GATE_ARGS="--gate-entry first,203.0.113.20:GATEPORT,/etc/authority-host/seat/gate.pin"
+   ```
+
+   For each additional gate append a space and another
+   `--gate-entry NAME,ADDR:PORT,PIN_FILE` inside the same quotes. Use a
+   unique name, a literal IP address and an absolute pin file path for each
+   gate. Leave `SEAT_NOTIFY_ARGS` empty or absent with any named entry.
+   In `/etc/systemd/system/ataniq-seat.service.d/gate.conf`, add one
+   `IPAddressAllow=` line per gate address (for example,
+   `IPAddressAllow=203.0.113.20`). Configure the firewall to allow the
+   user `seat` to reach only the gate port on each address. Make the seat's
+   key with `gate-init` from a root-owned copy of the release you verified,
+   carry its fingerprint to each gate's pin list, and create the unit's link,
    `ln -s /opt/authority-host/current/etc/systemd/system/ataniq-seat.service /etc/systemd/system/ataniq-seat.service`.
    The proxy in front of the host must pass `Host`, `Origin` and
    `Sec-Fetch-Site` unchanged and name the client in `X-Forwarded-For`.
@@ -631,6 +641,10 @@ of it is automatic. The placeholders are `203.0.113.53` for the resolver,
 the contact. It needs the owner's words on one thing: outbound access to
 Apple's push service for this unit, and nothing else.
 
+Seat notices are off while the seat serves more than one gate. To enable
+notices for a single gate, use the `--gate` form in step 3. Even one
+`--gate-entry` makes the seat refuse `--notify-socket`.
+
 1. **Build both binaries, static**, and keep their hashes:
 
    ```
@@ -671,11 +685,17 @@ Apple's push service for this unit, and nothing else.
    `IPAddressAllow=198.51.100.0/24` in place of the real values); the unit's
    link, `ln -s /opt/authority-host/current/etc/systemd/system/ataniq-seat-notify.service /etc/systemd/system/ataniq-seat-notify.service`;
    add `systemctl stop ataniq-seat-notify.service` to the host
-   `/etc/authority-host/stop.list`, retaining the seat stop. Set
-   the line `SEAT_NOTIFY_ARGS=--notify-socket /run/seat-notify/notify.sock` in
-   `/etc/authority-host/seat/seat.env`; and your firewall's rule that keeps
-   the user `seat-notify` to the resolver and to TCP port 443 of the push
-   range, outbound, and to nothing else.
+   `/etc/authority-host/stop.list`, retaining the seat stop. For single-gate
+   notices, set both lines below in `/etc/authority-host/seat/seat.env`,
+   replacing the named entry and using your gate's address, port and pin file.
+
+   ```ini
+   SEAT_GATE_ARGS="--gate 203.0.113.20:GATEPORT --gate-pin-file /etc/authority-host/seat/gate.pin"
+   SEAT_NOTIFY_ARGS="--notify-socket /run/seat-notify/notify.sock"
+   ```
+
+   Configure the firewall to allow the user `seat-notify` outbound access
+   only to the resolver and to TCP port 443 of the push range.
 
 4. **Deploy: dry, then go**, as in step 4. The switch runs the release's
    no-AI check (it reads `seat.env` and `seat-notify.env`), its validators
@@ -728,8 +748,8 @@ and never in this repository:
   when a decision service exists: for the seat app,
   `systemctl stop ataniq-seat.service`, once a switch to its release ended `ok`
   (see "Deploying the seat app").
-- **The seat app's files.** `/etc/authority-host/seat/` (`origin`, `gate.pin`,
-  `seat.env`, `site.caddy`), the drop-in that allows the gate's address, the
+- **The seat app's files.** `/etc/authority-host/seat/` (`origin`, one pin file
+  per gate, `seat.env`, `site.caddy`), the drop-in that allows each gate address, the
   user `seat`, the seat's key in `/var/lib/seat/identity` and the unit's link
   are the owner's, made by hand (see [the README](README.md#setting-the-host-up-for-it-once-by-hand)).
 - **The notifier's files.** `/etc/authority-host/seat-notify/seat-notify.env`

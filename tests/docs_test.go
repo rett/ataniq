@@ -232,3 +232,51 @@ func TestDocumentationSourceContainment(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectHomeOperatorSteps(t *testing.T) {
+	for _, example := range []struct{ guide, state, project string }{
+		{"scratch-leads.md", "STATE", "scratch-KEY"},
+		{"canary-slice.md", "STATE", "PROJECT"},
+		{"runbooks.md", "<state root>", "scratch-<key>"},
+		{"lead-daemon.md", "DIR", "PROJECT"},
+		{"federation.md", "DIR", "PROJECT"},
+	} {
+		data, err := os.ReadFile(filepath.Join(root(t), "docs", example.guide))
+		if err != nil {
+			t.Fatal(err)
+		}
+		init := "ataniqd init --state-dir " + example.state
+		enroll := "ataniqd project-home --state-dir " + example.state + " --home self " + example.project
+		_, after, ok := strings.Cut(string(data), init)
+		if !ok || !strings.Contains(after, enroll) {
+			t.Errorf("%s must show %q followed by %q", example.guide, init, enroll)
+		}
+	}
+}
+
+func TestManagedLeadIdentityGuides(t *testing.T) {
+	for _, name := range []string{"lead-sandbox.md", "federation.md"} {
+		data, err := os.ReadFile(filepath.Join(root(t), "docs", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := strings.Join(strings.Fields(string(data)), " ")
+		for _, term := range []string{"`ATANIQ_AUTHORITY_TAG`", "`QARGI_LEAD`", "refuses daemon startup"} {
+			if !strings.Contains(text, term) {
+				t.Errorf("%s omits %s from the managed identity contract", name, term)
+			}
+		}
+	}
+}
+
+func TestFederationStateRootFileTable(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join(root(t), "docs", "federation.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"instance.key", "store.incarnation", "registry/registry.jsonl", "registry/registry.jsonl.v1", "daemon.lock"} {
+		if !strings.Contains(string(doc), "\n| `"+name+"` |") {
+			t.Errorf("state root file table is missing %s", name)
+		}
+	}
+}

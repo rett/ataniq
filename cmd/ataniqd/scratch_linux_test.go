@@ -3,7 +3,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,9 +13,12 @@ import (
 	"testing"
 
 	"ataniq/internal/clientapi"
+	"ataniq/internal/instanceid"
 	"ataniq/internal/leadcanary/provision/provisiontest"
 	"ataniq/internal/leaddaemon"
 	"ataniq/internal/leadholder/canaryroot"
+	"ataniq/internal/leadregistry"
+	"ataniq/internal/leadunit"
 	"ataniq/internal/leadwire"
 )
 
@@ -171,7 +176,7 @@ func TestRunScratchEndToEnd(t *testing.T) {
 	w := newScratchWorld(t)
 	ta := scratchApp(t, w)
 	socket := filepath.Join(w.Runtime, "daemon.sock")
-	done := startApp(t, ta, []string{"--scratch", w.ConfigPath}, socket)
+	done := startApp(t, ta, []string{"--scratch", w.ConfigPath}, socket, "scratch-alpha", "scratch-beta")
 
 	ops, err := helloOperations(context.Background(), socket)
 	if err != nil {
@@ -212,5 +217,97 @@ func TestRunScratchEndToEnd(t *testing.T) {
 	ta.signals <- syscall.SIGTERM
 	if code := <-done; code != 0 {
 		t.Fatalf("exit %d: %s", code, ta.err.String())
+	}
+}
+
+func TestScratchDefineRefusesForeignProjectHome(t *testing.T) {
+	w := newScratchWorld(t)
+	peer, err := leadregistry.InitInstance(filepath.Join(t.TempDir(), "peer"), leadregistry.DirName, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	initTestState(t, w.State)
+	enrollTestProject(t, w.State, peer.Authority, "scratch-alpha")
+
+	ta := scratchApp(t, w)
+	socket := filepath.Join(w.Runtime, "daemon.sock")
+	done := startApp(t, ta, []string{"--scratch", w.ConfigPath}, socket)
+	defer func() {
+		ta.signals <- syscall.SIGTERM
+		if code := <-done; code != 0 {
+			t.Errorf("daemon exit %d: %s", code, ta.err.String())
+		}
+	}()
+	cl, err := clientapi.Dial(t.Context(), socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	var receipt leadwire.Receipt
+	params := leadwire.DefineParams{Client: "test", CommandID: "foreign-1", Role: "scratch-alpha/lead"}
+	if err := cl.Call(t.Context(), leadwire.OpDefine, params, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Status != leadwire.StatusRefused || receipt.Code != string(leadregistry.ErrOtherHome) {
+		t.Fatalf("foreign define: %+v", receipt)
+	}
+}
+
+func TestScratchInstanceInitialization(t *testing.T) {
+	w := newScratchWorld(t)
+	ta := scratchApp(t, w)
+	// A pre-identity scratch root has its provisioning marker and may already
+	// hold lead history. Run must leave both intact until explicit init.
+	regDir := filepath.Join(w.State, leaddaemon.RegistryDirName)
+	r, err := leadregistry.Open(regDir, leadregistry.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	journal := filepath.Join(regDir, leadregistry.FileName)
+	before, err := os.ReadFile(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"run", "--scratch", w.ConfigPath}
+	if code := ta.run(args); code != leaddaemon.ExitState || !strings.Contains(ta.err.String(), "ataniqd init --state-dir '"+w.State+"'") {
+		t.Fatalf("pre-identity root: exit %d: %s", code, ta.err.String())
+	}
+	if _, err := instanceid.Load(w.State); !errors.Is(err, instanceid.ErrMissing) {
+		t.Fatalf("key: %v", err)
+	}
+	if after, err := os.ReadFile(journal); err != nil || !bytes.Equal(after, before) {
+		t.Fatal("journal changed on refusal")
+	}
+	if _, err := os.Stat(w.Runtime); !os.IsNotExist(err) {
+		t.Fatal("run touched runtime before init")
+	}
+	if code := ta.run([]string{"init", "--state-dir", w.State, "--label", "sample desk"}); code != 0 {
+		t.Fatalf("init: %d: %s", code, ta.err.String())
+	}
+	id, err := instanceid.Load(w.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "authority=" + id.Authority + "\nincarnation=" + id.Incarnation + "\nlabel=sample desk\njournal=migrated records=0 backup=registry/registry.jsonl.v1\n"; ta.out.String() != want {
+		t.Fatalf("init output: %q", ta.out.String())
+	}
+	// Stop at the manager factory to exercise actual scratch startup through
+	// registry replay without binding a socket or starting a unit.
+	ta.newManager = func(context.Context) (leadunit.Manager, error) { return nil, errors.New("test manager reached") }
+	if code := ta.run(args); code != leaddaemon.ExitManager || !strings.Contains(ta.err.String(), "test manager reached") {
+		t.Fatalf("migrated run: %d: %s", code, ta.err.String())
+	}
+	if err := os.WriteFile(filepath.Join(w.State, instanceid.FileName), []byte("bad"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, _ := ta.runConfig(args[1:])
+	if err := ta.requireInstance(cfg, nil); !errors.Is(err, instanceid.ErrInvalid) || leaddaemon.ExitCode(err) != leaddaemon.ExitState {
+		t.Fatalf("damaged key: %v", err)
+	}
+	if code := ta.run(args); code != leaddaemon.ExitState {
+		t.Fatalf("damaged key: exit %d", code)
 	}
 }

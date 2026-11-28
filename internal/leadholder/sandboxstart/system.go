@@ -17,8 +17,8 @@ import (
 // of the host and what it does to it. The real one is NewSystem, over the
 // packages of the lead sandbox; tests pass a fake. Run calls the methods in the
 // order of the steps, each in its own step, and makes no other call to the host
-// (the checks of the canary roots and marker, which Run makes first in canary
-// mode, read the file system through package canaryroot).
+// except for the canary root and marker checks and loading the instance
+// identity from the state root during validation.
 //
 // The paths a method gets are the ones Run derived from the inputs; the folders
 // of the report channel and of the bound files are made and removed by the

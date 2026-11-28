@@ -11,6 +11,7 @@ import (
 
 	"ataniq/internal/clientapi"
 	"ataniq/internal/leadcanary"
+	"ataniq/internal/leadholder/sandboxstart"
 	"ataniq/internal/leadlifecycle"
 	"ataniq/internal/leadregistry"
 	"ataniq/internal/leadrole"
@@ -71,7 +72,9 @@ func (in *leadInstance) setHolderCommand(h leadlifecycle.HolderCommand) {
 // router with one role. There is no lock: the map is written before the daemon
 // serves and only read afterwards.
 type leadRouter struct {
-	byRole map[leadrole.Role]*leadInstance
+	// authorityTag is derived once from the daemon identity before serving.
+	authorityTag string
+	byRole       map[leadrole.Role]*leadInstance
 	// order is the roles in the order they were added; every loop over the
 	// instances (open, announce, close) follows it.
 	order []leadrole.Role
@@ -127,7 +130,14 @@ func (r *leadRouter) Build(role leadrole.Role, e leadregistry.Entry, intent lead
 	if h == nil {
 		return nil, "", nil, errNoHolder
 	}
-	return h.Build(role, e, intent)
+	if r.authorityTag == "" {
+		return nil, "", nil, errors.New("missing instance authority tag for holder launch")
+	}
+	argv, dir, env, err := h.Build(role, e, intent)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	return argv, dir, append(env, sandboxstart.AuthorityTagEnv+"="+r.authorityTag), nil
 }
 
 // Limits is the lifecycle's limits seam: the three limits of the role's config,

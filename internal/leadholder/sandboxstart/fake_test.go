@@ -49,6 +49,7 @@ func newWorld(t *testing.T) *world {
 		t.Fatal(err)
 	}
 	w.in = sampleInputs(base)
+	w.in.AuthorityTag = "0123456789abcdef"
 	w.in.AgentArgv = []string{"/ataniq/agent/bin/stand-in"}
 	w.sys = newFakeSystem(w)
 	w.lch = &fakeLauncher{w: w}

@@ -23,6 +23,10 @@ func (r *rig) appendPackDefine(role leadrole.Role) {
 	r.t.Helper()
 	t := r.t
 	req := profile()
+	home, herr := r.reg.ProjectHome(role.Project())
+	if herr != nil {
+		t.Fatal(herr)
+	}
 	req.Pack = leadregistry.PackRef{Name: "sample-pack", ManifestDigest: strings.Repeat("ab", 32)}
 	if err := r.reg.Close(); err != nil {
 		t.Fatal(err)
@@ -56,9 +60,10 @@ func (r *rig) appendPackDefine(role leadrole.Role) {
 		return bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 	}
 	payload := compact(struct {
-		Manager   leadregistry.Manager   `json:"manager"`
-		Requested leadregistry.Requested `json:"requested"`
-	}{leadregistry.ManagerAtaniq, req})
+		Assignment leadregistry.ProjectVersion `json:"assignment"`
+		Manager    leadregistry.Manager        `json:"manager"`
+		Requested  leadregistry.Requested      `json:"requested"`
+	}{home.ProjectVersion, leadregistry.ManagerAtaniq, req})
 	content := compact(struct {
 		Seq     uint64          `json:"seq"`
 		Time    string          `json:"time"`

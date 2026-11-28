@@ -104,7 +104,7 @@ func (s *scratchSeatWorld) start(t *testing.T) (*testApp, *gateBuf, <-chan int) 
 	ta.getenv = s.env
 	errs := &gateBuf{}
 	ta.stderr = errs
-	done := startApp(t, ta, []string{"--scratch", s.w.ConfigPath, "--owner-channel", "--seat-gate", s.addr}, s.socket)
+	done := startApp(t, ta, []string{"--scratch", s.w.ConfigPath, "--owner-channel", "--seat-gate", s.addr}, s.socket, "scratch-alpha", "scratch-beta")
 	return ta, errs, done
 }
 

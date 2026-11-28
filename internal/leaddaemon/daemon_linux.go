@@ -35,7 +35,7 @@ const (
 )
 
 // RegistryDirName is the name of the registry folder in the state folder.
-const RegistryDirName = "registry"
+const RegistryDirName = leadregistry.DirName
 
 // Config is what [Run] needs. Every dependency that touches the host is
 // injectable, so that a test runs the whole daemon in process.
@@ -238,9 +238,8 @@ func Run(ctx context.Context, cfg Config) error {
 		return nil
 	}
 
-	// canary evidence, once both locks are held: a daemon that was refused
-	// above has written nothing.
-	if err := canary.openEvidence(); err != nil {
+	// Read the managed launch identity and open the evidence under both locks.
+	if err := canary.openState(); err != nil {
 		return &StartupError{Step: StepState, Err: err}
 	}
 	defer func() {
@@ -271,6 +270,11 @@ func Run(ctx context.Context, cfg Config) error {
 	}()
 	if ctx.Err() != nil {
 		return nil
+	}
+
+	roles := canary.configuredRoles()
+	for _, warning := range visibleHomeWarnings(reg.MissingHomeWarnings(roles), roles) {
+		d.logf("warning: %s", warning)
 	}
 
 	// manager and controller
