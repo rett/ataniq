@@ -763,8 +763,10 @@ Names, with their values where the profile fixes them:
 | `TERM` | the host terminal's value (required) |
 | `COLORTERM`, `LANG`, `TZ` | the host's values, set only when the inputs give them |
 
-The holder loads the instance identity from the daemon state root before
-launch. A missing, damaged or unsafe identity refuses the managed start.
+At startup the daemon loads the instance identity from its state root. A
+missing, damaged or unsafe identity refuses daemon startup. At launch the
+daemon passes only the public tag to the holder in `ATANIQ_AUTHORITY_TAG`.
+The holder uses the tag to construct `QARGI_LEAD`.
 Offline and qualification profiles that omit the identity leave `QARGI_LEAD`
 unset. The [instance identity guide](federation.md#instance-identity) gives the
 shortening rule for long project names and an example coordinator label.

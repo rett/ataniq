@@ -2,44 +2,80 @@ package leadregistry
 
 import (
 	"errors"
+	"fmt"
+	"maps"
 	"math"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"ataniq/internal/instanceid"
 	"ataniq/internal/leadrole"
 )
 
+// EnrollmentOptions holds the owner acknowledgements for offline enrollment.
+type EnrollmentOptions struct {
+	ConfirmSelf bool
+	Replace     bool
+}
+
+// Enrollment identifies the requested authority and any foreign home in the
+// project history that the operator must acknowledge before claiming it.
+type Enrollment struct {
+	Authority        string
+	PriorForeignHome string
+}
+
 // EnrollProjectHome records or confirms the initial assignment under the same
 // exclusive registry lock as the daemon.
-func EnrollProjectHome(state, home, project string) (authority string, retErr error) {
+func EnrollProjectHome(state, home, project string, opts EnrollmentOptions) (result Enrollment, retErr error) {
+	if home != "self" && !validAuthority(home) {
+		return result, ErrInvalidHome
+	}
 	id, err := instanceid.Load(state)
 	if err != nil {
-		return "", err
+		return result, err
 	}
-	authority = home
+	authority := home
 	if authority == "self" {
 		authority = id.Authority
 	}
 	r, err := Open(filepath.Join(state, DirName), Options{})
 	if err != nil {
-		return "", err
+		return result, err
 	}
 	defer func() { retErr = errors.Join(retErr, r.Close()) }()
 	if id.Binding != r.binding {
-		return "", ErrForeignInstance
+		return result, ErrForeignInstance
+	}
+	result.Authority = authority
+	if authority == id.Authority {
+		result.PriorForeignHome = r.foreignHomes[project]
+		if result.PriorForeignHome != "" && !opts.ConfirmSelf {
+			return result, errors.New("verify the home on both instances and supply --confirm-self")
+		}
 	}
 	row, err := r.ProjectHome(project)
 	switch {
 	case errors.Is(err, ErrHomeMissing):
+		if opts.Replace {
+			return result, err
+		}
 		if err := r.SetProjectAssignment(project, authority, ProjectVersion{}, true); err != nil {
-			return "", err
+			return result, err
 		}
 	case err != nil:
-		return "", err
+		return result, err
+	case row.HomeAuthority != authority && opts.Replace:
+		role, err := leadrole.Lead(project)
+		if err != nil {
+			return result, err
+		}
+		return result, r.replaceHome(role, row, authority)
 	case row.HomeAuthority != authority || row.Holder == nil:
-		return "", errors.New("project already enrolled with a different assignment")
+		return result, fmt.Errorf("project already enrolled with a different assignment: home_authority=%s home_generation=%d revision=%d", row.HomeAuthority, row.HomeGeneration, row.Revision)
 	}
-	return authority, nil
+	return result, nil
 }
 
 // validateAssignment checks the same predecessor and local occupancy for
@@ -98,7 +134,7 @@ func (r *Registry) SetProjectAssignment(project, home string, expected ProjectVe
 	if err := cur.compare(expected); err != nil {
 		return err
 	}
-	next := &ProjectAssignment{HomeAuthority: home, ProjectVersion: ProjectVersion{HomeGeneration: 1, Revision: cur.Revision + 1}}
+	next := &ProjectAssignment{HomeAuthority: home, ProjectVersion: ProjectVersion{HomeGeneration: max(1, cur.HomeGeneration), Revision: cur.Revision + 1}}
 	if assigned {
 		next.Holder = &LeadRef{Authority: home, Role: role}
 		next.ExecutingInstance = home
@@ -109,15 +145,61 @@ func (r *Registry) SetProjectAssignment(project, home string, expected ProjectVe
 	if err := r.validateAssignment(role, next); err != nil {
 		return err
 	}
-	rec, line, sum, err := r.prepare(kindProjectHome, role, next)
+	return r.writeAssignment(kindProjectHome, role, next, next)
+}
+
+// replaceHome runs only on the private, exclusively locked offline registry.
+func (r *Registry) replaceHome(role leadrole.Role, old ProjectAssignment, authority string) error {
+	p := &replaceHomePayload{PreviousHome: old.HomeAuthority, ProjectAssignment: ProjectAssignment{
+		ProjectVersion: ProjectVersion{HomeGeneration: old.HomeGeneration + 1, Revision: old.Revision + 1},
+		HomeAuthority:  authority, Holder: &LeadRef{Authority: authority, Role: role}, ExecutingInstance: authority,
+	}}
+	if err := r.validateReplacement(role, p); err != nil {
+		return err
+	}
+	return r.writeAssignment(kindReplaceHome, role, p, &p.ProjectAssignment)
+}
+
+func (r *Registry) validateReplacement(role leadrole.Role, p *replaceHomePayload) error {
+	old, ok := r.homes[role.Project()]
+	if !ok || p.PreviousHome != old.HomeAuthority || p.HomeAuthority == old.HomeAuthority || p.Holder == nil {
+		return invalid("home correction must replace the recorded home with a different assigned home")
+	}
+	if old.HomeGeneration == math.MaxUint64 || p.HomeGeneration != old.HomeGeneration+1 {
+		return ErrStaleGeneration
+	}
+	if old.Revision == math.MaxUint64 || p.Revision != old.Revision+1 {
+		return ErrStaleRevision
+	}
+	for defined := range r.roles {
+		if defined.Project() == role.Project() {
+			return fmt.Errorf("%w: %s is defined", ErrAssignmentBusy, defined)
+		}
+	}
+	return nil
+}
+
+func (r *Registry) writeAssignment(kind string, role leadrole.Role, body payload, next *ProjectAssignment) error {
+	rec, line, sum, err := r.prepare(kind, role, body)
 	if err != nil {
 		return err
 	}
 	if err := r.commit(rec, line, sum); err != nil {
 		return err
 	}
-	r.homes[project] = *next
+	r.recordAssignment(role.Project(), next)
 	return nil
+}
+
+// A foreign home is the v1 registry designation for an executor-only project.
+func (r *Registry) recordAssignment(project string, next *ProjectAssignment) {
+	r.homes[project] = *next
+	if next.HomeAuthority != r.binding.Authority {
+		if r.foreignHomes == nil {
+			r.foreignHomes = make(map[string]string)
+		}
+		r.foreignHomes[project] = next.HomeAuthority
+	}
 }
 
 // ProjectHome returns a snapshot independent of future assignment writes.
@@ -198,4 +280,24 @@ func (r *Registry) checkRecordedAdmission(rec record) error {
 	}
 	_, err := r.checkProjectHome(rec.role, expected)
 	return err
+}
+
+// MissingHomeWarnings names each unenrolled project and its blocked roles.
+func (r *Registry) MissingHomeWarnings(configured []leadrole.Role) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	byProject := make(map[string][]string)
+	for _, role := range append(slices.Collect(maps.Keys(r.roles)), configured...) {
+		project := role.Project()
+		if _, enrolled := r.homes[project]; project != "" && !enrolled {
+			byProject[project] = append(byProject[project], role.String())
+		}
+	}
+	var warnings []string
+	for _, project := range slices.Sorted(maps.Keys(byProject)) {
+		roles := byProject[project]
+		slices.Sort(roles)
+		warnings = append(warnings, fmt.Sprintf("project %s has no home, blocking define and start for %s", project, strings.Join(slices.Compact(roles), ", ")))
+	}
+	return warnings
 }

@@ -18,9 +18,11 @@ import (
 	"ataniq/internal/approval/hostadapter"
 	"ataniq/internal/approval/ownerjournal"
 	"ataniq/internal/clientapi"
+	"ataniq/internal/instanceid"
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leaddaemon"
 	"ataniq/internal/leadholder/canaryroot"
+	"ataniq/internal/leadrole"
 )
 
 // This file is run --owner-settings DIR and run --check, in a build with both
@@ -540,7 +542,7 @@ func ownerSettingsRun(a *app, o *ownerFlags, cfg *leaddaemon.Config) (scratchLoa
 	case s.keysPrefix || s.sinceSet:
 		// The key list alone: neither the settings folder nor the gate is
 		// looked at.
-		if err := a.requireInstance(*cfg, true); err != nil {
+		if err := a.requireInstance(*cfg, checkRegistryHeader); err != nil {
 			fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(startupMessage(err, cfg.StateDir)))
 			return nil, leaddaemon.ExitCode(err)
 		}
@@ -675,18 +677,28 @@ func (a *app) ownerSettingsCheck(o *ownerFlags, cfg *leaddaemon.Config, p settin
 	if placeErr != nil {
 		skip("instance identity", "the scratch place is refused")
 	} else {
-		identityErr := a.requireInstance(*cfg, true)
+		identityErr := a.requireInstance(*cfg, func(root *os.File, binding instanceid.Binding) error {
+			var roles []leadrole.Role
+			for _, lead := range leads {
+				roles = append(roles, lead.Role)
+			}
+			warnings, err := leaddaemon.ReadHomeWarningsAt(root, binding, roles)
+			for _, warning := range warnings {
+				fmt.Fprintf(w, "warning: %s\n", warning)
+			}
+			return err
+		})
 		if identityErr != nil && fails == 0 {
 			exit = leaddaemon.ExitCode(identityErr)
 			fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(startupMessage(identityErr, cfg.StateDir)))
 		}
 		if leaddaemon.ExitCode(identityErr) == leaddaemon.ExitRegistry {
 			line("instance identity", nil, p.state)
-			line("registry header", identityErr, "")
+			line("registry header and project homes", identityErr, "")
 		} else {
 			line("instance identity", identityErr, p.state)
 			if identityErr == nil {
-				line("registry header", nil, journalPath(p.state))
+				line("registry header and project homes", nil, journalPath(p.state))
 			}
 		}
 	}

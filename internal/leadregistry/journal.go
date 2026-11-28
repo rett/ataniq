@@ -33,6 +33,7 @@ const (
 const (
 	kindHeader        = "header"
 	kindProjectHome   = "project-home"
+	kindReplaceHome   = "project-home-replaced"
 	kindDefine        = "define"
 	kindDesired       = "desired"
 	kindLaunchBegin   = "launch-begin"
@@ -467,6 +468,8 @@ func decodeLine(prev [sha256.Size]byte, wantSeq uint64, line []byte) (record, [s
 		p = &headerPayload{}
 	case kindProjectHome:
 		p = &ProjectAssignment{}
+	case kindReplaceHome:
+		p = &replaceHomePayload{}
 	case kindDefine:
 		p = &definePayload{}
 	case kindDesired:
@@ -491,7 +494,7 @@ func decodeLine(prev [sha256.Size]byte, wantSeq uint64, line []byte) (record, [s
 	if err := decodeRecord(env.Payload, p); err != nil {
 		return record{}, zero, fmt.Errorf("bad %s payload: %v", env.Kind, err)
 	}
-	if env.Kind == kindHeader || env.Kind == kindProjectHome {
+	if env.Kind == kindHeader || env.Kind == kindProjectHome || env.Kind == kindReplaceHome {
 		if repeated, err := repeatsMember(line); repeated || err != nil {
 			return record{}, zero, fmt.Errorf("ambiguous %s", env.Kind)
 		}

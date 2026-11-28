@@ -17,6 +17,8 @@ func (a *app) projectHomeCmd(args []string) int {
 	fs.Usage = func() { fmt.Fprintln(a.stderr, "usage:", projectHomeUsage) }
 	state := fs.String("state-dir", "", "initialized daemon state directory")
 	home := fs.String("home", "", "self or the home instance's authority ID")
+	confirmSelf := fs.Bool("confirm-self", false, "acknowledge the recorded executor-only history")
+	replace := fs.Bool("replace", false, "correct the home before any project lead is defined")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return leaddaemon.ExitOK
@@ -24,7 +26,7 @@ func (a *app) projectHomeCmd(args []string) int {
 		return leaddaemon.ExitUsage
 	}
 	project := fs.Arg(0)
-	if *state == "" || *home == "" || fs.NArg() != 1 || !leadrole.ValidProject(project) {
+	if *state == "" || fs.NArg() != 1 || !leadrole.ValidProject(project) {
 		fs.Usage()
 		return leaddaemon.ExitUsage
 	}
@@ -32,12 +34,19 @@ func (a *app) projectHomeCmd(args []string) int {
 		fmt.Fprintln(a.stderr, "ataniqd project-home: refusing to enroll as root")
 		return leaddaemon.ExitConfig
 	}
-	authority, err := leadregistry.EnrollProjectHome(*state, *home, project)
+	result, err := leadregistry.EnrollProjectHome(*state, *home, project, leadregistry.EnrollmentOptions{ConfirmSelf: *confirmSelf, Replace: *replace})
+	if result.PriorForeignHome != "" {
+		fmt.Fprintf(a.stderr, "warning: project %s previously recorded foreign home_authority=%s on this executor\n", project, result.PriorForeignHome)
+	}
 	if err != nil {
 		fmt.Fprintln(a.stderr, "ataniqd project-home:", leaddaemon.SafeText(err.Error()))
+		if errors.Is(err, leadregistry.ErrInvalidHome) {
+			fs.Usage()
+			return leaddaemon.ExitUsage
+		}
 		return leaddaemon.ExitState
 	}
-	if _, err := fmt.Fprintf(a.stdout, "project=%s home_authority=%s\n", project, authority); err != nil {
+	if _, err := fmt.Fprintf(a.stdout, "project=%s home_authority=%s\n", project, result.Authority); err != nil {
 		fmt.Fprintln(a.stderr, "ataniqd project-home:", leaddaemon.SafeText(err.Error()))
 		return leaddaemon.ExitFailure
 	}

@@ -272,6 +272,11 @@ func Run(ctx context.Context, cfg Config) error {
 		return nil
 	}
 
+	roles := canary.configuredRoles()
+	for _, warning := range visibleHomeWarnings(reg.MissingHomeWarnings(roles), roles) {
+		d.logf("warning: %s", warning)
+	}
+
 	// manager and controller
 	d.step(StepManager)
 	boot, err := d.BootID()

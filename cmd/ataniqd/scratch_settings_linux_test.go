@@ -590,6 +590,7 @@ func TestOwnerSettingsCheckPrintsWhatTheDaemonWouldRead(t *testing.T) {
 		"pass  " + ruleNamed + ": is not, lies not in and holds not the drop folder, the mirror, the work folder or the sandbox template",
 		"pass  the scratch roots, the drop folder and the mirror: ",
 		"pass  the suite: ",
+		"warning: project scratch-standin-1 has no home, blocking define and start for scratch-standin-1/lead",
 		"pass  the root marker: ", "pass  instance identity: " + w.state,
 		"pass  the seat gate: 127.0.0.1:7443, key fingerprint " + w.gateFP + ", 1 seat pin(s)",
 		"pass  the socket paths: ",

@@ -430,10 +430,22 @@ version, and e runs pasta, bubblewrap, ip, curl and a throwaway user unit.
    file` when run again). It writes nothing in `owner/`, and the trial daemon
    serves as before with the marker there. It refuses a state folder that is a
    default one or carries the canary's marker.
-   Before g, a pre-identity trial needs a one-time upgrade. Stop the trial
-   daemon and back up its private state folder. With the daemon stopped run
-   `$D init --state-dir "$S"` and record its authority and incarnation.
-   Restart the trial with the upgraded daemon before g. The older binary
+   Before g, stop the trial daemon and back up its private state folder.
+   With the daemon stopped, initialize the root and enroll the stand-in:
+
+   ```sh
+   $D init --state-dir "$S"
+   $D project-home --state-dir "$S" --home self "scratch-standin-$SITTING"
+   ```
+
+   If the sitting includes the live lead, enroll its project now:
+
+   ```sh
+   $D project-home --state-dir "$S" --home self "scratch-live-$SITTING"
+   ```
+
+   Record the authority and incarnation. After every enrollment succeeds,
+   restart the trial with the upgraded daemon before g. The older binary
    cannot open the initialized journal.
 - **g. The daemon's check, and the baseline of the trial's files (C)**,
    while the trial runs, nothing more:
@@ -540,8 +552,8 @@ large (100 by 30 or more) and do not resize it while attached.
    the other, and nothing needs repairing afterwards. The phone now finds no
    desk.
 
-   With the trial inactive, initialize its state root and enroll this sitting's
-   configured projects there before starting the proof daemon. Run in C and
+   With the trial inactive, confirm step f's initialization and project homes
+   before starting the proof daemon. Run in C and
    continue only after each command succeeds. Repeating the same enrollment
    confirms the existing assignment.
 
@@ -550,7 +562,7 @@ large (100 by 30 or more) and do not resize it while attached.
    $D project-home --state-dir "$S" --home self "scratch-standin-$SITTING"
    ```
 
-   If the scratch config also includes the live lead, enroll it now.
+   If the scratch config also includes the live lead, confirm its home too.
 
    ```sh
    $D project-home --state-dir "$S" --home self "scratch-live-$SITTING"

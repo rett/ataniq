@@ -101,16 +101,17 @@ registry before resuming work. Only the lead registry carries this binding today
 
 ### Sandbox identity
 
-At managed sandbox start, the daemon reads the identity from that state root
-and passes the holder only the short tag, from which the holder sets
+At startup the daemon reads the identity from its state root. At managed
+sandbox launch it passes the holder only the short tag in
+`ATANIQ_AUTHORITY_TAG`, from which the holder sets
 `QARGI_LEAD` to `<project>-lead-<tag>`; the holder never reads the key. The tag is the first 16 hex
 digits of the authority ID. Two independently generated keys have a 1 in
 2⁶⁴ chance of sharing that prefix. The full fingerprint identifies the
 authority. For project names over 42 bytes, the holder uses the first 25
 bytes, a hyphen and the first 16 hex digits of SHA-256 of the full project
 name. This keeps the lead name within 64 bytes while distinguishing long
-projects with the same prefix. A missing, damaged or unsafe key refuses the
-start before launch. The layout role used for directories and locks stays
+projects with the same prefix. A missing, damaged or unsafe key refuses
+daemon startup. The layout role used for directories and locks stays
 `<project>-lead`.
 
 When the agent environment declares a coordinator label, the sandbox derives
@@ -125,7 +126,12 @@ existing profile digest pins before the next managed start.
 Choose one home instance for the project and its long-lived branches. Its lead
 owns coordination and integration. The other instance runs offered work, such
 as member runs and suites, and returns results and patches to the home lead.
-The owner records the same designation on each participating instance.
+V1 does not detect two instances claiming the same project. The owner keeps
+one home per project by running `--home self` on exactly one instance and
+comparing the printed `home_authority` on every participating instance.
+If this registry has ever recorded the project as executor-only (a foreign
+home), claiming the local authority prints a warning and requires
+`--confirm-self`. Check the designation with the other instance first.
 The executor-only rule and its `project-home-foreign` refusal are spelled out
 in the [scratch lead instructions](../internal/leadcanary/provision/instructions.go).
 
@@ -140,9 +146,20 @@ ataniqd project-home --state-dir DIR --home self PROJECT
 Use the exact registry project name, for example `scratch-alpha` for the
 role `scratch-alpha/lead`. On the executor, use
 `ataniqd project-home --state-dir DIR --home AUTHORITY PROJECT`, with the
-home's full authority ID from `ataniqd init`. The subcommand takes the registry's
+home's full authority ID from `ataniqd init`. The ID is 64 lowercase hex
+digits. A malformed `--home` argument exits with status 2 before the command
+reads the state root. A conflict with the recorded state exits with status 11.
+The subcommand takes the registry's
 exclusive lock. It prints the project and recorded home. Repeating the same
-enrollment confirms it. A conflicting enrollment fails.
+enrollment confirms it. A conflicting enrollment prints the recorded home.
+
+To correct an erroneous designation, stop the daemon and run
+`ataniqd project-home --state-dir DIR --home self|AUTHORITY --replace PROJECT`
+with the intended home. Add `--confirm-self` when claiming a former executor
+project. Replacement requires an existing home and no defined project lead
+or coordinator, including stopped roles. The journal records the old and new
+authorities and increments both home generation and assignment revision.
+Repeating a successful correction confirms the row at the same generation.
 
 The journal records the home authority, home generation, assignment revision,
 qualified holder (authority and role), and executing instance together. At
@@ -152,11 +169,17 @@ and revision. Define and launch record the assignment version they admitted.
 A partial final assignment record is discarded on replay. A committed one
 survives a lost acknowledgement.
 
+Daemon startup and scratch-seat `run --check` list each configured or recorded
+project missing a home and the roles whose definition or start it blocks. An
+empty enrollment list still permits daemon startup. The check reads complete
+journal records without taking the registry lock or repairing a partial tail.
+
 Both new and migrated projects require explicit enrollment. Define, start and
 coordinator admission return `project-home-unset` when the row is missing,
 `project-home-foreign` when another authority is home, and `project-unassigned`
 when the row has no holder. Scratch clients receive a refused receipt and
-canary clients receive the code in the error reply. A mismatched generation
+canary clients receive the code in the error reply. The canary CLI exits
+with refusal status 30 for `project-assignment-busy` as well. A mismatched generation
 or revision yields `stale-home-generation` or `stale-assignment-revision`.
 Existing launch epochs, recovery, and stop operations retain their meanings.
 This version supports initial designation. Transferring the home to another
