@@ -63,7 +63,7 @@ func boundaryAllow(t *testing.T) map[wordHit]bool {
 			continue
 		}
 		if len(f) < 2 || !fs.ValidPath(f[0]) || !strings.HasSuffix(f[0], ".go") ||
-			!strings.HasPrefix(reason, " Migration: ") || strings.TrimSpace(strings.TrimPrefix(reason, " Migration: ")) == "" {
+			!wordMigrationReason(reason) {
 			t.Fatalf("allow.txt:%d: want file, words and migration reason", i+1)
 		}
 		for _, word := range f[1:] {
@@ -75,6 +75,24 @@ func boundaryAllow(t *testing.T) map[wordHit]bool {
 		}
 	}
 	return allow
+}
+
+// D36 retires with the release that ships detector prefixes. Each file
+// records the edit that removes its words in that release.
+func wordMigrationReason(reason string) bool {
+	task, ok := strings.CutPrefix(reason, " Migration: ")
+	if strings.HasPrefix(task, "D36") {
+		task, ok = strings.CutPrefix(task, "D36 authority-host prefix-list release: ")
+	}
+	return ok && strings.TrimSpace(task) != ""
+}
+
+func TestBoundaryWordsD36Retirement(t *testing.T) {
+	for _, reason := range []string{" Migration: D36 checker examples", " Migration: D36 authority-host prefix-list release: "} {
+		if wordMigrationReason(reason) {
+			t.Errorf("accepted D36 without its release and file retirement condition: %q", reason)
+		}
+	}
 }
 
 // A token is a run of letters and digits, split at a lower-to-upper case
