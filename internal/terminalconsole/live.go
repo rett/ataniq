@@ -194,6 +194,11 @@ type LiveStatus struct {
 	// CheckMismatches counts snapshot checks that failed, Resyncs the
 	// resynchronisations, RefusedInput the input the holder refused.
 	CheckMismatches, Resyncs, RefusedInput uint64
+	// InputFenced counts the input (keys, mouse events, pastes) and the sizes
+	// that were queued to be sent and were dropped, not sent, when the writer
+	// role was lost or the connection was replaced. It is the source's
+	// "client-input-fenced" counter, which is also in Counters.
+	InputFenced uint64
 	// Counters are the holder's other counters, in the order the holder
 	// gives them, shown in the evidence pane as they are. The cockpit keeps
 	// at most LiveCounterLimit: it cleans the names and cuts them to
