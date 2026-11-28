@@ -21,6 +21,9 @@ import (
 type DirectoryScope map[string]string
 
 type directoryRegistry interface {
+	// Revision is the journal's sequence number. Every change to an entry or
+	// to a project assignment moves it.
+	Revision() (uint64, error)
 	List() ([]leadregistry.Entry, error)
 	ProjectHome(string) (leadregistry.ProjectAssignment, error)
 }
@@ -48,11 +51,46 @@ func (h *DirectoryHandler) policy(ctx context.Context) DirectoryScope {
 	return h.scope(p)
 }
 
+// errDirectoryMoving reports a registry that kept changing while its rows were
+// read, so that no consistent read was made.
+var errDirectoryMoving = errors.New("the registry changed during every read of the directory")
+
+// directoryReadAttempts bounds the rereads of a registry that changes under a
+// read.
+const directoryReadAttempts = 3
+
+// rows reads the rows from one registry state. List and ProjectHome each lock
+// the registry on their own, so a change between them could join an entry's
+// epoch from before it to an assignment from after it, in a row that was
+// never the registry's. The journal revision before and after the reads
+// tells: a row is returned only when it did not move, and otherwise the
+// reads run again, up to directoryReadAttempts times.
 func (h *DirectoryHandler) rows(scope DirectoryScope) ([]clientapi.DirectoryRow, error) {
-	rows := []clientapi.DirectoryRow{}
 	if len(scope) == 0 {
-		return rows, nil
+		return []clientapi.DirectoryRow{}, nil
 	}
+	for range directoryReadAttempts {
+		before, err := h.registry.Revision()
+		if err != nil {
+			return nil, err
+		}
+		rows, err := h.readRows(scope)
+		if err != nil {
+			return nil, err
+		}
+		after, err := h.registry.Revision()
+		if err != nil {
+			return nil, err
+		}
+		if before == after {
+			return rows, nil
+		}
+	}
+	return nil, errDirectoryMoving
+}
+
+func (h *DirectoryHandler) readRows(scope DirectoryScope) ([]clientapi.DirectoryRow, error) {
+	rows := []clientapi.DirectoryRow{}
 	entries, err := h.registry.List()
 	if err != nil {
 		return nil, err
@@ -81,7 +119,7 @@ func (h *DirectoryHandler) rows(scope DirectoryScope) ([]clientapi.DirectoryRow,
 			Authority: h.authority, ProjectID: project, LeadRole: e.Role.String(),
 			HomeGeneration: a.HomeGeneration, Revision: a.Revision, LaunchEpoch: e.Epoch,
 		}
-		rows = append(rows, clientapi.DirectoryRow{DirectoryTarget: id, Target: id.ID(), DisplayName: name})
+		rows = append(rows, clientapi.DirectoryRow{DirectoryTarget: id, Target: id.ID(), Launched: e.Epoch > 0, DisplayName: name})
 	}
 	slices.SortFunc(rows, func(a, b clientapi.DirectoryRow) int { return strings.Compare(a.ProjectID, b.ProjectID) })
 	return rows, nil
