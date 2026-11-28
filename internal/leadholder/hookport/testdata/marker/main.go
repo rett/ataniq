@@ -1,3 +1,5 @@
+//go:build ignore
+
 // The unfiltered exec control replaces the case process with this static
 // image. The other modes give the kernel tests a disposable direct child.
 package main

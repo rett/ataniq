@@ -7,11 +7,11 @@ import (
 	"testing"
 )
 
-const definition = `{"schema":2,"kind":"provider","provider":"codex","family":"openai","surface":"local","models":{"catalog":"openai","use":"id"},"dispatch":{"mode":"command"},"barrier":{"kind":"sandbox-args"}}`
+const definition = `{"schema":2,"kind":"provider","provider":"alpha","family":"example","surface":"local","models":{"catalog":"example","use":"id"},"dispatch":{"mode":"command"},"barrier":{"kind":"sandbox-args"}}`
 
 func TestPinnedFields(t *testing.T) {
-	want := Pins{"/schema": json.Number("2"), "/kind": "provider", "/provider": "codex", "/family": "openai", "/surface": "local", "/models/catalog": "openai", "/models/use": "id", "/dispatch/mode": "command", "/barrier/kind": "sandbox-args"}
-	for _, data := range []string{definition, strings.Replace(definition, `"codex"`, `"cod\u0065x"`, 1), strings.Replace(definition, `"models":{`, `"extra":[{"opaque":true}],"models":{"extra":5,`, 1)} {
+	want := Pins{"/schema": json.Number("2"), "/kind": "provider", "/provider": "alpha", "/family": "example", "/surface": "local", "/models/catalog": "example", "/models/use": "id", "/dispatch/mode": "command", "/barrier/kind": "sandbox-args"}
+	for _, data := range []string{definition, strings.Replace(definition, `"alpha"`, `"alph\u0061"`, 1), strings.Replace(definition, `"models":{`, `"extra":[{"opaque":true}],"models":{"extra":5,`, 1)} {
 		if got, err := ParseDefinition(data); err != nil || !maps.Equal(got, want) {
 			t.Fatalf("pins = %v, %v; want %v", got, err, want)
 		}
@@ -65,9 +65,9 @@ func TestMalformedDefinitions(t *testing.T) {
 		strings.Replace(definition, `"schema":2`, `"schema":2e0`, 1),
 		strings.Replace(definition, `"family"`, `"Family"`, 1),
 		strings.Replace(definition, `"dispatch":{"mode":"command"}`, `"dispatch":null`, 1),
-		strings.Replace(definition, `"models":{"catalog":"openai","use":"id"}`, `"models":{"pattern":"x","tiers":{}}`, 1),
+		strings.Replace(definition, `"models":{"catalog":"example","use":"id"}`, `"models":{"pattern":"x","tiers":{}}`, 1),
 		strings.Replace(definition, `"barrier":{"kind":"sandbox-args"}`, `"extra":[{"a":1,"\u0061":2}],"barrier":{"kind":"sandbox-args"}`, 1),
-		strings.Replace(definition, "openai", "\xff", 1),
+		strings.Replace(definition, "example", "\xff", 1),
 	} {
 		if _, err := ParseDefinition(data); err == nil {
 			t.Errorf("accepted %q", data)

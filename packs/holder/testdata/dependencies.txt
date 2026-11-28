@@ -1,0 +1,5 @@
+ataniq/packs/claude/holder # D35: the holder list registers the Claude part. Remove when the holder no longer links this part.
+ataniq/packs/claude/launchpolicy # D35: the holder list includes Claude launch policy data. Remove when the holder no longer links this part.
+ataniq/packs/codex/holder # D35: the holder list registers the Codex part. Remove when the holder no longer links this part.
+ataniq/packs/codex/launchpolicy # D35: the holder list includes Codex launch policy data. Remove when the holder no longer links this part.
+ataniq/packs/codex/protocol # D35: the Codex holder part carries its protocol codec. Remove when the holder no longer links this part.

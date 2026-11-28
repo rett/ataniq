@@ -20,18 +20,13 @@ func registeredIdentities(id buildid.Identity) ([]wire.PackIdentity, error) {
 		// An unstamped build can display but has no exact built-in names.
 		return packs, nil
 	}
-	// Holder parts omit the full declarations. Pin their digests in the
-	// binary and check them against the source files in TestRegisteredIdentities.
-	digests := map[pack.Name]string{
-		"claude": "c78cee3a4cb9fa3476b47caa19784edce0203a82b9a9ac971ff47e80b5d8213e",
-		"codex":  "bea377e58e41ad2f5930be8c0655b75fafc6bf4c2b50975985810c24e85db5f3",
-	}
 	for _, name := range names {
 		full, err := pack.BuiltinIdentity(name, id.Version, id.Revision)
-		if err != nil || digests[name] == "" {
+		digest, ok := holder.DeclarationDigest(name)
+		if err != nil || !ok {
 			return nil, wire.RefusePack
 		}
-		packs = append(packs, wire.PackIdentity{Name: full, DeclarationDigest: digests[name]})
+		packs = append(packs, wire.PackIdentity{Name: full, DeclarationDigest: digest})
 	}
 	return packs, nil
 }

@@ -130,6 +130,9 @@ func (p *Port) Snapshot() Snapshot {
 // Filtered is returned only after the holder's process-wide filter is installed.
 type Filtered struct{ digest [32]byte }
 
+// Digest identifies the program installed by InstallFilter.
+func (f Filtered) Digest() [32]byte { return f.digest }
+
 // Serve takes ownership of the listener on success of its entry checks. It
 // runs once, in its caller's dedicated goroutine, and closes on cancellation.
 func (p *Port) Serve(ctx context.Context, l net.Listener, filter Filtered) error {
