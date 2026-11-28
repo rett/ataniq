@@ -129,7 +129,7 @@ func (f *leadsFake) List() (leadctl.Listing, error) {
 	defer f.mu.Unlock()
 	f.lists++
 	return leadctl.Listing{MaxRunning: 2, Running: 1, Leads: []leadctl.Lead{
-		{Key: "alpha", Role: "scratch-alpha/lead", State: "ready", Epoch: 3, Unit: "ataniq-lead-scratch-alpha.service", Inject: true},
+		{Key: "alpha", Role: "scratch-alpha/lead", State: "ready", Epoch: 3, Unit: "ataniq-lead-scratch-alpha.service", Inject: true, Actions: leadctl.OfferAll()},
 	}}, nil
 }
 

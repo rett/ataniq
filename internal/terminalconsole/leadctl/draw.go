@@ -298,7 +298,12 @@ func (m *Model) hintLines(w, h int) []string {
 	} {
 		label := hint.label
 		if a := l.availability(hint.control); !a.Offered {
-			label += " (" + reasonText(a.Reason) + ")"
+			if a.Reason == ReasonWriterOff {
+				// The key is off, not unoffered: the hint is the way to turn it on.
+				label = reasonText(a.Reason)
+			} else {
+				label += " (" + reasonText(a.Reason) + ")"
+			}
 		}
 		last := len(lines) - 1
 		if lines[last] != "" {

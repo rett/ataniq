@@ -448,8 +448,34 @@ func TestCF03ViewerRenewal(t *testing.T) {
 		}
 	})
 
+	t.Run("WriterFallsBackToViewerTickets", func(t *testing.T) {
+		cfg, _, _ := parse([]string{"--daemon", t.TempDir(), "--scratch-writer"}, &bytes.Buffer{})
+		place := newTicketPlace(t)
+		var minted []string
+		leads := &scriptedTickets{steps: []func(int) (consoleclient.LeadReceipt, error){place.mints(3, &minted)}}
+		// The ticket file holds the writer ticket the view made; the viewer
+		// tickets of the fallback are commands of their own, never that file.
+		writerTicket := place.put()
+		req := terminalconsole.AttachRequest{Role: "lead-alpha", Epoch: 3, Writer: true, Folder: place.folder, TicketFile: place.file}
+		got, err := terminalAttachConfig(cfg, req, leads)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lc := fileTicketConfig(got.attach, leadattach.ModeWriter)
+		if n := leads.count(); n != 0 {
+			t.Fatalf("%d ticket commands before the writer role was lost", n)
+		}
+		tk, err := lc.ViewerTickets()
+		if err != nil || tk == writerTicket || len(minted) != 1 || tk != minted[0] {
+			t.Fatalf("viewer ticket %q, %v; minted %v, writer ticket %q", tk, err, minted, writerTicket)
+		}
+		if asked := leads.asked(); len(asked) != 1 || asked[0] != (ticketCall{"lead-alpha", 3, false}) {
+			t.Fatalf("asked %+v, want one viewer ticket for the lead and epoch", asked)
+		}
+	})
+
 	t.Run("WriterPathUnchanged", func(t *testing.T) {
-		cfg, _, _ := parse([]string{"--daemon", t.TempDir()}, &bytes.Buffer{})
+		cfg, _, _ := parse([]string{"--daemon", t.TempDir(), "--scratch-writer"}, &bytes.Buffer{})
 		leads := &scriptedTickets{steps: []func(int) (consoleclient.LeadReceipt, error){fail(errors.New("no command is made"))}}
 		req := terminalconsole.AttachRequest{Role: "lead-alpha", Epoch: 3, Writer: true, Folder: "/run/lead-alpha", TicketFile: "/run/lead-alpha/ticket"}
 		got, err := terminalAttachConfig(cfg, req, leads)
@@ -460,9 +486,24 @@ func TestCF03ViewerRenewal(t *testing.T) {
 		if a.viewer || a.tickets != nil || a.expectLead != "" || a.expectEpoch != 0 || a.ticketFile != req.TicketFile || a.socket != "/run/lead-alpha/"+attachSocketName {
 			t.Fatalf("writer attach %+v", a)
 		}
-		// With no lead client a writer still attaches; a viewer cannot.
-		if _, err := terminalAttachConfig(cfg, req, nil); err != nil {
-			t.Fatalf("a writer without a lead client: %v", err)
+		// It reads its one ticket from the file; once the writer role is lost it
+		// becomes a viewer with viewer tickets from the daemon, asked for
+		// afresh (no ticket file is the first of them).
+		if a.writerFallback == nil {
+			t.Fatal("the writer has no viewer tickets for after the writer role is lost")
+		}
+		lc := fileTicketConfig(a, leadattach.ModeWriter)
+		if lc.Mode != leadattach.ModeWriter || !lc.ReconnectAsViewer || lc.ViewerTickets == nil {
+			t.Fatalf("writer config: mode %v, reconnect as viewer %t, viewer tickets %t", lc.Mode, lc.ReconnectAsViewer, lc.ViewerTickets != nil)
+		}
+		// With no lead client a writer still attaches, with no fallback; a
+		// viewer cannot.
+		bare, err := terminalAttachConfig(cfg, req, nil)
+		if err != nil || bare.attach.writerFallback != nil {
+			t.Fatalf("a writer without a lead client: %+v, %v", bare.attach, err)
+		}
+		if lc := fileTicketConfig(bare.attach, leadattach.ModeWriter); lc.ReconnectAsViewer || lc.ViewerTickets != nil {
+			t.Fatalf("a writer without a fallback reconnects as a viewer: %+v", lc)
 		}
 		req.Writer = false
 		if _, err := terminalAttachConfig(cfg, req, nil); !errors.Is(err, errNoViewerTickets) {

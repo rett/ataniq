@@ -133,3 +133,77 @@ func TestCFCapsRefreshBeforeTicketDispatch(t *testing.T) {
 		t.Fatal("viewer offer admitted a queued writer ticket")
 	}
 }
+
+// A lead with no offer map offers nothing: a backend that forgot the map must
+// not make every control, the writer ticket included, available.
+func TestCFCapsNoOfferMapOffersNothing(t *testing.T) {
+	b := newBackend(t)
+	l := aRunning("alpha")
+	l.Actions = nil
+	b.listing.Leads = []Lead{l}
+	r := newRig(t, b, 100, 24)
+	for _, k := range capabilityKeys {
+		if a := l.availability(k.control); a.Offered || a.Reason != k.reason {
+			t.Errorf("%s: availability %+v, want not offered for %q", k.key, a, k.reason)
+		}
+		r.key(k.key)
+		if b.total() != 0 || r.m.FieldOpen() || len(r.actions) != 0 {
+			t.Fatalf("%s acted with no offer map: %+v", k.key, b.calls)
+		}
+		r.seen("[" + k.key + "] " + k.label + " (" + reasonText(k.reason) + ")")
+	}
+}
+
+// OfferAll is every control, and each is a fresh map.
+func TestOfferAll(t *testing.T) {
+	a, b := OfferAll(), OfferAll()
+	if len(a) != len(capabilityKeys) {
+		t.Fatalf("%d controls", len(a))
+	}
+	for _, k := range capabilityKeys {
+		if !a[k.control].Offered {
+			t.Errorf("%s not offered", k.key)
+		}
+	}
+	delete(a, Control{Op: OpDefine})
+	if !b[Control{Op: OpDefine}].Offered {
+		t.Error("OfferAll shares its map")
+	}
+}
+
+// With the writer off the hint has no [w] key and says how to turn it on, the
+// key makes no call and shows the same words, and the other keys are as they
+// were; with it offered the key works as before.
+func TestWriterOffHintAndKey(t *testing.T) {
+	off := func() Lead {
+		l := aRunning("alpha")
+		l.Actions[Control{Op: OpTicket, Writer: true}] = Availability{Reason: ReasonWriterOff}
+		return l
+	}
+	b := newBackend(t)
+	b.listing.Leads = []Lead{off()}
+	r := newRig(t, b, 100, 24)
+	r.seen("writer off: start with --scratch-writer", "[v] attach as viewer")
+	r.notSeen("[w]", "attach as writer")
+	r.key("w")
+	if got := strings.TrimSpace(r.rows()[r.h-2]); got != "writer off: start with --scratch-writer" {
+		t.Fatalf("w displayed %q", got)
+	}
+	if b.total() != 0 || len(r.actions) != 0 || r.m.FieldOpen() {
+		t.Fatalf("w with the writer off called the backend: %+v", b.calls)
+	}
+	r.key("v")
+	if b.total() != 1 || b.calls[0].op != string(OpTicket) || b.calls[0].writer {
+		t.Fatalf("v after w: %+v", b.calls)
+	}
+
+	on := newBackend(t)
+	on.listing.Leads = []Lead{aRunning("alpha")}
+	r = newRig(t, on, 100, 24)
+	r.seen("[w] attach as writer")
+	r.notSeen("writer off")
+	r.key("w")
+	if on.total() != 1 || !on.calls[0].writer {
+		t.Fatalf("w with the writer on: %+v", on.calls)
+	}
+}

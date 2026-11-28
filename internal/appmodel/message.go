@@ -8,9 +8,12 @@ import (
 
 // MessageID is the stable identity of one conversation entry: the authority,
 // the stable lead role, the conversation's ID, the generation of the readable
-// segment and the entry's sequence within that segment. An attach, a page
-// refresh or a change of viewer keeps it; a fresh readable segment has a fresh
-// generation. Desk and seat compare whole values. The value is data, not a
+// segment and the entry's number within that segment. The number counts the
+// entries the reading viewer's disclosure projection does not hide, so that a
+// hidden entry leaves no gap in it; for a projection that hides nothing it is
+// the authority's sequence. An attach or a page refresh keeps it, and so does a
+// change of viewer whose projection hides the same entries below it; a fresh
+// readable segment has a fresh generation. Desk and seat compare whole values. The value is data, not a
 // proof of disclosure: a reader may see an entry only under current authority.
 //
 // The canonical text form is

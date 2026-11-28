@@ -33,7 +33,15 @@ type MemorySource struct {
 	next         uint64
 	entries      []Entry
 	statuses     map[appmodel.CommandKey]appmodel.CurrentStatus
-	viewers      map[string]func(Entry) Disclosure
+	viewers      map[string]*memViewer
+}
+
+// memViewer is one grant: its disclosure rule and how many of the entries
+// pruned since the grant it hid, which the snapshot reports so that pruning
+// leaves the viewer's message IDs as they were.
+type memViewer struct {
+	disclose     func(Entry) Disclosure
+	prunedHidden uint64
 }
 
 // NewMemorySource returns an empty source whose first segment has generation
@@ -42,7 +50,7 @@ type MemorySource struct {
 func NewMemorySource(lead string, conversation appmodel.ConversationRef, clock func() time.Time, retention Retention) *MemorySource {
 	return &MemorySource{clock: clock, lead: lead, conversation: conversation, retention: retention,
 		segment: 1, projection: 1, start: 1, floor: 1, next: 1,
-		statuses: map[appmodel.CommandKey]appmodel.CurrentStatus{}, viewers: map[string]func(Entry) Disclosure{}}
+		statuses: map[appmodel.CommandKey]appmodel.CurrentStatus{}, viewers: map[string]*memViewer{}}
 }
 
 // Append adds an entry to the segment, stamping its sequence and time, and
@@ -68,6 +76,9 @@ func (m *MemorySource) NewSegment() {
 	defer m.mu.Unlock()
 	m.segment++
 	m.start, m.floor, m.next, m.entries = 1, 1, 1, nil
+	for _, v := range m.viewers {
+		v.prunedHidden = 0
+	}
 }
 
 // SetStatus records a command's current status.
@@ -78,14 +89,16 @@ func (m *MemorySource) SetStatus(st appmodel.CurrentStatus) {
 }
 
 // Grant lets viewer read, with disclose deciding each entry (nil discloses
-// all), and moves the projection generation.
+// all), and moves the projection generation. A grant counts only the hidden
+// entries pruned after it: an entry pruned before the grant is taken as not
+// hidden, as the source no longer holds it to ask.
 func (m *MemorySource) Grant(viewer string, disclose func(Entry) Disclosure) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if disclose == nil {
 		disclose = func(Entry) Disclosure { return Disclosed }
 	}
-	m.viewers[viewer] = disclose
+	m.viewers[viewer] = &memViewer{disclose: disclose}
 	m.projection++
 }
 
@@ -111,6 +124,13 @@ func (m *MemorySource) prune() {
 		}
 	}
 	if drop > 0 {
+		for _, v := range m.viewers {
+			for _, e := range m.entries[:drop] {
+				if v.disclose(e) == Hidden {
+					v.prunedHidden++
+				}
+			}
+		}
 		m.entries = append([]Entry(nil), m.entries[drop:]...)
 	}
 	m.floor = m.next
@@ -126,15 +146,15 @@ func (m *MemorySource) prune() {
 func (m *MemorySource) Snapshot(viewer string, conversation appmodel.ConversationRef, lead string) (Snapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	disclose, ok := m.viewers[viewer]
+	v, ok := m.viewers[viewer]
 	if !ok || conversation != m.conversation || lead != m.lead {
 		return Snapshot{}, appmodel.DomainError{Code: appmodel.HiddenOrAbsent}
 	}
 	m.prune()
 	s := Snapshot{Segment: m.segment, Projection: m.projection, Start: m.start, Floor: m.floor, Head: m.next - 1,
-		Entries: make([]Entry, len(m.entries)), Statuses: map[appmodel.CommandKey]appmodel.CurrentStatus{}}
+		HiddenBelowFloor: v.prunedHidden, Entries: make([]Entry, len(m.entries)), Statuses: map[appmodel.CommandKey]appmodel.CurrentStatus{}}
 	for i, e := range m.entries {
-		e.Disclosure = disclose(e)
+		e.Disclosure = v.disclose(e)
 		if e.Receipt != nil {
 			rc := *e.Receipt
 			e.Receipt = &rc
