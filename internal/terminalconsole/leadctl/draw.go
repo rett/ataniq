@@ -240,9 +240,9 @@ func (m *Model) drawTable(d *drawer, w, h int) {
 		x := 3
 		x += d.put(x, row, w-x, pad(l.label(), keyW)+"  ", d.style(sText))
 		x += d.put(x, row, w-x, pad(state, colState), d.style(sText))
-		if l.degraded() {
+		if l.unreadable() {
 			reason := "invalid lead data"
-			if l.StateReason == "invalid-last-receipt" {
+			if l.StateReason == "client/invalid-last-receipt" {
 				reason = "invalid last receipt"
 			}
 			d.put(x, row, w-x, reason, d.style(sWarn))
@@ -297,7 +297,7 @@ func (m *Model) drawFooter(d *drawer, w, h int) {
 	}
 	d.rule(h - 5)
 	hint1, hint2 := "[j/k] move  [r] read again  [esc] back", "[d] define  [s] start  [x] stop  [m] message  [w] attach as writer  [v] attach as viewer"
-	if l, ok := m.under(); !ok || l.Offline || l.degraded() || l.HomeID != "" {
+	if l, ok := m.under(); !ok || l.Offline || l.unreadable() || l.HomeID != "" {
 		hint2 = ""
 	}
 	switch {

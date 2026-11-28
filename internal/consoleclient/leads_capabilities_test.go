@@ -261,6 +261,13 @@ func TestCapabilitiesPerLeadMessageSwitch(t *testing.T) {
 	}
 }
 
+func TestDecodedLeadCannotCarryAnUnreadableReason(t *testing.T) {
+	row := listingRow(json.RawMessage(`{"role":"alpha","state":"degraded","state_reason":"client/invalid-row"}`), LeadCapabilities{Stop: true}, 1)
+	if row.State != "degraded" || row.StateReason != "unrecognised" || !row.Capabilities.Stop {
+		t.Fatalf("decoded row = %+v", row)
+	}
+}
+
 // The first and last leads remain usable, including across a second read on
 // the same connection. Only a validated receipt can settle the kept command.
 func TestListDegradesOnlyTheMalformedRow(t *testing.T) {
@@ -315,7 +322,7 @@ func TestListDegradesOnlyTheMalformedRow(t *testing.T) {
 					g.Role != "gamma" || g.MessageResult.Outcome != "submitted" || !g.Capabilities.Start {
 					t.Fatalf("healthy rows = %+v, %+v", a, g)
 				}
-				if b.Key != tc.key || b.State != "degraded" || b.StateReason != tc.reason || b.Last != nil ||
+				if b.Key != tc.key || b.State != "degraded" || b.StateReason != "client/"+tc.reason || b.Last != nil ||
 					b.Capabilities != (LeadCapabilities{}) || b.MessagesEnabled || b.Inject || l.pending[key] != "c1" || len(l.pending) != 1 {
 					t.Fatalf("bad row = %+v, pending = %v", b, l.pending)
 				}

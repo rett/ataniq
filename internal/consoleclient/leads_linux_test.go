@@ -1383,7 +1383,7 @@ func TestListCleansWhatItShowsAndKeepsRolesExact(t *testing.T) {
 		t.Fatalf("rows %d, left out %d", len(lst.Leads), lst.LeftOut)
 	}
 	for _, bad := range lst.Leads[1:] {
-		if bad.Role != "" || bad.Key == "" || bad.State != "degraded" || bad.StateReason != "invalid-row" || bad.Capabilities != (LeadCapabilities{}) {
+		if bad.Role != "" || bad.Key == "" || bad.State != "degraded" || bad.StateReason != "client/invalid-row" || bad.Capabilities != (LeadCapabilities{}) {
 			t.Errorf("invalid role in row %+v", bad)
 		}
 	}

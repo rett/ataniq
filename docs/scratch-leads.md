@@ -310,6 +310,9 @@ What each does:
   stopped is asked about too. Where a stop could not be proven (a unit that may
   be loaded, a state that is unknown) the answer stays `uncertain` with the code
   `stop-unproven`; `uncertain` means that what the stop did is not known.
+  When the daemon reports a degraded lead, select its row to read the reason.
+  Press `x` and confirm with `y` to stop that epoch. A row the console could
+  not decode shows the data error and offers no commands.
 - **`lead.ticket`** asks the holder for a ticket for the epoch and writes it to
   the lead's ticket file. An `epoch` of 0, or one that is not the lead's current
   one, is refused `stale-epoch`.
