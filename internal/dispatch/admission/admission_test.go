@@ -174,7 +174,7 @@ func TestAdmissionBindsTheIntentAndTheFencesToTheRequest(t *testing.T) {
 	refused(t, "request names no epoch", func(r *Request) { r.Epoch = "" }, func(i *dispatch.Intent) { i.Epoch = "" }, nil, foreign, 0)
 	// The ledger holder's authority and role epoch are not the intent's: an
 	// intent spelled from them is not the request's.
-	refused(t, "holder identity is not the intent identity", nil, func(i *dispatch.Intent) {
+	refused(t, "an intent spelled from the holder's identity is not the request's", nil, func(i *dispatch.Intent) {
 		i.Authority, i.Epoch = holder().Authority, "3"
 	}, nil, foreign, 0)
 
