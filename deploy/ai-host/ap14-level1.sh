@@ -133,8 +133,8 @@ done
 if [ "$MODE" = check ] && { [ "$HAVE_FIX" = 1 ] || [ "$HAVE_TREE" = 1 ]; }; then
   refuse "--fixtures and --register-tree go with --self-test only"
 fi
-if [ "$HAVE_TREE" = 1 ]; then
-  [ "$HAVE_FIX" = 0 ] && [ "$HAVE_USER" = 0 ] && [ "$ROUTE" = 0 ] || refuse "--register-tree goes alone with --self-test"
+if [ "$HAVE_TREE" = 1 ] && { [ "$HAVE_FIX" != 0 ] || [ "$HAVE_USER" != 0 ] || [ "$ROUTE" != 0 ]; }; then
+  refuse "--register-tree goes alone with --self-test"
 fi
 if [ "$MODE" = self-test ] && [ "$HAVE_FIX" = 0 ]; then
   [ "$HAVE_USER" = 0 ] || refuse "--user goes with --fixtures in a self-test"
@@ -574,7 +574,9 @@ fx_report() {
 # is the filesystem root, by its device and inode, whatever its spelling (//,
 # /., a link to /).
 fx_root() {
-  fr_id=$(stat -L -c '%d:%i' -- "$2" 2>/dev/null) && [ -d "$2" ] || refuse "$1 must name a folder"
+  if ! fr_id=$(stat -L -c '%d:%i' -- "$2" 2>/dev/null) || [ ! -d "$2" ]; then
+    refuse "$1 must name a folder"
+  fi
   fr_root=$(stat -L -c '%d:%i' -- /) || refuse "cannot stat /"
   [ "$fr_id" != "$fr_root" ] || refuse "$1 must not be the filesystem root (by any spelling or link): that is this host's own configuration"
 }
