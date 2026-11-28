@@ -21,8 +21,8 @@ is labelled "Not built yet".** Read those as a plan, not as something to type.
   read-only.
 - Not built yet: a supervisor, and a unit or a start at boot for the daemon. You
   start the daemon by hand, and after a reboot no lead starts by itself.
-- Not built yet: the cutover from the tmux-manager to Ataniq, and the handoff
-  that goes with it. Section 5 is a design only.
+- A live cutover from the tmux-manager to Ataniq is unavailable. Section 5
+  describes the assignment ledger and the evidence it requires.
 
 **Words and placeholders.** The paths below are samples. Use your own.
 
@@ -315,6 +315,13 @@ of it. The words come from the holder. The MSG column of the row agrees.
   it.
 - All four leave the epoch's message **free**: the MSG column says `free (not
   delivered)` and `m` works again, with the same message id or another.
+- "the lead's holder could not be reached" (`holder-unreachable`): the daemon
+  could not connect to the holder, so nothing was written to the lead, and the
+  message is **free** again once the daemon has noted it in the lead's evidence
+  (when its log says it could not, the message stays spent).
+  Run step 1.1 and press `m` again. If the daemon says the operation `failed` and
+  its log names the evidence file, nothing was sent and the message is free too:
+  go to section 6 for the evidence file.
 
 What proves the message reached the lead is `sent`, shown only when the holder
 said the whole message was submitted. Everything else that may have reached the
@@ -332,10 +339,7 @@ lead leaves the epoch's one message **spent**.
   After a `died` result, do not press anything: the input may hold an open
   paste. Decide from what you see.
 - If it does not work: if you want a fresh message, stop the lead (step 1.7) and
-  start it (`s`). The new epoch has a new message. A message the daemon lost
-  between the frame and the evidence line (a window of a few milliseconds)
-  leaves the epoch free after a daemon restart although the message is on its
-  way: read the screen before sending again.
+  start it (`s`). The new epoch has a new message.
 
 ### 2.5 Attach is refused: "a writer may already be attached"
 
@@ -518,53 +522,50 @@ way, and deleting them while a lead runs breaks what the lead has bound.
 
 ## 5. The planned handoff and cutover, and the rollback
 
-**Not built yet.** This section is a design, not a procedure. No daemon holds a
-lease, no supervisor exists, no production mode exists, and nothing below can
-be typed. It records the order the owner has asked for, so that it can be built
-and tested before it is used. Do not follow it at 2 a.m.; follow it only after
-the pieces exist and this section has been rewritten from what was built.
+There is no live cutover procedure. The pure assignment reducer checks the
+evidence for each step, and the ledger records the holder, generation and
+result under the transfer ID. Daemon admission for handoffs, the effect broker
+that would enforce fencing where work starts, and Qargi transfer verbs are
+unbuilt. Keep real projects out of the scratch lead workflow.
 
-The shape:
+**Reading a transfer.** A freeze closes admission at generation `g`. An
+uncertain inventory or a mismatch in the successor's account blocks reservation.
+Once that account matches the completed inventory, the transfer proceeds in
+this order.
 
-1. **One side holds the lease at a time.** At any moment either the old session
-   (the tmux-manager's lead) or the new one (the Ataniq lead) holds the lease
-   for a project, never both. The design fences at the execution boundary with
-   the epoch, not only with a record (see [the runtime
-   design](design/runtime.md#lifecycle)). Not built yet: the lease itself.
-2. **The outgoing lead writes the Qargi handoff note.** It writes the note from
-   stored state, not from its memory, with `qargi marshal handoff`. Not built
-   yet: the Ataniq side of the exchange.
-   - You would see: a note file, and the outgoing lead saying it is done.
-   - It would prove: the state is on disk.
-   - If it did not work: do not start the new session. The old one keeps the
-     lease.
-3. **The new session reports what it believes before it acts.** It starts from
-   the note and reports its belief about the projects, the open runs and the
-   branches, and does nothing else. The owner compares the report with the
-   stored state. Not built yet.
-   - You would see: the new session's report, in its own words.
-   - It would prove: that the new session starts from what the old one stored.
-   - If it did not match: the new session is stopped, and nothing it did counts.
-     Go back to step 2.
-4. **The lease moves.** The old side gives up the lease, and only then the new
-   side takes it. Never both, never neither for longer than the move. Not built
-   yet.
-5. **The old session is stopped and disabled, not deleted, for 14 days.** It
-   can be started again for the whole 14 days. Not built yet.
-6. **The tmux-manager stays installed until its retirement.** It is retired only
-   after the 14 days and the owner's decision. Until then nothing removes it,
-   and nothing here may touch its sessions.
+1. **Reserve** the successor under the owner's decision.
+2. **Drain** outstanding work. Each frozen route supplies a receipt that it is
+   sealed and its work is settled.
+3. **Fence the old holder** once every receipt is present and the inventory is
+   still current.
+4. **Commit by transfer ID** after rechecking the decision. The successor now
+   holds generation `g+1`. Admission stays closed until every route confirms
+   it installed the new binding and rejects stale claims, and the reducer
+   verifies current enrollment evidence.
 
-**Rollback**, in the same design: stop the new session; check that it is stopped
-(the proof as in step 1.7); re-enable the old session; give the lease back to it
-and see it hold it; tell the old session what happened in the meantime from the
-handoff note and the evidence. Not built yet. The rollback is possible only
-because the old session was kept for 14 days.
+**After a lost reply.** The ledger can return the recorded result for the
+original transfer and request IDs. Recovery checks the replayed ledger against
+the independent witness checkpoint. For an uncertain checkpoint mutation,
+`Settle` at the witness uses the original mutation ID and epoch. It returns the
+recorded receipt or fences an unused ID against later application. If the
+witness is unreachable, the outcome stays unresolved. See the
+[witness guide](authority-host-witness.md).
 
-What exists today in place of this: the scratch leads of the console, on
-throwaway repositories, which are no real project's lead (see [the scratch leads
-guide](scratch-leads.md#what-it-is-and-what-it-is-not)). Do not use a scratch
-lead as a stand-in for a cutover.
+**Returning to the previous holder.** Before commit, the old holder can reopen
+only through a verified abort. An irreversibly fenced holder stays closed.
+After commit, a rollback is a new higher-generation transfer. It needs a new
+transfer ID and owner authorization, drains and fences the current holder, and
+commits the previous holder at `g+2`. The ledger preserves the original commit.
+It can also record a hold on the stopped, disabled legacy fallback with an
+earliest retirement at least 14 days after the hold starts. The hold gives no
+permission to restart it.
+
+**Conflicting receipts.** A late correction or contradiction from the issuer of
+an accepted fence or confirmation receipt quarantines the key. Neither side may
+act. The owner can acknowledge the quarantine once to record a disposition.
+The key stays closed in that store. Recovery requires retiring the doubtful
+identity and fresh enrollment in a new store. A contradiction from a different
+issuer is refused and must be reported to the owner.
 
 ## 6. When you cannot tell
 

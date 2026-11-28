@@ -1,12 +1,14 @@
 package leadregistry
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -506,6 +508,174 @@ func TestStaleEpochRefused(t *testing.T) {
 	if e, _ := r.Get(role); e.Unit != (UnitEvidence{}) {
 		t.Fatalf("evidence carried into a new epoch: %+v", e.Unit)
 	}
+
+	starting := ok(r.Get(role))
+	ready := ok(r.SetState(role, setState(StateReady, starting.Epoch)))
+	obs := Observed{Model: Seen("model-seen")}
+	path := filepath.Join(dir, FileName)
+	readJournal := func(t *testing.T) []byte {
+		t.Helper()
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	wantStale := func(t *testing.T, writer string, err error, expected, current Shown) {
+		t.Helper()
+		var stale *StaleStateError
+		if !errors.Is(err, ErrStaleState) || !errors.As(err, &stale) ||
+			!stale.Expected.equal(expected) || !stale.Current.equal(current) {
+			t.Errorf("%s returned %v, want stale state (expected %+v, current %+v)", writer, err, expected, current)
+		}
+	}
+	t.Run("SameEpochStaleObservedStateAppendsNothing", func(t *testing.T) {
+		before := readJournal(t)
+		c := setState(StateDegraded, starting.Epoch)
+		c.Expected = ExpectShown(starting.Shown)
+		_, err := r.SetState(role, c)
+		wantStale(t, "SetState", err, starting.Shown, ready.Shown)
+		_, err = r.SetObservedAt(role, starting.Epoch, obs, ExpectShown(starting.Shown))
+		wantStale(t, "SetObservedAt", err, starting.Shown, ready.Shown)
+		_, err = r.RecordOutcomeAt(role, starting.Intent.ID, starting.Epoch, OutcomeLaunched, ev, ExpectShown(starting.Shown))
+		wantStale(t, "RecordOutcomeAt", err, starting.Shown, ready.Shown)
+		c.Epoch = in2.Epoch
+		if _, err := r.SetState(role, c); !errors.Is(err, ErrStaleEpoch) {
+			t.Errorf("stale epoch and state returned %v, want ErrStaleEpoch", err)
+		}
+		if size := journalSize(t, dir); size != int64(len(before)) {
+			t.Errorf("journal size after refusal = %d, want %d", size, len(before))
+		}
+		if !bytes.Equal(before, readJournal(t)) {
+			t.Error("refused writes changed journal bytes")
+		}
+		if got := okf(t)(r.Get(role)); !reflect.DeepEqual(got, ready) {
+			t.Errorf("entry after refusal = %+v, want %+v", got, ready)
+		}
+	})
+	t.Run("SameStateDifferentReasonRefused", func(t *testing.T) {
+		// The state alone is not the decision: a caller that observed ready
+		// for one reason must not overwrite ready for another, nor degraded
+		// set at another time.
+		before := readJournal(t)
+		other := ready.Shown
+		other.Reason = Reason{Code: "other-reason", Detail: "detail"}
+		moved := ready.Shown
+		moved.At = moved.At.Add(time.Second)
+		for name, stale := range map[string]Shown{"reason code": other, "time set": moved} {
+			c := setState(StateDegraded, ready.Epoch)
+			c.Expected = ExpectShown(stale)
+			_, err := r.SetState(role, c)
+			wantStale(t, "SetState with another "+name, err, stale, ready.Shown)
+			_, err = r.SetObservedAt(role, ready.Epoch, obs, ExpectShown(stale))
+			wantStale(t, "SetObservedAt with another "+name, err, stale, ready.Shown)
+		}
+		if !bytes.Equal(before, readJournal(t)) {
+			t.Error("refused writes changed journal bytes")
+		}
+	})
+	t.Run("InvalidExpectation", func(t *testing.T) {
+		before := readJournal(t)
+		for _, st := range []State{"", "bogus"} {
+			x := ExpectShown(Shown{State: st})
+			c := setState(StateDegraded, ready.Epoch)
+			c.Expected = x
+			if _, err := r.SetState(role, c); !errors.Is(err, ErrInvalid) {
+				t.Errorf("SetState with expected state %q = %v, want ErrInvalid", st, err)
+			}
+			if _, err := r.SetObservedAt(role, ready.Epoch, obs, x); !errors.Is(err, ErrInvalid) {
+				t.Errorf("SetObservedAt with expected state %q = %v, want ErrInvalid", st, err)
+			}
+			if _, err := r.RecordOutcomeAt(role, ready.Intent.ID, ready.Epoch, OutcomeLaunched, ev, x); !errors.Is(err, ErrInvalid) {
+				t.Errorf("RecordOutcomeAt with expected state %q = %v, want ErrInvalid", st, err)
+			}
+			// An invalid expectation is not a stale epoch either.
+			c.Epoch = in2.Epoch
+			if _, err := r.SetState(role, c); !errors.Is(err, ErrInvalid) {
+				t.Errorf("SetState with expected state %q and a stale epoch = %v, want ErrInvalid", st, err)
+			}
+		}
+		if !bytes.Equal(before, readJournal(t)) {
+			t.Error("refused writes changed journal bytes")
+		}
+	})
+	t.Run("ErrorPrecedenceMatchesNoExpectation", func(t *testing.T) {
+		// A matching or absent expectation changes no refusal: the same
+		// calls give the same errors, in the same order.
+		before := readJournal(t)
+		bad := setState(StateDegraded, ready.Epoch)
+		bad.Reason = Reason{} // invalid payload, and a stale epoch below
+		stopNoProof := StateChange{Epoch: ready.Epoch, State: StateStopped, Evidence: EvidenceObservation, Reason: Reason{Code: "x"}}
+		stale := setState(StateDegraded, in2.Epoch)
+		table := map[string]StateChange{
+			"invalid reason":        bad,
+			"stopped without proof": stopNoProof,
+			"stale epoch":           stale,
+			"table refusal":         setState(StateDesired, ready.Epoch),
+		}
+		invalidAndStale := bad
+		invalidAndStale.Epoch = in2.Epoch
+		table["invalid reason and stale epoch"] = invalidAndStale
+		for name, c := range table {
+			_, plain := r.SetState(role, c)
+			c.Expected = ExpectShown(ready.Shown)
+			_, with := r.SetState(role, c)
+			if plain == nil || with == nil || plain.Error() != with.Error() {
+				t.Errorf("%s: without expectation %v, with a matching one %v", name, plain, with)
+			}
+		}
+		if !bytes.Equal(before, readJournal(t)) {
+			t.Error("refused writes changed journal bytes")
+		}
+	})
+	t.Run("ReplayAfterRefusal", func(t *testing.T) {
+		before := readJournal(t)
+		c := setState(StateDegraded, ready.Epoch)
+		c.Expected = ExpectShown(starting.Shown)
+		if _, err := r.SetState(role, c); !errors.Is(err, ErrStaleState) {
+			t.Fatalf("SetState = %v, want ErrStaleState", err)
+		}
+		if err := r.Close(); err != nil {
+			t.Fatal(err)
+		}
+		again, err := Open(dir, testOpts(1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(before, readJournal(t)) {
+			t.Error("reopening after a refused write changed the journal")
+		}
+		if got := okf(t)(again.Get(role)); !reflect.DeepEqual(got, ready) {
+			t.Errorf("entry after reopen = %+v, want %+v", got, ready)
+		}
+		// The refusal left the registry usable: the observation of the
+		// current value is accepted.
+		c.Expected = ExpectShown(ready.Shown)
+		if e := okf(t)(again.SetState(role, c)); e.Shown.State != StateDegraded {
+			t.Errorf("state after the matching write = %s, want degraded", e.Shown.State)
+		}
+		if err := again.Close(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("SameEpochMatchingStateWrites", func(t *testing.T) {
+		ok := okf(t)
+		r := openReg(t, dir) // the earlier registry was closed by the replay subtest
+		cur := ok(r.Get(role))
+		c := setState(StateReady, cur.Epoch)
+		c.Expected = ExpectShown(cur.Shown)
+		e := ok(r.SetState(role, c))
+		if e.Shown.State != StateReady {
+			t.Fatalf("shown state = %s, want ready", e.Shown.State)
+		}
+		ok(r.SetObservedAt(role, e.Epoch, obs, ExpectShown(e.Shown)))
+		ok(r.RecordOutcomeAt(role, e.Intent.ID, e.Epoch, OutcomeLaunched, ev, ExpectShown(e.Shown)))
+		replayed := ok(openReg(t, copyJournal(t, dir)).Get(role))
+		if replayed.Epoch != cur.Epoch || replayed.Shown.State != StateReady ||
+			replayed.Observed != obs || replayed.Intent.Outcome != OutcomeLaunched || replayed.Unit != ev {
+			t.Fatalf("replayed entry after matching writes = %+v", replayed)
+		}
+	})
 }
 
 func TestProofRules(t *testing.T) {

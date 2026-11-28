@@ -344,7 +344,11 @@ func TestLeadHealthObservations(t *testing.T) {
 	check(&treeGone, leadregistry.StateDegraded, "lead-exited")
 	check(&healthy, leadregistry.StateReady, "holder-ready")
 	// Build skew remains a refusal even if the holder answers successfully.
-	if err := m.showSkewed(lr, epoch, &opFail{msg: "another build"}); err != nil {
+	observed, err := m.reg.Get(lr.role)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.showSkewed(lr, observed, &opFail{msg: "another build"}); err != nil {
 		t.Fatal(err)
 	}
 	check(&healthy, leadregistry.StateDegraded, "holder-version-skew")
@@ -415,6 +419,68 @@ func TestLeadHealthPollRacingStopAndNewEpoch(t *testing.T) {
 	m.recordHealth(t.Context(), lr, observer, reply)
 	if e, _ := m.reg.Get(lr.role); e.Shown.State != leadregistry.StateDegraded || e.Epoch != next.Epoch {
 		t.Fatalf("old recovery after restart: %+v", e)
+	}
+}
+
+// The health poll decides from the entry it read before it takes the role's
+// lock. Another writer's newer decision for the same state, with another
+// reason, made in between, is not overwritten: the registry compares the whole
+// shown value, and the poll's write appends nothing.
+func TestLeadHealthPollRefusedBySameStateNewerReason(t *testing.T) {
+	m, lr, epoch := barePromote(t)
+	m.promote(lr, epoch)
+	observer := &readyObserver{epoch: epoch}
+	m.recordHealth(t.Context(), lr, observer, nil)
+	m.recordHealth(t.Context(), lr, observer, nil) // degraded, holder-unreachable
+	if e, _ := m.reg.Get(lr.role); e.Shown.State != leadregistry.StateDegraded || e.Shown.Reason.Code != codeHolderUnreachable {
+		t.Fatalf("setup: %+v", e.Shown)
+	}
+	reply := &wire.Status{Lead: lr.role.String(), Epoch: epoch, Facts: wire.Facts{TUIExited: wire.FactNo}}
+	build := lr.in.ext.build
+	read := build.Record
+	checking, resume := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(resume) })
+	defer unblock()
+	build.Record = func(dir string, epoch uint64) (buildid.Record, error) {
+		close(checking)
+		<-resume
+		return read(dir, epoch)
+	}
+	defer func() { build.Record = read }()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.recordHealth(t.Context(), lr, observer, reply) // wants ready
+	}()
+	select {
+	case <-checking:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the poll did not check the build before recovery")
+	}
+	if !lr.tryLock() {
+		t.Fatal("role busy")
+	}
+	_, err := m.reg.SetState(lr.role, leadregistry.StateChange{Epoch: epoch, State: leadregistry.StateDegraded,
+		Expected: leadregistry.NoExpectation(), Evidence: leadregistry.EvidenceObservation,
+		Reason: leadregistry.Reason{Code: "newer-reason"}})
+	lr.unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := m.reg.Revision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unblock()
+	<-done
+	if after, _ := m.reg.Revision(); after != before {
+		t.Fatalf("the poll appended %d records after the newer decision", after-before)
+	}
+	if e, _ := m.reg.Get(lr.role); e.Shown.State != leadregistry.StateDegraded || e.Shown.Reason.Code != "newer-reason" {
+		t.Fatalf("the newer decision was overwritten: %+v", e.Shown)
+	}
+	if m.broken.Load() {
+		t.Fatal("a superseded decision marked the daemon broken")
 	}
 }
 

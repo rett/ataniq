@@ -20,8 +20,9 @@ type Principal struct {
 
 // Peer binds the authenticated TLS key to its enrollment for this connection.
 type Peer struct {
-	Fingerprint string
-	Principal   Principal
+	Fingerprint    string
+	Principal      Principal
+	ChannelBinding ChannelBinding
 }
 
 // Registry holds the desk's device enrollments and their open connections in

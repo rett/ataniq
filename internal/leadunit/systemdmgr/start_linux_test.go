@@ -65,8 +65,6 @@ func TestStartArgvDashLeadingWordsFollowTheTerminator(t *testing.T) {
 func TestSystemctlArgvGolden(t *testing.T) {
 	mustEqual(t, showArgv(unitName),
 		[]string{"systemctl", "--user", "show", "--all", "--property=" + showProperties, "--", unitName})
-	mustEqual(t, killArgv(unitName, "SIGKILL"),
-		[]string{"systemctl", "--user", "kill", "--kill-whom=all", "--signal=SIGKILL", "--", unitName})
 	mustEqual(t, userManagerGroupArgv(),
 		[]string{"systemctl", "--user", "show", "--all", "--property=ControlGroup", "--", "-.slice"})
 }

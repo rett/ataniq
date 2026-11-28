@@ -4,6 +4,7 @@ package leaddaemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -436,17 +437,32 @@ func (l *leadMode) recordHealth(ctx context.Context, lr *leadRole, observer *rea
 		return
 	}
 	defer lr.unlock()
-	current, ok := lr.in.ext.runningEntry()
-	if ctx.Err() != nil || !ok || current.Epoch != epoch || current.Shown != e.Shown {
+	if ctx.Err() != nil {
 		return
 	}
+	// The decision was made from e. The registry compares its whole shown
+	// value (state, reason, time, evidence, proof) with it under its write
+	// lock, and its epoch, so a stop, a new epoch or another writer's newer
+	// decision between the read and the write refuses this one.
 	_, err := l.reg.SetState(lr.role, leadregistry.StateChange{
-		Epoch: epoch, State: state, Evidence: leadregistry.EvidenceObservation, Reason: reason,
+		Epoch: epoch, Expected: leadregistry.ExpectShown(e.Shown), State: state,
+		Evidence: leadregistry.EvidenceObservation, Reason: reason,
 	})
 	if err != nil {
+		if supersededDecision(err) {
+			return
+		}
 		l.registryDown(err)
 		l.d.logf("scratch health %q: cannot record %s for epoch %d: %s", lr.key, state, epoch, SafeText(err.Error()))
 	}
+}
+
+// supersededDecision reports whether the registry refused a write because the
+// role's epoch or shown value is no longer the one the writer decided from.
+// That is no failure of the registry: the newer decision stands, and the
+// writer's next observation judges again.
+func supersededDecision(err error) bool {
+	return errors.Is(err, leadregistry.ErrStaleEpoch) || errors.Is(err, leadregistry.ErrStaleState)
 }
 
 // markSkewed shows the lead of epoch, whose holder.json confirms another
@@ -478,10 +494,14 @@ func (l *leadMode) markSkewed(ctx context.Context, lr *leadRole, epoch uint64, f
 		}
 	}
 	defer lr.unlock()
-	if !l.startingIn(lr, epoch) {
+	e, ok := l.startingEntry(lr, epoch)
+	if !ok {
 		return
 	}
-	if err := l.showSkewed(lr, epoch, f); err != nil {
+	if err := l.showSkewed(lr, e, f); err != nil {
+		if supersededDecision(err) {
+			return
+		}
 		l.registryDown(err)
 		l.d.logf("scratch ready %q: the state degraded cannot be set for epoch %d: %s", lr.key, epoch, SafeText(err.Error()))
 		return
@@ -489,10 +509,13 @@ func (l *leadMode) markSkewed(ctx context.Context, lr *leadRole, epoch uint64, f
 	l.d.logf("scratch ready %q: the holder that started for epoch %d is not the build checked before the start; the lead is shown degraded and its unit is left running: stop the lead and start it again", lr.key, epoch)
 }
 
-// showSkewed sets the lead of epoch shown degraded, with the reason
-// holder-version-skew, the evidence kind ataniq-observation and the refusal f
-// as the detail. The caller holds the role's operation lock.
-func (l *leadMode) showSkewed(lr *leadRole, epoch uint64, f *opFail) error {
+// showSkewed sets the lead of e, the entry the caller read, shown degraded,
+// with the reason holder-version-skew, the evidence kind ataniq-observation
+// and the refusal f as the detail. The write is refused (an error that
+// wraps leadregistry.ErrStaleState or ErrStaleEpoch) when the registry no
+// longer shows e's value in e's epoch. The caller holds the role's operation
+// lock.
+func (l *leadMode) showSkewed(lr *leadRole, e leadregistry.Entry, f *opFail) error {
 	detail := f.msg
 	if len(detail) > leadregistry.MaxReasonDetailBytes {
 		detail = detail[:leadregistry.MaxReasonDetailBytes]
@@ -503,7 +526,7 @@ func (l *leadMode) showSkewed(lr *leadRole, epoch uint64, f *opFail) error {
 		}
 	}
 	_, err := l.reg.SetState(lr.role, leadregistry.StateChange{
-		Epoch: epoch, State: leadregistry.StateDegraded, Evidence: leadregistry.EvidenceObservation,
+		Epoch: e.Epoch, Expected: leadregistry.ExpectShown(e.Shown), State: leadregistry.StateDegraded, Evidence: leadregistry.EvidenceObservation,
 		Reason: leadregistry.Reason{Code: codeHolderVersionSkew, Detail: detail},
 	})
 	return err
@@ -542,7 +565,7 @@ func (l *leadMode) revalidateAdopted() error {
 		if !lr.tryLock() {
 			return fmt.Errorf("scratch mode: the lead %q of epoch %d is another build than this daemon's, and its lock is held, so it cannot be shown degraded", lr.key, e.Epoch)
 		}
-		serr := l.showSkewed(lr, e.Epoch, f)
+		serr := l.showSkewed(lr, e, f)
 		lr.unlock()
 		if serr != nil {
 			l.registryDown(serr)
@@ -553,11 +576,19 @@ func (l *leadMode) revalidateAdopted() error {
 	return nil
 }
 
+// startingEntry returns the lead's entry and true when it is shown starting in
+// the epoch, with its launch recorded. A write decided from it passes its
+// shown value as the registry's expectation.
+func (l *leadMode) startingEntry(lr *leadRole, epoch uint64) (leadregistry.Entry, bool) {
+	e, ok := lr.in.ext.runningEntry()
+	return e, ok && e.Epoch == epoch && e.Shown.State == leadregistry.StateStarting
+}
+
 // startingIn reports whether the lead is shown starting in the epoch, with its
 // launch recorded.
 func (l *leadMode) startingIn(lr *leadRole, epoch uint64) bool {
-	e, ok := lr.in.ext.runningEntry()
-	return ok && e.Epoch == epoch && e.Shown.State == leadregistry.StateStarting
+	_, ok := l.startingEntry(lr, epoch)
+	return ok
 }
 
 // promote sets the state ready if the lead is still shown starting in the
@@ -570,14 +601,18 @@ func (l *leadMode) promote(lr *leadRole, epoch uint64) (done bool) {
 		return false
 	}
 	defer lr.unlock()
-	if !l.startingIn(lr, epoch) {
+	e, ok := l.startingEntry(lr, epoch)
+	if !ok {
 		return true
 	}
 	_, err := l.reg.SetState(lr.role, leadregistry.StateChange{
-		Epoch: epoch, State: leadregistry.StateReady, Evidence: leadregistry.EvidenceObservation,
+		Epoch: epoch, Expected: leadregistry.ExpectShown(e.Shown), State: leadregistry.StateReady, Evidence: leadregistry.EvidenceObservation,
 		Reason: leadregistry.Reason{Code: codeHolderReady, Detail: detailHolderReady},
 	})
 	if err != nil {
+		if supersededDecision(err) {
+			return true
+		}
 		l.registryDown(err)
 		l.d.logf("scratch ready %q: the state ready cannot be set for epoch %d: %s", lr.key, epoch, SafeText(err.Error()))
 		return true

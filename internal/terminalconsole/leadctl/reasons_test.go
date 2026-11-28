@@ -483,11 +483,16 @@ func TestResultWordsAreShortASCIIAndSayWhetherTheEpochIsSpent(t *testing.T) {
 
 // TestTheDaemonSpendsTheMessageWhenTheRequestIsWrittenUnlessItWasNotDelivered
 // holds the sentences the view says of every done inject: the daemon marks the
-// epoch's message spent once the request is written to the holder, whatever the
-// holder answers, except that a lead of scratch mode whose message the holder
-// answered as not delivered (and whose result line is in the evidence) keeps it
-// free. It reads the daemon's source; a change there is a change of the view's
-// words.
+// epoch's message spent once the inject-sent line is recorded, before the
+// request is written to the holder and whether or not a frame then leaves, and
+// whatever the holder answers, except that a lead of scratch mode keeps it free
+// in three cases, each once the line that says so is in the evidence: the
+// holder answered not delivered (a result of not-now or refused with nothing
+// written), the holder refused the request itself (not busy), or the request
+// was never sent (the holder's socket could not be dialled, or its write
+// deadline could not be set). The name of the
+// test keeps the first words of the older rule. It reads the daemon's source; a
+// change there is a change of the view's words.
 func TestTheDaemonSpendsTheMessageWhenTheRequestIsWrittenUnlessItWasNotDelivered(t *testing.T) {
 	src, err := os.ReadFile(filepath.FromSlash("../../leaddaemon/canary_ext_linux.go"))
 	if err != nil {
@@ -495,13 +500,23 @@ func TestTheDaemonSpendsTheMessageWhenTheRequestIsWrittenUnlessItWasNotDelivered
 	}
 	s := string(src)
 	for _, want := range []string{
-		"resp, wrote, err := callHolderThen(",
-		"\t\tif wrote && !release {\n\t\t\tx.spent[epoch] = true\n\t\t}",
-		"x.scratch && leadcanary.ReleasesMessage(result)",
+		// The line is recorded first, and from it on the message is spent
+		// unless one of the three places below set release.
+		"resp, st, err := callHolderThen(",
+		"if err := x.appendSent(p.MessageID, epoch, effect); err != nil {",
+		"\t\tif sent && !release {\n\t\t\tx.spent[epoch] = true\n\t\t}",
+		// The three exceptions.
+		"if x.refuseUnsent(p.MessageID, epoch, effect) && x.scratch {",
+		"case recorded && x.scratch && holderFrees(resp.Code):",
+		"x.recorded(leadcanary.ResultEntry(p.MessageID, epoch, result)) && x.scratch && leadcanary.ReleasesMessage(result)",
+		"A lead of scratch mode has three exceptions to the spent message",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("the daemon's source no longer holds %q: check what it spends and change the view's words", want)
 		}
+	}
+	if n := strings.Count(s, "release = true"); n != 3 {
+		t.Errorf("the daemon's source frees the message in %d places, the view's words say three: check what it spends and change the view's words", n)
 	}
 }
 

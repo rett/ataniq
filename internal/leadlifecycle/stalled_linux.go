@@ -41,6 +41,11 @@ var ErrInstanceChanged = errors.New("leadlifecycle: the unit is not the stalled 
 // A stalled coordinator is not replaced by this package on its own, and no
 // launch is admitted from stalled: it is replaced only by Stop, which proves
 // the instance stopped, and then Start, which launches instance n+1.
+//
+// The state is recorded from the entry read under the role's lock and is
+// refused, appending nothing, with an error that wraps
+// leadregistry.ErrStaleState when the registry shows the coordinator
+// differently by then: the newer decision stands and the caller judges again.
 func (c *Controller) MarkStalled(ctx context.Context, role leadrole.Role, reason string) (leadregistry.Entry, error) {
 	unlock, err := c.lock(ctx, role)
 	if err != nil {
@@ -51,6 +56,13 @@ func (c *Controller) MarkStalled(ctx context.Context, role leadrole.Role, reason
 	if err != nil {
 		return e, err
 	}
+	return c.markStalledFrom(e, reason)
+}
+
+// markStalledFrom records the stall from e, the entry the caller read. The
+// caller holds the role's lock.
+func (c *Controller) markStalledFrom(e leadregistry.Entry, reason string) (leadregistry.Entry, error) {
+	role := e.Role
 	if e.Shown.State == leadregistry.StateStalled {
 		return e, nil
 	}
@@ -58,8 +70,10 @@ func (c *Controller) MarkStalled(ctx context.Context, role leadrole.Role, reason
 		reason = "no progress observed"
 	}
 	detail := clip(stalledWasPrefix+string(e.Shown.State)+stalledReasonJoiner+reason, leadregistry.MaxReasonDetailBytes)
+	// The detail records the state the coordinator was in, read from e: the
+	// write is made only if that is still what the registry shows.
 	out, err := c.reg.SetState(role, leadregistry.StateChange{
-		Epoch: e.Epoch, State: leadregistry.StateStalled, Evidence: leadregistry.EvidenceObservation,
+		Epoch: e.Epoch, Expected: leadregistry.ExpectShown(e.Shown), State: leadregistry.StateStalled, Evidence: leadregistry.EvidenceObservation,
 		Reason: leadregistry.Reason{Code: codeStalled, Detail: detail},
 	})
 	if err != nil {
@@ -141,8 +155,10 @@ func (c *Controller) ClearStalled(ctx context.Context, role leadrole.Role) (lead
 	if was := stalledFrom(e.Shown.Reason.Detail); was == leadregistry.StateReady {
 		to = leadregistry.StateReady
 	}
+	// The unit was inspected after e was read, and the return state is read
+	// from e: the write is made only if the stall is still what is shown.
 	out, err := c.reg.SetState(role, leadregistry.StateChange{
-		Epoch: e.Epoch, State: to, Evidence: leadregistry.EvidenceObservation,
+		Epoch: e.Epoch, Expected: leadregistry.ExpectShown(e.Shown), State: to, Evidence: leadregistry.EvidenceObservation,
 		Reason: leadregistry.Reason{Code: "stall-cleared", Detail: clip(fmt.Sprintf(
 			"the unit of epoch %d intent %s still runs (invocation %s)", e.Epoch, st.Intent, st.InvocationID), leadregistry.MaxReasonDetailBytes)},
 	})

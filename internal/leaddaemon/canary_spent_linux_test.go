@@ -67,7 +67,11 @@ func TestCanaryMessageStaysSpentAcrossARestart(t *testing.T) {
 	}
 }
 
-func TestCanaryUnspentMessageStaysUnspentAcrossARestart(t *testing.T) {
+// The canary keeps its stricter rule: a message whose inject-sent line is
+// written and whose socket could not be dialled is spent, the inject-refused
+// line with the code unsent not freeing it, in this daemon and in the one that
+// starts next.
+func TestCanaryUnsentMessageStaysSpentAcrossARestart(t *testing.T) {
 	c := newCanaryEnv(t)
 	c.start()
 	c.define()
@@ -75,12 +79,19 @@ func TestCanaryUnspentMessageStaysUnspentAcrossARestart(t *testing.T) {
 	// No holder listens: nothing was sent, and the evidence says so.
 	_, err := c.inject("msg-one", "body text\n")
 	wantCode(t, err, CodeUnavailable)
+	_, err = c.inject("msg-two", "body text\n")
+	if ce := wantCode(t, err, CodeRefused); ce.Message != msgSecond {
+		t.Fatalf("message %q, want %q", ce.Message, msgSecond)
+	}
 
 	c.restart()
 	c.holder = newFakeHolder(t, c.holderDir, submitted)
-	got, err := c.inject("msg-one", "body text\n")
-	if err != nil || got.Result.Outcome != wire.InjectOutcomeSubmitted {
-		t.Fatalf("%+v %v", got, err)
+	_, err = c.inject("msg-three", "body text\n")
+	if ce := wantCode(t, err, CodeRefused); ce.Message != msgSecond {
+		t.Fatalf("message %q, want %q", ce.Message, msgSecond)
+	}
+	if n := len(c.holder.requests(wire.OpInject)); n != 0 {
+		t.Fatalf("%d inject requests reached the holder", n)
 	}
 }
 

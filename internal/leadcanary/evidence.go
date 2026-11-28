@@ -62,9 +62,10 @@ const (
 	// EventInjectRefused: the message was refused before it reached the
 	// holder (code says why).
 	EventInjectRefused Event = "inject-refused"
-	// EventInjectSent: the line is written right after the request frame is
-	// written and before the daemon waits for the answer; the message is spent
-	// from here.
+	// EventInjectSent: the line is written before the request frame is, and
+	// the frame is written only once the line is in the evidence; the message
+	// is spent from here. A line that says nothing was sent follows it as an
+	// inject-refused line with the code unsent.
 	EventInjectSent Event = "inject-sent"
 	// EventInjectResult: the result of the message, or the uncertain result
 	// that stands in for no answer.
@@ -100,6 +101,13 @@ type Entry struct {
 	// Code is a short token (an [AdmitCode], for example). The inject-refused
 	// line requires it.
 	Code string
+	// EffectID is empty or the id of the effect the line is about: the command
+	// id of the request the daemon gives the holder, a short token (a-z, 0-9
+	// and . _ -). The daemon writes it on the inject-sent line, which is
+	// written before the request frame, and on the inject-refused line that
+	// says nothing was sent, so that several messages of one epoch each have
+	// their own pair of lines and a restarted daemon never repeats an id.
+	EffectID string
 }
 
 // evidenceLine is one line of the file, in the order of its keys.
@@ -118,6 +126,7 @@ type evidenceLine struct {
 	Code          string `json:"code,omitempty"`
 	Qualification string `json:"qualification,omitempty"`
 	Login         string `json:"login,omitempty"`
+	EffectID      string `json:"effect_id,omitempty"`
 }
 
 // Evidence appends the events of a canary run to
@@ -253,7 +262,7 @@ func (e *Evidence) Append(en Entry) error {
 	l := evidenceLine{
 		At: e.now().UTC().Format(time.RFC3339Nano), Event: en.Event, Role: e.role, Epoch: en.Epoch,
 		MessageID: en.MessageID, Outcome: en.Outcome, Reason: en.Reason, Written: en.Written,
-		Detail: en.Detail, Agent: e.kind, Code: en.Code,
+		Detail: en.Detail, Agent: e.kind, Code: en.Code, EffectID: en.EffectID,
 	}
 	switch en.Event {
 	case EventDefine:
@@ -309,6 +318,7 @@ func (en Entry) check() error {
 	}
 	for _, f := range []struct{ name, val string }{
 		{"outcome", en.Outcome}, {"reason", en.Reason}, {"written", en.Written}, {"code", en.Code},
+		{"effect id", en.EffectID},
 	} {
 		if !tokenOrEmpty(f.val) {
 			return refuse("%s is not a short token", f.name)

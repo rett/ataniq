@@ -201,7 +201,6 @@ type rig struct {
 	show   map[string]string // canned show output by unit; "-.slice" too
 	showFn func() (string, error)
 	start  func() (string, error)
-	kill   func() (string, error)
 }
 
 func newRig(t *testing.T) *rig {
@@ -212,7 +211,6 @@ func newRig(t *testing.T) *rig {
 	r.k.groups[cgUnit] = idA
 	r.k.groups[cgBase] = idB
 	r.start = func() (string, error) { return jobReply, nil }
-	r.kill = func() (string, error) { return "", nil }
 	r.run.handle = func(argv []string) (string, error) {
 		switch {
 		case argv[0] == "busctl":
@@ -227,7 +225,7 @@ func newRig(t *testing.T) *rig {
 			}
 			return out, nil
 		case argv[0] == "systemctl" && argv[2] == "kill":
-			return r.kill()
+			return "", errors.New("systemctl kill is refused")
 		}
 		return "", errors.New("unexpected call")
 	}

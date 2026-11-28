@@ -274,7 +274,7 @@ Exit status of `ataniqd canary`:
 | 21 | The daemon refused this user. |
 | 22 | An answer that is not valid, or an error the daemon answered with another code. |
 | 30 | `refused`: the daemon changed nothing that matters. The message did not pass the admission, the role is not running, a message is already in flight, a second message in the epoch, injection is off in the config, a role other than the config's, or the registry or the lifecycle refused. One refusal may follow a start or a stop that was already carried out (a stale epoch, a state change the registry does not make): its text says to check the role's status. |
-| 31 | `unavailable`: the operation could not be carried out, or its outcome is not known. A start whose outcome is not known and a stop that is not proven answer this too: the role is then shown `unknown`, a unit may still run, and its text says so. For `inject` it means nothing reached the lead: the holder's socket could not be dialled or the frame could not be written, or the holder refused with `disabled`, `wrong-epoch`, `busy` or `bad-request`. |
+| 31 | `unavailable`: the operation could not be carried out, or its outcome is not known. A start whose outcome is not known and a stop that is not proven answer this too: the role is then shown `unknown`, a unit may still run, and its text says so. For `inject` it means nothing reached the lead: the evidence file took no line, the holder's socket could not be dialled (after the `inject-sent` line, so the canary's message is spent), or the holder refused with `disabled`, `wrong-epoch`, `busy` or `bad-request`. A frame that was only partly written is not this answer but an `uncertain` result. |
 
 The two error codes `refused` and `unavailable` are new, and carry fixed texts
 that never echo what the caller sent.
@@ -559,15 +559,32 @@ maps the fence's result to the words of the wire:
 `detail` is the fence's own words and readings, printable ASCII, at most 512
 bytes, and nothing branches on it. The slice never answers `delivered`.
 
-**Once the request frame is written the message is spent for the epoch, and
-only an ok answer whose result decodes is a result.** Anything else after that
-point (no answer in time, a closed connection, an answer that does not decode)
-is not an error: `canary.inject` answers ok with `outcome` `uncertain`,
-`reason` `died`, `written` `unknown` and the detail `no answer from the
-holder`. The daemon waits 5 s to reach the holder and 20 s for its answer, and
-the command's client waits 30 s, so the daemon's answer arrives first. A
-refusal before the frame is written spends nothing, and an `unavailable` answer
-always means that nothing was written to the lead. A refusal by the holder
+**Once the `inject-sent` line is in the evidence the message is spent for the
+epoch, and only an ok answer whose result decodes is a result.** The daemon
+writes that line first, then dials the holder and writes the request frame; it
+writes no frame when the line cannot be written. Anything else after the line
+(no answer in time, a closed connection, an answer that does not decode) is not
+an error: `canary.inject` answers ok with `outcome` `uncertain`, `reason`
+`died`, `written` `unknown` and the detail `no answer from the holder`. The
+daemon waits 5 s to reach the holder and 20 s for its answer, and the command's
+client waits 30 s, so the daemon's answer arrives first.
+
+A refusal before the `inject-sent` line is written spends nothing: a bad
+message, a stopped role, a second message, a holder that is of another build.
+So does an evidence file that takes no line: nothing is sent, and the answer is
+`unavailable` with the code `failed` and the daemon's log says why (the
+evidence's `inject-refused` line, if it can be written, has the code
+`evidence-unwritable`; the code `request-invalid` stands for a request that
+does not encode, with nothing recorded or sent). The line is written before the
+holder's socket is dialled, so a socket that cannot be dialled **does** spend
+the canary's message: the answer is `unavailable` with the code
+`holder-unreachable`, nothing was written to the lead, and the evidence holds
+the `inject-sent` line and then an `inject-refused` line with the code
+`unsent`. The canary's reader ignores that second line, so the epoch stays
+spent after a restart of the daemon; only a lead of scratch mode reads it as
+the message given back (see [the scratch leads guide](scratch-leads.md#message-and-attach)).
+An `unavailable` answer therefore always means that nothing was written to the
+lead, but not always that the message is free. A refusal by the holder
 (`unavailable` after the frame was written) still spends the epoch's message:
 the epoch takes no other.
 
@@ -582,7 +599,7 @@ message.
 caller's, one JSON object and one line break per event, synced after each. Each
 line has `at` (RFC 3339, UTC), `event`, `role`, `agent` (the config's kind),
 `epoch` once the role has one (not on `daemon-start` and `define`), and by event `message_id`, `outcome`, `reason`, `written`, `detail`,
-`code`, and on the `define` and `start` lines `qualification`, `login` and
+`code`, `effect_id` (on `inject-sent`, and on an `inject-refused` line with the code `unsent`), and on the `define` and `start` lines `qualification`, `login` and
 (`start` only) `waiver`. The events are:
 
 | Event | When |
@@ -591,8 +608,8 @@ line has `at` (RFC 3339, UTC), `event`, `role`, `agent` (the config's kind),
 | `define` | The role was defined. |
 | `start` | The role was started; the line carries the waiver. |
 | `ticket` | A ticket was minted, never the ticket itself; the detail names the attach role. |
-| `inject-refused` | The message was refused before it reached the holder; `code` says why. |
-| `inject-sent` | The request frame was written; the message is spent from here. |
+| `inject-refused` | The message was refused before it reached the holder; `code` says why (`unsent` after an `inject-sent` line: the holder's socket could not be dialled, so no frame was written, with the same `effect_id`). |
+| `inject-sent` | Written before the request frame is, with an `effect_id`: the id of the command in the frame, which no restart of the daemon repeats. The message is spent from here. |
 | `inject-result` | The result, or the uncertain result that stands in for no answer. |
 | `stop` | The role was stopped. |
 

@@ -158,6 +158,36 @@ func TestRepositoryDocumentationLinks(t *testing.T) {
 	}
 }
 
+func TestHandoffWording(t *testing.T) {
+	for _, doc := range []struct{ path, heading string }{
+		{"design/roles-and-authority.md", "## Handoff"},
+		{"runbooks.md", "## 5."},
+	} {
+		t.Run(doc.path, func(t *testing.T) {
+			page := readFile(t, filepath.Join(root(t), "docs", doc.path))
+			_, section, ok := strings.Cut(page, "\n"+doc.heading)
+			if !ok {
+				t.Fatalf("missing %s", doc.heading)
+			}
+			section, _, _ = strings.Cut(section, "\n## ")
+			words := strings.Join(strings.Fields(strings.ToLower(section)), " ")
+			fence := strings.Index(words, "fence the old holder")
+			commit := strings.Index(words, "commit by transfer id")
+			if fence < 0 || commit < 0 || fence >= commit {
+				t.Error("describe fencing the old holder before committing by transfer ID")
+			}
+			if !strings.Contains(words, "rollback is a new higher-generation transfer") {
+				t.Error("missing rollback generation rule")
+			}
+			for _, stale := range []string{"outgoing holder keeps the role", "old side gives up the lease"} {
+				if strings.Contains(words, stale) {
+					t.Errorf("obsolete handoff rule %q", stale)
+				}
+			}
+		})
+	}
+}
+
 func TestDocumentationLinkFixtures(t *testing.T) {
 	outer := t.TempDir()
 	dir := filepath.Join(outer, "root")

@@ -52,9 +52,12 @@
 // is read again. A done message is drawn from the holder's three words (the
 // receipt's Outcome, Reason and Written): whether the message was submitted,
 // NOT delivered (nothing was written) or written with an unknown result, and
-// whether the epoch's message is spent, as the daemon makes it: a message that
-// was not delivered leaves it free, and the lead may send another, while a
-// submitted or uncertain one spends it. The MSG column agrees (free, free (not
+// whether the epoch's message is spent, as the daemon makes it: the daemon spends
+// it as soon as it has recorded the message, before any frame is written, and a
+// lead of scratch mode takes it back only when nothing reached the lead (the
+// holder answered not delivered or refused the request, or the request was never
+// sent because the holder's socket could not be dialled or its write deadline
+// could not be set), so the lead may send another; a submitted or uncertain one stays spent. The MSG column agrees (free, free (not
 // delivered), sent, sent-unsure, spent, not delivered), from the answers the
 // view saw and the Lead's MessageResult, and a line under the
 // table gives words for a state and reason such as ready and holder-ready. A row whose last receipt is in progress is read again every

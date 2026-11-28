@@ -35,6 +35,17 @@ var (
 	// another one than the [State] names. [Manager.Empty] answers false with
 	// it.
 	ErrControlGroupMismatch = errors.New("leadunit: control group identity differs")
+	// ErrNoControlGroupID means the [State] records no control group identity
+	// (or one that cannot be read), so [Manager.Signal] refused to signal: a
+	// signal is sent only to a control group whose identity is checked.
+	ErrNoControlGroupID = errors.New("leadunit: state records no control group identity")
+	// ErrPartialSignal means [Manager.Signal] sent the signal to some
+	// processes of the control group and could not send it to others. The
+	// signal is out: a caller must not take the call for one that sent
+	// nothing and send it again to every process on its next poll. It still
+	// says that some process may not have it, so the caller keeps the error
+	// and relies on its proof, and on a kill, for those.
+	ErrPartialSignal = errors.New("leadunit: signal sent to some processes only")
 )
 
 // Manager manages the transient user unit of a lead role. Every method takes
@@ -83,7 +94,10 @@ type Manager interface {
 
 	// Signal sends sig to every process of the control group of the
 	// invocation that st names. It returns [ErrNotLoaded] when the unit is not
-	// loaded and [ErrInvocationChanged] when it has another invocation.
+	// loaded (or its control group is gone), [ErrInvocationChanged] when it
+	// has another invocation and [ErrNoControlGroupID] when st records no
+	// control group identity. It returns [ErrPartialSignal] when some
+	// processes were signalled and others could not be.
 	Signal(ctx context.Context, st State, sig syscall.Signal) error
 
 	// Empty reports whether the control group of the invocation that st names
