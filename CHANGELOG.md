@@ -8,6 +8,100 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.0.15] - 2026-11-28
 
+### Added
+
+- Added the conversation page contract shared by the desk and the seat:
+  message IDs that are stable within one viewer's projection, backward and
+  forward paging with opaque cursors, the end, gap, reset and withheld states,
+  and the desk's `conversation.read` request and response values. No daemon
+  serves it yet.
+- The seat card shows the four-word binding tag beside the short digest, and
+  the decide answer carries it as `binding_tag`. Decisions still compare the
+  full digest.
+- The seat's card list shows the four-word binding tag on each waiting row
+  when the daemon's listing carries the binding digest, and "Open for binding
+  tag." when it does not. The card page already shows it.
+
+### Changed
+
+- The leads view shows why a scratch action is unavailable beside its key,
+  including separate reasons for writer and viewer tickets. Pressing that key
+  shows the reason without sending a command or opening a prompt.
+- The console's live attach client now drops input still waiting to be sent
+  when it loses the writer role or its connection is replaced, instead of
+  letting it reach a screen the user no longer sees. It counts the drop as
+  `client-input-fenced` (also `InputFenced` in the live status) and says so in
+  one notice. `Config.ReconnectAsViewer` makes the client reconnect as a viewer
+  after such a loss, with `Config.ViewerTickets` for the viewer tickets; the
+  default keeps the scratch `--attach` behaviour. Queued input given up with a
+  connection is now counted as fenced, no longer as `client-input-dropped`,
+  which counts only a full queue.
+- The live console now shows "EPOCH CHANGED · select the lead again" with
+  the old lead and epoch when the attach client stops because the lead's epoch
+  changed, shows the role, state and reason while resyncing or waiting for a
+  renewed ticket, and no longer gives a stopped session the focus.
+- The console's leads view is now viewer-only unless it is started with
+  `ataniq-console --daemon DIR --scratch-writer`. Without the flag the hint has
+  no `[w]` and says "writer off: start with --scratch-writer", the `w` key
+  sends nothing, and the console never asks the daemon for a writer ticket. With
+  the flag, `w` is offered for scratch leads only, when the daemon lists the
+  writer role in `ticket_roles` or, with no `ticket_roles`, the whole legacy
+  scratch interface; a hello without `ticket_roles` no longer offers a writer by
+  itself. A writer attach made from the view becomes a viewer for good when it
+  loses the writer role, with viewer tickets from the daemon.
+- A viewer attach from the leads view asks the daemon for a new viewer ticket
+  each time it connects, so a viewer that the holder dropped connects again
+  without the owner asking. It is pinned to the lead and epoch of the selected
+  row and stops, asking the owner to select the lead again, when the epoch
+  changed or the lead is gone. A busy holder or a refusal is shown in the
+  status, and an unreachable daemon is waited out. The writer attach is
+  unchanged.
+- Correct the handoff design and owner runbook to describe fencing before
+  commit, rollback at a new generation and recovery from quarantine. The
+  runbook now explains which parts of a live cutover are still unbuilt.
+- The console's leads view and its guide now describe when a lead's one message
+  per epoch is spent: as soon as the daemon has recorded the message, before
+  the request is written to the holder, and not when the request is written. A
+  scratch lead gets it back in three cases only: the holder answered not
+  delivered, the holder refused the request itself (not busy), or the request
+  was never sent because the holder's socket could not be dialled or its write
+  deadline could not be set.
+
+### Fixed
+
+- The console's live attach pin now treats epoch 0 and an empty lead as
+  pinned values, completes the pin only after a Welcome passes the role
+  check, and stops when a ticket source reports a stale selection on the
+  scratch attach path too, instead of polling for tickets.
+- A writer attach from the leads view is now pinned to the lead and epoch of
+  the selected row, as a viewer attach is, and so is the viewer it becomes when
+  it loses the writer role: if another epoch answers, it stops and asks the
+  owner to select the lead again, instead of attaching to it. Quitting the
+  console while that viewer fallback is asking the daemon for a ticket now
+  cancels the request at once, instead of waiting for it to time out, so the
+  lead is not left with an unused viewer ticket outstanding.
+- Releasing the writer of a lead's holder now also voids a writer ticket that
+  was issued but not yet used, so a ticket from before the release can no
+  longer attach a writer after it.
+- Scratch and canary leads record an inject before sending it. The inject-sent
+  line, which now carries an effect id that no restart of the daemon repeats, is
+  written before the request frame, and nothing is sent when it cannot be
+  written: the inject is refused as unavailable and spends nothing. A daemon
+  killed in between can no longer have a message delivered that its evidence
+  does not know. A holder socket that cannot be dialled leaves an
+  `inject-refused` line with the code `unsent`, which frees a scratch lead's
+  message; the canary's message stays spent. The canary slice, scratch leads and
+  runbook guides describe this order.
+- Stopping a lead's unit now signals its control group by the identity the
+  daemon recorded, not the unit by name. SIGKILL writes to the group's
+  `cgroup.kill` through the group's open directory, SIGTERM goes to pidfds of
+  the processes the group lists, and a group that was removed or replaced is
+  never written to. A state without a recorded control group identity is
+  refused, and `systemctl kill` is no longer run.
+- Witness configuration files accept trailing ASCII whitespace, including a
+  final newline. Configuration errors identify the field or reason without
+  printing its value.
+
 ## [0.0.14] - 2026-11-27
 
 ### Added
