@@ -185,19 +185,74 @@ func (r Role) String() string {
 	return ""
 }
 
-// UnitName returns the systemd unit name of the role:
+// UnitName returns the legacy systemd unit name of the role:
 // "ataniq-lead-<project>.service", "ataniq-supervisor.service" or
 // "ataniq-coord-<project>_<feature>.service". An underscore cannot occur in a
 // project or a feature, so no two roles share a unit name. The zero Role gives
-// "".
+// "". The registry persists UnitName in launch intents and checks it on
+// replay. Callers migrating to QualifiedUnitName must still find running
+// scratch units under their recorded legacy names.
 func (r Role) UnitName() string {
+	return r.unitName("")
+}
+
+// authorityLen is the length of a public authority fingerprint, in hex digits
+// of a SHA-256 digest, and authorityTagLen the length of its short tag.
+const (
+	authorityLen    = 64
+	authorityTagLen = 16
+)
+
+// ShortAuthorityTag takes the first sixteen hex digits of a public authority
+// fingerprint, which must be 64 lower-case hex digits. The error wraps
+// ErrInvalid. It lives here because the launch matcher depends on this package
+// and may not depend on the sandbox profile.
+func ShortAuthorityTag(authority string) (string, error) {
+	if len(authority) != authorityLen {
+		return "", fmt.Errorf("%w: instance authority must be %d lower-case hex digits", ErrInvalid, authorityLen)
+	}
+	for i := 0; i < len(authority); i++ {
+		c := authority[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return "", fmt.Errorf("%w: instance authority must be %d lower-case hex digits", ErrInvalid, authorityLen)
+		}
+	}
+	return authority[:authorityTagLen], nil
+}
+
+// QualifiedUnitName inserts the instance's short authority tag before
+// ".service". A dot separates the tag from the role because neither a project
+// nor a feature can contain one. Their 63-byte limits keep even a qualified
+// coordinator unit below systemd's 255-byte limit.
+//
+// authority is the full public fingerprint. owners maps occupied unit names
+// to their full authority fingerprints. A different owner of the same name
+// is a collision, even if both fingerprints have the same short tag. Pass nil
+// to derive a name without checking occupancy.
+func (r Role) QualifiedUnitName(authority string, owners map[string]string) (string, error) {
+	tag, err := ShortAuthorityTag(authority)
+	if err != nil {
+		return "", err
+	}
+	name := r.unitName("." + tag)
+	if name == "" {
+		return "", fmt.Errorf("%w: cannot name unit for invalid role", ErrInvalid)
+	}
+	if owner, exists := owners[name]; exists && owner != authority {
+		return "", fmt.Errorf("unit %q belongs to a different instance authority", name)
+	}
+	return name, nil
+}
+
+func (r Role) unitName(qualifier string) string {
+	suffix := qualifier + ".service"
 	switch r.kind {
 	case KindLead:
-		return "ataniq-lead-" + r.project + ".service"
+		return "ataniq-lead-" + r.project + suffix
 	case KindSupervisor:
-		return "ataniq-supervisor.service"
+		return "ataniq-supervisor" + suffix
 	case KindCoordinator:
-		return "ataniq-coord-" + r.project + "_" + r.feature + ".service"
+		return "ataniq-coord-" + r.project + "_" + r.feature + suffix
 	}
 	return ""
 }

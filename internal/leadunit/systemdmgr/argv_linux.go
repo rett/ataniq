@@ -35,11 +35,6 @@ func userManagerGroupArgv() []string {
 	return []string{toolSystemctl, "--user", "show", "--all", "--property=ControlGroup", "--", "-.slice"}
 }
 
-// killArgv signals every process of the unit's control group.
-func killArgv(unit, signal string) []string {
-	return []string{toolSystemctl, "--user", "kill", "--kill-whom=all", "--signal=" + signal, "--", unit}
-}
-
 // startArgv renders the StartTransientUnit call as busctl takes it: the
 // signature "ssa(sv)a(sa(sv))", the unit name, the mode "fail", the number of
 // properties and each as name, variant signature and value (an array as its

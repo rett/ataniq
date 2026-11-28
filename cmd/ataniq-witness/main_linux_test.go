@@ -69,6 +69,51 @@ func call(t *testing.T, path, op string, want int) string {
 	return b.String()
 }
 
+func TestWitnessConfigWhitespace(t *testing.T) {
+	c, path := fixture(t)
+	data, err := os.ReadFile(path)
+	must(t, err)
+	valid := string(data)
+
+	t.Run("TrailingNewlineAccepted", func(t *testing.T) {
+		for _, suffix := range []string{"\n", "\r\n", " \t\n\v\f\r"} {
+			must(t, os.WriteFile(path, []byte(valid+suffix), 0600))
+			_, store, err := loadConfig(path)
+			must(t, err)
+			if store.Directory != c.State {
+				t.Fatalf("unexpected state directory after trimming %q", suffix)
+			}
+		}
+	})
+
+	t.Run("FieldNamedInRefusal", func(t *testing.T) {
+		for _, tc := range []struct{ name, input, reason string }{
+			{"relative path", strings.Replace(valid, c.Seed, "private-value", 1), "seed"},
+			{"unknown key", `{"extra":"private-value",` + valid[1:], "unknown key"},
+			{"wrong-case key", strings.Replace(valid, `"socket":`, `"Socket":`, 1), "unknown key"},
+			{"wrong type", strings.Replace(valid, `"seed":"`+c.Seed+`"`, `"seed":["private-value"]`, 1), "seed"},
+			{"invalid epoch", strings.Replace(valid, `"epoch":"7"`, `"epoch":"private-value"`, 1), "identity.epoch"},
+			{"invalid UTF-8", valid + "\xff\n", "invalid UTF-8"},
+			{"duplicate key", `{"seed":"private-value",` + valid[1:], "repeated key"},
+		} {
+			must(t, os.WriteFile(path, []byte(tc.input), 0600))
+			got := call(t, path, "check", 1)
+			if !strings.Contains(got, tc.reason) || strings.Contains(got, "private-value") || strings.Contains(got, c.Seed) {
+				t.Errorf("%s: unexpected diagnostic %q", tc.name, got)
+			}
+		}
+	})
+
+	t.Run("OnlyTrailingASCIIWhitespace", func(t *testing.T) {
+		for _, input := range []string{" \t\n", "\n" + valid, valid + "\u00a0", valid + " {}", valid + "\x00\n"} {
+			must(t, os.WriteFile(path, []byte(input), 0600))
+			if _, _, err := loadConfig(path); !errors.Is(err, errConfig) {
+				t.Errorf("expected a configuration refusal, got %v", err)
+			}
+		}
+	})
+}
+
 func TestWitnessInitAndReadOnlyCheck(t *testing.T) {
 	c, path := fixture(t)
 	call(t, path, "check", 1)
@@ -211,7 +256,7 @@ func TestWitnessHomeFirewallEndpoint(t *testing.T) {
 		c.Home = addr
 		writeConfig(t, path, c)
 		for _, op := range []string{"check", "run"} {
-			if got := call(t, path, op, 1); got != "invalid witness configuration\n" {
+			if got := call(t, path, op, 1); got != "invalid witness configuration: invalid home_endpoint\n" {
 				t.Fatalf("%q: %s", addr, got)
 			}
 		}

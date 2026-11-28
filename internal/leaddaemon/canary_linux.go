@@ -202,14 +202,11 @@ func (m *canaryMode) openState() error {
 		// 0600, one link) and makes it when it is not there.
 		ev, err := leadcanary.OpenEvidence(in.cfg, m.d.Clock.Now)
 		if err == nil {
-			var spent map[uint64]bool
-			if m.lead != nil {
-				// Scratch mode: a message the holder answered as not
-				// delivered is not spent.
-				spent, err = scratchSpentEpochs(in.cfg.EvidencePath(), in.cfg.Role.String())
-			} else {
-				spent, err = spentEpochs(in.cfg.EvidencePath(), in.cfg.Role.String())
-			}
+			// Scratch mode: a message the holder answered as not delivered
+			// (or that was never sent) is not spent.
+			var state evidenceState
+			state, err = readEvidence(in.cfg.EvidencePath(), in.cfg.Role.String(), m.lead != nil)
+			spent := state.spent
 			if err != nil {
 				_ = ev.Close()
 				err = fmt.Errorf("canary mode: %w; no message is admitted from an evidence file that cannot be read back; set the file aside only once the role's unit is stopped, since a new file spends no epoch's message", err)
@@ -217,7 +214,7 @@ func (m *canaryMode) openState() error {
 				for epoch := range spent {
 					m.d.logf("canary: the evidence shows the message of epoch %d as sent; the epoch takes no other", epoch)
 				}
-				in.ev, in.spent = ev, spent
+				in.ev, in.spent, in.effects = ev, spent, state.effects
 			}
 		}
 		if err != nil {

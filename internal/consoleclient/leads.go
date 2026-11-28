@@ -208,6 +208,11 @@ type LeadsConfig struct {
 	// Timeout bounds each dial and each call. Zero means
 	// [DefaultLeadsTimeout].
 	Timeout time.Duration
+	// ScratchWriter lets the client offer and ask for writer tickets, for the
+	// scratch leads of the daemon it speaks to: the console's --scratch-writer.
+	// Without it no capability of a connection has the writer role and the
+	// client never sends a writer ticket request, whatever the daemon offers.
+	ScratchWriter bool
 }
 
 // maxLeadsName is the most bytes of [LeadsConfig.Client]: the client string
@@ -235,8 +240,11 @@ type LeadCapabilities struct {
 
 // leadHelloResult extends the v1 hello with optional ticket_roles. An explicit
 // list narrows lead.ticket to those roles. Without the field, the full legacy
-// scratch interface supports both roles. For a partial offer a ticket alone
-// suffices to view, while a writer needs an explicit offer.
+// scratch interface supports the viewer role, and a lead ticket alone suffices
+// to view. The writer role is never implied by the hello: it is offered only
+// when the client was made with [LeadsConfig].ScratchWriter and the daemon
+// either lists the role in ticket_roles or, with no ticket_roles, lists the
+// whole legacy scratch interface (list, define, start, stop and inject).
 type leadHelloResult struct {
 	clientapi.HelloResult
 	TicketRoles json.RawMessage `json:"ticket_roles"`
@@ -273,24 +281,24 @@ func (h *leadHelloResult) UnmarshalJSON(raw []byte) error {
 	return json.Unmarshal(raw, (*plainHello)(h))
 }
 
-func (h leadHelloResult) capabilities() (LeadCapabilities, error) {
+func (h leadHelloResult) capabilities(scratchWriter bool) (LeadCapabilities, error) {
 	has := func(op string) bool { return slices.Contains(h.Operations, op) }
 	c := LeadCapabilities{
-		Directory: has(leadwire.OpList), Conversation: has("conversation.read"),
+		Directory: has(leadwire.OpList), Conversation: has(leadwire.OpConversationRead),
 		Define: has(leadwire.OpDefine), Start: has(leadwire.OpStart),
 		Stop: has(leadwire.OpStop), Inject: has(leadwire.OpInject),
 	}
 	if has(leadwire.OpTicket) {
 		if h.TicketRoles == nil {
 			c.Viewer = true
-			c.Writer = c.Directory && c.Define && c.Start && c.Stop && c.Inject
+			c.Writer = scratchWriter && c.Directory && c.Define && c.Start && c.Stop && c.Inject
 		} else {
 			var roles []string
 			if err := json.Unmarshal(h.TicketRoles, &roles); err != nil || roles == nil {
 				return LeadCapabilities{}, &Unavailable{State: StateBadAnswer}
 			}
 			c.Viewer = slices.Contains(roles, leadwire.AttachViewer)
-			c.Writer = slices.Contains(roles, leadwire.AttachWriter)
+			c.Writer = scratchWriter && slices.Contains(roles, leadwire.AttachWriter)
 		}
 	}
 	return c, nil
@@ -378,6 +386,8 @@ type Leads struct {
 	client  string
 	timeout time.Duration
 	random  io.Reader
+	// scratchWriter is LeadsConfig.ScratchWriter.
+	scratchWriter bool
 
 	closed atomic.Bool
 	live   atomic.Pointer[leadConnection]
@@ -414,6 +424,8 @@ func NewLeads(cfg LeadsConfig) (*Leads, error) {
 		timeout: cfg.Timeout,
 		random:  cfg.Random,
 		pending: map[leadKey]string{},
+
+		scratchWriter: cfg.ScratchWriter,
 	}
 	if l.timeout <= 0 {
 		l.timeout = DefaultLeadsTimeout
@@ -487,7 +499,7 @@ func (l *Leads) connect() (*leadConnection, error) {
 	if !speaksProtocol(hello.Protocols) {
 		return fail(&Unavailable{State: StateOtherProtocol})
 	}
-	caps, err := hello.capabilities()
+	caps, err := hello.capabilities(l.scratchWriter)
 	if err != nil {
 		return fail(err)
 	}

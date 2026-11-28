@@ -1,9 +1,7 @@
 # Roles and authority split
 
-Status: owner-approved direction, specification only; none of it is
-implemented or qualified. Role assignment, handoff, the supervisor, the feature
-coordinator and the lead registry exist only as this specification. Their
-contracts are still to be designed and reviewed before any runtime work.
+Status: owner-approved direction. The assignment reducer and ledger implement
+the handoff rules below. Managed handoff at runtime remains unqualified.
 
 ## Lead and supervisor roles
 
@@ -92,18 +90,39 @@ feature.
 
 ## Handoff
 
-A role changes hands only by a verified handoff, in this order:
+The ledger freezes admission at the current generation `g`. The inventory must
+cover the frozen routes and outstanding work, the handoff note must be verified,
+and the successor's account must match the inventory. The reducer then requires
+these steps in order.
 
-1. Reconcile state: the outgoing holder's work, records and uncertain outcomes.
-2. Establish exclusive ownership for the successor.
-3. Fence the old holder, so it can no longer act under the role.
+1. Reserve the successor under the owner's decision for this transfer ID.
+2. Drain outstanding work on each route and record its sealed-and-drained receipt.
+3. Fence the old holder once every route has a receipt, no work is outstanding
+   and the inventory has been revalidated.
+4. Commit by transfer ID after revalidating the decision. The ledger assigns
+   the successor at generation `g+1`. Admission stays closed until every route
+   confirms that it installed the new binding and refuses the stale one, and
+   the reducer accepts current enrollment evidence and opens the row.
 
-If any step fails, the outgoing holder keeps the role; an outcome that cannot
-be resolved goes to the owner. Who verifies each step, and how a failure after
-exclusive ownership has passed is undone, are settled in the handoff contract,
-which is designed before any managed lead and is not decided here. A handoff
-grants no authority: the successor receives the role, not the predecessor's
-approval tokens, grants or plan tokens, and each gate is decided on its own evidence.
+Before commit, an abort requires proof that the candidate never executed and
+that outstanding work is settled. Reopening the old holder also requires that
+it was open before the freeze and every route is safe to reopen. An irreversibly
+fenced holder stays closed.
+
+After commit, a rollback is a new higher-generation transfer with its own
+authorization and ID. It fences the current holder and commits the previous
+holder at `g+2`. The original commit stays in the ledger.
+
+If the same issuer later corrects or contradicts an accepted fence or
+confirmation receipt, the reducer quarantines the assignment key, even during
+a later transfer. Both sides stay closed, including after the owner's one-time
+acknowledgement. Recovery requires retiring the doubtful identity and fresh
+enrollment in a new store. The reducer refuses
+a contradictory receipt from a different issuer, which the adapter must report
+to the owner.
+
+A handoff grants no authority. The predecessor's approval tokens, grants and
+plan tokens never pass to the successor. Each gate uses its own evidence.
 A handoff to a holder outside a qualified boundary, a cloud agent for example,
 first revokes every grant held under the role, because no such holder may hold
 one. This is a second safeguard: a grant never passes to a successor in any

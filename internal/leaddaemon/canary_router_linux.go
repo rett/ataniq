@@ -48,7 +48,11 @@ type leadInstance struct {
 	// spent is the epochs whose message the evidence shows as sent, read when
 	// the evidence is opened.
 	spent map[uint64]bool
-	ext   *canaryExt
+	// effects is the largest counter of an effect id the evidence holds, read
+	// when the evidence is opened; the extension's command ids continue from
+	// it.
+	effects uint64
+	ext     *canaryExt
 }
 
 // holderCommand returns the role's holder command, nil when it has none.

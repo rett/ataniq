@@ -6,6 +6,102 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.15] - 2026-11-28
+
+### Added
+
+- Added the conversation page contract shared by the desk and the seat:
+  message IDs that are stable within one viewer's projection, backward and
+  forward paging with opaque cursors, the end, gap, reset and withheld states,
+  and the desk's `conversation.read` request and response values. No daemon
+  serves it yet.
+- The seat card shows the four-word binding tag beside the short digest, and
+  the decide answer carries it as `binding_tag`. Decisions still compare the
+  full digest.
+- The seat's card list shows the four-word binding tag on each waiting row
+  when the daemon's listing carries the binding digest, and "Open for binding
+  tag." when it does not. The card page already shows it.
+
+### Changed
+
+- The leads view shows why a scratch action is unavailable beside its key,
+  including separate reasons for writer and viewer tickets. Pressing that key
+  shows the reason without sending a command or opening a prompt.
+- The console's live attach client now drops input still waiting to be sent
+  when it loses the writer role or its connection is replaced, instead of
+  letting it reach a screen the user no longer sees. It counts the drop as
+  `client-input-fenced` (also `InputFenced` in the live status) and says so in
+  one notice. `Config.ReconnectAsViewer` makes the client reconnect as a viewer
+  after such a loss, with `Config.ViewerTickets` for the viewer tickets; the
+  default keeps the scratch `--attach` behaviour. Queued input given up with a
+  connection is now counted as fenced, no longer as `client-input-dropped`,
+  which counts only a full queue.
+- The live console now shows "EPOCH CHANGED · select the lead again" with
+  the old lead and epoch when the attach client stops because the lead's epoch
+  changed, shows the role, state and reason while resyncing or waiting for a
+  renewed ticket, and no longer gives a stopped session the focus.
+- The console's leads view is now viewer-only unless it is started with
+  `ataniq-console --daemon DIR --scratch-writer`. Without the flag the hint has
+  no `[w]` and says "writer off: start with --scratch-writer", the `w` key
+  sends nothing, and the console never asks the daemon for a writer ticket. With
+  the flag, `w` is offered for scratch leads only, when the daemon lists the
+  writer role in `ticket_roles` or, with no `ticket_roles`, the whole legacy
+  scratch interface; a hello without `ticket_roles` no longer offers a writer by
+  itself. A writer attach made from the view becomes a viewer for good when it
+  loses the writer role, with viewer tickets from the daemon.
+- A viewer attach from the leads view asks the daemon for a new viewer ticket
+  each time it connects, so a viewer that the holder dropped connects again
+  without the owner asking. It is pinned to the lead and epoch of the selected
+  row and stops, asking the owner to select the lead again, when the epoch
+  changed or the lead is gone. A busy holder or a refusal is shown in the
+  status, and an unreachable daemon is waited out. The writer attach is
+  unchanged.
+- Correct the handoff design and owner runbook to describe fencing before
+  commit, rollback at a new generation and recovery from quarantine. The
+  runbook now explains which parts of a live cutover are still unbuilt.
+- The console's leads view and its guide now describe when a lead's one message
+  per epoch is spent: as soon as the daemon has recorded the message, before
+  the request is written to the holder, and not when the request is written. A
+  scratch lead gets it back in three cases only: the holder answered not
+  delivered, the holder refused the request itself (not busy), or the request
+  was never sent because the holder's socket could not be dialled or its write
+  deadline could not be set.
+
+### Fixed
+
+- The console's live attach pin now treats epoch 0 and an empty lead as
+  pinned values, completes the pin only after a Welcome passes the role
+  check, and stops when a ticket source reports a stale selection on the
+  scratch attach path too, instead of polling for tickets.
+- A writer attach from the leads view is now pinned to the lead and epoch of
+  the selected row, as a viewer attach is, and so is the viewer it becomes when
+  it loses the writer role: if another epoch answers, it stops and asks the
+  owner to select the lead again, instead of attaching to it. Quitting the
+  console while that viewer fallback is asking the daemon for a ticket now
+  cancels the request at once, instead of waiting for it to time out, so the
+  lead is not left with an unused viewer ticket outstanding.
+- Releasing the writer of a lead's holder now also voids a writer ticket that
+  was issued but not yet used, so a ticket from before the release can no
+  longer attach a writer after it.
+- Scratch and canary leads record an inject before sending it. The inject-sent
+  line, which now carries an effect id that no restart of the daemon repeats, is
+  written before the request frame, and nothing is sent when it cannot be
+  written: the inject is refused as unavailable and spends nothing. A daemon
+  killed in between can no longer have a message delivered that its evidence
+  does not know. A holder socket that cannot be dialled leaves an
+  `inject-refused` line with the code `unsent`, which frees a scratch lead's
+  message; the canary's message stays spent. The canary slice, scratch leads and
+  runbook guides describe this order.
+- Stopping a lead's unit now signals its control group by the identity the
+  daemon recorded, not the unit by name. SIGKILL writes to the group's
+  `cgroup.kill` through the group's open directory, SIGTERM goes to pidfds of
+  the processes the group lists, and a group that was removed or replaced is
+  never written to. A state without a recorded control group identity is
+  refused, and `systemctl kill` is no longer run.
+- Witness configuration files accept trailing ASCII whitespace, including a
+  final newline. Configuration errors identify the field or reason without
+  printing its value.
+
 ## [0.0.14] - 2026-11-27
 
 ### Added
@@ -854,8 +950,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   The console shows the reason on that row and keeps other leads usable.
 - A key from the pre-release instance format now reports its origin and
   directs the owner to run init on a fresh root.
-- A malformed `--home` prints the accepted format and exits with usage status
-  2. Missing-home refusals explain that enrollment needs a stopped daemon.
+- A malformed `--home` prints the accepted format and exits with usage
+  status 2. Missing-home refusals explain that enrollment needs a stopped daemon.
 - Init validates the legacy journal under the migration lock and removes stale
   `.registry-check-*` replay copies left by earlier builds.
 - Restoring an incarnation with a journal in place now requires explicit
@@ -2293,7 +2389,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a refusal and pass A's first epoch (the owner clears the pane and pastes the
   message himself). Step 16 ends with the owner's checks of the pane (the empty
   composer, no dialog, the last row reading the mode the config expects with no
-  notice, then Ctrl+\ and no key or mouse for 3 seconds), and step 14 says what
+  notice, then `Ctrl+\` and no key or mouse for 3 seconds), and step 14 says what
   the window size means to the fence. Step 15 tells the owner how to carry the
   login URL out of the pane, accepts `logged-in` or `failed`, and lists changed
   files even when the folder was empty before. Step 6 lists the listeners once
@@ -2343,8 +2439,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Correct the terminals the attended canary run's page and its preflight name:
   the daemon stays in front of its terminal until Ctrl-C at step 26, so the
   owner needs four, T1 for the script, T2 for the daemon, T3 for the console
-  and T4 for the second console of step 14 and the integrate command of step
-  20. `CHECKLIST.txt`, the preflight's READY text, the run's own prompts at
+  and T4 for the second console of step 14 and the integrate command of
+  step 20. `CHECKLIST.txt`, the preflight's READY text, the run's own prompts at
   steps 10 and 14 and the guide now agree.
 - Make the attended canary run say why a holder ended at its start. The holder
   reports a refused start on its standard error, which is the unit's journal;
@@ -2893,7 +2989,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   qualified: `fetch` and `verify` run the commands of a template file that the
   owner writes, and refuse without a usable one. A verification pass is
   evidence, not proof, and after the sign-off the code runs as the owner like
-  any merged code. See [the lead intake guide](docs/lead-intake.md).
+  any merged code. See [the lead intake guide](https://github.com/rett/ataniq/blob/master/docs/lead-intake.md).
 - Add `ataniq-probe`, a static helper command of the lead sandbox proposal. It
   is unqualified, runs on Linux only (elsewhere it builds and exits with a
   message), and only the opt-in lead sandbox qualification harness launches it:
@@ -3005,7 +3101,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `ataniq-qualify-<random>-child.service`, never under the name of a role,
   checks the manager against them, prints one JSON report and cleans its units
   up. It is run by hand: no test and no make target runs it, and no run of it
-  is recorded. See [the lead daemon guide](docs/lead-daemon.md).
+  is recorded. See [the lead daemon guide](https://github.com/rett/ataniq/blob/master/docs/lead-daemon.md).
 - `ataniq-console --attach DIR --ticket-file FILE [--viewer]` shows a live
   scratch session from a holder in the cockpit: one writer, one read-only
   viewer, no takeover. A console that waits for a ticket does not connect, so
@@ -3032,7 +3128,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   queue and delivers nothing, and the holder answers an `inject` request with
   `disabled`), nothing reads delivery from the conversation file, and no live
   agent was used.
-  See [lead injection](docs/lead-injection.md).
+  See [lead injection](https://github.com/rett/ataniq/blob/master/docs/lead-injection.md).
 - Add `docs/lead-sandbox.md`, a guide to the lead sandbox proposal: the launch
   plan, nested sandboxes under owner decision R17, the file-system view, the
   clone rules, the environment allowlist, network and DNS, the probe, the ten
@@ -3053,7 +3149,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   target. It works in a scratch state root and writes one JSON report of facts
   with no pass, supported or qualified field: a person reads the facts and
   decides. It qualifies no sandbox by itself. See
-  [the lead mirror qualification manual](docs/qualification-lead-mirror.md).
+  [the lead mirror qualification manual](https://github.com/rett/ataniq/blob/master/docs/qualification-lead-mirror.md).
 
 ### Changed
 
@@ -3139,7 +3235,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and is labelled "fixture recording, not a live session" in every state.
   Tab cycles the panes and Enter on the session focuses it. In session focus
   every key goes to the session, `q` and Ctrl+C included, except the return
-  key (Ctrl+\ by default, set with `--return-key ctrl+KEY`) and F12, which
+  key (`Ctrl+\` by default, set with `--return-key ctrl+KEY`) and F12, which
   zooms the pane to the window in either focus. Both work with CapsLock,
   NumLock or ScrollLock on. The return key is read from the byte 0x1c and from
   `CSI 92;5u`; without the kitty keyboard protocol Ctrl+4 sends the same byte

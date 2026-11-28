@@ -181,8 +181,50 @@ func (m *Model) liveHelpLines(width int) (string, []line) {
 	return "HELP", out
 }
 
+// liveReselectTitle is what the header says when the client stopped because
+// the lead's epoch changed: the pin no longer holds, so the owner has to
+// select the lead again. The old lead and epoch stay in the status, and the
+// header shows them.
+const liveReselectTitle = "EPOCH CHANGED · select the lead again"
+
+// liveReselect reports whether the client stopped for reselection.
+func (m *Model) liveReselect() bool {
+	return m.live.st.Conn == LiveStoppedReselect
+}
+
+// liveOldText names the lead and the epoch the client was pinned to.
+func (m *Model) liveOldText() string {
+	lead := m.live.st.Lead
+	if lead == "" {
+		lead = "unknown"
+	}
+	return "lead " + lead + " · epoch " + m.liveEpochText()
+}
+
+// liveCockpitHeader returns the header row of the cockpit layout for a
+// reselect stop, or while resyncing or waiting for a renewed ticket, and ""
+// for every other state, which keeps the usual header. The state comes
+// before the variable-length text, so that a narrow window cuts the lead and
+// the epoch first.
+func (m *Model) liveCockpitHeader() string {
+	st := m.live.st
+	switch st.Conn {
+	case LiveStoppedReselect:
+		return "q detach · " + liveReselectTitle + " · " + m.liveOldText()
+	case LiveResyncing, LiveWaitingTicket:
+		state := st.Conn.String()
+		if st.Reason != "" {
+			state += ": " + st.Reason
+		}
+		return "ATANIQ / LIVE SCRATCH · " + m.liveRoleText() + " · " + state + " · " + m.liveOldText()
+	}
+	return ""
+}
+
 // liveLines reserves two rows above the session. Keep the detach hint,
-// role and connection ahead of variable-length text on a phone display.
+// role and connection ahead of variable-length text on a phone display. A
+// reselect stop puts its title on the first row, with the detach hint, and
+// the old lead and epoch on the second.
 func (m *Model) liveLines() []string {
 	st := m.live.st
 	header := "q detach · " + m.liveRoleText() + " · "
@@ -196,9 +238,12 @@ func (m *Model) liveLines() []string {
 	}
 	detail := "Live scratch session · lead " + lead + " · epoch " + m.liveEpochText()
 	switch {
+	case m.liveReselect():
+		header = "q detach · " + liveReselectTitle
+		detail = "was " + m.liveOldText() + " · " + m.liveRoleText()
 	case m.sessionEnded():
 		detail = "SESSION ENDED · " + detail
-	case m.liveDown() && st.Reason != "":
+	case (m.liveDown() || st.Conn == LiveResyncing) && st.Reason != "":
 		detail = st.Reason
 	}
 	lines := []string{header, detail}

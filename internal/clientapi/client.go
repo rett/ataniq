@@ -73,11 +73,22 @@ type Client struct {
 	conn net.Conn
 	br   *bufio.Reader
 	seq  uint64
+	// protocol is the protocol name on every request: [ProtocolV2] for the
+	// client of a [ManagedClient], and [Protocol] when it is empty.
+	protocol string
 
 	// closed is set when the connection is closed, by Close or by a failure;
 	// closeOnce closes the connection exactly once, without c.mu.
 	closed    atomic.Bool
 	closeOnce sync.Once
+}
+
+// wireProtocol is the protocol name the client's requests carry.
+func (c *Client) wireProtocol() string {
+	if c.protocol == "" {
+		return Protocol
+	}
+	return c.protocol
 }
 
 // Dial connects to the socket at path.
@@ -110,14 +121,14 @@ func (c *Client) closeConn() error {
 // Hello asks for the server's protocols, limits and operations.
 func (c *Client) Hello(ctx context.Context) (HelloResult, error) {
 	var r HelloResult
-	err := c.call(ctx, OpHello, nil, &r)
+	err := c.call(ctx, "", OpHello, nil, &r)
 	return r, err
 }
 
 // Status asks for the daemon block and the leads.
 func (c *Client) Status(ctx context.Context) (StatusResult, error) {
 	var r StatusResult
-	err := c.call(ctx, OpStatus, nil, &r)
+	err := c.call(ctx, "", OpStatus, nil, &r)
 	return r, err
 }
 
@@ -132,28 +143,36 @@ func (c *Client) Status(ctx context.Context) (StatusResult, error) {
 // other operations, and the failures of the transport and of the response's
 // form close the client, as they do there.
 func (c *Client) Call(ctx context.Context, op string, params, result any) error {
-	var raw json.RawMessage
-	if params != nil {
-		b, err := json.Marshal(params)
-		if err != nil {
-			return fmt.Errorf("%w: %v", ErrBadParams, err)
-		}
-		switch {
-		case bytes.Equal(b, []byte("null")):
-		case len(b) > 0 && b[0] == '{':
-			raw = b
-		default:
-			return ErrBadParams
-		}
+	raw, err := paramsObject(params)
+	if err != nil {
+		return err
 	}
-	return c.call(ctx, op, raw, result)
+	return c.call(ctx, "", op, raw, result)
+}
+
+// paramsObject marshals params as [Client.Call] documents.
+func paramsObject(params any) (json.RawMessage, error) {
+	if params == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(params)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrBadParams, err)
+	}
+	switch {
+	case bytes.Equal(b, []byte("null")):
+		return nil, nil
+	case len(b) > 0 && b[0] == '{':
+		return b, nil
+	}
+	return nil, ErrBadParams
 }
 
 // call sends one request and reads its response into result. The context's
 // deadline and cancellation apply to the whole exchange. A failure of the
 // transport or of the response's form closes the client, as the stream can no
 // longer be trusted; an error response does not.
-func (c *Client) call(ctx context.Context, op string, params json.RawMessage, result any) error {
+func (c *Client) call(ctx context.Context, target, op string, params json.RawMessage, result any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed.Load() {
@@ -191,7 +210,7 @@ func (c *Client) call(ctx context.Context, op string, params json.RawMessage, re
 
 	c.seq++
 	id := "c-" + strconv.FormatUint(c.seq, 10)
-	line, err := json.Marshal(Request{Protocol: Protocol, RequestID: id, Op: op, Params: params})
+	line, err := json.Marshal(Request{Protocol: c.wireProtocol(), RequestID: id, Op: op, Target: target, Params: params})
 	if err != nil {
 		return err
 	}
@@ -218,7 +237,12 @@ func (c *Client) call(ctx context.Context, op string, params json.RawMessage, re
 	if !exactKeys(raw, "protocol", "request_id", "ok", "result", "error") {
 		return fail(fmt.Errorf("%w: a key is not spelled exactly", ErrBadResponse))
 	}
-	if resp.Protocol != Protocol {
+	// A server without version 2 answers a version 2 request with its own
+	// protocol name on an "unsupported-protocol" error. That one error is
+	// read as the refusal it is; anything else under another name is bad.
+	otherName := resp.Protocol == Protocol && c.wireProtocol() != Protocol && !resp.OK &&
+		resp.Error != nil && resp.Error.Code == CodeUnsupportedProtocol
+	if resp.Protocol != c.wireProtocol() && !otherName {
 		return fail(fmt.Errorf("%w: protocol does not match", ErrBadResponse))
 	}
 	if resp.OK {

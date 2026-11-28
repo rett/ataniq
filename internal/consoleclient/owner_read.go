@@ -83,9 +83,8 @@ func (o *Owner) Looked(time.Time) {
 // List returns the daemon's listing as the console's. The rows come as the
 // daemon sent them in order, the pending ones with their asked and expiry
 // times and the held mark, the recent ones with their state and the host's
-// line. A row has no binding digest here: the listing carries the digest of
-// the record, and the binding's is on the card. A listing with a project that
-// is not plain text is a bad answer.
+// line. A pending row carries the binding digest when the daemon supplies
+// it. A listing with a project that is not plain text is a bad answer.
 func (o *Owner) List() (card.Listing, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -127,7 +126,7 @@ func listingOf(l ownerwire.Listing) (card.Listing, bool) {
 		}
 		out.Pending = append(out.Pending, card.Item{
 			ID: p.ID, Project: p.Project, Verb: p.Verb, Feature: p.Feature,
-			Asked: asked, Expires: expires, Held: p.Held,
+			Asked: asked, Expires: expires, Held: p.Held, BindingSHA256: p.BindingSHA256,
 		})
 	}
 	for _, r := range l.Recent {

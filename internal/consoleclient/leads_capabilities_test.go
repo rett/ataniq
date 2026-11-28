@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 
@@ -40,7 +41,14 @@ func (capabilityPeer) Close() error { return nil }
 
 func leadsWithOffers(t *testing.T, handle func(int, clientapi.Request) any) *Leads {
 	t.Helper()
-	l, err := NewLeads(LeadsConfig{})
+	return leadsWithOffersFlag(t, true, handle)
+}
+
+// leadsWithOffersFlag is leadsWithOffers for a client made with or without the
+// scratch writer flag.
+func leadsWithOffersFlag(t *testing.T, scratchWriter bool, handle func(int, clientapi.Request) any) *Leads {
+	t.Helper()
+	l, err := NewLeads(LeadsConfig{ScratchWriter: scratchWriter})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,13 +136,73 @@ func TestPartialOpsCapabilities(t *testing.T) {
 		{"roles need ticket", []string{leadwire.OpList}, json.RawMessage(`["writer"]`), LeadCapabilities{Directory: true}},
 		{"unknown roles", []string{leadwire.OpList, leadwire.OpTicket}, json.RawMessage(`["unknown"]`), LeadCapabilities{Directory: true}},
 		{"legacy scratch", leadwire.Operations(), nil, LeadCapabilities{Directory: true, Viewer: true, Writer: true, Define: true, Start: true, Stop: true, Inject: true}},
+		{"legacy scratch minus inject", slices.DeleteFunc(leadwire.Operations(), func(op string) bool { return op == leadwire.OpInject }), nil,
+			LeadCapabilities{Directory: true, Viewer: true, Define: true, Start: true, Stop: true}},
+		{"both roles listed", []string{leadwire.OpTicket}, json.RawMessage(`["viewer","writer"]`), LeadCapabilities{Viewer: true, Writer: true}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			h := leadHelloResult{HelloResult: clientapi.HelloResult{Operations: tt.ops}, TicketRoles: tt.roles}
-			if got, err := h.capabilities(); err != nil || got != tt.want {
+			if got, err := h.capabilities(true); err != nil || got != tt.want {
 				t.Errorf("capabilities = %+v, %v; want %+v", got, err, tt.want)
 			}
 		})
+	}
+}
+
+// Without the scratch writer flag no hello offers the writer role: not the
+// legacy scratch interface, and not an explicit list that names it.
+func TestNoWriterWithoutTheFlag(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		ops   []string
+		roles json.RawMessage
+		want  LeadCapabilities
+	}{
+		{"legacy scratch", leadwire.Operations(), nil, LeadCapabilities{Directory: true, Viewer: true, Define: true, Start: true, Stop: true, Inject: true}},
+		{"writer listed", []string{leadwire.OpTicket}, json.RawMessage(`["writer"]`), LeadCapabilities{}},
+		{"both roles listed", []string{leadwire.OpTicket}, json.RawMessage(`["viewer","writer"]`), LeadCapabilities{Viewer: true}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := leadHelloResult{HelloResult: clientapi.HelloResult{Operations: tt.ops}, TicketRoles: tt.roles}
+			if got, err := h.capabilities(false); err != nil || got != tt.want {
+				t.Errorf("capabilities = %+v, %v; want %+v", got, err, tt.want)
+			}
+		})
+	}
+	// The client sends no writer ticket request, and no viewer one is lost.
+	var writerCalls, viewerCalls int
+	l := leadsWithOffersFlag(t, false, func(_ int, req clientapi.Request) any {
+		switch req.Op {
+		case clientapi.OpHello:
+			return map[string]any{"protocols": clientapi.SupportedProtocols(), "operations": leadwire.Operations()}
+		case leadwire.OpList:
+			return leadwire.ListResult{Leads: []leadwire.Lead{{Role: "alpha", Inject: true}}}
+		case leadwire.OpTicket:
+			var p leadwire.TicketParams
+			if err := json.Unmarshal(req.Params, &p); err != nil {
+				t.Fatal(err)
+			}
+			if p.AttachRole == leadwire.AttachWriter {
+				writerCalls++
+			} else {
+				viewerCalls++
+			}
+			return leadwire.Receipt{Op: req.Op, Role: p.Role, CommandID: p.CommandID, Status: leadwire.StatusInProgress}
+		}
+		t.Fatalf("unexpected call %s", req.Op)
+		return nil
+	})
+	if _, err := l.Ticket("alpha", 1, true); !errors.Is(err, ErrLeadCapability) {
+		t.Errorf("writer ticket without the flag: %v", err)
+	}
+	if _, err := l.Ticket("alpha", 1, false); err != nil {
+		t.Errorf("viewer ticket without the flag: %v", err)
+	}
+	if writerCalls != 0 || viewerCalls != 1 {
+		t.Errorf("writer calls = %d, viewer calls = %d", writerCalls, viewerCalls)
+	}
+	if len(l.pending) != 1 {
+		t.Errorf("pending commands = %d, want the viewer's only", len(l.pending))
 	}
 }
 

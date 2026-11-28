@@ -18,9 +18,11 @@ func (d Document) completeRecord(record map[string]any) bool {
 	if !fieldsPresent(record, d.fields["backend"] == "refs", "provisional") || !completeLead(record["lead"]) {
 		return false
 	}
-	// Only handoff states the project's integrity mode. An inventory row
-	// without the triplet cannot establish that integrity was switched off.
-	wantIntegrity := d.kind != Handoff || d.fields["integrity"] != "off"
+	// Handoff and schema 2 status and check state the project's integrity mode;
+	// the triplet is absent exactly when it is off. A schema 1 document has no
+	// mode, so a row without the triplet cannot establish that integrity was
+	// switched off, and the absent mode counts as on.
+	wantIntegrity := d.fields["integrity"] != "off"
 	return fieldsPresent(record, wantIntegrity, "integrity", "integrity_note", "signer")
 }
 

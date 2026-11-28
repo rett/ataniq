@@ -369,4 +369,105 @@ func TestUnitAndLockUnambiguous(t *testing.T) {
 			t.Fatalf("unit %q has a lead prefix", r.UnitName())
 		}
 	}
+
+	const tag = "0123456789abcdef"
+	authority := tag + strings.Repeat("0", 48)
+	t.Run("TwoInstancesSameRoleAndEpoch", func(t *testing.T) {
+		const otherTag = "fedcba9876543210"
+		otherAuthority := otherTag + strings.Repeat("0", 48)
+		coord, _, _, err := ParseIdentity("alpha-lead@e3:coord:beta:1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for role, stem := range map[Role]string{
+			coord.Parent(): "ataniq-lead-alpha",
+			Supervisor():   "ataniq-supervisor",
+			coord:          "ataniq-coord-alpha_beta",
+		} {
+			name, err := role.QualifiedUnitName(authority, nil)
+			if err != nil || name != stem+"."+tag+".service" {
+				t.Fatalf("first instance, role %q: got %q, %v", role, name, err)
+			}
+			other, err := role.QualifiedUnitName(otherAuthority, map[string]string{name: authority})
+			if err != nil || other != stem+"."+otherTag+".service" {
+				t.Errorf("second instance, role %q: got %q, %v", role, other, err)
+			}
+		}
+	})
+	t.Run("ReservedScratchPrefix", func(t *testing.T) {
+		scratch, err := Lead(ScratchPrefix + "alpha")
+		if err != nil {
+			t.Fatal(err)
+		}
+		name, err := scratch.QualifiedUnitName(authority, nil)
+		if err != nil || name != "ataniq-lead-scratch-alpha."+tag+".service" {
+			t.Fatalf("qualified scratch unit = %q, %v", name, err)
+		}
+		if legacy := scratch.UnitName(); legacy != "ataniq-lead-scratch-alpha.service" {
+			t.Fatalf("legacy scratch unit = %q", legacy)
+		}
+		// A legacy scratch project cannot spell the qualified name.
+		if _, err := Lead(ScratchPrefix + "alpha." + tag); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("accepted tag separator in scratch project: %v", err)
+		}
+	})
+	t.Run("CollisionRefused", func(t *testing.T) {
+		role := Supervisor()
+		name, err := role.QualifiedUnitName(authority, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		owners := map[string]string{name: authority}
+		if got, err := role.QualifiedUnitName(authority, owners); err != nil || got != name {
+			t.Fatalf("same authority: got %q, %v, want %q", got, err, name)
+		}
+		colliding := tag + strings.Repeat("f", 48)
+		if got, err := role.QualifiedUnitName(colliding, owners); err == nil || got != "" {
+			t.Fatalf("different authority with same tag: got %q, %v", got, err)
+		}
+	})
+	t.Run("NameLengthBound", func(t *testing.T) {
+		long := strings.Repeat("p", 63)
+		coord, err := Coordinator(long, long)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for role, want := range map[Role]string{
+			coord.Parent(): "ataniq-lead-" + long + "." + tag + ".service",
+			coord:          "ataniq-coord-" + long + "_" + long + "." + tag + ".service",
+		} {
+			got, err := role.QualifiedUnitName(authority, nil)
+			if err != nil || got != want || len(got) > 255 {
+				t.Errorf("maximum-length role %q: got %q, %v, want %q", role, got, err, want)
+			}
+		}
+		for _, role := range []string{long + "p/lead", long + "p/coord/f", "p/coord/" + long + "p"} {
+			if _, err := Parse(role); !errors.Is(err, ErrInvalid) {
+				t.Errorf("oversized role %q: got %v", role, err)
+			}
+		}
+	})
+	t.Run("InvalidInputs", func(t *testing.T) {
+		for _, bad := range []string{"", tag, authority + "0", authority[:63] + "z"} {
+			if got, err := Supervisor().QualifiedUnitName(bad, nil); got != "" || err == nil {
+				t.Errorf("invalid authority %q: got %q, %v", bad, got, err)
+			}
+		}
+		if got, err := (Role{}).QualifiedUnitName(authority, nil); got != "" || !errors.Is(err, ErrInvalid) {
+			t.Errorf("zero role: got %q, %v", got, err)
+		}
+	})
+}
+
+func TestShortAuthorityTag(t *testing.T) {
+	const tag = "0123456789abcdef"
+	authority := tag + strings.Repeat("f", 48)
+	if got, err := ShortAuthorityTag(authority); err != nil || got != tag {
+		t.Fatalf("short tag = %q, %v, want %q", got, err, tag)
+	}
+	for _, bad := range []string{"", tag, strings.ToUpper(authority), authority + "0", authority[:63] + "z"} {
+		if got, err := ShortAuthorityTag(bad); got != "" || !errors.Is(err, ErrInvalid) {
+			t.Errorf("invalid authority %q: got %q, %v", bad, got, err)
+		}
+	}
 }

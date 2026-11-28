@@ -58,10 +58,11 @@ type cardReading struct {
 	// last showed: its binding digest, its expiry, how many flagged paths
 	// it has, and the parts of it the page showed whole. binding is empty
 	// while only pages of its path list were read.
-	binding string
-	expires time.Time
-	flagged int
-	whole   Whole
+	binding    string
+	bindingTag string // Display words from the same card.
+	expires    time.Time
+	flagged    int
+	whole      Whole
 	// opened is when the Card page last showed it.
 	opened time.Time
 	// pages is the page count of the whole path list, review the review
@@ -187,6 +188,7 @@ func (r *cardReading) note(c Card, now time.Time) {
 		r.pages, r.review, r.read = 0, "", nil
 	}
 	r.binding, r.expires, r.flagged, r.opened, r.whole = c.BindingSHA256, c.Expires, len(c.Flagged), now, wholeOf(c)
+	r.bindingTag = c.BindingTag
 	r.live = !c.Ended && !c.OnItsWay && (c.State == "" || c.State == "pending")
 	r.sent = false
 }
@@ -642,6 +644,7 @@ func (a *app) decideChallenge(w http.ResponseWriter, r *http.Request) {
 		"action":       in.Action,
 		"card":         Text(f.ID, maxID),
 		"binding":      short(f.BindingSHA256),
+		"binding_tag":  bindingTagText(rd.bindingTag),
 		"signed_off":   len(f.SignedOff),
 		"expires_in":   int(expires.Sub(now) / time.Second),
 	})

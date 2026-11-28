@@ -35,7 +35,9 @@ import (
 // group. Without it by the bound, or with a manager error that lasts to the
 // bound, the role is unknown (case L4) and the error wraps ErrStopUnproven.
 // ErrNotLoaded and ErrInvocationChanged from a signal are not failures: the
-// proof decides. A context that ends first leaves the role shown stopping, and
+// proof decides. Nor is leadunit.ErrPartialSignal from the SIGTERM: some
+// processes have it, so it is not sent again, and the wait and the kill
+// settle the rest; a SIGTERM that sent nothing is retried at each poll. A context that ends first leaves the role shown stopping, and
 // Stop can be called again.
 //
 // Stop of a lead first stops each coordinator of the lead that is not proven
@@ -349,7 +351,9 @@ func (c *Controller) stopOne(ctx context.Context, role leadrole.Role) (leadregis
 	}
 	if e.Shown.State != leadregistry.StateStopping && e.Shown.State != leadregistry.StateUnknown {
 		if e, err = c.reg.SetState(role, leadregistry.StateChange{
-			Epoch: e.Epoch, State: leadregistry.StateStopping, Evidence: leadregistry.EvidenceObservation,
+			// The owner's order does not depend on which live state is
+			// shown; the table refuses it from the states that are not live.
+			Epoch: e.Epoch, Expected: leadregistry.NoExpectation(), State: leadregistry.StateStopping, Evidence: leadregistry.EvidenceObservation,
 			Reason: leadregistry.Reason{Code: "stop-requested"},
 		}); err != nil {
 			return e, err
@@ -418,6 +422,14 @@ func (c *Controller) terminate(ctx context.Context, e leadregistry.Entry, st lea
 			switch {
 			case err == nil, errors.Is(err, leadunit.ErrNotLoaded), errors.Is(err, leadunit.ErrInvocationChanged):
 				termSent = true
+			case errors.Is(err, leadunit.ErrPartialSignal):
+				// Some processes have the TERM and others could not be
+				// signalled. It is out: sending it again each poll would
+				// repeat it to the processes that have it. The processes
+				// that do not are left to the wait and the kill, and the
+				// error is kept for the reason of an unproven stop.
+				termSent = true
+				last = err
 			case ctx.Err() != nil:
 				return e, err
 			default:

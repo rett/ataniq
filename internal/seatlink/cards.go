@@ -95,6 +95,14 @@ func (d *Daemon) List(ctx context.Context) (seatapp.Listing, error) {
 	if err != nil {
 		return seatapp.Listing{}, errReadAnswer
 	}
+	return listingOf(l)
+}
+
+// listingOf maps a decoded listing to the app's, row by row. A row whose id
+// is not a card's or whose times are not a record's is a bad answer. A row
+// that carries a binding digest carries its four-word tag too; one that does
+// not has neither.
+func listingOf(l ownerwire.Listing) (seatapp.Listing, error) {
 	out := seatapp.Listing{NotListed: l.NotListed}
 	for _, p := range l.Pending {
 		asked, err1 := record.ParseTime(p.RequestedAt)
@@ -105,6 +113,7 @@ func (d *Daemon) List(ctx context.Context) (seatapp.Listing, error) {
 		out.Pending = append(out.Pending, seatapp.Item{
 			ID: p.ID, Project: p.Project, Verb: p.Verb, Feature: p.Feature,
 			Asked: asked, Expires: expires, Held: p.Held,
+			BindingSHA256: p.BindingSHA256, BindingTag: card.BindingTag(p.BindingSHA256),
 		})
 	}
 	for _, r := range l.Recent {
@@ -260,6 +269,7 @@ func viewOf(c card.Card) seatapp.Card {
 		Verb: c.Verb.Name, Feature: c.Verb.Feature, Target: c.Verb.Target, Class: c.Verb.Class,
 		Asked: c.Title.Asked, Expires: c.Title.Expires,
 		BindingSHA256: c.BindingSHA256,
+		BindingTag:    card.BindingTag(c.BindingSHA256),
 		State:         string(c.After.State),
 		Ended:         c.Ended(),
 		Held:          c.After.Held,

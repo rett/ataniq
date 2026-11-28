@@ -415,8 +415,22 @@ needs its own offer. For `d`, `s`, `x` and `m` these are `lead.define`,
 `lead.start`, `lead.stop` and `lead.inject`, respectively. Both `w` (writer)
 and `v` (viewer) need `lead.ticket`. When the hello includes `ticket_roles`,
 it names the roles available. Without that field, `lead.ticket` suffices for
-a viewer ticket. A writer ticket also needs `lead.list`, `lead.define`,
-`lead.start`, `lead.stop` and `lead.inject`.
+a viewer ticket.
+
+The leads view is viewer-only unless the console was started with
+`--scratch-writer`. Without the flag the hint has no `[w]`: it says "writer
+off: start with --scratch-writer" in its place, `w` shows the same words and
+sends nothing, and the console never asks the daemon for a writer ticket,
+whatever the daemon offers. With the flag, `w` is offered for a scratch lead
+(a row of the daemon's own scratch directory, never a row of a managed
+directory, which takes no commands) when the daemon offers the writer role:
+`ticket_roles` lists `writer`, or, with no `ticket_roles`, the hello lists the
+whole legacy scratch interface (`lead.list`, `lead.define`, `lead.start`,
+`lead.stop`, `lead.inject` and `lead.ticket`). A hello without `ticket_roles`
+never offers a writer by itself. A writer attach made this way is a viewer
+for good once it loses the writer role (the holder released it or dropped it):
+it reconnects with viewer tickets that the console asks the daemon for, and
+never asks for the writer again; ask again with `w`.
 
 If the connection lacks the operation or ticket role for a new command,
 the client sends nothing. The receipt line names the action, for example
@@ -451,7 +465,7 @@ and how many leads count against it:
 | KEY | The lead's key in the daemon's config. |
 | STATE | The registry's state of the lead, with `*` after it while a command for the lead has no answer yet. |
 | EPOCH | The current epoch, `-` with none. |
-| MSG | `off` when the lead's config turns messages off, `-` for a lead that is not running (its state is stopped, ended or desired, or it is `unknown` with the reason `launch-unsettled` or `launch-reply-lost`, or it has no epoch: the words of its last epoch's message are not drawn; a lead that is `unknown` for another reason, such as `control-group-not-proven-empty` or `competing-unit`, may have a unit that runs with the epoch's message sent, so its column follows the rule below), `free` while the epoch's message is not spent, and `free (not delivered)` while it is free after a message that was not delivered (the holder answered not-now or refused with nothing written, or refused the request itself as disabled, wrong-epoch or bad-request; the receipt line says why): another can be sent with `m`. Once the message is spent, what became of it: `sent` only when its words say it was submitted; `sent-unsure` when something may have reached the lead (look at its screen), when the words are not ones the console knows, and when the daemon holds the epoch spent and has no words for it (the holder answered busy, which says it is delivering something the daemon has no record of; the answer was lost, the message was sent before the console started or by another client, or the daemon was restarted since and a later command hides the receipt): the request was written and nothing says what became of the message; and `spent, not delivered` for a message that was not delivered but that the daemon holds as spent anyway, because it could not write the result, or the holder's refusal, down (then `m` says a message was already sent in this epoch). |
+| MSG | `off` when the lead's config turns messages off, `-` for a lead that is not running (its state is stopped, ended or desired, or it is `unknown` with the reason `launch-unsettled` or `launch-reply-lost`, or it has no epoch: the words of its last epoch's message are not drawn; a lead that is `unknown` for another reason, such as `control-group-not-proven-empty` or `competing-unit`, may have a unit that runs with the epoch's message sent, so its column follows the rule below), `free` while the epoch's message is not spent (also after a message that was never sent because the holder could not be reached, once the daemon has written that down), and `free (not delivered)` while it is free after a message that was not delivered (the holder answered not-now or refused with nothing written, or refused the request itself as disabled, wrong-epoch or bad-request; the receipt line says why): another can be sent with `m`. Once the message is spent, what became of it: `sent` only when its words say it was submitted; `sent-unsure` when something may have reached the lead (look at its screen), when the words are not ones the console knows, and when the daemon holds the epoch spent and has no words for it (the holder answered busy, which says it is delivering something the daemon has no record of; the answer was lost, the message was sent before the console started or by another client, or the daemon was restarted since and a later command hides the receipt): the message was recorded, its request may have been sent, partly sent or not sent at all, and nothing says what became of it; and `spent, not delivered` for a message that was not delivered but that the daemon holds as spent anyway, because it could not write the result, or the holder's refusal, down (then `m` says a message was already sent in this epoch). |
 | LAST RECEIPT | The lead's last command and where it stands. |
 | UNIT | The lead's unit name. |
 
@@ -502,7 +516,7 @@ error is never drawn.
 | s | Start it. |
 | x | Ask "Stop KEY (epoch N)?"; only y stops it, any other key keeps it running. |
 | m | Open a one-line editor for a message to the lead, for the epoch the row shows. Enter sends it once, Esc drops it, Ctrl+U clears it, and every printable key, q and j included, is text. It holds at most 2048 bytes, the daemon's limit, and stops taking text there. |
-| w, v | Ask for an attach ticket as a writer or as a viewer (below). |
+| w, v | Ask for an attach ticket as a writer or as a viewer (below). `w` works only with `--scratch-writer`; without it the key only says "writer off: start with --scratch-writer". |
 | r | Read the list again now. The view also reads it every two seconds by itself while a receipt is in progress and while a lead is `starting` or `stopping`, so a started lead turns `ready` without this key, and stops reading when none is. A lead that is `unknown` is not read by a timer: press this key to see a launch that the daemon has settled since. |
 | Esc | Close the view. |
 | Ctrl+C | Quit, dropping an open field first. |
@@ -558,10 +572,18 @@ answer's words:
 | uncertain, died, unknown | result unknown: the lead ended or no answer came back; how much was written is not known. Look at the lead's screen |
 
 The last sentence of a line is what the daemon does: it marks the epoch's message spent
-once it has written the request to the holder, and frees it again when nothing
-was written to the lead: the holder answered not-now or refused with nothing
-written, or refused the request itself (`holder-disabled`, `holder-wrong-epoch`
-or `holder-bad-request`). A `holder-busy` refusal does not free it: the daemon
+as soon as it has recorded the message in its evidence, before it dials the
+holder or writes the request, whether or not a request then leaves. A lead of
+scratch mode has three exceptions, and the daemon frees the message in each only
+once the line that says so is in the evidence: the holder answered not-now or
+refused with nothing written; the holder refused the request itself
+(`holder-disabled`, `holder-wrong-epoch` or `holder-bad-request`); or the request
+was never sent because the holder's socket could not be dialled or its write
+deadline could not be set (the receipt
+says `holder-unreachable`, and the row shows the message as `free` once the daemon has
+written that down; when it could not, the message stays spent). A message
+that could not be recorded at all is refused as failed, with nothing sent and
+nothing spent. A `holder-busy` refusal does not free it: the daemon
 sends one message at a time, so a busy holder is delivering something the
 daemon has no record of, which may have reached the lead. So after a message
 that was NOT delivered the lead may be sent another in the same epoch, and after
@@ -747,7 +769,7 @@ See `internal/terminalconsole/pairview`.
 ```
 ataniq-console --demo [--theme dark|light] [--return-key ctrl+KEY] [--recording NAME] [--linger DURATION] [--no-bell]
 ataniq-console --attach DIR --ticket-file FILE [--viewer] [--shift-enter esc-cr|lf|csi-u|backslash-cr] [--theme dark|light] [--return-key ctrl+KEY]
-ataniq-console --daemon DIR [--theme dark|light] [--no-bell]
+ataniq-console --daemon DIR [--scratch-writer] [--theme dark|light] [--no-bell]
 ```
 
 - `--demo` starts the cockpit with sample cards that change nothing. Without it, `--attach` or `--daemon` the
@@ -774,6 +796,9 @@ ataniq-console --daemon DIR [--theme dark|light] [--no-bell]
   holds the daemon's socket. It cannot be combined with `--demo`, `--attach`,
   `--recording`, `--linger`, `--return-key`, `--ticket-file`, `--viewer` or
   `--shift-enter`. See [The daemon view](#the-daemon-view).
+- `--scratch-writer` needs `--daemon`. It lets the leads view offer the writer
+  attach (`w`) for scratch leads. Without it the leads view is viewer-only. See
+  [Lead control](#lead-control-scratch-daemon-only).
 - `--no-bell` does not ring the terminal's bell when a card arrives while
   you are away. It needs `--demo` or `--daemon`.
 - `--theme dark|light` chooses the appearance. The default is dark.

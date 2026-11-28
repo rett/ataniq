@@ -113,7 +113,7 @@ func TestHelpDescribesTheDaemonFlag(t *testing.T) {
 		t.Fatal(code)
 	}
 	for _, want := range []string{
-		"ataniq-console --daemon DIR [--theme dark|light]",
+		"ataniq-console --daemon DIR [--scratch-writer] [--theme dark|light]", "-scratch-writer", "viewer-only",
 		"--demo, --attach and --daemon exclude each other.",
 		"-daemon", "the folder that holds the daemon's socket", "read-only", "provisional", "not with --demo or --attach",
 	} {

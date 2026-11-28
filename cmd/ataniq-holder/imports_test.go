@@ -22,6 +22,7 @@ const module = "ataniq"
 // in a build without the ataniq_canary tag, directly or indirectly.
 // A build with the tag adds the written-out list in imports_canary_test.go.
 var scratchRepoDeps = []string{
+	"ataniq/internal/cgroupsig",             // the holder's process host (leadholder/ptyhost) signals and kills its control group through this leaf, which imports only the standard library and golang.org/x/sys/unix.
 	"ataniq/internal/agentsession",          // D35: the holder codec uses the shared agent session types.
 	"ataniq/internal/agentsession/protocol", // D35: the holder parts use the shared protocol codec interface.
 	"ataniq/internal/leadholder/buildid",

@@ -862,10 +862,10 @@ func (m *leadMode) ticket(ctx context.Context, lr *leadRole, p leadwire.TicketPa
 // delivery is running that the daemon has no record of, which may have reached
 // the lead, so it leaves the epoch spent.
 //
-// The residual: a daemon killed after the frame is written and before the
-// inject-sent line is, a window of a few milliseconds, leaves the epoch unspent
-// after the restart, and the command's receipt reads uncertain. The owner reads
-// the lead's screen before a second message.
+// The inject-sent line is written before the frame, so a daemon killed at any
+// point leaves the epoch spent or sends nothing; a message that cannot be
+// recorded is refused, with nothing sent, as failed (the evidence line says
+// evidence-unwritable).
 func (m *leadMode) inject(ctx context.Context, lr *leadRole, p leadwire.InjectParams) outcome {
 	if leadActHook != nil {
 		leadActHook("inject")

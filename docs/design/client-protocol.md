@@ -76,6 +76,10 @@ of version 1.
 
 ## Events, replay and snapshots
 
+For a page of older instructions, receipts and replies, use the backward read
+in the [conversation and terminal history design](conversation-history.md).
+It also specifies how a viewer recovers the holder's recent rows on attach.
+
 Events carry a schema version, stable event ID, authority and project, resource
 identity and revision, type, causal command or attempt where applicable, and
 opaque durable cursor. The cursor orders the authority's journal, not provider

@@ -49,6 +49,8 @@ var (
 	ErrTooLarge = errors.New("leadregistry: journal line too large")
 	// ErrStaleEpoch means the call named an epoch other than the role's current one.
 	ErrStaleEpoch = errors.New("leadregistry: stale epoch")
+	// ErrStaleState means the shown state differs from the caller's expectation.
+	ErrStaleState = errors.New("leadregistry: stale shown state")
 	// ErrEpochExhausted means the epoch counter cannot grow.
 	ErrEpochExhausted = errors.New("leadregistry: epoch exhausted")
 	// ErrLaunchRefused is matched by every refusal of BeginLaunch.
@@ -88,8 +90,7 @@ var (
 	ErrIntentResolved = errors.New("leadregistry: launch intent already resolved")
 	// ErrProofRequired means stopped and ended need a non-empty proof text.
 	ErrProofRequired = errors.New("leadregistry: proof required")
-	// ErrStateTransition is matched by every refusal of SetState or
-	// ResolveUnknown for the shown state the role is in.
+	// ErrStateTransition means SetState or ResolveUnknown refused the transition.
 	ErrStateTransition = errors.New("leadregistry: state change refused")
 	// ErrOutcomePending is a state refusal: stopped, ended and an owner
 	// decision are refused while the launch intent is pending. The caller
@@ -191,6 +192,59 @@ func (d Desired) validate() error {
 	}
 	return nil
 }
+
+// Expectation is what a caller observed of a role's shown value before it
+// decided on a write in the same epoch. The registry compares it under the
+// write lock that commits the record, so a decision made from an old
+// observation cannot overwrite a newer one. Name it in every call: use
+// ExpectShown with the entry the decision was made from, or NoExpectation
+// when no state the registry can change is part of the decision. The zero
+// value is NoExpectation.
+//
+// The whole Shown value is compared, not the state alone: the state, the
+// reason code and detail, the time it was set, the evidence kind and the
+// proof. A caller that publishes a reason for the state it observed (the
+// health poll's degraded with its reason) must see a same-state rewrite
+// with another reason as a newer decision, and the time set stands in for a
+// per-role revision without a new journal field: every write of the shown
+// value stamps it.
+type Expectation struct {
+	shown Shown
+	set   bool
+}
+
+// ExpectShown expects the shown value of the current epoch to be shown.
+func ExpectShown(shown Shown) Expectation { return Expectation{shown: shown, set: true} }
+
+// NoExpectation states that the write decides from nothing the registry can
+// have changed since the caller looked, and compares nothing.
+func NoExpectation() Expectation { return Expectation{} }
+
+func (x Expectation) validate() error {
+	if !x.set {
+		return nil
+	}
+	return x.shown.State.validate()
+}
+
+func (s Shown) equal(o Shown) bool {
+	return s.State == o.State && s.Reason == o.Reason && s.At.Equal(o.At) &&
+		s.Evidence == o.Evidence && s.Proof == o.Proof
+}
+
+// StaleStateError reports the same-epoch mismatch of the shown value that
+// refused a write.
+type StaleStateError struct {
+	Expected Shown
+	Current  Shown
+}
+
+func (e *StaleStateError) Error() string {
+	return fmt.Sprintf("%v: expected %s (%s), current %s (%s)", ErrStaleState,
+		e.Expected.State, e.Expected.Reason.Code, e.Current.State, e.Current.Reason.Code)
+}
+
+func (e *StaleStateError) Unwrap() error { return ErrStaleState }
 
 // State is the shown state of a role.
 type State string

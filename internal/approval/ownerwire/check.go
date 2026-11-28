@@ -132,6 +132,9 @@ func checkListing(l *Listing) error {
 		c.need(!dup, at+" repeats an earlier id")
 		seen[p.ID] = struct{}{}
 		c.sha256(p.SHA256, at+".sha256")
+		if p.BindingSHA256 != "" {
+			c.sha256(p.BindingSHA256, at+".binding_sha256")
+		}
 		c.filled(p.Project, at+".project")
 		c.verb(p.Verb, p.Feature, at)
 		c.time(p.RequestedAt, at+".requested_at")

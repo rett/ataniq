@@ -492,6 +492,120 @@ func TestFakeSignalRefusals(t *testing.T) {
 	r.signal(second, syscall.SIGKILL)
 }
 
+// TestFakeSignalControlGroupContract: the fake refuses as Manager.Signal does a
+// State that records no control group identity or path (ErrNoControlGroupID),
+// and another group than the one the State names (ErrControlGroupMismatch),
+// and signals nothing then.
+func TestFakeSignalControlGroupContract(t *testing.T) {
+	r := newRig(t)
+	r.fake.SetProcs(unitA, ProcScript{Behavior: IgnoreTerm})
+	st := r.start(unitA, 1)
+	for name, tc := range map[string]struct {
+		mut  func(*State)
+		want error
+	}{
+		"no identity":      {func(s *State) { s.ControlGroupID = "" }, ErrNoControlGroupID},
+		"no path":          {func(s *State) { s.ControlGroup = "" }, ErrNoControlGroupID},
+		"another identity": {func(s *State) { s.ControlGroupID += "-other" }, ErrControlGroupMismatch},
+		"another path":     {func(s *State) { s.ControlGroup += "/other" }, ErrControlGroupMismatch},
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := st
+			tc.mut(&bad)
+			for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL} {
+				if err := r.fake.Signal(r.ctx, bad, sig); !errors.Is(err, tc.want) {
+					t.Fatalf("Signal %v = %v, want %v", sig, err, tc.want)
+				}
+			}
+			if got := r.inspect(unitA); !got.Live() || got.InvocationID != st.InvocationID {
+				t.Fatalf("a refused signal reached the unit: %+v", got)
+			}
+			if r.empty(st) {
+				t.Fatal("the group is empty after refused signals")
+			}
+		})
+	}
+	// The invocation is judged first, as the real manager does, so a stale
+	// State without an identity is the invocation's refusal.
+	stale := st
+	stale.InvocationID, stale.ControlGroupID = "other", ""
+	if err := r.fake.Signal(r.ctx, stale, syscall.SIGKILL); !errors.Is(err, ErrInvocationChanged) {
+		t.Fatalf("stale invocation without an identity: %v", err)
+	}
+	r.signal(st, syscall.SIGKILL) // the State as Start returned it still works
+	if r.fake.Loaded(unitA) {
+		t.Fatal("the kill of the named group did not end the unit")
+	}
+}
+
+// TestFakeHideControlGroupID: while it is set the State of a unit has no
+// control group identity, and Signal refuses it without effect; a State taken
+// before still works, and the option can be cleared.
+func TestFakeHideControlGroupID(t *testing.T) {
+	r := newRig(t)
+	r.fake.SetProcs(unitA, ProcScript{Behavior: IgnoreTerm})
+	whole := r.start(unitA, 1)
+	r.fake.HideControlGroupID(unitA, true)
+	hidden := r.inspect(unitA)
+	if hidden.ControlGroupID != "" || hidden.ControlGroup != whole.ControlGroup || hidden.InvocationID != whole.InvocationID || !hidden.Live() {
+		t.Fatalf("hidden State %+v, whole %+v", hidden, whole)
+	}
+	if err := r.fake.Signal(r.ctx, hidden, syscall.SIGKILL); !errors.Is(err, ErrNoControlGroupID) {
+		t.Fatalf("Signal of a State without an identity: %v", err)
+	}
+	if !r.inspect(unitA).Live() {
+		t.Fatal("the refused signal reached the unit")
+	}
+	r.fake.HideControlGroupID(unitA, false)
+	if got := r.inspect(unitA); got.ControlGroupID != whole.ControlGroupID {
+		t.Fatalf("after clearing: %+v", got)
+	}
+	r.fake.HideControlGroupID(unitA, true)
+	r.signal(whole, syscall.SIGKILL) // a State taken before the option still works
+	if r.fake.Loaded(unitA) {
+		t.Fatal("the kill did not end the unit")
+	}
+}
+
+// TestFakeSignalPartly: a scripted partial signal reaches the main process
+// only and returns ErrPartialSignal, for as many calls as scripted; the checks
+// of Signal come first and do not use the script up.
+func TestFakeSignalPartly(t *testing.T) {
+	r := newRig(t)
+	r.fake.SetProcs(unitA, ProcScript{Behavior: ExitOnTerm}, ProcScript{Behavior: ExitOnTerm}, ProcScript{Behavior: IgnoreTerm})
+	st := r.start(unitA, 1)
+	if n := len(r.fake.Processes(unitA)); n != 3 {
+		t.Fatalf("%d processes", n)
+	}
+	r.fake.SignalPartly(unitA, 1)
+	stale := st
+	stale.InvocationID = "other"
+	if err := r.fake.Signal(r.ctx, stale, syscall.SIGTERM); !errors.Is(err, ErrInvocationChanged) {
+		t.Fatalf("stale invocation: %v", err)
+	}
+	if err := r.fake.Signal(r.ctx, st, syscall.SIGTERM); !errors.Is(err, ErrPartialSignal) {
+		t.Fatalf("partial TERM: %v", err)
+	}
+	if n := len(r.fake.Processes(unitA)); n != 2 {
+		t.Fatalf("%d processes after a partial TERM, want 2 (the main one gone)", n)
+	}
+	calls := r.fake.CallsOf(MethodSignal)
+	if last := calls[len(calls)-1]; !errors.Is(last.Err, ErrPartialSignal) || last.Signal != syscall.SIGTERM {
+		t.Fatalf("logged %+v", last)
+	}
+	// The script is spent: the next TERM reaches every process.
+	r.signal(st, syscall.SIGTERM)
+	if n := len(r.fake.Processes(unitA)); n != 1 {
+		t.Fatalf("%d processes after a whole TERM, want the one that ignores it", n)
+	}
+	r.fake.SignalPartly(unitA, 2)
+	r.fake.SignalPartly(unitA, 0)
+	r.signal(st, syscall.SIGKILL)
+	if r.fake.Loaded(unitA) {
+		t.Fatal("a cleared script still made the kill partial")
+	}
+}
+
 func TestFakeSignalReachesEveryProcess(t *testing.T) {
 	r := newRig(t)
 	r.fake.SetProcs(unitA, ProcScript{}, ProcScript{}, ProcScript{Behavior: ExitOnTermAfter, Delay: time.Second})
