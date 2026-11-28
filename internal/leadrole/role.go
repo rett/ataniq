@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"ataniq/internal/leadsandbox/profile"
 )
 
 // MaxProjectLen is the longest accepted project name, in bytes.
@@ -185,19 +187,50 @@ func (r Role) String() string {
 	return ""
 }
 
-// UnitName returns the systemd unit name of the role:
+// UnitName returns the legacy systemd unit name of the role:
 // "ataniq-lead-<project>.service", "ataniq-supervisor.service" or
 // "ataniq-coord-<project>_<feature>.service". An underscore cannot occur in a
 // project or a feature, so no two roles share a unit name. The zero Role gives
-// "".
+// "". The registry persists UnitName in launch intents and checks it on
+// replay. Callers migrating to QualifiedUnitName must still find running
+// scratch units under their recorded legacy names.
 func (r Role) UnitName() string {
+	return r.unitName("")
+}
+
+// QualifiedUnitName inserts the instance's short authority tag before
+// ".service". A dot separates the tag from the role because neither a project
+// nor a feature can contain one. Their 63-byte limits keep even a qualified
+// coordinator unit below systemd's 255-byte limit.
+//
+// authority is the full public fingerprint. owners maps occupied unit names
+// to their full authority fingerprints. A different owner of the same name
+// is a collision, even if both fingerprints have the same short tag. Pass nil
+// to derive a name without checking occupancy.
+func (r Role) QualifiedUnitName(authority string, owners map[string]string) (string, error) {
+	tag, err := profile.ShortAuthorityTag(authority)
+	if err != nil {
+		return "", err
+	}
+	name := r.unitName("." + tag)
+	if name == "" {
+		return "", fmt.Errorf("%w: cannot name unit for invalid role", ErrInvalid)
+	}
+	if owner, exists := owners[name]; exists && owner != authority {
+		return "", fmt.Errorf("unit %q belongs to a different instance authority", name)
+	}
+	return name, nil
+}
+
+func (r Role) unitName(qualifier string) string {
+	suffix := qualifier + ".service"
 	switch r.kind {
 	case KindLead:
-		return "ataniq-lead-" + r.project + ".service"
+		return "ataniq-lead-" + r.project + suffix
 	case KindSupervisor:
-		return "ataniq-supervisor.service"
+		return "ataniq-supervisor" + suffix
 	case KindCoordinator:
-		return "ataniq-coord-" + r.project + "_" + r.feature + ".service"
+		return "ataniq-coord-" + r.project + "_" + r.feature + suffix
 	}
 	return ""
 }
