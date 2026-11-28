@@ -564,7 +564,8 @@ scratch mode has three exceptions, and the daemon frees the message in each only
 once the line that says so is in the evidence: the holder answered not-now or
 refused with nothing written; the holder refused the request itself
 (`holder-disabled`, `holder-wrong-epoch` or `holder-bad-request`); or the request
-was never sent because the holder's socket could not be dialled (the receipt
+was never sent because the holder's socket could not be dialled or its write
+deadline could not be set (the receipt
 says `holder-unreachable` and the row shows the message as `free`). A message
 that could not be recorded at all is refused as failed, with nothing sent and
 nothing spent. A `holder-busy` refusal does not free it: the daemon

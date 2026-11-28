@@ -275,7 +275,8 @@ const unknownResult = "the result is not known to this console"
 // cases only, each once the line that says so is in the evidence: the holder
 // answered that nothing was written (not-now or refused), the holder refused the
 // request itself (disabled, wrong-epoch or bad-request, not busy), or the
-// request was never sent (the holder's socket could not be dialled). The
+// request was never sent (the holder's socket could not be dialled, or its
+// write deadline could not be set). The
 // receipt does not say which: the daemon holds the epoch spent all the same when
 // it could not write that line down, and only the list's row (message_spent)
 // knows. So the tail of a message that was not delivered is drawn from the row
