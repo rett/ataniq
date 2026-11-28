@@ -1,0 +1,254 @@
+{
+  "map_tables": {
+    "adapter": {
+      "*": "pack-qargi-defect",
+      "1": "pack-qargi-bad-request",
+      "2": "pack-qargi-refused",
+      "3": "pack-qargi-unsupported",
+      "4": "pack-qargi-transport"
+    },
+    "adapter-check": {
+      "*": "pack-qargi-defect",
+      "0": "success:adapter-check",
+      "1": "pack-qargi-no-definition",
+      "126": "pack-qargi-missing",
+      "127": "pack-qargi-missing",
+      "2": "pack-qargi-refused",
+      "3": "pack-qargi-unsupported"
+    },
+    "adapter-run-empty": {
+      "*": "pack-qargi-defect",
+      "1": "pack-qargi-no-definition",
+      "2": "pack-qargi-refused",
+      "3": "pack-qargi-unsupported"
+    },
+    "provider-show": {
+      "*": "pack-qargi-defect",
+      "0": "success:provider-show",
+      "1": "pack-qargi-no-definition",
+      "126": "pack-qargi-missing",
+      "127": "pack-qargi-missing",
+      "2": "pack-qargi-refused",
+      "3": "pack-qargi-unsupported"
+    },
+    "version": {
+      "*": "pack-qargi-defect",
+      "0": "success:version",
+      "126": "pack-qargi-missing",
+      "127": "pack-qargi-missing"
+    }
+  },
+  "qargi_surfaces": ["adapter-check", "provider-show", "version"],
+  "schema": "qargi-ataniq.exit-map/1",
+  "steps": [
+    {
+      "code": "pack-qargi-missing",
+      "id": "install-absent",
+      "surfaces": ["adapter-check", "adapter-run", "provider-show", "version"]
+    },
+    {
+      "code": "pack-qargi-install-unsafe",
+      "id": "install-unsafe",
+      "surfaces": ["adapter-check", "adapter-run", "provider-show", "version"]
+    },
+    {
+      "code": "pack-qargi-missing",
+      "id": "not-started",
+      "surfaces": ["adapter-check", "adapter-run", "provider-show", "version"]
+    },
+    {
+      "code": "pack-qargi-timeout",
+      "id": "timeout",
+      "surfaces": ["adapter-check", "adapter-run", "provider-show", "version"]
+    },
+    {
+      "code": "pack-qargi-output-invalid",
+      "id": "output-over-limit",
+      "surfaces": ["adapter-check", "adapter-run", "provider-show", "version"]
+    },
+    {
+      "code": "pack-qargi-defect",
+      "id": "signal",
+      "surfaces": ["adapter-check", "adapter-run", "provider-show", "version"]
+    },
+    {
+      "code": "pack-qargi-output-invalid",
+      "id": "refusal-line-unreadable",
+      "surfaces": ["adapter-check", "provider-show", "version"]
+    },
+    {
+      "code": "pack-qargi-output-invalid",
+      "id": "refusal-lines-differ",
+      "surfaces": ["adapter-check", "provider-show", "version"]
+    },
+    {
+      "code": "pack-qargi-output-invalid",
+      "id": "refusal-line-disagrees",
+      "surfaces": ["adapter-check", "provider-show", "version"]
+    },
+    {
+      "code": "pack-qargi-output-invalid",
+      "id": "stdout-on-nonzero",
+      "surfaces": ["adapter-check", "provider-show", "version"]
+    },
+    {
+      "code": "pack-qargi-output-invalid",
+      "id": "no-line-on-77",
+      "surfaces": ["adapter-check", "provider-show", "version"]
+    },
+    {
+      "by_exit": {
+        "1": "pack-qargi-refused",
+        "2": "pack-qargi-refused",
+        "77": "pack-qargi-lead-refusal"
+      },
+      "id": "line-agrees",
+      "surfaces": ["adapter-check", "provider-show", "version"]
+    },
+    {
+      "by_class": {
+        "nonzero_empty": "table:adapter-run-empty",
+        "nonzero_one_error_object": "table:adapter",
+        "nonzero_other": "pack-qargi-output-invalid",
+        "zero_one_fitting_response": "ok",
+        "zero_other": "pack-qargi-output-invalid"
+      },
+      "id": "adapter-output",
+      "surfaces": ["adapter-run"]
+    },
+    {
+      "by_surface": {
+        "adapter-check": "table:adapter-check",
+        "provider-show": "table:provider-show",
+        "version": "table:version"
+      },
+      "id": "status",
+      "surfaces": ["adapter-check", "provider-show", "version"]
+    }
+  ],
+  "success_checks": {
+    "adapter-check": [
+      {
+        "code": "pack-qargi-output-invalid",
+        "id": "stdout-not-empty"
+      },
+      {
+        "code": "ok",
+        "id": "passed"
+      }
+    ],
+    "provider-show": [
+      {
+        "code": "pack-qargi-output-invalid",
+        "id": "not-one-object"
+      },
+      {
+        "code": "pack-qargi-output-invalid",
+        "id": "pinned-field-absent-null-or-mistyped"
+      },
+      {
+        "code": "pack-qargi-crosswalk-mismatch",
+        "id": "pinned-value-differs"
+      },
+      {
+        "code": "ok",
+        "id": "passed"
+      }
+    ],
+    "version": [
+      {
+        "code": "pack-qargi-output-invalid",
+        "id": "first-line-not-a-label"
+      },
+      {
+        "code": "pack-qargi-release-unpinned",
+        "id": "label-not-pinned"
+      },
+      {
+        "code": "ok",
+        "id": "passed"
+      }
+    ]
+  },
+  "cases": {
+    "historical_0_3_5": [
+      {"surface": "provider-show", "status": 1, "stderr": "qargi: unknown provider 'claude'; available: claude-code, claude-platform, codex\n", "step": "status", "code": "pack-qargi-no-definition"},
+      {"surface": "provider-show", "status": 1, "stderr": "qargi: unknown provider 'openai'; available: claude-code, claude-platform, codex\n", "step": "status", "code": "pack-qargi-no-definition"},
+      {"surface": "adapter-check", "status": 2, "stderr": "usage: qargi provider adapter-run NAME local|cloud VERB [--check]\n", "step": "status", "code": "pack-qargi-refused"}
+    ],
+    "structured_from_0_3_6": [
+      {"surface": "provider-show", "status": 77, "stderr": "diagnostic\nqargi-refusal/1 {\"exit\":77,\"code\":\"unknown-code\"}\n", "refusal_code": "unknown-code", "step": "line-agrees", "code": "pack-qargi-lead-refusal"},
+      {"surface": "provider-show", "status": 1, "stderr": "diagnostic\nqargi-refusal/1 {\"exit\":1,\"code\":\"unknown-code\"}\n", "refusal_code": "unknown-code", "step": "line-agrees", "code": "pack-qargi-refused"},
+      {"surface": "adapter-check", "status": 77, "stderr": "diagnostic\nqargi-refusal/1 {\"exit\":77,\"code\":\"unknown-code\"}\n", "refusal_code": "unknown-code", "step": "line-agrees", "code": "pack-qargi-lead-refusal"},
+      {"surface": "adapter-check", "status": 2, "stderr": "diagnostic\nqargi-refusal/1 {\"exit\":2,\"code\":\"unknown-code\"}\n", "refusal_code": "unknown-code", "step": "line-agrees", "code": "pack-qargi-refused"},
+      {"surface": "version", "status": 1, "stderr": "diagnostic\nqargi-refusal/1 {\"exit\":1,\"code\":\"unknown-code\"}\n", "refusal_code": "unknown-code", "step": "line-agrees", "code": "pack-qargi-refused"},
+      {"surface": "provider-show", "status": 1, "stderr": "qargi-refusal/1 {\"exit\":1,\"code\":\"example\"}\nqargi-refusal/1 {\"exit\":1,\"code\":\"example\"}", "refusal_code": "example", "step": "line-agrees", "code": "pack-qargi-refused"},
+      {"surface": "provider-show", "status": 77, "stdout": "", "stderr": "qargi-refusal/1 {\"exit\":1,\"code\":\"example\"}", "step": "refusal-line-disagrees", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 1, "stdout": "", "stderr": "qargi-refusal/1 {\"exit\":77,\"code\":\"example\"}", "step": "refusal-line-disagrees", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 0, "stdout": "", "stderr": "qargi-refusal/1 {\"exit\":1,\"code\":\"example\"}", "step": "refusal-line-disagrees", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 1, "stdout": "x", "stderr": "qargi-refusal/1 {\"exit\":2,\"code\":\"example\"}", "step": "refusal-line-disagrees", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 1, "stdout": "x", "stderr": "qargi-refusal/1 {\"exit\":1,\"code\":\"example\"}", "step": "stdout-on-nonzero", "code": "pack-qargi-output-invalid"},
+      {"surface": "version", "status": 2, "stdout": "x", "stderr": "qargi-refusal/1 {\"exit\":2,\"code\":\"example\"}", "step": "stdout-on-nonzero", "code": "pack-qargi-output-invalid"},
+      {"surface": "adapter-check", "status": 1, "stdout": "x", "stderr": "qargi-refusal/1 {\"exit\":1,\"code\":\"example\"}", "step": "stdout-on-nonzero", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 77, "stdout": "x", "stderr": "qargi-refusal/1 {\"exit\":77,\"code\":\"example\"}", "step": "stdout-on-nonzero", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 77, "step": "no-line-on-77", "code": "pack-qargi-output-invalid"},
+      {"surface": "adapter-check", "status": 77, "step": "no-line-on-77", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 1, "stderr": "qargi-refusal/1 {\"exit\":1,\"code\":\"example\"}\nqargi-refusal/1 {\"exit\":1,\"code\":\"other\"}", "step": "refusal-lines-differ", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 1, "stderr": "qargi-refusal/1 {\"exit\":1,\"code\":\"example\"}\nqargi-refusal/1 {\"code\":\"example\",\"exit\":1}", "step": "refusal-lines-differ", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 1, "stderr": "qargi-refusal/1 {\"exit\":1,\"code\":\"example\"}\nqargi-refusal/1 {\"exit\":2,\"code\":\"example\"}\nqargi-refusal/1 {}", "step": "refusal-line-unreadable", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 1, "stderr": "qargi-refusal/1 {}", "step": "refusal-line-unreadable", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 1, "stderr": "qargi-refusal/1 {\"exit\":0}", "step": "refusal-line-unreadable", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 1, "stderr": "qargi-refusal/1 {\"exit\":\"1\"}", "step": "refusal-line-unreadable", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 1, "stderr": "qargi-refusal/1 {\"exit\":1.0}", "step": "refusal-line-unreadable", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 1, "stderr": "qargi-refusal/1 {\"exit\":1e0}", "step": "refusal-line-unreadable", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 1, "stderr": "qargi-refusal/1 {\"exit\":-1}", "step": "refusal-line-unreadable", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 1, "stderr": "qargi-refusal/1 {\"exit\":1,\"exit\":1}", "step": "refusal-line-unreadable", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 1, "stderr": "qargi-refusal/1 {\"exit\":1,\"exit\":77}", "step": "refusal-line-unreadable", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 1, "stderr": "qargi-refusal/1 {\"exit\":1,\"extra\":[{\"a\":0,\"a\":0}]}", "step": "refusal-line-unreadable", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 1, "stderr": "qargi-refusal/1 {\"exit\":1} ", "step": "refusal-line-unreadable", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 1, "stderr": "qargi-refusal/1 {\"exit\":1}\r", "step": "refusal-line-unreadable", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 1, "stderr": "qargi-refusal/1 {\"exit\":1}{}", "step": "refusal-line-unreadable", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 1, "stderr": "qargi-refusal/1 [1]", "step": "refusal-line-unreadable", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 1, "stderr": "qargi-refusal/1 {\"extra\":{\"nested\":[true,null]},\"exit\":1}", "step": "line-agrees", "code": "pack-qargi-refused"},
+      {"surface": "adapter-run", "status": 1, "stdout": "{\"error\":\"bad request\"}", "stderr": "qargi-refusal/1 {\"exit\":77,\"code\":\"example\"}", "step": "adapter-output", "code": "pack-qargi-bad-request"},
+      {"surface": "adapter-run", "status": 77, "stdout": "", "stderr": "qargi-refusal/1 {\"exit\":77,\"code\":\"example\"}", "origin_unknown": true, "step": "adapter-output", "code": "pack-qargi-defect"},
+      {"surface": "adapter-run", "status": 0, "stdout": "{\"decision\":\"allow\",\"reason\":\"\"}", "stderr": "qargi-refusal/1 {\"exit\":77,\"code\":\"example\"}", "step": "adapter-output", "code": "ok"},
+      {"surface": "adapter-run", "status": 0, "stdout": "{\"decision\":\"unknown\",\"reason\":\"\"}", "stderr": "qargi-refusal/1 {\"exit\":77,\"code\":\"example\"}", "step": "adapter-output", "code": "pack-qargi-output-invalid"},
+      {"surface": "adapter-run", "status": 0, "stdout": "{}", "stderr": "qargi-refusal/1 {\"exit\":77,\"code\":\"example\"}", "step": "adapter-output", "code": "pack-qargi-output-invalid"},
+      {"surface": "adapter-run", "status": 1, "stdout": "{\"error\":null}", "stderr": "qargi-refusal/1 {\"exit\":77,\"code\":\"example\"}", "step": "adapter-output", "code": "pack-qargi-output-invalid"},
+      {"surface": "adapter-run", "status": 1, "stdout": "{\"error\":\"\"}", "stderr": "qargi-refusal/1 {\"exit\":77,\"code\":\"example\"}", "step": "adapter-output", "code": "pack-qargi-output-invalid"},
+      {"surface": "adapter-run", "status": 1, "stdout": "{\"error\":\"bad\",\"extra\":1}", "stderr": "qargi-refusal/1 {\"exit\":77,\"code\":\"example\"}", "step": "adapter-output", "code": "pack-qargi-output-invalid"}
+    ],
+    "synthetic": [
+      {"surface": "adapter-run", "status": 0, "stdout": "", "step": "adapter-output", "code": "pack-qargi-output-invalid"},
+      {"surface": "adapter-run", "status": 1, "stdout": "", "origin_unknown": true, "step": "adapter-output", "code": "pack-qargi-no-definition"},
+      {"surface": "adapter-run", "status": 2, "stdout": "{\"error\":\"bad\"}{}", "step": "adapter-output", "code": "pack-qargi-output-invalid"},
+      {"surface": "adapter-run", "status": 4, "stdout": "", "origin_unknown": true, "step": "adapter-output", "code": "pack-qargi-defect"},
+      {"surface": "adapter-run", "status": 127, "stdout": "", "origin_unknown": true, "step": "adapter-output", "code": "pack-qargi-defect"},
+      {"surface": "adapter-run", "status": 4, "stdout": "{\"error\":\"failed\"}", "step": "adapter-output", "code": "pack-qargi-transport"},
+      {"surface": "provider-show", "status": 1, "stdout": "x", "step": "stdout-on-nonzero", "code": "pack-qargi-output-invalid"},
+      {"surface": "version", "status": 0, "stdout": "qargi 0.3.5", "step": "status", "code": "pack-qargi-output-invalid"},
+      {"surface": "version", "status": 0, "stdout": "0.3.6", "step": "status", "code": "pack-qargi-release-unpinned"},
+      {"surface": "version", "status": 0, "stdout": "0.3.5\nsecond line", "step": "status", "code": "ok"},
+      {"surface": "provider-show", "status": 127, "stdout": "", "step": "status", "code": "pack-qargi-missing"},
+      {"surface": "adapter-check", "status": 127, "stdout": "", "step": "status", "code": "pack-qargi-missing"},
+      {"surface": "adapter-check", "status": 0, "stdout": "", "step": "status", "code": "ok"},
+      {"surface": "adapter-check", "status": 0, "stdout": " ", "step": "status", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 70, "stdout": "", "step": "status", "code": "pack-qargi-defect"},
+      {"surface": "provider-show", "status": 0, "stdout": "{\"schema\":2,\"provider\":\"codex\",\"kind\":\"provider\",\"family\":\"openai\",\"models\":{\"catalog\":\"openai\",\"use\":\"id\"},\"surface\":\"local\",\"dispatch\":{\"mode\":\"command\"},\"barrier\":{\"kind\":\"sandbox-args\"}}", "row": "codex.codex", "step": "status", "code": "ok"},
+      {"surface": "provider-show", "status": 0, "stdout": "{\"schema\":2,\"provider\":\"codex\",\"kind\":\"provider\",\"family\":null,\"models\":{\"catalog\":\"openai\",\"use\":\"id\"},\"surface\":\"local\",\"dispatch\":{\"mode\":\"command\"},\"barrier\":{\"kind\":\"sandbox-args\"}}", "row": "codex.codex", "step": "status", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 0, "stdout": "{\"schema\":2,\"provider\":\"codex\",\"kind\":\"provider\",\"family\":\"openai\",\"models\":{\"catalog\":\"openai\",\"use\":\"id\"},\"surface\":\"local\",\"dispatch\":{\"mode\":\"command\"},\"barrier\":{\"kind\":\"sandbox-args\"},\"schema\":2}", "row": "codex.codex", "step": "status", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 0, "stdout": "{\"schema\":2,\"provider\":\"codex\",\"kind\":\"provider\",\"family\":\"openai\",\"models\":{\"catalog\":\"openai\",\"use\":\"id\"},\"surface\":\"cloud\",\"dispatch\":{\"mode\":\"command\"},\"barrier\":{\"kind\":\"sandbox-args\"}}", "row": "codex.codex", "step": "status", "code": "pack-qargi-crosswalk-mismatch"},
+      {"surface": "provider-show", "status": 1, "outcome": "install-absent", "stdout": "partial", "step": "install-absent", "code": "pack-qargi-missing"},
+      {"surface": "provider-show", "status": 1, "outcome": "install-unsafe", "stdout": "partial", "step": "install-unsafe", "code": "pack-qargi-install-unsafe"},
+      {"surface": "provider-show", "status": 1, "outcome": "not-started", "stdout": "partial", "step": "not-started", "code": "pack-qargi-missing"},
+      {"surface": "provider-show", "status": 1, "outcome": "timeout", "stdout": "partial", "step": "timeout", "code": "pack-qargi-timeout"},
+      {"surface": "provider-show", "status": 1, "outcome": "output-over-limit", "stdout": "partial", "step": "output-over-limit", "code": "pack-qargi-output-invalid"},
+      {"surface": "provider-show", "status": 1, "outcome": "signal", "stdout": "partial", "step": "signal", "code": "pack-qargi-defect"},
+      {"surface": "provider-show", "status": 2, "stderr": "usage error\n", "step": "status", "code": "pack-qargi-refused"},
+      {"surface": "provider-show", "status": 3, "stderr": "unsupported\n", "step": "status", "code": "pack-qargi-unsupported"},
+      {"surface": "version", "status": 1, "stderr": "version failed\n", "step": "status", "code": "pack-qargi-defect"},
+      {"surface": "adapter-check", "status": 1, "stderr": "definition error\n", "step": "status", "code": "pack-qargi-no-definition"}
+    ]
+  }
+}

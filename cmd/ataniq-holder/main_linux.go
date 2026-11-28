@@ -460,7 +460,7 @@ func run(args []string, d deps) int {
 	vcfg := serve.Config{
 		Session: sess, Dir: cfg.runtimeDir, Lead: cfg.role, Epoch: cfg.epoch,
 		Runtime: cfg.runtime, RuntimeVersion: cfg.runtimeVersion, Log: log, DaemonLock: cfg.daemonLock,
-		Now: d.now,
+		Now: d.now, PackIdentities: registeredIdentities,
 	}
 	mode.serve(sess, &vcfg)
 	if d.tweakServe != nil {

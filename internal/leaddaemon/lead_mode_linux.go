@@ -79,6 +79,9 @@ type Scratch struct {
 	// ReadyBackoff is the first wait between two of its questions; default
 	// [DefaultReadyBackoff].
 	ReadyBackoff time.Duration
+	// HealthEvery is the interval between holder status checks after readiness.
+	// It defaults to [DefaultHealthEvery].
+	HealthEvery time.Duration
 	// Chat, when not nil, is the seat's chat port that this mode binds to
 	// its leads' chat once their stores are open (chat_port_linux.go): until
 	// then, and after the daemon stops, it answers chat-busy. Nil leaves the
@@ -187,6 +190,7 @@ type leadMode struct {
 	// lead_ready_linux.go); ready is its observers.
 	readyWithin  time.Duration
 	readyBackoff time.Duration
+	healthEvery  time.Duration
 	ready        readyObservers
 	// settle is the timers that settle a launch intent that a start left
 	// pending when its late-start window ends (see lead_settle_linux.go).
@@ -254,7 +258,7 @@ func (d *daemon) scratchSetup() (*canaryMode, error) {
 	lm := &leadMode{
 		cm: m, d: d, cfg: s.Config, getenv: getenv, provisionT: s.ProvisionTimeout,
 		roles: make(map[leadrole.Role]*leadRole, len(leads)), maxRunning: s.Config.MaxRunning,
-		readyWithin: s.ReadyWithin, readyBackoff: s.ReadyBackoff,
+		readyWithin: s.ReadyWithin, readyBackoff: s.ReadyBackoff, healthEvery: s.HealthEvery,
 	}
 	if lm.provisionT <= 0 {
 		lm.provisionT = DefaultProvisionTimeout

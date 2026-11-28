@@ -18,18 +18,21 @@ import (
 // module is this repository's module path.
 const module = "ataniq"
 
-// scratchRepoDeps are the packages of this repository the command depends on
-// in a build without the ataniq_canary tag, directly or not: exactly these
-// seven. A build with the tag adds the written-out list in
-// imports_canary_test.go.
+// scratchRepoDeps are the pack-neutral packages of this repository the command depends on
+// in a build without the ataniq_canary tag, directly or indirectly.
+// A build with the tag adds the written-out list in imports_canary_test.go.
 var scratchRepoDeps = []string{
+	"ataniq/internal/agentsession",          // D35: the holder codec uses the shared agent session types.
+	"ataniq/internal/agentsession/protocol", // D35: the holder parts use the shared protocol codec interface.
 	"ataniq/internal/leadholder/buildid",
 	"ataniq/internal/leadholder/eventlog",
 	"ataniq/internal/leadholder/ptyhost",
 	"ataniq/internal/leadholder/serve",
 	"ataniq/internal/leadholder/session",
 	"ataniq/internal/leadholder/wire",
+	"ataniq/internal/pack", // D35: the registry supplies the carried pack names and their built-in identities.
 	"ataniq/internal/terminalconsole/sessionpane",
+	"ataniq/packs/holder", // D35: the command registers the built-in holder parts for its hello.
 }
 
 // forbiddenRepoDep says why a package of this repository may never be a
@@ -127,8 +130,7 @@ func guardGoEnv() []string {
 // TestImportGuard keeps the command small. It walks the whole dependency list
 // of the command (go list -deps, offline, without the tests' own imports), not
 // the direct imports: the packages of this repository in it are exactly the
-// list of this build (guardRepoDeps: seven without the ataniq_canary tag, a
-// written-out longer list with it), and nothing under qualification/, no
+// list of this build (guardRepoDeps), and nothing under qualification/, no
 // console package beyond sessionpane, internal/leadcanary, internal/leaddaemon
 // and the fake agent are ever among them.
 func TestImportGuard(t *testing.T) {
@@ -145,7 +147,17 @@ func TestImportGuard(t *testing.T) {
 	if len(deps) < 10 {
 		t.Fatalf("the dependency list is too short to be one: %q", out)
 	}
-	for _, p := range checkRepoDeps(deps, guardRepoDeps()) {
+	// D35 puts the reviewed list of provider dependencies with the holder parts.
+	list, err := os.ReadFile("../../packs/holder/testdata/dependencies.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed := append([]string(nil), guardRepoDeps()...)
+	for line := range strings.Lines(string(list)) {
+		dep, _, _ := strings.Cut(line, "#")
+		allowed = append(allowed, strings.TrimSpace(dep))
+	}
+	for _, p := range checkRepoDeps(deps, allowed) {
 		t.Error(p)
 	}
 }
@@ -193,7 +205,7 @@ func TestImportGuardDirectImports(t *testing.T) {
 func TestImportGuardCheck(t *testing.T) {
 	base := append([]string{"fmt", "golang.org/x/sys/unix", module + "/cmd/ataniq-holder"}, scratchRepoDeps...)
 	if p := checkRepoDeps(base, scratchRepoDeps); len(p) != 0 {
-		t.Fatalf("the seven are refused: %v", p)
+		t.Fatalf("the scratch dependencies are refused: %v", p)
 	}
 	for _, c := range []struct{ extra, want string }{
 		{module + "/qualification/leadsandbox/internal/harness", "qualification/"},

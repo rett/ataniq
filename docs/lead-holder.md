@@ -583,6 +583,33 @@ The flow:
    disconnected as `stalled`. A writer that disconnects leaves the lead without a
    writer, and nothing is typed on its behalf.
 
+## Measuring idle holder wakeups
+
+Run the opt-in measurement from the checkout root on a Linux coordinator with
+PTYs and private Unix sockets. Record the checkout revision alongside the output.
+
+```sh
+make doctor
+git rev-parse HEAD
+ATANIQ_MEASURE_WAKES=1 sh scripts/go-tool.sh test -count=1 -v -run '^TestMeasureHolderWakes$' ./internal/leadholder/serve/
+```
+
+Each of the four cells runs for 60 seconds. Set `ATANIQ_MEASURE_INTERVAL` to a
+positive Go duration to change that window. Allow time for four windows plus
+setup when selecting a longer Go test timeout. The one or eight canary holders
+share a test process. Each has private sockets and a quiet fake agent on its own
+PTY. Each attached holder has one console attach client reading frames as its
+writer. Sampling starts two production poll intervals after setup, once every
+attached client has restored its initial snapshot.
+
+The table and final JSON line give raw counts and wakes per second for each
+holder and the group. A temporary Go build overlay counts the timekeeper's
+timer and kick, the sender's wake channel and the canary counter pump's ticker.
+The timer column covers the hour timer with no client and the poll or check
+deadline with a client. The holder polls lifetime facts at 100 ms while
+attached. A facts poll occurs inside a timekeeper wake and is counted separately
+from the wake total. Rates cover those holder goroutines only.
+
 ## What needs a check before anyone relies on it
 
 The automated tests use a fake agent, fixtures and fake process trees. None of

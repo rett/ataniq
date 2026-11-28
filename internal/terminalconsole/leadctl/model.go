@@ -273,11 +273,14 @@ func (m *Model) onListed(v listedMsg) tea.Cmd {
 	// Scratch operations address a role without its epoch. Qualified rows
 	// instead have distinct addresses even when their roles are identical.
 	roles := make(map[Identity]int)
+	unreadable := make(map[string]bool)
 	for _, l := range v.l.Leads {
 		if slices.Contains(v.l.OfflineHomes, l.HomeID) {
 			continue
 		}
-		if !l.validAddress() {
+		if l.unreadable() {
+			unreadable[l.Role] = true
+		} else if !l.validAddress() {
 			m.leftOut++
 			continue
 		}
@@ -301,7 +304,9 @@ func (m *Model) onListed(v listedMsg) tea.Cmd {
 			c.Last = &last
 		}
 		m.leads = append(m.leads, c)
-		roles[l.address()] = 1
+		if l.validAddress() {
+			roles[l.address()] = 1
+		}
 	}
 	listed := len(m.leads)
 	m.leads = slices.DeleteFunc(m.leads, func(l Lead) bool { return roles[l.address()] > 1 })
@@ -337,13 +342,17 @@ func (m *Model) onListed(v listedMsg) tea.Cmd {
 	for _, l := range m.leads {
 		present[l.identity()] = true
 	}
+	// An unreadable scratch row cannot establish that its epoch ended.
+	keepEvidence := func(k Identity) bool {
+		return present[k] || k.Home == "" && (unreadable[k.Lead] || unreadable[""])
+	}
 	for k := range m.delivered {
-		if !present[k] {
+		if !keepEvidence(k) {
 			delete(m.delivered, k)
 		}
 	}
 	for k := range m.unconfirmed {
-		if !present[k] {
+		if !keepEvidence(k) {
 			delete(m.unconfirmed, k)
 		}
 	}
@@ -400,6 +409,9 @@ func (l Lead) address() Identity {
 	return id
 }
 
+// The client marks a decoding failure with a reason outside the daemon grammar.
+func (l Lead) unreadable() bool { return strings.HasPrefix(l.StateReason, "client/") }
+
 func (l Lead) validAddress() bool {
 	if len(l.ProjectID) > maxRole || len(l.ID) > maxRole || len(l.ConversationID) > maxRole || len(l.Role) > maxRole {
 		return false
@@ -421,7 +433,7 @@ func (l Lead) identity() Identity {
 func (m *Model) bindingIndex(id Identity) int {
 	found := -1
 	for i, l := range m.leads {
-		if !l.Offline && l.identity() == id {
+		if !l.Offline && !l.unreadable() && l.identity() == id {
 			if found >= 0 {
 				return -1
 			}
@@ -566,6 +578,10 @@ func (m *Model) move(delta int) {
 func (m *Model) admit() (Lead, bool) {
 	l, ok := m.current()
 	if !ok {
+		return Lead{}, false
+	}
+	if l.unreadable() {
+		m.note = "Commands unavailable for this degraded row."
 		return Lead{}, false
 	}
 	if l.Offline || l.HomeID != "" {

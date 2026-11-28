@@ -1,0 +1,421 @@
+=== agent /home/lead/.claude/agents/reviewer.md ===
+---
+"description": "Review the assigned changes."
+"name": "reviewer"
+---
+Review the assigned changes and report findings.
+=== provider-policy /etc/claude-code/managed-settings.json ===
+{
+  "allowManagedHooksOnly": true,
+  "allowManagedMcpServersOnly": true,
+  "allowManagedPermissionRulesOnly": true,
+  "disableRemoteControl": true,
+  "disableSideloadFlags": true,
+  "enableAllProjectMcpServers": false,
+  "env": {
+    "BASH_ENV": "",
+    "ENV": "",
+    "LD_LIBRARY_PATH": "",
+    "LD_PRELOAD": ""
+  },
+  "hooks": {
+    "ConfigChange": [
+      {
+        "hooks": [
+          {
+            "args": [
+              "claude.config-change"
+            ],
+            "async": false,
+            "command": "/ataniq/hook/ataniq-hook",
+            "onFailure": "block",
+            "timeout": 5,
+            "type": "command"
+          }
+        ],
+        "matcher": "user_settings|project_settings|local_settings"
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "args": [
+              "claude.notification"
+            ],
+            "async": true,
+            "command": "/ataniq/hook/ataniq-hook",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "args": [
+              "claude.permission-request"
+            ],
+            "async": true,
+            "command": "/ataniq/hook/ataniq-hook",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "args": [
+              "claude.pre-tool-use"
+            ],
+            "async": true,
+            "command": "/ataniq/hook/ataniq-hook",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "args": [
+              "claude.session-end"
+            ],
+            "async": true,
+            "command": "/ataniq/hook/ataniq-hook",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "args": [
+              "claude.session-start"
+            ],
+            "async": true,
+            "command": "/ataniq/hook/ataniq-hook",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "args": [
+              "claude.stop"
+            ],
+            "async": true,
+            "command": "/ataniq/hook/ataniq-hook",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "args": [
+              "claude.stop-failure"
+            ],
+            "async": true,
+            "command": "/ataniq/hook/ataniq-hook",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "args": [
+              "claude.prompt-submit"
+            ],
+            "async": true,
+            "command": "/ataniq/hook/ataniq-hook",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "defaultMode": "default",
+    "disableAutoMode": "disable",
+    "disableBypassPermissionsMode": "disable"
+  }
+}
+=== user-settings /home/lead/.claude/settings.json ===
+{}
+=== local-settings /home/lead/.claude/settings.local.json ===
+{}
+=== trust-entry /home/lead/.claude/.claude.json ===
+{
+  "hasCompletedOnboarding": true,
+  "projects": {
+    "/work/sample": {
+      "hasTrustDialogAccepted": true
+    }
+  }
+}
+=== empty tree overlays ===
+folder .claude
+=== helper table ===
+{
+  "schema": "ataniq.pack-declaration/1",
+  "builds": {
+    "2.1.332": [
+      {
+        "id": "claude.session-start",
+        "event": "SessionStart",
+        "fields": [
+          {
+            "name": "hook_event_name",
+            "pointer": "/hook_event_name"
+          },
+          {
+            "name": "session_id",
+            "pointer": "/session_id"
+          },
+          {
+            "name": "permission_mode",
+            "pointer": "/permission_mode"
+          },
+          {
+            "name": "source",
+            "pointer": "/source"
+          },
+          {
+            "name": "model",
+            "pointer": "/model"
+          }
+        ],
+        "output": "none",
+        "async": true,
+        "timeout_ms": 5000
+      },
+      {
+        "id": "claude.prompt-submit",
+        "event": "UserPromptSubmit",
+        "fields": [
+          {
+            "name": "hook_event_name",
+            "pointer": "/hook_event_name"
+          },
+          {
+            "name": "session_id",
+            "pointer": "/session_id"
+          },
+          {
+            "name": "permission_mode",
+            "pointer": "/permission_mode"
+          }
+        ],
+        "output": "none",
+        "async": true,
+        "timeout_ms": 5000
+      },
+      {
+        "id": "claude.pre-tool-use",
+        "event": "PreToolUse",
+        "fields": [
+          {
+            "name": "hook_event_name",
+            "pointer": "/hook_event_name"
+          },
+          {
+            "name": "session_id",
+            "pointer": "/session_id"
+          },
+          {
+            "name": "permission_mode",
+            "pointer": "/permission_mode"
+          },
+          {
+            "name": "tool_name",
+            "pointer": "/tool_name"
+          }
+        ],
+        "digests": [
+          {
+            "name": "tool_input",
+            "pointer": "/tool_input"
+          }
+        ],
+        "output": "none",
+        "async": true,
+        "timeout_ms": 5000
+      },
+      {
+        "id": "claude.permission-request",
+        "event": "PermissionRequest",
+        "fields": [
+          {
+            "name": "hook_event_name",
+            "pointer": "/hook_event_name"
+          },
+          {
+            "name": "session_id",
+            "pointer": "/session_id"
+          },
+          {
+            "name": "permission_mode",
+            "pointer": "/permission_mode"
+          },
+          {
+            "name": "tool_name",
+            "pointer": "/tool_name"
+          }
+        ],
+        "digests": [
+          {
+            "name": "tool_input",
+            "pointer": "/tool_input"
+          }
+        ],
+        "output": "none",
+        "async": true,
+        "timeout_ms": 5000
+      },
+      {
+        "id": "claude.notification",
+        "event": "Notification",
+        "fields": [
+          {
+            "name": "hook_event_name",
+            "pointer": "/hook_event_name"
+          },
+          {
+            "name": "session_id",
+            "pointer": "/session_id"
+          },
+          {
+            "name": "permission_mode",
+            "pointer": "/permission_mode"
+          },
+          {
+            "name": "notification_type",
+            "pointer": "/notification_type"
+          }
+        ],
+        "output": "none",
+        "async": true,
+        "timeout_ms": 5000
+      },
+      {
+        "id": "claude.stop",
+        "event": "Stop",
+        "fields": [
+          {
+            "name": "hook_event_name",
+            "pointer": "/hook_event_name"
+          },
+          {
+            "name": "session_id",
+            "pointer": "/session_id"
+          },
+          {
+            "name": "permission_mode",
+            "pointer": "/permission_mode"
+          },
+          {
+            "name": "stop_hook_active",
+            "pointer": "/stop_hook_active"
+          }
+        ],
+        "output": "none",
+        "async": true,
+        "timeout_ms": 5000
+      },
+      {
+        "id": "claude.stop-failure",
+        "event": "StopFailure",
+        "fields": [
+          {
+            "name": "hook_event_name",
+            "pointer": "/hook_event_name"
+          },
+          {
+            "name": "session_id",
+            "pointer": "/session_id"
+          },
+          {
+            "name": "permission_mode",
+            "pointer": "/permission_mode"
+          }
+        ],
+        "output": "none",
+        "async": true,
+        "timeout_ms": 5000
+      },
+      {
+        "id": "claude.session-end",
+        "event": "SessionEnd",
+        "fields": [
+          {
+            "name": "hook_event_name",
+            "pointer": "/hook_event_name"
+          },
+          {
+            "name": "session_id",
+            "pointer": "/session_id"
+          },
+          {
+            "name": "permission_mode",
+            "pointer": "/permission_mode"
+          },
+          {
+            "name": "reason",
+            "pointer": "/reason"
+          }
+        ],
+        "output": "none",
+        "async": true,
+        "timeout_ms": 5000
+      },
+      {
+        "id": "claude.config-change",
+        "event": "ConfigChange",
+        "fields": [
+          {
+            "name": "hook_event_name",
+            "pointer": "/hook_event_name"
+          },
+          {
+            "name": "session_id",
+            "pointer": "/session_id"
+          },
+          {
+            "name": "permission_mode",
+            "pointer": "/permission_mode"
+          },
+          {
+            "name": "source",
+            "pointer": "/source"
+          }
+        ],
+        "output": "deny-from-table",
+        "async": false,
+        "timeout_ms": 5000
+      }
+    ]
+  }
+}

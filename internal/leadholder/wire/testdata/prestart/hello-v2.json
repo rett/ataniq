@@ -1,0 +1,1 @@
+{"version":2,"range":{"min":1,"max":2},"selected":2,"build_id":{"module":"ataniq","version":"v1.0.0","revision":"abc123","modified":false},"packs":[{"name":"sample@1.0.0+r1","declaration_digest":"b42d849b14aa2fd6ad03d886d0ab30efa195bfbba30478f850394e164d417e5f"}],"hook_frames":[1],"session":true,"spec_digest":"9fa09898a45171af266102ce216972f45e9b5bd4f72b574538f51f88769970a0"}
