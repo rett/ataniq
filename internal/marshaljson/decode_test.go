@@ -16,6 +16,10 @@ func mustJSON(t *testing.T, v any) []byte {
 	return b
 }
 
+func warning(text, severity string) map[string]any {
+	return map[string]any{"text": text, "severity": severity}
+}
+
 func TestDocumentEvidence(t *testing.T) {
 	files := casesArchive(t)
 	// Start each mutation with usable evidence. This isolates each signal
@@ -35,7 +39,8 @@ func TestDocumentEvidence(t *testing.T) {
 			f["answer"] = "free-stale"
 			f["lead"] = map[string]any{"id": "lead", "user": "user", "host": "host", "since": "now", "worktree": "0123456789abcdef"}
 		}, true, false, false},
-		{"warning", Check, func(f map[string]any) { f["warnings"] = []string{"opaque text"} }, false, true, false},
+		{"warning", Check, func(f map[string]any) { f["warnings"] = []any{warning("opaque text", "info")} }, false, true, false},
+		{"damaging warning", Check, func(f map[string]any) { f["warnings"] = []any{warning("opaque text", "damaging")} }, false, true, false},
 		{"unnamed without inventory", Check, func(f map[string]any) { f["feature"], f["answer"] = nil, nil }, false, true, false},
 		{"named without answer", Check, func(f map[string]any) { f["answer"] = nil }, false, true, false},
 		{"stale without lead", Check, func(f map[string]any) { f["answer"] = "free-stale" }, true, true, false},
@@ -344,7 +349,10 @@ func TestInventoryEvidenceByFeature(t *testing.T) {
 		{"provisional", Status, func(r map[string]any) { r["provisional"] = true }},
 		{"invalid", Status, func(r map[string]any) { r["integrity"] = "INVALID" }},
 		{"unverifiable", Check, func(r map[string]any) { r["integrity"] = "cannot verify" }},
-		{"overlap warning", Check, func(r map[string]any) { r["warnings"] = []string{"another feature changes the same files"} }},
+		{"overlap warning", Check, func(r map[string]any) {
+			r["warnings"] = []any{warning("another feature changes the same files", "info")}
+		}},
+		{"damaging warning", Check, func(r map[string]any) { r["warnings"] = []any{warning("ref vanished", "damaging")} }},
 		{"truncated record", Handoff, func(r map[string]any) {
 			r["record"].(map[string]any)["data"].(map[string]any)["truncated"] = []string{"goal"}
 		}},
@@ -410,5 +418,255 @@ func TestDocumentSizeLimit(t *testing.T) {
 	check(DecodeResult(Check, 1, nil, over))
 	if _, err := Decode(Refusal, over); err == nil {
 		t.Fatal("oversize refusal line accepted")
+	}
+}
+
+func decodeChange(t *testing.T, kind Kind, name string, change func(map[string]any)) (Document, error) {
+	t.Helper()
+	var f map[string]any
+	if err := json.Unmarshal(fixture(t, casesArchive(t), kind, name), &f); err != nil {
+		t.Fatal(err)
+	}
+	if change != nil {
+		change(f)
+	}
+	return Decode(kind, mustJSON(t, f))
+}
+
+func TestSchema2IntegrityRequired(t *testing.T) {
+	for _, tc := range []struct {
+		kind Kind
+		name string
+	}{{Status, "valid-refs"}, {Check, "valid-refs-name"}} {
+		d, err := decodeChange(t, tc.kind, tc.name, nil)
+		if err != nil || d.Schema() != 2 || d.Fields()["integrity"] == nil {
+			t.Fatalf("%s: schema %d, err %v", tc.kind, d.Schema(), err)
+		}
+		for _, change := range []func(map[string]any){
+			func(f map[string]any) { delete(f, "integrity") },
+			func(f map[string]any) { f["integrity"] = nil },
+			func(f map[string]any) { f["integrity"] = "on" },
+			func(f map[string]any) { f["integrity"] = true },
+			func(f map[string]any) { f["integrity"] = "Off" },
+		} {
+			if d, err := decodeChange(t, tc.kind, tc.name, change); err == nil || d.UsableEvidence("app", "r1") {
+				t.Errorf("%s: integrity missing or outside its enum was accepted", tc.kind)
+			}
+		}
+		for _, mode := range []string{"advisory", "strict"} {
+			d, err := decodeChange(t, tc.kind, tc.name, func(f map[string]any) { f["integrity"] = mode })
+			if err != nil || !d.UsableEvidence("app", "r1") {
+				t.Errorf("%s with integrity %s: usable=%v err=%v", tc.kind, mode, d.UsableEvidence("app", "r1"), err)
+			}
+		}
+	}
+}
+
+// The top-level mode says whether the triplet belongs on a row: off means
+// absent by design, advisory and strict mean present.
+func TestSchema2IntegrityModeJudgesRows(t *testing.T) {
+	dropTriplet := func(f map[string]any) {
+		for _, key := range []string{"integrity", "integrity_note", "signer"} {
+			delete(firstRow(f), key)
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(map[string]any)
+		usable bool
+	}{
+		{"on with triplet", nil, true},
+		{"off with triplet", func(f map[string]any) { f["integrity"] = "off" }, false},
+		{"off without triplet", func(f map[string]any) { f["integrity"] = "off"; dropTriplet(f) }, true},
+		{"on without triplet", dropTriplet, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, err := decodeChange(t, Status, "valid-refs", tc.change)
+			if err != nil || d.UsableEvidence("app", "r1") != tc.usable {
+				t.Fatalf("usable=%v err=%v", d.UsableEvidence("app", "r1"), err)
+			}
+		})
+	}
+}
+
+func TestWarningSeverityIsTyped(t *testing.T) {
+	files := casesArchive(t)
+	d, err := Decode(Check, fixture(t, files, Check, "valid-vanished"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := d.Warnings()
+	if len(got) != 2 || got[0].Severity != SeverityInfo || got[1].Severity != SeverityDamaging ||
+		got[0].Feature != "v1" || got[1].Feature != "v1" || !strings.Contains(got[1].Text, "vanished") {
+		t.Fatalf("warnings %+v", got)
+	}
+	if !d.Damaging() || !d.Incomplete() || d.UsableEvidence("app", "v1") {
+		t.Fatalf("damaging=%v incomplete=%v usable=%v", d.Damaging(), d.Incomplete(), d.UsableEvidence("app", "v1"))
+	}
+	got[0].Text, got[1].Severity = "changed", SeverityInfo
+	if !d.Damaging() || d.Warnings()[0].Text == "changed" {
+		t.Fatal("editing the returned warnings changed the document")
+	}
+
+	// Severity decides, never the words of the text.
+	d, err = decodeChange(t, Check, "valid-yours", func(f map[string]any) {
+		f["warnings"] = []any{warning("the ref vanished from the remote; deleted or rewound", "info")}
+	})
+	if err != nil || d.Damaging() || len(d.Warnings()) != 1 {
+		t.Fatalf("info warning read as damaging: %v", err)
+	}
+	d, err = decodeChange(t, Check, "valid-minimal", nil)
+	if err != nil || d.Damaging() || len(d.Warnings()) != 0 {
+		t.Fatalf("warning-free document: %v", err)
+	}
+}
+
+// A damaging warning of one inventory row withholds that feature only, and
+// the document still reports it.
+func TestDamagingWarningOfInventoryRow(t *testing.T) {
+	d, err := decodeChange(t, Check, "valid-refs", func(f map[string]any) {
+		row := firstRow(f)
+		row["warnings"] = []any{warning("ref vanished", "damaging")}
+	})
+	if err != nil || !d.Damaging() {
+		t.Fatalf("damaging=%v err=%v", d.Damaging(), err)
+	}
+	var damaging []Warning
+	for _, w := range d.Warnings() {
+		if w.Severity == SeverityDamaging {
+			damaging = append(damaging, w)
+		}
+	}
+	if len(damaging) != 1 || damaging[0].Feature != "r1" || d.UsableEvidence("app", "r1") {
+		t.Fatalf("warnings %+v usable=%v", d.Warnings(), d.UsableEvidence("app", "r1"))
+	}
+}
+
+func TestWarningShapeRefused(t *testing.T) {
+	for name, warnings := range map[string][]any{
+		"string at schema 2":   {"plain text"},
+		"unknown severity":     {warning("x", "serious")},
+		"upper case severity":  {warning("x", "Damaging")},
+		"missing severity":     {map[string]any{"text": "x"}},
+		"missing text":         {map[string]any{"severity": "info"}},
+		"null severity":        {map[string]any{"text": "x", "severity": nil}},
+		"severity as number":   {map[string]any{"text": "x", "severity": 1}},
+		"text as object":       {map[string]any{"text": map[string]any{}, "severity": "info"}},
+		"second one is broken": {warning("x", "info"), warning("y", "bad")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d, err := decodeChange(t, Check, "valid-refs-name", func(f map[string]any) { f["warnings"] = warnings })
+			if err == nil || d.UsableEvidence("app", "r1") || len(d.Warnings()) != 0 {
+				t.Fatal("malformed warning accepted")
+			}
+			d, err = decodeChange(t, Check, "valid-refs", func(f map[string]any) { firstRow(f)["warnings"] = warnings })
+			if err == nil || d.UsableEvidence("app", "r1") {
+				t.Fatal("malformed row warning accepted")
+			}
+		})
+	}
+}
+
+func TestUnknownFieldsInWarningsRefusedAsUnknown(t *testing.T) {
+	d, err := decodeChange(t, Check, "valid-yours", func(f map[string]any) {
+		w := warning("x", "damaging")
+		w["future"] = true
+		f["warnings"] = []any{w}
+	})
+	if err != nil || !d.Unknown() || d.UsableEvidence("app", "f1") || !d.Damaging() {
+		t.Fatalf("unknown=%v damaging=%v err=%v", d.Unknown(), d.Damaging(), err)
+	}
+	if _, ok := d.Fields()["warnings"].([]any)[0].(map[string]any)["future"]; ok {
+		t.Fatal("unknown field retained")
+	}
+}
+
+// Qargi 0.3.9 documents (schema 1) still decode, each against its own registry.
+func TestSchema1StillDecodes(t *testing.T) {
+	old := pins[0].archive(t)
+	for _, tc := range []struct {
+		kind Kind
+		name string
+	}{{Status, "valid-refs"}, {Check, "valid-refs-name"}, {Check, "valid-name"}} {
+		d, err := Decode(tc.kind, fixtureAt(t, old, tc.kind, 1, tc.name))
+		if err != nil || d.Schema() != 1 || d.Kind() != tc.kind {
+			t.Fatalf("%s %s: schema %d, err %v", tc.kind, tc.name, d.Schema(), err)
+		}
+	}
+	d, err := Decode(Status, fixtureAt(t, old, Status, 1, "valid-refs"))
+	if err != nil || !d.UsableEvidence("app", "r1") {
+		t.Fatalf("schema 1 status gave no usable evidence: %v", err)
+	}
+	// Schema 1 has no mode, so a row without the triplet is incomplete there.
+	var f map[string]any
+	if err := json.Unmarshal(fixtureAt(t, old, Status, 1, "valid-refs"), &f); err != nil {
+		t.Fatal(err)
+	}
+	delete(firstRow(f), "signer")
+	if d, err := Decode(Status, mustJSON(t, f)); err != nil || d.UsableEvidence("app", "r1") {
+		t.Fatalf("schema 1 row without signer usable: %v", err)
+	}
+	// Schema 1 warnings are text only: visible, but not classified.
+	var c map[string]any
+	if err := json.Unmarshal(fixtureAt(t, old, Check, 1, "valid-refs-name"), &c); err != nil {
+		t.Fatal(err)
+	}
+	c["warnings"] = []any{"the lead is stale"}
+	d, err = Decode(Check, mustJSON(t, c))
+	w := d.Warnings()
+	if err != nil || len(w) != 1 || w[0].Severity != SeverityUnclassified || d.Damaging() || !d.Incomplete() {
+		t.Fatalf("schema 1 warning: %+v err=%v", w, err)
+	}
+	// Fields of one schema do not leak into the other. The top-level mode is
+	// not a schema 1 field, so it is an unknown field there.
+	for _, kind := range []Kind{Status, Check} {
+		name := "valid-refs"
+		if kind == Check {
+			name = "valid-refs-name"
+		}
+		d, err := decodeChange(t, kind, name, func(f map[string]any) { f["schema"] = 1 })
+		if err != nil || !d.Unknown() || d.UsableEvidence("app", "r1") {
+			t.Fatalf("%s: schema 2 mode in a schema 1 document: unknown=%v err=%v", kind, d.Unknown(), err)
+		}
+	}
+	if _, err := decodeChange(t, Check, "valid-refs-name", func(f map[string]any) {
+		f["schema"], f["warnings"] = 1, []any{warning("x", "info")}
+	}); err == nil {
+		t.Fatal("an object warning passed as schema 1")
+	}
+	// A document of schema 2 whose body is schema 1 is refused for its missing mode.
+	for _, kind := range []Kind{Status, Check} {
+		name := "valid-refs"
+		if kind == Check {
+			name = "valid-refs-name"
+		}
+		var f map[string]any
+		if err := json.Unmarshal(fixtureAt(t, old, kind, 1, name), &f); err != nil {
+			t.Fatal(err)
+		}
+		f["schema"] = 2
+		if _, err := Decode(kind, mustJSON(t, f)); err == nil {
+			t.Fatalf("%s: schema 1 body accepted as schema 2", kind)
+		}
+	}
+}
+
+func TestUnknownSchemaRefused(t *testing.T) {
+	for _, kind := range []Kind{Status, Check, Handoff} {
+		for _, n := range []any{0, 3, -1, "2", 2.5, nil, true} {
+			name := "valid-refs"
+			if kind == Check {
+				name = "valid-refs-name"
+			}
+			if d, err := decodeChange(t, kind, name, func(f map[string]any) { f["schema"] = n }); err == nil || d.Kind() != "" {
+				t.Errorf("%s schema %v accepted", kind, n)
+			}
+		}
+	}
+	// Handoff and refusal have no schema 2.
+	for _, kind := range []Kind{Handoff, Refusal} {
+		if len(schemas[kind]) != 1 || schemas[kind][1] == nil {
+			t.Errorf("%s reads schemas %v", kind, schemas[kind])
+		}
 	}
 }
