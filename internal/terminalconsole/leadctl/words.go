@@ -19,7 +19,6 @@ const (
 	busyLine      = "a command for this lead is still being sent"
 	unconfirmed   = "a message for this epoch has no final answer: read the list before you decide anything"
 	notRunning    = "the lead has no epoch: it is not running"
-	injectOffLine = "messages are off for this lead"
 	spentLine     = "a message was already sent in this epoch"
 	blankLine     = "there is nothing to send"
 	pasteLine     = "that paste was not taken: it holds text that cannot be sent"
@@ -71,6 +70,8 @@ var reasonWords = map[string]string{
 	"unavailable":     "the daemon could not carry it out",
 	"not-listed":      "the lead is not one of this daemon's",
 
+	"messages-off":              "messages are off for this lead",
+	"offline":                   "the lead is offline",
 	"define-not-offered":        "the daemon does not offer defining this lead",
 	"start-not-offered":         "the daemon does not offer starting this lead",
 	"stop-not-offered":          "the daemon does not offer stopping this lead",

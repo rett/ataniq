@@ -110,7 +110,8 @@ func (a *leadsAdapter) List() (leadctl.Listing, error) {
 	out := leadctl.Listing{MaxRunning: l.MaxRunning, Running: l.Running, LeftOut: l.LeftOut}
 	for _, r := range l.Leads {
 		lead := leadctl.Lead{
-			Key: r.Key, Role: r.Role, Defined: r.Defined, Provision: r.Provision,
+			Actions: rowActions(r),
+			Key:     r.Key, Role: r.Role, Defined: r.Defined, Provision: r.Provision,
 			State: r.State, StateReason: r.StateReason, Epoch: r.Epoch, Unit: r.Unit, Inject: r.MessagesEnabled, MessageSpent: r.MessageSpent,
 			MessageResult: leadctl.Delivery{Outcome: r.MessageResult.Outcome, Reason: r.MessageResult.Reason, Written: r.MessageResult.Written},
 		}
@@ -126,33 +127,48 @@ func (a *leadsAdapter) List() (leadctl.Listing, error) {
 	return out, nil
 }
 
+func rowActions(row consoleclient.LeadRow) map[leadctl.Control]leadctl.Availability {
+	actions := make(map[leadctl.Control]leadctl.Availability, 6)
+	for _, c := range [...]leadctl.Control{
+		{Op: leadctl.OpDefine}, {Op: leadctl.OpStart}, {Op: leadctl.OpStop},
+		{Op: leadctl.OpInject}, {Op: leadctl.OpTicket, Writer: true}, {Op: leadctl.OpTicket},
+	} {
+		err := row.Capabilities.CheckCommand(consoleclient.LeadOp(c.Op), c.Writer)
+		offer := leadctl.Availability{Offered: err == nil}
+		if err != nil {
+			offer.Reason = c.NotOfferedReason()
+		}
+		if c.Op == leadctl.OpInject && !row.MessagesEnabled {
+			offer = leadctl.Availability{Reason: "messages-off"}
+		}
+		actions[c] = offer
+	}
+	return actions
+}
+
 // Define provisions and defines the lead role.
 func (a *leadsAdapter) Define(role string) (leadctl.Receipt, error) {
 	r, err := a.c.Define(role)
-	return a.answer(leadctl.OpDefine, "define-not-offered", r, err)
+	return a.answer(leadctl.Control{Op: leadctl.OpDefine}, r, err)
 }
 
 // Start starts the lead role.
 func (a *leadsAdapter) Start(role string) (leadctl.Receipt, error) {
 	r, err := a.c.Start(role)
-	return a.answer(leadctl.OpStart, "start-not-offered", r, err)
+	return a.answer(leadctl.Control{Op: leadctl.OpStart}, r, err)
 }
 
 // Stop stops the lead role in epoch.
 func (a *leadsAdapter) Stop(role string, epoch uint64) (leadctl.Receipt, error) {
 	r, err := a.c.Stop(role, epoch)
-	return a.answer(leadctl.OpStop, "stop-not-offered", r, err)
+	return a.answer(leadctl.Control{Op: leadctl.OpStop}, r, err)
 }
 
 // Ticket asks for an attach ticket. A done ticket's attach kind is
 // remembered for the loop.
 func (a *leadsAdapter) Ticket(role string, epoch uint64, writer bool) (leadctl.Receipt, error) {
 	cr, err := a.c.Ticket(role, epoch, writer)
-	missing := "viewer-ticket-not-offered"
-	if writer {
-		missing = "writer-ticket-not-offered"
-	}
-	r, err := a.answer(leadctl.OpTicket, missing, cr, err)
+	r, err := a.answer(leadctl.Control{Op: leadctl.OpTicket, Writer: writer}, cr, err)
 	if err == nil && r.Status == leadctl.Done {
 		a.remember(attachTarget{r.Folder, r.TicketFile}, a.kindOf(cr))
 	}
@@ -162,7 +178,7 @@ func (a *leadsAdapter) Ticket(role string, epoch uint64, writer bool) (leadctl.R
 // Send sends one message to the lead in epoch.
 func (a *leadsAdapter) Send(role string, epoch uint64, messageID, body string) (leadctl.Receipt, error) {
 	r, err := a.c.Send(role, epoch, messageID, body)
-	return a.answer(leadctl.OpInject, "inject-not-offered", r, err)
+	return a.answer(leadctl.Control{Op: leadctl.OpInject}, r, err)
 }
 
 // attachKind is the kind of attach a request of the view is for: the kind of
@@ -183,7 +199,7 @@ func (a *leadsAdapter) remember(t attachTarget, k attachKind) {
 	a.kinds[t] = k
 }
 
-// answer turns the client's answer to a command (op) into the view's.
+// answer turns the client's answer to a control into the view's receipt.
 //
 // An error of the client that says that the command was refused before the
 // daemon admitted it, and that nothing was done, becomes a Refused receipt
@@ -197,10 +213,10 @@ func (a *leadsAdapter) remember(t attachTarget, k attachKind) {
 // A receipt that answers an earlier command (Earlier) is given to the view
 // with the flag set: the view draws it as the answer to an earlier command
 // and never attaches with it. This is the one place that reads the flag.
-func (a *leadsAdapter) answer(op leadctl.Op, missing string, r consoleclient.LeadReceipt, err error) (leadctl.Receipt, error) {
+func (a *leadsAdapter) answer(control leadctl.Control, r consoleclient.LeadReceipt, err error) (leadctl.Receipt, error) {
 	if err != nil {
-		if code, ok := refusedCode(err, missing); ok {
-			return leadctl.Receipt{Op: op, Status: leadctl.Refused, Code: code}, nil
+		if code, ok := refusedCode(err, control.NotOfferedReason()); ok {
+			return leadctl.Receipt{Op: control.Op, Status: leadctl.Refused, Code: code}, nil
 		}
 		return leadctl.Receipt{}, errNoReceipt
 	}

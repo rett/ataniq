@@ -100,7 +100,9 @@ func (f *fakeLeads) closedCount() int {
 }
 
 func aLead() consoleclient.LeadRow {
-	return consoleclient.LeadRow{Key: "alpha", Role: "lead-alpha", Defined: true, Provision: "done", State: "ready", Epoch: 3, Unit: "unit-alpha", Inject: true, MessagesEnabled: true}
+	return consoleclient.LeadRow{Capabilities: consoleclient.LeadCapabilities{
+		Directory: true, Define: true, Start: true, Stop: true, Inject: true, Writer: true, Viewer: true,
+	}, Key: "alpha", Role: "lead-alpha", Defined: true, Provision: "done", State: "ready", Epoch: 3, Unit: "unit-alpha", Inject: true, MessagesEnabled: true}
 }
 
 func doneTicket() consoleclient.LeadReceipt {
@@ -115,6 +117,35 @@ func TestTheKindOfATicketComesFromOneFunction(t *testing.T) {
 	// terminal for every ticket.
 	if got := attachKindOf(consoleclient.LeadReceipt{}); got != attachTerminal {
 		t.Fatalf("kind %q", got)
+	}
+}
+
+func TestCFCapsAdapterPartialOffer(t *testing.T) {
+	row := aLead()
+	row.Capabilities = consoleclient.LeadCapabilities{Directory: true, Viewer: true}
+	other := row
+	other.Role, other.MessagesEnabled = "lead-beta", false
+	other.Capabilities.Viewer, other.Capabilities.Writer = false, true
+	f := &fakeLeads{list: consoleclient.LeadListing{Leads: []consoleclient.LeadRow{row, other}}}
+	list, err := newLeadsAdapter(f).List()
+	if err != nil || len(list.Leads) != 2 {
+		t.Fatalf("list = %+v, err = %v", list, err)
+	}
+	for _, tc := range []struct {
+		row     int
+		control leadctl.Control
+		want    leadctl.Availability
+	}{
+		{0, leadctl.Control{Op: leadctl.OpTicket}, leadctl.Availability{Offered: true}},
+		{0, leadctl.Control{Op: leadctl.OpTicket, Writer: true}, leadctl.Availability{Reason: "writer-ticket-not-offered"}},
+		{0, leadctl.Control{Op: leadctl.OpInject}, leadctl.Availability{Reason: "inject-not-offered"}},
+		{1, leadctl.Control{Op: leadctl.OpTicket}, leadctl.Availability{Reason: "viewer-ticket-not-offered"}},
+		{1, leadctl.Control{Op: leadctl.OpTicket, Writer: true}, leadctl.Availability{Offered: true}},
+		{1, leadctl.Control{Op: leadctl.OpInject}, leadctl.Availability{Reason: "messages-off"}},
+	} {
+		if got := list.Leads[tc.row].Actions[tc.control]; got != tc.want {
+			t.Errorf("row %d, %+v: got %+v, want %+v", tc.row, tc.control, got, tc.want)
+		}
 	}
 }
 
@@ -159,6 +190,16 @@ func TestTheAdapterMapsTheListing(t *testing.T) {
 			Last:          &leadctl.Receipt{CommandID: "c9", Op: leadctl.OpStart, Status: leadctl.Refused, Code: "max-running"}},
 		{Key: "beta", Role: "lead-beta"},
 	}}
+	want.Leads[0].Actions = map[leadctl.Control]leadctl.Availability{
+		{Op: leadctl.OpDefine}: {Offered: true}, {Op: leadctl.OpStart}: {Offered: true},
+		{Op: leadctl.OpStop}: {Offered: true}, {Op: leadctl.OpInject}: {Offered: true},
+		{Op: leadctl.OpTicket}: {Offered: true}, {Op: leadctl.OpTicket, Writer: true}: {Offered: true},
+	}
+	want.Leads[1].Actions = map[leadctl.Control]leadctl.Availability{
+		{Op: leadctl.OpDefine}: {Reason: "define-not-offered"}, {Op: leadctl.OpStart}: {Reason: "start-not-offered"},
+		{Op: leadctl.OpStop}: {Reason: "stop-not-offered"}, {Op: leadctl.OpInject}: {Reason: "messages-off"},
+		{Op: leadctl.OpTicket}: {Reason: "viewer-ticket-not-offered"}, {Op: leadctl.OpTicket, Writer: true}: {Reason: "writer-ticket-not-offered"},
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v\nwant %+v", got, want)
 	}
