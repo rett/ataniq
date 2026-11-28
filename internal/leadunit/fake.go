@@ -1039,7 +1039,11 @@ func (f *Fake) Inspect(ctx context.Context, unit string) (st State, err error) {
 }
 
 // Signal implements [Manager]. The fake acts on SIGTERM and SIGKILL only;
-// any other signal reaches the processes and does nothing.
+// any other signal reaches the processes and does nothing. It refuses what
+// the contract refuses, and signals nothing then: [ErrNotLoaded],
+// [ErrInvocationChanged], [ErrNoControlGroupID] for a State with no control
+// group identity or path, and [ErrControlGroupMismatch] for another group
+// than the one the State names.
 func (f *Fake) Signal(ctx context.Context, st State, sig syscall.Signal) (err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1063,6 +1067,15 @@ func (f *Fake) Signal(ctx context.Context, st State, sig syscall.Signal) (err er
 	}
 	if st.InvocationID == "" || st.InvocationID != u.invocation {
 		return ErrInvocationChanged
+	}
+	// As in the real manager, a State that records no control group identity
+	// (or no path) is refused, and a group of another identity or path than
+	// the one the State names is not signalled.
+	if st.ControlGroupID == "" || st.ControlGroup == "" {
+		return ErrNoControlGroupID
+	}
+	if st.ControlGroupID != u.cgroupID || st.ControlGroup != u.cgroup {
+		return ErrControlGroupMismatch
 	}
 	// The call is logged before its effect, so that the stops it causes in
 	// bound units follow it in the log.
