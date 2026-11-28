@@ -10,6 +10,7 @@
 {{range .}}<li><a href="{{mount}}{{cardHref .ID}}">
 <span class="what">{{if mount}}{{text instance maxName}} · {{end}}{{text .Project maxName}} · {{text .Verb maxName}}{{if .Feature}} {{text .Feature maxName}}{{end}}</span>
 <span class="meta">{{text .ID maxID}}. Asked {{when .Asked}}. Ends {{until $.Now .Expires}}.</span>
+{{if .BindingTag}}<span class="meta mono">{{bindingTag .BindingTag}}</span>{{else}}<span class="meta">Open for binding tag.</span>{{end}}
 {{if .Held}}<span class="held">Held: decided past the limit.</span>{{end}}
 </a></li>
 {{end}}</ul>
