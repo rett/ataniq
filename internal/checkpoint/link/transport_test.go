@@ -8,8 +8,10 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"errors"
+	"io"
 	"net"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -171,27 +173,57 @@ func TestMalformedAndSlowFramesClose(t *testing.T) {
 		})
 	}
 }
+
+type pausedOwnerRead struct {
+	cp.Administration
+	entered, resume chan struct{}
+}
+
+func (a pausedOwnerRead) Read(ctx context.Context, q cp.ReadRequest) (cp.View, error) {
+	close(a.entered)
+	<-a.resume
+	return a.Administration.Read(ctx, q)
+}
+
 func TestConnectionCap(t *testing.T) {
 	f := newFixture(t, "witness")
 	f.s.ownerCapacity = 1
-	e := f.endpoint(testOwner(t, f.s, f.w, f.w.Administration(), f.id.Fingerprint()))
+	backend := pausedOwnerRead{f.w.Administration(), make(chan struct{}), make(chan struct{})}
+	f.enroll(t, backend.Administration)
+	e := f.endpoint(testOwner(t, f.s, f.w, backend, f.id.Fingerprint()))
+	owner, err := e.Administration(f.id)
+	must(t, err)
+	// Backend entry proves the server holds the slot, and pausing the read
+	// keeps it occupied until the excess connection has closed.
+	finished := make(chan error, 1)
+	go func() {
+		_, err := owner.Read(t.Context(), cp.ReadRequest{Slot: f.slot, Challenge: cp.ID{1}})
+		finished <- err
+	}()
+	defer close(backend.resume)
+	select {
+	case <-backend.entered:
+	case err := <-finished:
+		t.Fatalf("first read ended before reaching the backend: %v", err)
+	}
+
 	tr, err := e.transport(f.id)
-	must(t, err)
-	// Occupy the one permitted connection through its handshake.
-	busy, err := tr.connect(t.Context())
-	must(t, err)
-	defer busy.NetConn().Close()
-	_, err = busy.Write([]byte{0})
 	must(t, err)
 	c, err := tr.connect(t.Context())
 	must(t, err)
 	defer c.NetConn().Close()
-	c.SetDeadline(time.Now().Add(time.Second))
-	_, err = c.Read(make([]byte, 1))
-	var timeout net.Error
-	if err == nil || errors.As(err, &timeout) && timeout.Timeout() {
-		t.Fatalf("excess connection stayed open: %v", err)
+	// An admitted connection would receive a reply to this full frame, even
+	// when the backend refuses status. A rejected peer may race the write.
+	challenge := cp.ID{2}
+	err = frame.New(frame.OwnerStatus, challenge[:]).WriteToStream(c)
+	if err != nil && !errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, syscall.EPIPE) && !errors.Is(err, syscall.ECONNRESET) {
+		t.Fatalf("excess connection write: %v", err)
 	}
+	if n, err := c.Read(make([]byte, 1)); n != 0 || (!errors.Is(err, io.EOF) && !errors.Is(err, syscall.ECONNRESET)) {
+		t.Fatalf("excess connection read (%d, %v), want peer close", n, err)
+	}
+	backend.resume <- struct{}{}
+	must(t, <-finished)
 }
 
 func TestReadAuthenticationAndOwnerIsolation(t *testing.T) {
