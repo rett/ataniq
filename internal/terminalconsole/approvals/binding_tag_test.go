@@ -50,6 +50,19 @@ func TestBindingTagMissingFromListing(t *testing.T) {
 	r.seen("Binding tag: " + card.BindingTag(c.BindingSHA256))
 }
 
+func TestCF07BindingTagListRow(t *testing.T) {
+	b := newBackend(t)
+	b.listing.Pending = []card.Item{
+		{Verb: "feature finish", Feature: "first", BindingSHA256: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"},
+		{Verb: "feature finish", Feature: "second"},
+	}
+	r := newRig(t, b, 120, 24)
+	r.seen("name=first  Binding tag: marsh candle koala lotus", "name=second  open for binding tag")
+	if len(b.opens) != 0 {
+		t.Fatalf("drawing the list opened %v", b.opens)
+	}
+}
+
 func TestBindingTagMalformedIsInert(t *testing.T) {
 	c := testCard("p-1")
 	c.BindingSHA256 = strings.Repeat("a", 59) + "\x1b[2J!"
