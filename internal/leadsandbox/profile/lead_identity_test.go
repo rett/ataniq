@@ -35,30 +35,34 @@ func TestQualifiedLeadIdentity(t *testing.T) {
 }
 
 func TestCoordinatorActorUsesTheQualifiedLead(t *testing.T) {
-	in := fixture(Claude)
-	for _, suffix := range []string{":coord:one:1", "@e7:coord:feature-two:13"} {
-		for _, prefix := range []string{in.Project + "-lead", in.LeadIdentity} {
-			in.ExtraEnv = []EnvVar{{EnvQargiActor, prefix + suffix}}
-			env := envMap(t, in)
-			if env[EnvQargiActor] != env[EnvQargiLead]+suffix {
-				t.Errorf("actor = %q, lead = %q", env[EnvQargiActor], env[EnvQargiLead])
+	for _, rt := range Runtimes() {
+		t.Run(string(rt), func(t *testing.T) {
+			in := fixture(rt)
+			for _, suffix := range []string{":coord:one:1", "@e7:coord:feature-two:13"} {
+				for _, prefix := range []string{in.Project + "-lead", in.LeadIdentity} {
+					in.ExtraEnv = []EnvVar{{EnvQargiActor, prefix + suffix}}
+					env := envMap(t, in)
+					if env[EnvQargiActor] != env[EnvQargiLead]+suffix {
+						t.Errorf("actor = %q, lead = %q", env[EnvQargiActor], env[EnvQargiLead])
+					}
+				}
 			}
-		}
-	}
-	in.LeadIdentity = strings.Repeat("p", 64)
-	for _, bad := range []string{
-		"other-lead:coord:one:1", "ataniq-lead:coord:one:0",
-		"ataniq-lead:coord:a--b:1", "ataniq-lead:coord:" + strings.Repeat("a", 41) + ":1",
-		"ataniq-lead@e1234567890:coord:" + strings.Repeat("a", 40) + ":1234567890",
-	} {
-		in.ExtraEnv = []EnvVar{{EnvQargiActor, bad}}
-		if _, err := in.Environment(); err == nil || refusalOf(t, err).Field != EnvQargiActor {
-			t.Errorf("invalid actor: %v", err)
-		}
-	}
-	in.LeadIdentity = ""
-	in.ExtraEnv = []EnvVar{{EnvQargiActor, "ataniq-lead:coord:one:1"}}
-	if _, err := in.Environment(); err == nil || refusalOf(t, err).Field != EnvQargiActor {
-		t.Errorf("coordinator without a parent identity: %v", err)
+			in.LeadIdentity = strings.Repeat("p", 64)
+			for _, bad := range []string{
+				"other-lead:coord:one:1", "ataniq-lead:coord:one:0",
+				"ataniq-lead:coord:a--b:1", "ataniq-lead:coord:" + strings.Repeat("a", 41) + ":1",
+				"ataniq-lead@e1234567890:coord:" + strings.Repeat("a", 40) + ":1234567890",
+			} {
+				in.ExtraEnv = []EnvVar{{EnvQargiActor, bad}}
+				if _, err := in.Environment(); err == nil || refusalOf(t, err).Field != EnvQargiActor {
+					t.Errorf("invalid actor: %v", err)
+				}
+			}
+			in.LeadIdentity = ""
+			in.ExtraEnv = []EnvVar{{EnvQargiActor, "ataniq-lead:coord:one:1"}}
+			if _, err := in.Environment(); err == nil || refusalOf(t, err).Field != EnvQargiActor {
+				t.Errorf("coordinator without a parent identity: %v", err)
+			}
+		})
 	}
 }
