@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"ataniq/internal/cgroupsig"
 	"ataniq/internal/leadunit"
 	"ataniq/internal/systemd"
 )
@@ -37,6 +38,7 @@ type Options struct {
 type Manager struct {
 	run     Runner
 	k       kernel
+	pk      cgroupsig.Kernel // pidfd calls of Signal; nil means the host's
 	timeout time.Duration
 }
 
@@ -303,17 +305,25 @@ func parseGroupID(s string) (systemd.FileIdentity, bool) {
 // ([ErrUnsupportedSignal] otherwise). It inspects the unit, returns
 // [leadunit.ErrNotLoaded] when it is not loaded and
 // [leadunit.ErrInvocationChanged] when its invocation is not st's (or st has
-// none), and then runs "systemctl --user kill --kill-whom=all".
+// none). A State that records no control group identity is refused
+// ([leadunit.ErrNoControlGroupID]): the signal is sent to a control group
+// that is pinned and checked, never to a unit by name.
 //
-// The window. systemctl kill names the unit, not the invocation, so between
-// the inspection and the kill the unit could end and another invocation start,
-// and the signal would reach that one. The window is accepted: the unit name
-// belongs to one role and only the one daemon starts units of that name, and
-// the daemon starts a new invocation only after the previous one is proven
-// gone and while it holds the role's lock; with Restart=no systemd starts no
-// other. A signal that reaches a newer invocation of the same role's unit is
-// the signal the daemon was about to send for that role anyway. The kill
-// reports no success for a unit that is gone ([leadunit.ErrNotLoaded]).
+// The signal. The control group the State names is opened by path without
+// following links and its identity (device, inode, owner) is compared with
+// the one the State recorded; another identity is
+// [leadunit.ErrControlGroupMismatch] and nothing is written. Every later step
+// goes through that one open directory (see internal/cgroupsig).
+//
+//   - SIGKILL writes "1" to its cgroup.kill, which the kernel applies to the
+//     whole group and its sub-groups.
+//   - SIGTERM goes to the processes cgroup.procs lists (not those of
+//     sub-groups), each through a pidfd opened before the file is listed again,
+//     the main process first; a pid that is no longer listed is skipped.
+//
+// A group that was removed is [leadunit.ErrNotLoaded]. A kernel without
+// cgroup.kill fails SIGKILL ([cgroupsig.ErrNoKill]); nothing else is tried, in
+// particular no "systemctl kill", which names the unit and not the invocation.
 func (m *Manager) Signal(ctx context.Context, st leadunit.State, sig syscall.Signal) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -321,13 +331,7 @@ func (m *Manager) Signal(ctx context.Context, st leadunit.State, sig syscall.Sig
 	if err := validUnitName(st.Unit); err != nil {
 		return err
 	}
-	var name string
-	switch sig {
-	case syscall.SIGTERM:
-		name = "SIGTERM"
-	case syscall.SIGKILL:
-		name = "SIGKILL"
-	default:
+	if sig != syscall.SIGTERM && sig != syscall.SIGKILL {
 		return fmt.Errorf("%w: %d", ErrUnsupportedSignal, int(sig))
 	}
 	cur, err := m.Inspect(ctx, st.Unit)
@@ -340,20 +344,42 @@ func (m *Manager) Signal(ctx context.Context, st leadunit.State, sig syscall.Sig
 	if st.InvocationID == "" || cur.InvocationID == "" || cur.InvocationID != st.InvocationID {
 		return leadunit.ErrInvocationChanged
 	}
-	if st.ControlGroupID != "" && cur.ControlGroupID != "" && st.ControlGroupID != cur.ControlGroupID {
+	if st.ControlGroupID == "" {
+		return leadunit.ErrNoControlGroupID
+	}
+	id, ok := parseGroupID(st.ControlGroupID)
+	if !ok || st.ControlGroup == "" {
+		return fmt.Errorf("%w: unreadable identity or no path", leadunit.ErrNoControlGroupID)
+	}
+	if cur.ControlGroupID != "" && st.ControlGroupID != cur.ControlGroupID ||
+		cur.ControlGroup != "" && st.ControlGroup != cur.ControlGroup {
 		return leadunit.ErrControlGroupMismatch
 	}
-	out, err := m.call(ctx, killArgv(st.Unit, name))
+	g, err := cgroupsig.Open(m.pk, cgroupMount, st.ControlGroup, cgroupsig.Identity(id))
 	if err != nil {
-		if cerr := ctx.Err(); cerr != nil {
-			return cerr
-		}
-		if strings.Contains(out, "Unit "+st.Unit+" not loaded") {
-			return leadunit.ErrNotLoaded
-		}
-		return fmt.Errorf("systemdmgr: kill %s: %s: %w", st.Unit, snippet(out), err)
+		return signalError(st.Unit, err)
+	}
+	defer g.Close()
+	if sig == syscall.SIGKILL {
+		err = g.Kill()
+	} else {
+		_, err = g.Signal(sig, cur.MainPID)
+	}
+	if err != nil {
+		return signalError(st.Unit, err)
 	}
 	return nil
+}
+
+// signalError maps the errors of internal/cgroupsig to those of the manager.
+func signalError(unit string, err error) error {
+	switch {
+	case errors.Is(err, cgroupsig.ErrGone):
+		return leadunit.ErrNotLoaded
+	case errors.Is(err, cgroupsig.ErrIdentity):
+		return leadunit.ErrControlGroupMismatch
+	}
+	return fmt.Errorf("systemdmgr: signal %s: %w", unit, err)
 }
 
 // Empty implements [leadunit.Manager]. It is true only on positive proof, in

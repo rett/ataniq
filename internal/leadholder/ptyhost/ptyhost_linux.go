@@ -163,7 +163,6 @@ const (
 	DefaultProcScanLimit = 1 << 17
 
 	maxStatBytes   = 4 << 10
-	maxProcsBytes  = 1 << 20
 	maxCgroupBytes = 64 << 10
 )
 

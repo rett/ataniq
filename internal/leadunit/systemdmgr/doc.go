@@ -24,10 +24,12 @@
 // completes later, so that state can be partial (see [Manager.Start]). Inspect
 // is one "systemctl --user show --all" with a fixed property list, which
 // includes BindsTo: State.Parent is that unit when the list names exactly one
-// service unit, and empty in any other case. Signal checks the invocation,
-// then runs "systemctl --user kill --kill-whom=all". Empty proves a control
-// group empty from the control group file system and the manager, in the cases
-// listed at [Manager.Empty].
+// service unit, and empty in any other case. Signal checks the invocation
+// and the recorded control group identity, then signals the control group
+// itself, pinned by an open directory (SIGKILL through its cgroup.kill, SIGTERM
+// through pidfds of the processes it lists); it runs no "systemctl kill". Empty
+// proves a control group empty from the control group file system and the
+// manager, in the cases listed at [Manager.Empty].
 //
 // # Failure classes of Start
 //
@@ -65,8 +67,10 @@
 // gets, besides the explicit environment, what systemd adds (the environment
 // block of the user manager, HOME, LOGNAME, USER, SHELL, INVOCATION_ID and
 // the like); the explicit entries win on the same name. Signal checks the
-// invocation and then kills by name, so a unit that restarts in between is hit
-// (see [Manager.Signal]). An Empty answer is a fact about the instant it was
+// invocation and then signals the control group the State recorded, by
+// identity, so a unit that restarts in between is not hit (see
+// [Manager.Signal]); its SIGKILL needs cgroup.kill (Linux 5.14), which was not
+// checked on a live host. An Empty answer is a fact about the instant it was
 // read. The control group file system is read at the fixed mount
 // "/sys/fs/cgroup" through internal/systemd; nothing proves that the mount is
 // the manager's own beyond the identity checks those helpers make.
