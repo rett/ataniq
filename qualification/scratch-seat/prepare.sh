@@ -1028,25 +1028,26 @@ record_baseline() {
   fi
   # The name, in one rename that replaces nothing, not even an empty folder
   # made at that name meanwhile: GNU mv -n renames with RENAME_NOREPLACE and
-  # leaves the folder where it is when the name is taken. Whether the
-  # staging folder is gone decides, not mv's exit status (mv -n ends 0 when
-  # it skips).
+  # leaves the staging folder in place when the name is taken. Versions of
+  # mv differ in their diagnostic and exit status for that refusal.
   _mrc=0
-  mv -n -T -- "$_tmp" "$BASELINE" || _mrc=$?
+  _mv_diag=$(mv -n -T -- "$_tmp" "$BASELINE" 2>&1) || _mrc=$?
   if [ -e "$_tmp" ] || [ -L "$_tmp" ]; then
-    not_recorded "the baseline written in $_tmp was not given its name $BASELINE (the rename ended with exit status $_mrc): a folder of that name appeared meanwhile, and nothing was replaced; the one in $_tmp is not the baseline"
+    if [ -e "$BASELINE" ] || [ -L "$BASELINE" ]; then
+      not_recorded "the baseline written in $_tmp was not given its name $BASELINE: that name was taken meanwhile, and nothing was replaced; the one in $_tmp is not the baseline"
+      return 0
+    fi
+  elif [ "$_mrc" -eq 0 ] && [ ! -L "$BASELINE" ] && [ -d "$BASELINE" ]; then
+    # The name on disk too, before success is said.
+    if ! sync -- "$EVIDENCE"; then
+      not_recorded "the evidence folder $EVIDENCE cannot be synced after $BASELINE got its name, so the name may not survive a power loss: do not start the sitting, prepare a new root"
+      return 0
+    fi
+    say "status: recorded: the digests of the trial's six files and the key list's prefix $_p, one baseline in $BASELINE, synced to disk"
     return 0
   fi
-  if [ "$_mrc" -ne 0 ] || [ -L "$BASELINE" ] || [ ! -d "$BASELINE" ]; then
-    not_recorded "the rename to $BASELINE ended with exit status $_mrc: look at $EVIDENCE; do not start the sitting, prepare a new root"
-    return 0
-  fi
-  # The name on disk too, before success is said.
-  if ! sync -- "$EVIDENCE"; then
-    not_recorded "the evidence folder $EVIDENCE cannot be synced after $BASELINE got its name, so the name may not survive a power loss: do not start the sitting, prepare a new root"
-    return 0
-  fi
-  say "status: recorded: the digests of the trial's six files and the key list's prefix $_p, one baseline in $BASELINE, synced to disk"
+  [ -z "$_mv_diag" ] || printf '%s\n' "$_mv_diag" >&2
+  not_recorded "the rename to $BASELINE ended with exit status $_mrc: look at $EVIDENCE; do not start the sitting, prepare a new root"
 }
 
 # compare_record is --status --compare: the trial's files against the record
