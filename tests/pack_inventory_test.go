@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -1467,14 +1468,20 @@ func TestPackInventoryRefusals(t *testing.T) {
 	// Each design case is a separate required input. Removing a tree must
 	// not silently turn its check green.
 	for _, required := range strings.Fields("seat-capability seat-dispatch computed-operations bool-configure capability-mode " +
-		"widening-import both-only desk-hook-on withdraw-body four-calls handler-func unknown-tag other-os nested-module excluded-capability hook-field session-tag plural-operation generic-extension") {
+		"widening-import both-only desk-hook-on withdraw-body four-calls handler-func unknown-tag other-os nested-module excluded-capability hook-field session-tag plural-operation generic-extension multi-build") {
 		if !slices.ContainsFunc(cases, func(e fs.DirEntry) bool { return e.IsDir() && e.Name() == required }) {
 			t.Errorf("missing refusal fixture %s", required)
 		}
 	}
 	tool := canaryGoTool(t)
+	// Each fixture runs its tag sets in golden order. Limit the number of
+	// concurrent go list processes even on hosts with a high -parallel.
+	slots := make(chan struct{}, min(4, runtime.GOMAXPROCS(0)))
 	for _, entry := range cases {
 		t.Run(entry.Name(), func(t *testing.T) {
+			t.Parallel()
+			slots <- struct{}{}
+			defer func() { <-slots }()
 			src := filepath.Join(folder, entry.Name())
 			// Materialize tagged .go.in files outside testdata. The tag
 			// placement guards intentionally forbid tagged Go files there.
