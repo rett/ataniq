@@ -538,6 +538,74 @@ func TestFakeSignalControlGroupContract(t *testing.T) {
 	}
 }
 
+// TestFakeHideControlGroupID: while it is set the State of a unit has no
+// control group identity, and Signal refuses it without effect; a State taken
+// before still works, and the option can be cleared.
+func TestFakeHideControlGroupID(t *testing.T) {
+	r := newRig(t)
+	r.fake.SetProcs(unitA, ProcScript{Behavior: IgnoreTerm})
+	whole := r.start(unitA, 1)
+	r.fake.HideControlGroupID(unitA, true)
+	hidden := r.inspect(unitA)
+	if hidden.ControlGroupID != "" || hidden.ControlGroup != whole.ControlGroup || hidden.InvocationID != whole.InvocationID || !hidden.Live() {
+		t.Fatalf("hidden State %+v, whole %+v", hidden, whole)
+	}
+	if err := r.fake.Signal(r.ctx, hidden, syscall.SIGKILL); !errors.Is(err, ErrNoControlGroupID) {
+		t.Fatalf("Signal of a State without an identity: %v", err)
+	}
+	if !r.inspect(unitA).Live() {
+		t.Fatal("the refused signal reached the unit")
+	}
+	r.fake.HideControlGroupID(unitA, false)
+	if got := r.inspect(unitA); got.ControlGroupID != whole.ControlGroupID {
+		t.Fatalf("after clearing: %+v", got)
+	}
+	r.fake.HideControlGroupID(unitA, true)
+	r.signal(whole, syscall.SIGKILL) // a State taken before the option still works
+	if r.fake.Loaded(unitA) {
+		t.Fatal("the kill did not end the unit")
+	}
+}
+
+// TestFakeSignalPartly: a scripted partial signal reaches the main process
+// only and returns ErrPartialSignal, for as many calls as scripted; the checks
+// of Signal come first and do not use the script up.
+func TestFakeSignalPartly(t *testing.T) {
+	r := newRig(t)
+	r.fake.SetProcs(unitA, ProcScript{Behavior: ExitOnTerm}, ProcScript{Behavior: ExitOnTerm}, ProcScript{Behavior: IgnoreTerm})
+	st := r.start(unitA, 1)
+	if n := len(r.fake.Processes(unitA)); n != 3 {
+		t.Fatalf("%d processes", n)
+	}
+	r.fake.SignalPartly(unitA, 1)
+	stale := st
+	stale.InvocationID = "other"
+	if err := r.fake.Signal(r.ctx, stale, syscall.SIGTERM); !errors.Is(err, ErrInvocationChanged) {
+		t.Fatalf("stale invocation: %v", err)
+	}
+	if err := r.fake.Signal(r.ctx, st, syscall.SIGTERM); !errors.Is(err, ErrPartialSignal) {
+		t.Fatalf("partial TERM: %v", err)
+	}
+	if n := len(r.fake.Processes(unitA)); n != 2 {
+		t.Fatalf("%d processes after a partial TERM, want 2 (the main one gone)", n)
+	}
+	calls := r.fake.CallsOf(MethodSignal)
+	if last := calls[len(calls)-1]; !errors.Is(last.Err, ErrPartialSignal) || last.Signal != syscall.SIGTERM {
+		t.Fatalf("logged %+v", last)
+	}
+	// The script is spent: the next TERM reaches every process.
+	r.signal(st, syscall.SIGTERM)
+	if n := len(r.fake.Processes(unitA)); n != 1 {
+		t.Fatalf("%d processes after a whole TERM, want the one that ignores it", n)
+	}
+	r.fake.SignalPartly(unitA, 2)
+	r.fake.SignalPartly(unitA, 0)
+	r.signal(st, syscall.SIGKILL)
+	if r.fake.Loaded(unitA) {
+		t.Fatal("a cleared script still made the kill partial")
+	}
+}
+
 func TestFakeSignalReachesEveryProcess(t *testing.T) {
 	r := newRig(t)
 	r.fake.SetProcs(unitA, ProcScript{}, ProcScript{}, ProcScript{Behavior: ExitOnTermAfter, Delay: time.Second})
