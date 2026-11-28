@@ -228,7 +228,7 @@ func (c *Client) Close() {
 	c.wg.Wait()
 	if first {
 		c.mu.Lock()
-		if c.started && c.st.Reason != "session ended" {
+		if c.started && c.st.Conn != terminalconsole.LiveStoppedReselect && c.st.Reason != "session ended" {
 			c.st.Conn = terminalconsole.LiveDisconnected
 			c.st.Reason = "closed"
 		}
@@ -316,6 +316,15 @@ func (c *Client) setDisconnected(reason string) {
 	})
 }
 
+func (c *Client) stopForReselect() {
+	const reason = "the lead's epoch changed: select the lead again"
+	c.mutate(func() {
+		c.st.Conn = terminalconsole.LiveStoppedReselect
+		c.st.Reason = reason
+		c.addNoticeLocked(liveNotice("epoch-changed", reason))
+	})
+}
+
 // setWaiting says that the client waits for a ticket. The reason is that, and
 // why the source gave none when it said (not ErrNoTicket), or else why the
 // last connection ended.
@@ -387,6 +396,10 @@ func (c *Client) run() {
 		var err error
 		if c.issueBeforeDial {
 			ticket, err = c.askTicket()
+			if errors.Is(err, ErrReselect) {
+				c.stopForReselect()
+				return
+			}
 		} else if ready := c.cfg.TicketReady; ready != nil {
 			err = ready()
 		}
@@ -432,6 +445,10 @@ func (c *Client) run() {
 		missed = false
 		c.setConnecting(resync)
 		out := c.attach(nc, ticket, resync)
+		if out.kind == outReselect {
+			c.stopForReselect()
+			return
+		}
 		resync = false
 		if out.checked {
 			fails, resyncs = 0, 0

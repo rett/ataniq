@@ -120,6 +120,8 @@ const (
 	// outRoleMismatch: the welcome claimed the wrong place. Detach to
 	// release it before asking for another ticket.
 	outRoleMismatch
+	// outReselect: the Welcome belongs to a different lead or epoch.
+	outReselect
 	// outProtocol: the holder broke the protocol; the next attempt waits
 	// longer each time.
 	outProtocol
@@ -185,7 +187,7 @@ func (c *Client) attach(nc net.Conn, ticket string, resync bool) (out outcome) {
 		if !started {
 			close(cn.sendDone)
 		}
-		if n := cn.finish(out.kind == outClosed || out.kind == outResync || out.kind == outRoleMismatch); n > 0 {
+		if n := cn.finish(out.kind == outClosed || out.kind == outResync || out.kind == outRoleMismatch || out.kind == outReselect); n > 0 {
 			// Input that was queued and never written is not sent later, to
 			// a different screen; it is counted.
 			c.mu.Lock()
@@ -330,6 +332,9 @@ func (s *session) handshake(f wire.Frame) *outcome {
 	if w.Version != wire.ProtocolVersion {
 		return &outcome{kind: outStop, reason: versionReason(w.Version)}
 	}
+	if !c.acceptTarget(w) {
+		return &outcome{kind: outReselect}
+	}
 	if want := wire.Role(c.cfg.Mode); w.Role != want {
 		reason := "requested " + string(want) + " but the ticket granted " + string(w.Role)
 		c.mutate(func() { c.addNoticeLocked(liveNotice("role-mismatch", reason)) })
@@ -352,6 +357,20 @@ func (s *session) handshake(f wire.Frame) *outcome {
 		// would go to a screen the user cannot see.
 	})
 	return nil
+}
+
+// acceptTarget checks or completes the lifetime pin before the client uses
+// anything from this Welcome. Only the attach goroutine reads or changes it.
+func (c *Client) acceptTarget(w wire.Welcome) bool {
+	lead, epoch := c.cfg.ExpectLead, c.cfg.ExpectEpoch
+	if !c.issueBeforeDial && lead == "" && epoch == 0 {
+		return true
+	}
+	if (lead != "" && lead != w.Lead) || (epoch != 0 && epoch != w.Epoch) {
+		return false
+	}
+	c.cfg.ExpectLead, c.cfg.ExpectEpoch = w.Lead, w.Epoch
+	return true
 }
 
 func refusal(what, text string) string {
