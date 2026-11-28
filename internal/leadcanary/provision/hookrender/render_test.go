@@ -126,6 +126,17 @@ func TestSyntheticRender(t *testing.T) {
 	}
 }
 
+func TestOversizeHelperTable(t *testing.T) {
+	x := synthetic(t, false)
+	x.src.Declaration.Hooks[x.s.Version] = []pack.HookRow{{
+		ID: "start", Event: strings.Repeat("e", pack.MaxDeclarationBytes), Output: "none", TimeoutMS: 1,
+	}}
+	out, err := x.src.Preview(x.s)
+	if err == nil || !reflect.DeepEqual(out, hookrender.Files{}) {
+		t.Fatal("oversize helper table must refuse the whole preview")
+	}
+}
+
 func TestMalformedFileTemplates(t *testing.T) {
 	for _, tc := range []struct{ name, old, replacement string }{
 		{"extra file", settings, "/etc/example/other.json"},

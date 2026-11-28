@@ -16,7 +16,6 @@ import (
 	"strings"
 	"unicode"
 
-	"ataniq/internal/agentsession/hookwire"
 	lp "ataniq/internal/launchpolicy"
 	"ataniq/internal/pack"
 )
@@ -27,6 +26,25 @@ type Source struct {
 	Declaration *pack.Declaration
 	Layout      pack.BindLayout
 	Templates   fs.FS
+}
+
+// FromPack reads the embedded data of a registered runtime pack.
+func FromPack(p pack.Pack, layout pack.BindLayout) (Source, error) {
+	data, ok := p.(interface {
+		SandboxData() (manifest, hooks []byte, templates fs.FS)
+	})
+	if !ok {
+		return Source{}, errors.New("pack has no sandbox data")
+	}
+	manifest, hooks, templates := data.SandboxData()
+	src, err := Decode(manifest, hooks, templates, layout)
+	if err != nil {
+		return Source{}, err
+	}
+	if src.Declaration.Manifest.Name != p.Name() {
+		return Source{}, errors.New("sandbox declaration differs from registered pack")
+	}
+	return src, nil
 }
 
 // Decode joins the pack's three declaration files using the declaration
@@ -165,8 +183,10 @@ func (src Source) files(b pack.Sandbox, s lp.Snapshot) (Files, error) {
 	if err != nil {
 		return Files{}, err
 	}
-	if _, err := hookwire.DecodeTable(table); err != nil {
-		return Files{}, err
+	// build validated the hook rows. Indentation can still put the serialized
+	// companion over the helper's input limit.
+	if len(table) > pack.MaxDeclarationBytes {
+		return Files{}, errors.New("hook table exceeds declaration bound")
 	}
 	out := Files{HelperTable: string(table)}
 	docs, err := src.templates(s.Version, rows)

@@ -1,6 +1,6 @@
 //go:build ataniq_canary
 
-package hookrender_test
+package all_test
 
 import (
 	"bytes"
@@ -16,25 +16,16 @@ import (
 	"strings"
 	"testing"
 
+	"ataniq/internal/agentsession/hookwire"
 	lp "ataniq/internal/launchpolicy"
 	"ataniq/internal/leadcanary/provision/hookrender"
 	"ataniq/internal/leadsandbox/profile"
 	"ataniq/internal/pack"
-	claudesandbox "ataniq/packs/claude/sandbox"
-	codexsandbox "ataniq/packs/codex/sandbox"
+	"ataniq/packs/all"
 	"ataniq/packs/holder"
 )
 
-func read(t *testing.T, fsys fs.FS, p string) []byte {
-	t.Helper()
-	b, err := fs.ReadFile(fsys, p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return b
-}
-
-func source(t *testing.T, rt profile.Runtime, root, files fs.FS) hookrender.Source {
+func source(t *testing.T, rt profile.Runtime) hookrender.Source {
 	t.Helper()
 	layout := pack.BindLayout{Config: profile.ConfigInside(rt), Tree: profile.TreeInside("sample"),
 		CoreRows: []string{profile.HomeInside, profile.ConfigInside(rt), profile.SkillsInside(rt), profile.InstructionInside(rt), profile.TreeInside("sample")},
@@ -50,7 +41,16 @@ func source(t *testing.T, rt profile.Runtime, root, files fs.FS) hookrender.Sour
 			return nil
 		},
 	}
-	src, err := hookrender.Decode(read(t, root, pack.ManifestPath), read(t, root, pack.HooksPath), files, layout)
+	r := pack.New()
+	if err := all.Register(r); err != nil {
+		t.Fatal(err)
+	}
+	r.Freeze()
+	p, ok := r.Lookup(pack.Name(rt))
+	if !ok {
+		t.Fatal("missing registered pack", rt)
+	}
+	src, err := hookrender.FromPack(p, layout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,31 +73,18 @@ func formatFiles(candidate hookrender.Files) string {
 func golden(t *testing.T, fixtures fs.FS, version, name, got string) {
 	t.Helper()
 	file := path.Join(version, name+".golden")
-	if want := string(read(t, fixtures, file)); got != want {
+	want, err := fs.ReadFile(fixtures, file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != string(want) {
 		t.Fatalf("%s differs:\n%s", file, got)
 	}
 }
 
-type mode struct {
-	Name, Recognizer string
-	Class            pack.ModeClass
-}
-
 func checkGoldenInventory(t *testing.T, fixtures fs.FS, version string, policy []byte) []mode {
 	t.Helper()
-	var doc struct {
-		Fixture struct {
-			SHA string `json:"sha256"`
-		}
-		Slots struct {
-			Permission struct {
-				Values []mode
-			} `json:"permission_mode"`
-		}
-	}
-	if err := json.Unmarshal(policy, &doc); err != nil {
-		t.Fatal(err)
-	}
+	doc := parse(t, policy)
 	modes := doc.Slots.Permission.Values
 	leadUsable := false
 	for _, m := range modes {
@@ -137,7 +124,7 @@ func TestClaudePinnedRender(t *testing.T) {
 		{PathRole: "agent", Dest: "/home/lead/.claude/agents/reviewer.md", Definition: true, AgentName: "reviewer"},
 		{PathRole: "trust-entry", Dest: "/home/lead/.claude/.claude.json"},
 	}
-	checkPinned(t, claudesandbox.Files(), profile.Claude, version, "reviewer", inventory)
+	checkPinned(t, profile.Claude, version, "reviewer", inventory)
 }
 
 func TestCodexPinnedRender(t *testing.T) {
@@ -147,25 +134,28 @@ func TestCodexPinnedRender(t *testing.T) {
 		{PathRole: "managed-hooks", Dest: "/etc/codex/hooks.json"},
 		{PathRole: "config", Dest: "/home/lead/.codex/config.toml"},
 	}
-	checkPinned(t, codexsandbox.Files(), profile.Codex, version, "", inventory)
+	checkPinned(t, profile.Codex, version, "", inventory)
 }
 
 // checkPinned checks an exact build. Inventory is the test's independent statement
 // of the destinations expected from provisioning.
-func checkPinned(t *testing.T, files fs.FS, rt profile.Runtime, version, agent string, inv lp.Inventory) {
+func checkPinned(t *testing.T, rt profile.Runtime, version, agent string, inv lp.Inventory) {
 	t.Helper()
-	packDir := path.Join("../../../../packs", string(rt))
-	fixtures := os.DirFS(path.Join(packDir, "sandbox/testdata"))
+	fixtures := os.DirFS(path.Join("..", string(rt), "sandbox/testdata"))
 	policy, help, ok := holder.LaunchPolicy(pack.Name(rt), version)
 	if !ok {
 		t.Fatal("missing pinned policy")
 	}
-	src := source(t, rt, os.DirFS(packDir), files)
+	src := source(t, rt)
 	d := src.Declaration
 	s := lp.Snapshot{Pack: d.Manifest.Name, Version: version, Role: "sample/lead", Transport: pack.Terminal, Agent: agent}
 	candidate, err := src.Preview(s)
 	if err != nil {
 		t.Fatal(err)
+	}
+	tables, err := hookwire.DecodeTable([]byte(candidate.HelperTable))
+	if err != nil || len(tables) != 1 || !reflect.DeepEqual(tables[version], hookwire.Table(d.Hooks[version])) {
+		t.Fatalf("helper table differs from declared rows: %v", err)
 	}
 	golden(t, fixtures, version, "files", formatFiles(candidate))
 	modes := checkGoldenInventory(t, fixtures, version, policy)
@@ -177,11 +167,6 @@ func checkPinned(t *testing.T, files fs.FS, rt profile.Runtime, version, agent s
 		return p
 	}
 	p := decode(policy)
-	intent := func(raw []byte) (string, lp.View, error) {
-		var v lp.View
-		err := json.Unmarshal(raw, &v)
-		return fmt.Sprintf("%x", sha256.Sum256(raw)), v, err
-	}
 	bind := func() {
 		var err error
 		s.Requested, err = json.Marshal(lp.View{Pack: s.Pack, Version: s.Version, Mode: s.Mode})

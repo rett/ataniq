@@ -9,8 +9,13 @@ import (
 	"testing"
 
 	"ataniq/internal/agentsession"
-	"ataniq/internal/assignment"
-	"ataniq/internal/leadrole"
+)
+
+// Byte limits of the frozen ataniq.session-ref/1 grammar.
+const (
+	authorityLimit = 162
+	projectLimit   = 63
+	featureLimit   = 63
 )
 
 func referenceInputs() (agentsession.RefIdentity, agentsession.LaunchIntent, agentsession.LaunchedPack) {
@@ -133,9 +138,9 @@ func TestSessionRefWireValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := map[string][]string{
-		"authority":                {`""`, `"slot\u001f"`, `"slot\u007f"`, `"é"`, `"` + strings.Repeat("x", assignment.MaxReferenceBytes+1) + `"`},
+		"authority":                {`""`, `"slot\u001f"`, `"slot\u007f"`, `"é"`, `"` + strings.Repeat("x", authorityLimit+1) + `"`},
 		"store_incarnation":        {`""`, `"` + strings.Repeat("A", 32) + `"`},
-		"project":                  {`"-start"`, `"end-"`, `"A"`, `"a/b"`, `"` + strings.Repeat("x", leadrole.MaxProjectLen+1) + `"`},
+		"project":                  {`"-start"`, `"end-"`, `"A"`, `"a/b"`, `"` + strings.Repeat("x", projectLimit+1) + `"`},
 		"role":                     {`"lead"`, `"other/lead"`, `"sample/coord/"`, `"sample/coord/bad/feature"`},
 		"conversation":             {`"0"`, `"` + strings.Repeat("c", 32) + `"`},
 		"launch":                   {`"0"`, `"` + strings.Repeat("C", 32) + `"`},
@@ -181,10 +186,10 @@ func TestSessionRefWireValues(t *testing.T) {
 
 func TestSessionRefGrammarBoundaries(t *testing.T) {
 	id, launch, pack := referenceInputs()
-	id.Authority = " " + strings.Repeat("~", assignment.MaxReferenceBytes-1)
-	launch.Project = strings.Repeat("x", leadrole.MaxProjectLen)
+	id.Authority = " " + strings.Repeat("~", authorityLimit-1)
+	launch.Project = strings.Repeat("x", projectLimit)
 	launch.Epoch = ^uint64(0)
-	for _, role := range []string{"supervisor", launch.Project + "/lead", launch.Project + "/coord/" + strings.Repeat("0", leadrole.MaxFeatureLen)} {
+	for _, role := range []string{"supervisor", launch.Project + "/lead", launch.Project + "/coord/" + strings.Repeat("0", featureLimit)} {
 		launch.Role = role
 		got, err := agentsession.BuildSessionRef(id, launch, pack)
 		if err != nil || got.Authority != id.Authority || got.Role != role {

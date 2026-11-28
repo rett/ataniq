@@ -30,7 +30,7 @@ import (
 const canaryTag = "ataniq_canary"
 
 // canaryAllowedPaths are the only places a Go file's build constraint may name
-// the tag. Each is a folder, with its subfolders.
+// the tag, apart from canaryAllowedTestFiles. Each is a folder, with its subfolders.
 var canaryAllowedPaths = []string{
 	"internal/leadcanary/",
 	"internal/leadholder/sandboxstart/",
@@ -48,6 +48,10 @@ var canaryAllowedPaths = []string{
 	"cmd/ataniq-canary-standin/",
 	"cmd/ataniq-hook/",
 }
+
+// Task 44 exercises the tagged renderer against the registered packs. Retire
+// this exact test-file entry when the renderer no longer needs the tag.
+var canaryAllowedTestFiles = []string{"packs/all/hookrender_test.go"}
 
 // canaryWholePaths hold packages that have no file outside the tag: an untagged
 // build cannot import them, and every Go file in them, tests included, carries
@@ -287,7 +291,7 @@ func checkCanaryPlacement(fsys fs.FS) []string {
 			return nil
 		}
 		switch {
-		case named && !underAnyPath(p, canaryAllowedPaths):
+		case named && !underAnyPath(p, canaryAllowedPaths) && !slices.Contains(canaryAllowedTestFiles, p):
 			problems = append(problems, fmt.Sprintf("%s: the build constraint names %s outside the allowed paths", p, canaryTag))
 		case named && !(hasGoBuild && slices.ContainsFunc(applied, exprNamesTag)):
 			problems = append(problems, fmt.Sprintf("%s: %s is named, but not in a go:build line that the go command applies", p, canaryTag))

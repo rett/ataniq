@@ -164,6 +164,7 @@ owner-desk	trial.submit	cmd/ataniqd.trialOpSubmit	-	owner-desk	ataniq_ownerchann
 widening:	cmd/ataniqd	-	-	-	untagged ataniq_canary ataniq_ownerchannel ataniq_ownerchannel,ataniq_canary
 widening:	internal/leadcanary	-	-	-	ataniq_canary ataniq_ownerchannel,ataniq_canary
 widening:	internal/leadcanary/provision	-	-	-	ataniq_canary ataniq_ownerchannel,ataniq_canary
+widening:	internal/leadcanary/provision/hookrender	-	-	-	ataniq_canary ataniq_ownerchannel,ataniq_canary
 widening:	internal/leadcanary/provision/provisiontest	-	-	-	ataniq_canary ataniq_ownerchannel,ataniq_canary
 widening:	internal/leadcanary/standin	-	-	-	ataniq_canary ataniq_ownerchannel,ataniq_canary
 widening:	internal/leadchat	-	-	-	ataniq_canary ataniq_ownerchannel,ataniq_canary

@@ -23,7 +23,7 @@ import (
 	"ataniq/internal/agentsession/hookwire"
 	"ataniq/internal/agentsession/sessiontest"
 	"ataniq/internal/pack"
-	packhook "ataniq/packs/codex/hook"
+	"ataniq/internal/pack/packtest"
 	"golang.org/x/sys/unix"
 )
 
@@ -375,55 +375,50 @@ func TestHP3ForgedEventsBoundedAndLabelled(t *testing.T) {
 }
 
 func TestHP3ForgedHelperInputHasNoPermit(t *testing.T) {
-	tables, err := hookwire.DecodeTable(packhook.RowsJSON())
+	rows := hookwire.Table(packtest.AlphaHookRows())
+	var claim agentsession.Claim
+	p, err := New(Config{
+		Group: "/unit", SessionForm: "printable", Peers: peers(t), Table: rows,
+		Decode: func(row pack.HookRow, req hookwire.Request, _ []byte) (agentsession.HookReport, string, error) {
+			report := agentsession.HookReport{Kind: "other", Session: req.Fields["session"]}
+			claim = agentsession.Claim{Basis: "self", Source: "hook", State: "unknown"}
+			if req.Fields["event"] != row.Event {
+				return agentsession.HookReport{}, "", errors.New("event differs from selected row")
+			}
+			switch row.Event {
+			case "start":
+				report.Kind = "session-start"
+			case "idle":
+				claim.State = "idle"
+			}
+			return report, string(claim.State), nil
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for build, rows := range tables {
-		t.Run(build, func(t *testing.T) {
-			var claim agentsession.Claim
-			p, err := New(Config{
-				Group: "/unit", SessionForm: "printable", Peers: peers(t), Table: rows,
-				Decode: func(_ pack.HookRow, _ hookwire.Request, frame []byte) (agentsession.HookReport, string, error) {
-					o, err := packhook.Decode(build, frame)
-					if err != nil {
-						return agentsession.HookReport{}, "", err
-					}
-					claim = o.Claim
-					return o.Report, string(claim.State), nil
-				},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, row := range rows {
-				if row.Event != "SessionStart" && row.Event != "Stop" {
-					continue
-				}
-				// Invoke the helper's real extractor with a fabricated provider input.
-				input := `{"session_id":"made-up","hook_event_name":"` + row.Event + `"}`
-				req, err := hookwire.Extract(row, strings.NewReader(input))
-				if err != nil {
-					t.Fatal(err)
-				}
-				frame, err := hookwire.EncodeRequest(*req)
-				if err != nil {
-					t.Fatal(err)
-				}
-				runOne(p, mem(frame))
-			}
-			s := p.Snapshot()
-			if len(s.Events) != 2 || s.Bound != "made-up" || s.Events[1].Class != "bound" || claim.State != "idle" {
-				t.Fatal(s, claim)
-			}
-			record := agentsession.Compose(agentsession.Inputs{
-				Transport: agentsession.Claim{State: "unknown", Basis: "transport"},
-				Hook:      &claim, Sight: "rules",
-			})
-			if record.State != "idle" || record.Deliverable || record.Permit != "" {
-				t.Fatal(record)
-			}
-		})
+	for _, row := range rows {
+		input := `{"session":"made-up","event":"` + row.Event + `"}`
+		req, err := hookwire.Extract(row, strings.NewReader(input))
+		if err != nil {
+			t.Fatal(err)
+		}
+		frame, err := hookwire.EncodeRequest(*req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		runOne(p, mem(frame))
+	}
+	s := p.Snapshot()
+	if len(s.Events) != 2 || s.Bound != "made-up" || s.Events[1].Class != "bound" || claim.State != "idle" {
+		t.Fatal(s, claim)
+	}
+	record := agentsession.Compose(agentsession.Inputs{
+		Transport: agentsession.Claim{State: "unknown", Basis: "transport"},
+		Hook:      &claim, Sight: "rules",
+	})
+	if record.State != "idle" || record.Deliverable || record.Permit != "" {
+		t.Fatal(record)
 	}
 }
 

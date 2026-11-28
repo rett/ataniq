@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"unsafe"
 
-	"ataniq/internal/leadholder/hookport/testdata/probe"
+	"ataniq/internal/leadholder/hookport/internal/probe"
 	"golang.org/x/sys/unix"
 )
 

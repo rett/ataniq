@@ -18,7 +18,7 @@ import (
 // module is this repository's module path.
 const module = "ataniq"
 
-// scratchRepoDeps are the packages of this repository the command depends on
+// scratchRepoDeps are the pack-neutral packages of this repository the command depends on
 // in a build without the ataniq_canary tag, directly or indirectly.
 // A build with the tag adds the written-out list in imports_canary_test.go.
 var scratchRepoDeps = []string{
@@ -32,12 +32,7 @@ var scratchRepoDeps = []string{
 	"ataniq/internal/leadholder/wire",
 	"ataniq/internal/pack", // D35: the registry supplies the carried pack names and their built-in identities.
 	"ataniq/internal/terminalconsole/sessionpane",
-	"ataniq/packs/claude/holder",       // D35: the holder list registers the Claude part.
-	"ataniq/packs/claude/launchpolicy", // D35: the holder list includes Claude launch policy data.
-	"ataniq/packs/codex/holder",        // D35: the holder list registers the Codex part.
-	"ataniq/packs/codex/launchpolicy",  // D35: the holder list includes Codex launch policy data.
-	"ataniq/packs/codex/protocol",      // D35: the Codex holder part carries its protocol codec.
-	"ataniq/packs/holder",              // D35: the command registers the built-in holder parts for its hello.
+	"ataniq/packs/holder", // D35: the command registers the built-in holder parts for its hello.
 }
 
 // forbiddenRepoDep says why a package of this repository may never be a
@@ -150,7 +145,17 @@ func TestImportGuard(t *testing.T) {
 	if len(deps) < 10 {
 		t.Fatalf("the dependency list is too short to be one: %q", out)
 	}
-	for _, p := range checkRepoDeps(deps, guardRepoDeps()) {
+	// D35 puts the reviewed list of provider dependencies with the holder parts.
+	list, err := os.ReadFile("../../packs/holder/testdata/dependencies.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed := append([]string(nil), guardRepoDeps()...)
+	for line := range strings.Lines(string(list)) {
+		dep, _, _ := strings.Cut(line, "#")
+		allowed = append(allowed, strings.TrimSpace(dep))
+	}
+	for _, p := range checkRepoDeps(deps, allowed) {
 		t.Error(p)
 	}
 }

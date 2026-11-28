@@ -21,8 +21,7 @@ import (
 	"time"
 	"unsafe"
 
-	"ataniq/internal/leadholder/hookport/testdata/probe"
-	"ataniq/internal/leadholder/hookport/testdata/pthread"
+	"ataniq/internal/leadholder/hookport/internal/probe"
 	"ataniq/internal/leadholder/ptyhost"
 	"golang.org/x/sys/unix"
 )
@@ -181,20 +180,18 @@ func TestHP8(t *testing.T) {
 		t.Run("kernel-coverage", func(t *testing.T) { checkKernelCoverage(t, filtered) })
 	}()
 
-	marker := filepath.Join(t.TempDir(), "marker")
-	build := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "build", "-o", marker, "./testdata/marker")
-	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOTOOLCHAIN=local", "GOPROXY=off")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("static exec marker: %v\n%s", err, out)
-	}
+	marker := buildChild(t, "marker", false)
 	// Count only completed filtered cases. Skip ends the subtest's
 	// goroutine, and a successful unfiltered control proves no filter ran.
+	childArgs := func(mode, name string) []string {
+		return []string{os.Args[0], "-test.run=^TestHP8Child$", "--", mode, name, marker}
+	}
 	run := func(op operation, mode string) {
 		t.Run(mode+"/"+op.name, func(t *testing.T) {
 			if mode == "kill" {
-				runChild(t, op, "abi-control", marker)
+				runChild(t, op, "abi-control", childArgs("abi-control", op.name)...)
 			}
-			runChild(t, op, mode, marker)
+			runChild(t, op, mode, childArgs(mode, op.name)...)
 			if mode != "control" {
 				filtered++
 			}
@@ -206,15 +203,34 @@ func TestHP8(t *testing.T) {
 		}
 	}
 	positive := []string{"accept-peer", "accepted-io", "stop", "threads"}
-	if pthread.Linked {
-		positive = append(positive, "pthread")
-	}
 	for _, name := range positive {
 		run(operation{name: name}, "positive")
+	}
+	if pthreadLinked {
+		t.Run("positive/pthread", func(t *testing.T) {
+			runChild(t, operation{name: "pthread"}, "positive", buildChild(t, "pthread", true))
+			filtered++
+		})
 	}
 	for _, abi := range []string{"x32", "i386"} {
 		run(operation{name: abi}, "kill")
 	}
+}
+
+func buildChild(t *testing.T, name string, cgo bool) string {
+	t.Helper()
+	binary := filepath.Join(t.TempDir(), name)
+	source := filepath.Join("testdata", name, "main.go")
+	build := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "build", "-o", binary, source)
+	cgoEnabled := "0"
+	if cgo {
+		cgoEnabled = "1"
+	}
+	build.Env = append(os.Environ(), "CGO_ENABLED="+cgoEnabled, "GOTOOLCHAIN=local", "GOPROXY=off")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build %s: %v\n%s", name, err, out)
+	}
+	return binary
 }
 
 func checkKernelCoverage(t *testing.T, filtered int) {
@@ -256,11 +272,11 @@ func probeSeccomp() {
 	os.Exit(0)
 }
 
-func runChild(t *testing.T, op operation, mode, marker string) {
+func runChild(t *testing.T, op operation, mode string, argv ...string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHP8Child$", "--", mode, op.name, marker)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = t.TempDir()
 	if mode == "attribution" {
 		// Do not create a background C runtime thread between installing
@@ -286,6 +302,12 @@ func runChild(t *testing.T, op operation, mode, marker string) {
 	}
 	if op.namespace && cmd.Process == nil && kernelRefusal(err) {
 		unavailable(t, "kernel refused case namespace: "+err.Error())
+	}
+	if op.name == "pthread" && err != nil {
+		var errno syscall.Errno
+		if _, scanErr := fmt.Sscanf(string(out), "INSTALL %d", &errno); scanErr == nil && kernelRefusal(errno) {
+			unavailable(t, "install pthread filter: "+errno.Error())
+		}
 	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && exit.ExitCode() == 77 && bytes.Contains(out, []byte("UNAVAILABLE ")) {
@@ -569,13 +591,6 @@ func positiveCase(name, dir, marker string, checkOld chan chan error) (call, err
 			}
 			if created < 2 {
 				return errors.New("no evidence of two filtered new threads")
-			}
-			return nil
-		}, nil
-	case "pthread":
-		return func() error {
-			if n := pthread.Check(); n != int(unix.EPERM) {
-				return fmt.Errorf("new C thread socket result %d", n)
 			}
 			return nil
 		}, nil
