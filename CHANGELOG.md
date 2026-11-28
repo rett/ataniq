@@ -2293,7 +2293,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a refusal and pass A's first epoch (the owner clears the pane and pastes the
   message himself). Step 16 ends with the owner's checks of the pane (the empty
   composer, no dialog, the last row reading the mode the config expects with no
-  notice, then Ctrl+\ and no key or mouse for 3 seconds), and step 14 says what
+  notice, then `Ctrl+\` and no key or mouse for 3 seconds), and step 14 says what
   the window size means to the fence. Step 15 tells the owner how to carry the
   login URL out of the pane, accepts `logged-in` or `failed`, and lists changed
   files even when the folder was empty before. Step 6 lists the listeners once
@@ -2893,7 +2893,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   qualified: `fetch` and `verify` run the commands of a template file that the
   owner writes, and refuse without a usable one. A verification pass is
   evidence, not proof, and after the sign-off the code runs as the owner like
-  any merged code. See [the lead intake guide](docs/lead-intake.md).
+  any merged code. See [the lead intake guide](https://github.com/rett/ataniq/blob/master/docs/lead-intake.md).
 - Add `ataniq-probe`, a static helper command of the lead sandbox proposal. It
   is unqualified, runs on Linux only (elsewhere it builds and exits with a
   message), and only the opt-in lead sandbox qualification harness launches it:
@@ -3139,7 +3139,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and is labelled "fixture recording, not a live session" in every state.
   Tab cycles the panes and Enter on the session focuses it. In session focus
   every key goes to the session, `q` and Ctrl+C included, except the return
-  key (Ctrl+\ by default, set with `--return-key ctrl+KEY`) and F12, which
+  key (`Ctrl+\` by default, set with `--return-key ctrl+KEY`) and F12, which
   zooms the pane to the window in either focus. Both work with CapsLock,
   NumLock or ScrollLock on. The return key is read from the byte 0x1c and from
   `CSI 92;5u`; without the kitty keyboard protocol Ctrl+4 sends the same byte
