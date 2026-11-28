@@ -711,11 +711,10 @@ func (j *joined) card2() (reqID, cardID string) {
 // tap is a proxy between the console's client and the daemon that keeps every
 // byte that passes in either direction.
 type tap struct {
-	mu   sync.Mutex
-	up   bytes.Buffer // client to daemon
-	down bytes.Buffer // daemon to client
-	dir  string
-	l    net.Listener
+	up        lockedBuffer // client to daemon
+	down      lockedBuffer // daemon to client
+	dir       string
+	firstDone <-chan error // nil result when the daemon closes the first connection
 }
 
 // startTap listens on a folder of its own and forwards to the daemon's
@@ -727,49 +726,42 @@ func (j *joined) startTap() *tap {
 	if err != nil {
 		j.t.Fatal(err)
 	}
-	tp := &tap{dir: dir, l: l}
-	target := clientapi.SocketPath(j.runtime)
+	firstDone := make(chan error, 1)
+	tp := &tap{dir: dir, firstDone: firstDone}
+	target := &net.UnixAddr{Net: "unix", Name: clientapi.SocketPath(j.runtime)}
 	go func() {
 		for {
 			c, err := l.Accept()
 			if err != nil {
 				return
 			}
-			go func() {
-				d, err := net.Dial("unix", target)
-				if err != nil {
-					_ = c.Close()
-					return
-				}
-				done := make(chan struct{}, 2)
-				cp := func(dst, src net.Conn, keep *bytes.Buffer) {
-					buf := make([]byte, 4096)
-					for {
-						n, err := src.Read(buf)
-						if n > 0 {
-							tp.mu.Lock()
-							keep.Write(buf[:n])
-							tp.mu.Unlock()
-							if _, werr := dst.Write(buf[:n]); werr != nil {
-								break
-							}
-						}
-						if err != nil {
-							break
-						}
-					}
-					done <- struct{}{}
-				}
-				go cp(d, c, &tp.up)
-				go cp(c, d, &tp.down)
-				<-done
-				_ = c.Close()
-				_ = d.Close()
-			}()
+			if firstDone != nil {
+				done := firstDone
+				firstDone = nil
+				go func() { done <- tp.forward(c, target) }()
+			} else {
+				go tp.forward(c, target)
+			}
 		}
 	}()
 	j.t.Cleanup(func() { _ = l.Close() })
 	return tp
+}
+
+func (tp *tap) forward(c net.Conn, target *net.UnixAddr) error {
+	defer c.Close()
+	d, err := net.DialUnix("unix", nil, target)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	go func() {
+		_, _ = io.Copy(io.MultiWriter(&tp.up, d), c)
+		// Forward the console's EOF and keep reading the daemon's side.
+		_ = d.CloseWrite()
+	}()
+	_, err = io.Copy(io.MultiWriter(&tp.down, c), d)
+	return err
 }
 
 // bytesField matches the records that travel as base64 in the wire's results.
@@ -814,8 +806,6 @@ func decideParams(t *testing.T, up string) []map[string]json.RawMessage {
 
 // seen returns everything that passed, both ways.
 func (tp *tap) seen() (up, down string) {
-	tp.mu.Lock()
-	defer tp.mu.Unlock()
 	return tp.up.String(), tp.down.String()
 }
 

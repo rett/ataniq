@@ -224,7 +224,7 @@ func TestScratchSeatPrepareIsPlainShell(t *testing.T) {
 			`_kp=$("$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-prefix --expect-state "$S") || _krc=$?`,
 			`"$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-since "$_prefix" --expect-state "$S" || _krc=$?`},
 		"/usr/bin/git": {`/usr/bin/git -c core.hooksPath=/dev/null -c commit.gpgSign=false -c tag.gpgSign=false -c core.fsmonitor=false \`},
-		"mv":           {`mv -n -T -- "$_tmp" "$BASELINE" || _mrc=$?`},
+		"mv":           {`_mv_diag=$(mv -n -T -- "$_tmp" "$BASELINE" 2>&1) || _mrc=$?`},
 	}
 	seen := map[string]int{}
 	for i, line := range strings.Split(text, "\n") {
@@ -1101,18 +1101,35 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 	noErr(t, os.WriteFile(syncStub, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >>'"+syncLog+"'\nmode=$(cat '"+syncMode+"' 2>/dev/null)\n"+
 		"case $mode:$* in\n  files:*/.step-g.*) exit 1 ;;\n  evidence:*'"+evidence+"') exit 1 ;;\n  race:*/.step-g.*) mkdir '"+baseline+"' ;;\nesac\nexec /usr/bin/sync \"$@\"\n"), 0o700))
 	defer os.Remove(syncStub)
-	for _, c := range []struct{ mode, want string }{
-		{"files", "status: NOT RECORDED: the baseline written in " + evidence + "/.step-g."},
-		{"race", "was not given its name " + baseline + " (the rename ended with exit status 0): a folder of that name appeared meanwhile, and nothing was replaced"},
-		{"evidence", "status: NOT RECORDED: the evidence folder " + evidence + " cannot be synced after " + baseline + " got its name"},
+	// Exercise the real no-clobber rename with both GNU mv skip conventions.
+	mvStub := filepath.Join(k.tools, "mv")
+	noErr(t, os.WriteFile(mvStub, []byte(`#!/bin/sh
+case ${MV_SKIP_STATUS-} in
+  0|1)
+    /usr/bin/mv "$@" 2>/dev/null
+    if [ "$MV_SKIP_STATUS" = 1 ]; then echo 'mv: not replacing target' >&2; fi
+    exit "$MV_SKIP_STATUS" ;;
+esac
+exec /usr/bin/mv "$@"
+`), 0o700))
+	defer os.Remove(mvStub)
+	raceMessage := "was not given its name " + baseline + ": that name was taken meanwhile, and nothing was replaced"
+	for _, c := range []struct{ mode, skipStatus, want string }{
+		{"files", "", "status: NOT RECORDED: the baseline written in " + evidence + "/.step-g."},
+		{"race", "0", raceMessage},
+		{"race", "1", raceMessage},
+		{"evidence", "", "status: NOT RECORDED: the evidence folder " + evidence + " cannot be synced after " + baseline + " got its name"},
 	} {
 		noErr(t, os.WriteFile(syncMode, []byte(c.mode), 0o600))
-		out, code := k.run(t, nil, record...)
+		out, code := k.run(t, []string{"MV_SKIP_STATUS=" + c.skipStatus}, record...)
 		if code != 1 || !strings.Contains(out, c.want) || strings.Contains(out, "status: recorded") {
 			t.Errorf("--record with a sync that %s: exit %d, want 1 and %q:\n%s", c.mode, code, c.want, out)
 		}
 		switch c.mode {
 		case "race":
+			if strings.Contains(out, "mv: not replacing") {
+				t.Errorf("mv skip status %s leaked its diagnostic:\n%s", c.skipStatus, out)
+			}
 			if names, err := os.ReadDir(baseline); err != nil || len(names) != 0 {
 				t.Errorf("the empty folder made at the baseline's name was replaced: %v %v", names, err)
 			}

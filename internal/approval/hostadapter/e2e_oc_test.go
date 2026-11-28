@@ -1477,7 +1477,11 @@ func TestOwnerChannelOC21RestartsOfTheConsoleAndTheDaemon(t *testing.T) {
 	j := newJoined(t, execFeature)
 	_, cid := j.card2()
 	p := j.pendingOf(cid)
-	o1 := j.decider()
+	tp := j.startTap()
+	o1 := j.tapped(tp)
+	if ok, why := o1.Decider(); !ok {
+		t.Fatalf("the first console is not the decider: %s", why)
+	}
 	md1 := newModel(t, o1, j.clock, "7Q4K")
 	md1.key("enter")
 	if md1.code() != "7Q4K" {
@@ -1507,7 +1511,19 @@ func TestOwnerChannelOC21RestartsOfTheConsoleAndTheDaemon(t *testing.T) {
 	}
 
 	// A console restart: a new client and a new model, a new code, the same card.
-	_ = o1.Close()
+	if err := o1.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// The daemon releases the decider before it closes its socket. Wait for
+	// that EOF on the first console's connection before the next one asks.
+	select {
+	case err := <-tp.firstDone:
+		if err != nil {
+			t.Fatalf("waiting for the daemon to close the first console's connection: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the daemon did not close the first console's connection")
+	}
 	o2 := j.decider()
 	listed(o2, "after a console restart")
 	md2 := newModel(t, o2, j.clock, "ACDE")

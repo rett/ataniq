@@ -50,9 +50,28 @@ func TestExistingReleaseNeedsProvenance(t *testing.T) {
 		{"no record", CodeProvenanceMissing, func(e *env, dir string) { os.Remove(e.provenancePath(filepath.Base(dir))) }},
 		{"file replaced", CodeProvenanceMismatch, func(e *env, dir string) {
 			p := filepath.Join(dir, "bin/app")
-			data, _ := os.ReadFile(p)
-			os.Remove(p)
-			os.WriteFile(p, data, 0o755)
+			before, err := os.Stat(p)
+			if err != nil {
+				e.t.Fatal(err)
+			}
+			data, err := os.ReadFile(p)
+			if err != nil {
+				e.t.Fatal(err)
+			}
+			// Allocate the replacement while the original inode is still in use.
+			if err := os.WriteFile(p+".new", data, before.Mode().Perm()); err != nil {
+				e.t.Fatal(err)
+			}
+			if err := os.Rename(p+".new", p); err != nil {
+				e.t.Fatal(err)
+			}
+			after, err := os.Stat(p)
+			if err != nil {
+				e.t.Fatal(err)
+			}
+			if os.SameFile(before, after) {
+				e.t.Fatal("replacement still has the original inode")
+			}
 		}},
 		{"file added", CodeProvenanceMismatch, func(e *env, dir string) {
 			record, _ := os.ReadFile(e.provenancePath(filepath.Base(dir)))
