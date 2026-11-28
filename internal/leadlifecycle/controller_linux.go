@@ -253,6 +253,10 @@ func (c *Controller) load(role leadrole.Role) (leadregistry.Entry, error) {
 	return e, nil
 }
 
+// setUnknown shows the role unknown for code. e is the entry the decision was
+// made from, the latest the caller holds: the write is refused with
+// leadregistry.ErrStaleState, appending nothing, when the registry shows the
+// role otherwise by then (a health poll, another caller of the registry).
 func (c *Controller) setUnknown(e leadregistry.Entry, code, detail string) (leadregistry.Entry, error) {
 	// Idempotent by reason code: a repeated Reconcile does not append a line
 	// for a role that is already unknown for the same reason.
@@ -260,14 +264,17 @@ func (c *Controller) setUnknown(e leadregistry.Entry, code, detail string) (lead
 		return e, nil
 	}
 	return c.reg.SetState(e.Role, leadregistry.StateChange{
-		Epoch: e.Epoch, State: leadregistry.StateUnknown, Evidence: leadregistry.EvidenceObservation,
+		Epoch: e.Epoch, Expected: leadregistry.ExpectShown(e.Shown), State: leadregistry.StateUnknown, Evidence: leadregistry.EvidenceObservation,
 		Reason: leadregistry.Reason{Code: code, Detail: clip(detail, leadregistry.MaxReasonDetailBytes)},
 	})
 }
 
 func (c *Controller) setProven(e leadregistry.Entry, state leadregistry.State, code, detail, proof string) (leadregistry.Entry, error) {
 	return c.reg.SetState(e.Role, leadregistry.StateChange{
-		Epoch: e.Epoch, State: state, Evidence: leadregistry.EvidenceObservation,
+		// The proof is of the unit (absent, gone), found by inspection and
+		// true whatever is shown; the table still refuses a state that
+		// cannot be left for stopped or ended, so nothing is compared.
+		Epoch: e.Epoch, Expected: leadregistry.NoExpectation(), State: state, Evidence: leadregistry.EvidenceObservation,
 		Reason: leadregistry.Reason{Code: code, Detail: clip(detail, leadregistry.MaxReasonDetailBytes)},
 		Proof:  clip(proof, leadregistry.MaxProofBytes),
 	})

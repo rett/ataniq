@@ -349,7 +349,9 @@ func (c *Controller) stopOne(ctx context.Context, role leadrole.Role) (leadregis
 	}
 	if e.Shown.State != leadregistry.StateStopping && e.Shown.State != leadregistry.StateUnknown {
 		if e, err = c.reg.SetState(role, leadregistry.StateChange{
-			Epoch: e.Epoch, State: leadregistry.StateStopping, Evidence: leadregistry.EvidenceObservation,
+			// The owner's order does not depend on which live state is
+			// shown; the table refuses it from the states that are not live.
+			Epoch: e.Epoch, Expected: leadregistry.NoExpectation(), State: leadregistry.StateStopping, Evidence: leadregistry.EvidenceObservation,
 			Reason: leadregistry.Reason{Code: "stop-requested"},
 		}); err != nil {
 			return e, err
