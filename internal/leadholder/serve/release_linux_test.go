@@ -260,9 +260,9 @@ func TestWriterReleasedDuringItsHandshakeSetsNothing(t *testing.T) {
 // handshake then claims the slot of a writer that was meant to be gone.
 func TestReleaseCannotMissAHandshakeBetweenTicketAndClaim(t *testing.T) {
 	var (
-		e                 *env
-		once              sync.Once
-		answered          = make(chan wire.Response, 1)
+		e             *env
+		once          sync.Once
+		answered      = make(chan wire.Response, 1)
 		answeredEarly = make(chan bool, 1)
 	)
 	hook := func() {
