@@ -15,11 +15,20 @@ import (
 const registryImportPath = "ataniq/internal/leadregistry"
 
 // unstatedExpectations returns the position and reason of every StateChange
-// literal in f that does not state its expectation of the shown value: an
-// unkeyed literal, a literal without the Expected key, and one whose Expected
-// is the zero Expectation{} written out, which names nothing. A caller states
+// in f that does not state its expectation of the shown value: an unkeyed
+// literal, a literal without the Expected key, one whose Expected is the zero
+// Expectation{} written out, and a StateChange that is declared without a
+// value (var c lr.StateChange, var a [2]lr.StateChange, new(lr.StateChange)),
+// whose Expected is the zero Expectation too. Literals whose type is elided
+// (the elements of []lr.StateChange{{...}}, and the elements and values of
+// the arrays, slices and maps of StateChange or *StateChange) are literals
+// of StateChange and are checked the same way. A caller states
 // ExpectShown(entry.Shown), or NoExpectation() with a comment saying why none
 // applies. Test files are not checked: the zero value stays unchecked there.
+//
+// A StateChange reached any other way (a struct field, the result of a
+// function) is not seen: the zero Expectation there keeps the unchecked
+// behaviour, and only a reviewer can catch it.
 func unstatedExpectations(fset *token.FileSet, f *ast.File) []string {
 	local := f.Name.Name == "leadregistry"
 	alias := ""
@@ -43,18 +52,31 @@ func unstatedExpectations(fset *token.FileSet, f *ast.File) []string {
 		}
 		return false
 	}
-	var out []string
-	ast.Inspect(f, func(n ast.Node) bool {
-		lit, ok := n.(*ast.CompositeLit)
-		if !ok || !isType(lit.Type, "StateChange") {
+	// zeroValued reports whether a variable of type e holds zero StateChange
+	// values from its declaration: a StateChange or an array of them. A
+	// pointer, a slice and a map start empty or nil, so their elements come
+	// from literals that are checked on their own.
+	var zeroValued func(e ast.Expr) bool
+	zeroValued = func(e ast.Expr) bool {
+		if isType(e, "StateChange") {
 			return true
 		}
+		if a, ok := e.(*ast.ArrayType); ok && a.Len != nil {
+			return zeroValued(a.Elt)
+		}
+		return false
+	}
+	var out []string
+	flag := func(pos token.Pos, why string) {
+		out = append(out, fset.Position(pos).String()+": "+why)
+	}
+	checkLiteral := func(lit *ast.CompositeLit) {
 		var expected ast.Expr
 		for _, el := range lit.Elts {
 			kv, ok := el.(*ast.KeyValueExpr)
 			if !ok {
-				out = append(out, fset.Position(lit.Pos()).String()+": unkeyed StateChange literal")
-				return true
+				flag(lit.Pos(), "unkeyed StateChange literal")
+				return
 			}
 			if k, ok := kv.Key.(*ast.Ident); ok && k.Name == "Expected" {
 				expected = kv.Value
@@ -62,10 +84,56 @@ func unstatedExpectations(fset *token.FileSet, f *ast.File) []string {
 		}
 		switch v := expected.(type) {
 		case nil:
-			out = append(out, fset.Position(lit.Pos()).String()+": StateChange literal without Expected")
+			flag(lit.Pos(), "StateChange literal without Expected")
 		case *ast.CompositeLit:
 			if isType(v.Type, "Expectation") {
-				out = append(out, fset.Position(v.Pos()).String()+": Expected is the zero Expectation{}; name ExpectShown or NoExpectation")
+				flag(v.Pos(), "Expected is the zero Expectation{}; name ExpectShown or NoExpectation")
+			}
+		}
+	}
+	// visit checks lit, whose type is ty (the literal's own, or the one its
+	// container gives it when the type is elided).
+	var visit func(lit *ast.CompositeLit, ty ast.Expr)
+	visit = func(lit *ast.CompositeLit, ty ast.Expr) {
+		if star, ok := ty.(*ast.StarExpr); ok {
+			ty = star.X
+		}
+		if isType(ty, "StateChange") {
+			checkLiteral(lit)
+			return
+		}
+		var elem ast.Expr
+		switch t := ty.(type) {
+		case *ast.ArrayType:
+			elem = t.Elt
+		case *ast.MapType:
+			elem = t.Value
+		default:
+			return
+		}
+		for _, el := range lit.Elts {
+			if kv, ok := el.(*ast.KeyValueExpr); ok {
+				el = kv.Value
+			}
+			// A literal with its own type is reached by the walk itself.
+			if inner, ok := el.(*ast.CompositeLit); ok && inner.Type == nil {
+				visit(inner, elem)
+			}
+		}
+	}
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.CompositeLit:
+			if n.Type != nil {
+				visit(n, n.Type)
+			}
+		case *ast.ValueSpec:
+			if len(n.Values) == 0 && n.Type != nil && zeroValued(n.Type) {
+				flag(n.Pos(), "StateChange declared without a value, so with the zero Expectation{}; name ExpectShown or NoExpectation")
+			}
+		case *ast.CallExpr:
+			if id, ok := n.Fun.(*ast.Ident); ok && id.Name == "new" && len(n.Args) == 1 && zeroValued(n.Args[0]) {
+				flag(n.Pos(), "new(StateChange) has the zero Expectation{}; name ExpectShown or NoExpectation")
 			}
 		}
 		return true
@@ -115,6 +183,78 @@ var b = StateChange{Epoch: 1, Expected: NoExpectation()}
 	fset, f = parseSnippet(t, "inpackage.go", inPackage)
 	if got := unstatedExpectations(fset, f); len(got) != 1 {
 		t.Fatalf("in-package literals flagged %d, want 1: %q", len(got), got)
+	}
+}
+
+// TestStateChangeGuardSeesDeclaredVariablesAndElidedLiterals: a StateChange
+// that is declared and filled in afterwards, or written in a literal whose
+// type is elided, reaches SetState with the zero Expectation just as an
+// unnamed literal does.
+func TestStateChangeGuardSeesDeclaredVariablesAndElidedLiterals(t *testing.T) {
+	const caller = `package x
+
+import lr "ataniq/internal/leadregistry"
+
+func f(reg *lr.Registry) {
+	var c lr.StateChange
+	c.State = "ready"
+	var p *lr.StateChange
+	var arr [2]lr.StateChange
+	q := new(lr.StateChange)
+	var empty []lr.StateChange
+	var none map[string]lr.StateChange
+	_, _, _, _, _, _ = c, p, arr, q, empty, none
+}
+
+var (
+	slice  = []lr.StateChange{{Epoch: 1}}
+	ptrs   = []*lr.StateChange{{Epoch: 1}}
+	byName = map[string]*lr.StateChange{"a": {Epoch: 1}}
+	nested = [][]lr.StateChange{{{Epoch: 1}}}
+	array  = [...]lr.StateChange{3: {Epoch: 1}}
+	unkeyed = []lr.StateChange{{1, lr.Expectation{}, "ready", "", lr.Reason{}, ""}}
+	zero    = []lr.StateChange{{Epoch: 1, Expected: lr.Expectation{}}}
+
+	okSlice  = []lr.StateChange{{Epoch: 1, Expected: lr.NoExpectation()}}
+	okMap    = map[string]*lr.StateChange{"a": {Epoch: 1, Expected: lr.ExpectShown(lr.Shown{})}}
+	okNested = [][]lr.StateChange{{{Epoch: 1, Expected: lr.NoExpectation()}}}
+	okOther  = []other.StateChange{{Epoch: 1}}
+	okInts   = [][]int{{1}}
+	okFilled lr.StateChange = lr.StateChange{Epoch: 1, Expected: lr.NoExpectation()}
+)
+`
+	fset, f := parseSnippet(t, "caller.go", caller)
+	got := unstatedExpectations(fset, f)
+	want := []string{
+		"declared without a value", // var c
+		"declared without a value", // var arr
+		"new(StateChange)",         // q
+		"without Expected",         // slice
+		"without Expected",         // ptrs
+		"without Expected",         // byName
+		"without Expected",         // nested
+		"without Expected",         // array
+		"unkeyed",                  // unkeyed
+		"zero Expectation{}",       // zero
+	}
+	if len(got) != len(want) {
+		t.Fatalf("flagged %d, want %d: %q", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if !strings.Contains(got[i], w) {
+			t.Errorf("finding %d = %q, want it to say %q", i, got[i], w)
+		}
+	}
+	// The same forms of the registry's own package.
+	const inPackage = `package leadregistry
+
+var a = []StateChange{{Epoch: 1}}
+var b = []StateChange{{Epoch: 1, Expected: NoExpectation()}}
+var c StateChange
+`
+	fset, f = parseSnippet(t, "inpackage.go", inPackage)
+	if got := unstatedExpectations(fset, f); len(got) != 2 {
+		t.Fatalf("in-package forms flagged %d, want 2 (a, c): %q", len(got), got)
 	}
 }
 
