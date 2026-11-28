@@ -71,7 +71,7 @@ and [replay contract](client-protocol.md#events-replay-and-snapshots).
 | Page state | What the reader does |
 | --- | --- |
 | **end** | The authority can account for the start of the readable segment. Show its beginning and stop paging. An empty new segment can end here. |
-| **gap** | A valid read reaches a known loss, such as entries pruned by retention. Mark the break at the oldest retained boundary. Never infer loss or its size from nonconsecutive visible IDs. |
+| **gap** | A valid read reaches a known loss to this viewer, such as visible entries pruned by retention; entries pruned that the viewer's projection hides are no loss to it and show no gap. Mark the break at the oldest retained boundary. Never infer loss or its size from nonconsecutive visible IDs. |
 | **reset** | An expired or invalid continuation, changed segment, instance or disclosure projection requires `reset_required` for an authorized reader. Discard the old page and cursor and obtain a fresh authorized snapshot. Show a gap there if retention cut off older entries. |
 | **withheld** | Render an authorized omission as a content-free marker. Continue paging past it if a cursor is supplied. When even existence is hidden, suppress the marker and any identifying counts, including a gap in the visible numbers: the reader numbers the visible entries consecutively. |
 

@@ -243,7 +243,7 @@ func (r *PageReader) Read(req PageRequest) (Page, error) {
 		if page, err = r.withOlder(req, snap, page, position); err != nil {
 			return Page{}, err
 		}
-		return r.withNewer(req, snap, page, snap.Head)
+		return r.withNewer(req, snap, page, snap.newestNumber())
 	default:
 		var exhausted bool
 		page.Entries, exhausted, position = r.backward(req, snap, vseq, position, limit)
@@ -259,7 +259,9 @@ func (r *PageReader) olderState(s Snapshot, exhausted bool) PageState {
 	switch {
 	case !exhausted:
 		return PageMore
-	case s.Floor > s.Start:
+	case s.prunedVisible() > 0:
+		// Only a pruned entry this viewer could see is a loss to it; a pruned
+		// hidden one must not show through as a gap.
 		return PageGap
 	}
 	return PageEnd
@@ -323,6 +325,23 @@ func (r *PageReader) validSnapshot(s Snapshot) error {
 
 func (r *PageReader) validCommand(k appmodel.CommandKey) bool {
 	return k.Authority == r.instance.Authority && validID(k.EnrolledClientID) && validID(string(k.CommandID))
+}
+
+// prunedVisible is how many of the entries retention pruned this viewer could
+// see. They hold the numbers Start through Start+prunedVisible-1.
+func (s Snapshot) prunedVisible() uint64 { return s.Floor - s.Start - s.HiddenBelowFloor }
+
+// newestNumber is the number of the newest entry the viewer's projection does
+// not hide (Start-1 while it has none), which is where a forward read of
+// everything stops: the segment's head less every entry hidden up to it.
+func (s Snapshot) newestNumber() uint64 {
+	n := s.Head - s.HiddenBelowFloor
+	for _, e := range s.Entries {
+		if e.Disclosure == Hidden {
+			n--
+		}
+	}
+	return n
 }
 
 // visibleSeqs numbers the snapshot's entries for their message IDs, parallel to
@@ -417,26 +436,27 @@ func (r *PageReader) backward(req PageRequest, s Snapshot, vseq []uint64, before
 	return entries, i < 0, lowest
 }
 
-// forward returns the entries with sequence above after, oldest first, under
-// the same bounds, and the position the next forward read resumes from: the
-// newest sequence examined. Its state is PageGap when retention pruned entries
-// the reader never saw (after+1 is below the oldest retained), else PageMore.
+// forward returns the entries numbered above after, oldest first, under the
+// same bounds, and the position the next forward read resumes from: the number
+// of the newest entry read. A forward position is a message number, not an
+// authority sequence, because the numbers are the viewer's: whether a pruned
+// entry was unread and visible is then exact, however many hidden ones are
+// mixed with the visible ones below it. Its state is PageGap when retention
+// pruned an entry the viewer could see and had not read (a number above after
+// among the pruned ones, Start through Start+prunedVisible-1), else PageMore.
 func (r *PageReader) forward(req PageRequest, s Snapshot, vseq []uint64, after uint64, limit int) (entries []PageEntry, state PageState, next uint64) {
 	state = PageMore
-	if after+1 < s.Floor {
+	if v := s.prunedVisible(); v > 0 && after+1 < s.Start+v {
 		state = PageGap
 	}
 	entries = []PageEntry{}
 	bytes := 0
-	next = s.Head
+	next = s.newestNumber()
 	for i, e := range s.Entries {
-		if e.Seq <= after {
-			continue
-		}
-		if e.Disclosure != Hidden {
+		if e.Disclosure != Hidden && vseq[i] > after {
 			p := r.entry(req, s, e, vseq[i])
 			if len(entries) == limit || (len(entries) > 0 && bytes+cost(p) > MaxPageBytes) {
-				return entries, state, e.Seq - 1
+				return entries, state, vseq[i] - 1
 			}
 			entries = append(entries, p)
 			bytes += cost(p)
