@@ -101,11 +101,6 @@ func (s *Server) handshake(conn *net.UnixConn, cred PeerCred) (*client, *wire.Re
 		s.refuse(conn, wire.ReasonRefusedVersion, "this holder speaks another protocol version", cntRefusedVersion, "attach-version", cred.PID)
 		return nil, nil
 	}
-	role, status := s.takeTicket(hello.Ticket)
-	if status != "" {
-		s.refuse(conn, wire.ReasonRefusedTicket, "the ticket is not valid", cntRefusedTicket, status, cred.PID)
-		return nil, nil
-	}
 	// The command line is read before the client is claimed: it does not
 	// depend on the claim, and once the client holds a place the timekeeper
 	// reads it under the lock, for the Role frames of the other clients.
@@ -113,9 +108,18 @@ func (s *Server) handshake(conn *net.UnixConn, cred PeerCred) (*client, *wire.Re
 		s: s, conn: conn, name: hello.Name, pid: cred.PID, cmd: readCmdline(cred.PID),
 		wake: make(chan struct{}, 1), done: make(chan struct{}),
 	}
+	// Release must see either the outstanding ticket or the claimed slot.
 	s.mu.Lock()
-	ok := !s.closed && !s.finishing && s.claimLocked(c, role)
+	role, status := s.takeTicketLocked(hello.Ticket)
+	if s.cfg.afterTicketTake != nil {
+		s.cfg.afterTicketTake()
+	}
+	ok := status == "" && !s.closed && !s.finishing && s.claimLocked(c, role)
 	s.mu.Unlock()
+	if status != "" {
+		s.refuse(conn, wire.ReasonRefusedTicket, "the ticket is not valid", cntRefusedTicket, status, cred.PID)
+		return nil, nil
+	}
 	if !ok {
 		s.refuse(conn, wire.ReasonRefusedBusy, "the "+string(role)+" place is taken", cntRefusedBusy, "attach-busy", cred.PID)
 		return nil, nil
@@ -202,7 +206,7 @@ func ticketProblem(payload []byte) bool {
 func (s *Server) unclaim(c *client) {
 	s.mu.Lock()
 	if s.writer == c {
-		s.writer = nil
+		s.clearWriterLocked()
 	}
 	if s.viewer == c {
 		s.viewer = nil

@@ -111,6 +111,9 @@ func (m *Model) drawHeader(p *painter, l layout) {
 	}
 	if m.live.on() {
 		left = "ATANIQ / LIVE SCRATCH · cockpit · " + m.liveLabel() + " · through a holder"
+		if h := m.liveCockpitHeader(); h != "" {
+			left = h
+		}
 	} else if m.labelled() {
 		left = "ATANIQ · cockpit · " + m.viewLabel()
 	}

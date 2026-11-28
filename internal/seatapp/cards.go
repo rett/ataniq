@@ -67,6 +67,10 @@ type Item struct {
 	Asked, Expires             time.Time
 	// Held is the mark "decided past the limit".
 	Held bool
+	// BindingSHA256 is the binding's digest when the daemon's listing
+	// carries one, and BindingTag the four display words for it; both are
+	// empty when it does not.
+	BindingSHA256, BindingTag string
 }
 
 // Recent is one decided or ended card in the list.
@@ -90,6 +94,9 @@ type Card struct {
 	Asked, Expires               time.Time
 	// BindingSHA256 is the digest of the binding the card shows.
 	BindingSHA256 string
+	// BindingTag holds the four display words for the digest, or is empty
+	// when the digest has no tag.
+	BindingTag string
 	// State is the record's state, empty while it is pending; Line is the
 	// host's line about what came after; Ended says it can no longer be
 	// decided; Held is the mark "decided past the limit"; Refused says the

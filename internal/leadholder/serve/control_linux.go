@@ -202,12 +202,16 @@ func (s *Server) issueTicket(role wire.Role, ticket string) wire.Response {
 // takeTicket consumes the ticket a Hello presents: the first use of a ticket
 // uses it up, whether or not the attach completes. It returns the role the
 // ticket is for, or a code for the log when there is none: the ticket is not
-// registered (never, or used) or has expired. Every ticket is compared in
+// registered (never, used or released) or has expired. Every ticket is compared in
 // constant time.
 func (s *Server) takeTicket(presented string) (wire.Role, string) {
-	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.takeTicketLocked(presented)
+}
+
+func (s *Server) takeTicketLocked(presented string) (wire.Role, string) {
+	now := s.now()
 	hit := -1
 	for i, t := range s.tickets {
 		if sameTicket(t.ticket, presented) && hit < 0 {

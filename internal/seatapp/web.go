@@ -155,19 +155,20 @@ func wholeOf(c Card) Whole {
 // [Text]; the rest format the app's own values. A test holds every template
 // to that.
 var funcs = template.FuncMap{
-	"text":      Text,
-	"lead":      func(l Lead, max int) string { return Text(l.str(), max) },
-	"when":      when,
-	"until":     until,
-	"num":       num,
-	"short":     short,
-	"cardHref":  cardHref,
-	"pathsHref": pathsHref,
-	"maxName":   func() int { return maxName },
-	"maxID":     func() int { return maxID },
-	"maxLine":   func() int { return maxLine },
-	"maxPath":   func() int { return maxPath },
-	"maxText":   func() int { return maxText },
+	"text":       Text,
+	"lead":       func(l Lead, max int) string { return Text(l.str(), max) },
+	"when":       when,
+	"until":      until,
+	"num":        num,
+	"short":      short,
+	"bindingTag": bindingTagText,
+	"cardHref":   cardHref,
+	"pathsHref":  pathsHref,
+	"maxName":    func() int { return maxName },
+	"maxID":      func() int { return maxID },
+	"maxLine":    func() int { return maxLine },
+	"maxPath":    func() int { return maxPath },
+	"maxText":    func() int { return maxText },
 	// The project pages' own addresses and the names and ids of a
 	// question's controls, made of the app's own words and of ids the app
 	// checked.
@@ -228,6 +229,13 @@ func short(s string) string {
 		return "none"
 	}
 	return Text(s, 12)
+}
+
+func bindingTagText(tag string) string {
+	if tag == "" {
+		return "Binding tag unavailable"
+	}
+	return Text(tag, maxName)
 }
 
 // num writes a whole number.

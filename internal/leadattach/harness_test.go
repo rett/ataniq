@@ -329,7 +329,12 @@ func enc(t *testing.T) func([]byte, error) []byte {
 
 func (hc *hconn) welcome(role wire.Role) {
 	hc.t.Helper()
-	w := wire.Welcome{Version: wire.ProtocolVersion, Role: role, Lead: "lead-one", Epoch: 3, Runtime: "claude", RuntimeVersion: "1.2.3", Caps: wire.DefaultCaps()}
+	hc.welcomeTarget(role, "lead-one", 3)
+}
+
+func (hc *hconn) welcomeTarget(role wire.Role, lead string, epoch uint64) {
+	hc.t.Helper()
+	w := wire.Welcome{Version: wire.ProtocolVersion, Role: role, Lead: lead, Epoch: epoch, Runtime: "claude", RuntimeVersion: "1.2.3", Caps: wire.DefaultCaps()}
 	hc.send(wire.TypeWelcome, enc(hc.t)(wire.EncodeWelcome(w)))
 }
 

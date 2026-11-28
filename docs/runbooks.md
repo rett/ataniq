@@ -188,8 +188,8 @@ added later, while the daemon is stopped. A restart keeps the recorded homes.
 
 The keys of the view, for the steps below (from [the console
 guide](terminal-console.md#lead-control-scratch-daemon-only)): `d` define, `s` start, `x` stop (then `y`,
-any other key keeps it running), `m` message, `w` and `v` attach as writer or as
-viewer, `r` read the list again.
+any other key keeps it running), `m` message, `v` attach as viewer, `w` attach as writer
+(only when the console was started with `--scratch-writer`), `r` read the list again.
 
 **Start it again.** A lead that the host rebooted under is shown `stopped`.
 Press `s` to start it. The row goes `starting` and, when the holder answers,

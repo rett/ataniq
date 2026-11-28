@@ -993,6 +993,8 @@ func TestPaneInventoryCoversEveryField(t *testing.T) {
 		"dec":         "derived: from the modes, set again by Restore",
 		"syncOut":     "carried as mode 2026 (on); the held frame is a presentation copy and is dropped",
 		"recent":      "not carried: the client's viewing state since attach",
+		"ring":        "not carried: the holder's record of rows that scrolled off; Restore empties it",
+		"sens":        "not carried: the holder's sensitive switch; Restore turns it off",
 		"title":       "carried",
 		"clipboard":   "not carried: a counter",
 		"titlesCut":   "not carried: a counter",

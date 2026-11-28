@@ -52,6 +52,18 @@
 // [NewViewer] asks its ticket service before dialing. While the service has
 // no ticket the client waits without opening a connection. Every new dial,
 // including a retry after a failed dial, asks for a fresh viewer ticket.
+// The viewer pins the lead and epoch for its lifetime. [Config.ExpectLead]
+// and [Config.ExpectEpoch] can supply either part of the pin in advance.
+// The first Welcome that passes the role check supplies each missing part,
+// whatever its value (epoch 0 and an empty lead are pinned like any other; a
+// Welcome that fails the role check pins nothing). A Welcome that disagrees
+// with the pin gets a Detach before any snapshot or input. The client keeps
+// its last screen and stops with an epoch-changed notice asking the operator
+// to select the lead again. A ticket source returning [ErrReselect] also
+// stops the client this way, on every path that asks it: the viewer service
+// before a dial, and the presence check and the ticket read of [New]. The
+// scratch --attach path uses [New], which enables pinning only when its
+// caller supplies an expected lead or epoch.
 //
 // A check mismatch or a gap in the output positions makes the client close the
 // connection, with a Detach, and attach again with a new ticket: the state is
@@ -81,8 +93,11 @@
 // that and not from the pane. Until a Modes frame comes on a connection, the
 // modes of its first snapshot stand in. State fills the end facts, the idle
 // word and the title, and ends the pane only when it says the stream ended.
-// The Role frame only updates the role; the holder's Notice is the one notice
-// of a writer change. The Notice with the reason input-broken (the agent's
+// The Role frame updates the role, and the holder's Notice is the one notice
+// of a writer change; a Role frame that takes the writer role away from the
+// client, and a writer-released Notice that comes while the client is the
+// writer (a release that closes the connection sends no Role frame), also
+// fence the input (see Input). The Notice with the reason input-broken (the agent's
 // input is broken for good) is shown once, in a text of this client's own.
 //
 // The pane's Options.Replies must stay nil in live mode: the holder alone
@@ -97,7 +112,8 @@
 // is not attached as the writer, and viewer-input-refused notices from the
 // holder). LiveStatus.Counters lists the client's own, all named client-*
 // (snapshots, position-gaps, checks-skipped for a Check at another position,
-// input-dropped for a full queue and for input queued when a connection was
+// input-dropped for a full queue, input-fenced (also LiveStatus.InputFenced)
+// for what was queued when the writer role was lost or the connection was
 // given up, keys-unencodable, pastes-refused, notices-dropped), then the
 // holder's from its Exit in name order. The holder's State frame carries no
 // counters.
@@ -120,6 +136,22 @@
 // connecting or resyncing is sent as the writer whenever a snapshot moves the
 // state to attached (the first of a connection, and the one after the holder's
 // own resync Notice), if it differs from the holder's.
+//
+// The input is fenced when the client loses the writer role (a Role frame that
+// demotes it, or a writer-released Notice) and when a connection ends with
+// input still queued (a replacement: the holder dropped it, or the client gave
+// it up to resync): every Input and Paste frame and the Resize still waiting is
+// dropped, counted in client-input-fenced (a size counts as one) and said once
+// in an input-fenced notice. On a fenced connection the queue takes nothing,
+// and the sink counts what is typed as refused, until a Role frame makes the
+// client the writer again; nothing queued for one connection is ever sent on
+// another. A frame the sender had already taken from the queue is written
+// whole, for the holder to refuse. With [Config.ReconnectAsViewer] the client
+// is also a viewer from then on, and also after a writer connection ends: its
+// next connections ask for [Config.ViewerTickets] (before the dial, like the
+// service of [NewViewer]), accept only the viewer role, and the user asks for
+// the writer again with a new client. The default, the scratch --attach path,
+// keeps asking for the role of its Mode.
 //
 // Sending never blocks the cockpit: frames wait in a queue of at most 256, a
 // run of keys shares frames of up to 64 KiB, and what does not fit is dropped,

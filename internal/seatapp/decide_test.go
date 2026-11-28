@@ -134,7 +134,7 @@ func TestSeatDecideFormOnTheCardPage(t *testing.T) {
 		`<button id="deny" type="button" class="deny" data-offer="open" hidden>Deny</button>`,
 		`<div id="confirm" hidden>`, `<button id="confirm-go" type="button" data-offer="open"></button>`,
 		"<dt>Project</dt><dd>ataniq</dd>", "<dt>What</dt><dd>feature finish seat-glue</dd>", "<dt>Into</dt><dd>develop</dd>",
-		"<dt>Revision</dt><dd class=\"mono\">binding abababababab</dd>", "<dt>Card</dt><dd>" + testCardID + "</dd>",
+		"<dt>Revision</dt><dd class=\"mono\">binding abababababab · silver lotus river aurora</dd>", "<dt>Card</dt><dd>" + testCardID + "</dd>",
 		`<a id="look" href="/cards/` + testCardID + `" hidden>Look again</a>`,
 		`<p id="decide-status" role="status"></p>`, "<noscript>", `<script src="/static/decide.js"></script>`,
 		"&lt;script&gt;alert(1)&lt;/script&gt;",
@@ -192,6 +192,53 @@ func TestSeatDecideFormOnTheCardPage(t *testing.T) {
 		if strings.Contains(w.Body.String(), `id="decide"`) || strings.Contains(w.Body.String(), "decide.js") {
 			t.Errorf("%s has the decide form", path)
 		}
+	}
+}
+
+func TestCF07SeatTagCard(t *testing.T) {
+	r := newRig(t)
+	body := r.openCard(t, r.login(t))
+	const binding = "abababababab · silver lotus river aurora"
+	for _, want := range []string{
+		`<dt>Binding</dt><dd class="mono">` + binding + "</dd>",
+		`<dt>Revision</dt><dd class="mono">binding ` + binding + "</dd>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("card page lacks %q", want)
+		}
+	}
+}
+
+func TestCF07SeatTagMalformed(t *testing.T) {
+	for _, digest := range []string{"", strings.Repeat("ab", 31) + "az"} {
+		r := newRig(t)
+		r.daemon.card.BindingSHA256 = digest
+		r.daemon.card.BindingTag = ""
+		body := r.openCard(t, r.login(t))
+		if n := strings.Count(body, "Binding tag unavailable"); n != 2 {
+			t.Errorf("digest %q: saw the unavailable tag %d times, want 2", digest, n)
+		}
+	}
+}
+
+func TestCF07SeatTagDecideJSON(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	r.openCard(t, s)
+	w := r.tap(approveBody, s)
+	m := answer(t, w)
+	if w.Code != http.StatusOK || m["binding"] != "abababababab" || m["binding_tag"] != "silver lotus river aurora" {
+		t.Fatalf("challenge returned %d %v", w.Code, m)
+	}
+
+	// A frame matching the displayed prefix still has to match the rest
+	// of the digest before the browser can get a challenge.
+	r.daemon.decideCh = func(c *DecideChallenge) {
+		c.Frame.BindingSHA256 = c.Frame.BindingSHA256[:63] + "0"
+	}
+	w = r.tap(approveBody, s)
+	if w.Code == http.StatusOK || answer(t, w)["challenge"] != nil {
+		t.Errorf("changed binding returned %d %s", w.Code, w.Body)
 	}
 }
 

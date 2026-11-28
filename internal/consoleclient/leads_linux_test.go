@@ -238,7 +238,7 @@ func newLeads(t *testing.T, dir string) *Leads {
 
 func newLeadsWith(t *testing.T, dir string, timeout time.Duration) *Leads {
 	t.Helper()
-	l, err := NewLeads(LeadsConfig{Dir: dir, Timeout: timeout})
+	l, err := NewLeads(LeadsConfig{Dir: dir, Timeout: timeout, ScratchWriter: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +427,7 @@ func TestCommandIdsAre128RandomBits(t *testing.T) {
 	src.Write(bytes.Repeat([]byte{0xab}, 16))
 	src.Write(bytes.Repeat([]byte{0xcd}, 16))
 	d := startLeadDaemon(t)
-	l, err := NewLeads(LeadsConfig{Dir: d.dir, Random: &src, Timeout: 5 * time.Second})
+	l, err := NewLeads(LeadsConfig{Dir: d.dir, Random: &src, Timeout: 5 * time.Second, ScratchWriter: true})
 	if err != nil {
 		t.Fatal(err)
 	}

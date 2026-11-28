@@ -10,7 +10,7 @@
 <dt>Asked</dt><dd>{{when .Asked}}</dd>
 <dt>Ends</dt><dd>{{if .Ended}}ended{{else}}{{until $.Now .Expires}}, {{when .Expires}}{{end}}</dd>
 <dt>Class</dt><dd>{{text .Class maxName}}</dd>
-<dt>Binding</dt><dd class="mono">{{short .BindingSHA256}}</dd>
+<dt>Binding</dt><dd class="mono">{{short .BindingSHA256}} · {{bindingTag .BindingTag}}</dd>
 </dl>
 {{if .Refused}}<p class="flag">A run refused: this card is here because of it.</p>
 {{end}}{{if .Held}}<p class="held">Held: decided past the limit. Nothing was applied.</p>
@@ -97,7 +97,7 @@
 <dt>Project</dt><dd>{{text .Card.Project maxName}}</dd>
 <dt>What</dt><dd>{{text .Card.Verb maxName}}{{if .Card.Feature}} {{text .Card.Feature maxName}}{{end}}</dd>
 {{if .Card.Target}}<dt>Into</dt><dd>{{text .Card.Target maxName}}</dd>
-{{end}}<dt>Revision</dt><dd class="mono">binding {{short .Card.BindingSHA256}}</dd>
+{{end}}<dt>Revision</dt><dd class="mono">binding {{short .Card.BindingSHA256}} · {{bindingTag .Card.BindingTag}}</dd>
 </dl>
 <button id="confirm-go" type="button" data-offer="open"></button>
 <button id="confirm-cancel" type="button" class="quiet">Cancel</button>
