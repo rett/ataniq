@@ -35,6 +35,7 @@ var frameTypes = []struct {
 	{wire.TypeCheck, wire.ToClient, wire.MaxHolderPayload, 2, "check"},
 	{wire.TypeNotice, wire.ToClient, wire.MaxHolderPayload, 2, "notice"},
 	{wire.TypeExit, wire.ToClient, wire.MaxHolderPayload, 2, "exit"},
+	{wire.TypeHistory, wire.ToClient, wire.MaxHistoryPayload, 22, "history"},
 	{wire.TypeRequest, wire.ControlRequests, wire.MaxControlPayload, 2, "request"},
 	{wire.TypeResponse, wire.ControlResponses, wire.MaxControlPayload, 2, "response"},
 }
