@@ -41,6 +41,11 @@ type outQueue struct {
 	limit  int
 	full   bool
 	closed bool
+	// fenced refuses pushes: the client lost the writer role on this
+	// connection, and a sink that took the connection before that must not
+	// queue anything behind the fence. A Role frame that says writer again
+	// lifts it.
+	fenced bool
 	// sig tells the sender there is something to send.
 	sig chan struct{}
 }
@@ -75,7 +80,7 @@ func (q *outQueue) pushInput(b []byte) queueResult {
 		return queued
 	}
 	q.mu.Lock()
-	if q.closed {
+	if q.closed || q.fenced {
 		q.mu.Unlock()
 		return queueClosed
 	}
@@ -104,7 +109,7 @@ func (q *outQueue) pushInput(b []byte) queueResult {
 // pushPaste queues the text of a paste, which is already a valid payload.
 func (q *outQueue) pushPaste(p []byte) queueResult {
 	q.mu.Lock()
-	if q.closed {
+	if q.closed || q.fenced {
 		q.mu.Unlock()
 		return queueClosed
 	}
@@ -132,7 +137,7 @@ func (q *outQueue) dropLocked() queueResult {
 // queue takes it.
 func (q *outQueue) setResize(s wire.Size) bool {
 	q.mu.Lock()
-	if q.closed {
+	if q.closed || q.fenced {
 		q.mu.Unlock()
 		return false
 	}
@@ -174,16 +179,44 @@ func (q *outQueue) pop() (outFrame, bool) {
 	return f, true
 }
 
-// close drops everything queued and refuses what comes. It returns how many
-// pushes (keys, mouse events, pastes) the dropped frames held; a size waiting
-// is not input and is not counted.
-func (q *outQueue) close() (dropped int) {
-	q.mu.Lock()
-	q.closed = true
+// drainLocked drops everything queued and returns how many things it was: the
+// pushes (keys, mouse events, pastes) the dropped frames held, and a size
+// waiting to be sent as one.
+func (q *outQueue) drainLocked() (dropped int) {
 	for _, f := range q.frames {
 		dropped += f.n
 	}
-	q.frames, q.resize = nil, nil
+	if q.resize != nil {
+		dropped++
+	}
+	q.frames, q.resize, q.full = nil, nil, false
+	return dropped
+}
+
+// close drops everything queued and refuses what comes. It returns how many
+// things were dropped (see drainLocked).
+func (q *outQueue) close() (dropped int) {
+	q.mu.Lock()
+	q.closed = true
+	dropped = q.drainLocked()
 	q.mu.Unlock()
 	return dropped
+}
+
+// fence drops everything queued, and refuses pushes until unfence: the client
+// is no longer the writer here. It returns how many things were dropped. A
+// frame the sender already took from the queue is not among them.
+func (q *outQueue) fence() (dropped int) {
+	q.mu.Lock()
+	q.fenced = true
+	dropped = q.drainLocked()
+	q.mu.Unlock()
+	return dropped
+}
+
+// unfence takes pushes again after a Role frame made this client the writer.
+func (q *outQueue) unfence() {
+	q.mu.Lock()
+	q.fenced = false
+	q.mu.Unlock()
 }

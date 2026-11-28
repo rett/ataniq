@@ -651,19 +651,21 @@ func TestInputQueuedWhenAConnectionIsGivenUpIsCounted(t *testing.T) {
 	e.sink.Key(keyA)
 	e.sink.Key(keyA)
 	e.sink.Paste("last")
-	if n := counter(e.c.Status(), "client-input-dropped"); n != 0 {
-		t.Fatalf("%d dropped before the connection was given up", n)
+	if st := e.c.Status(); counter(st, "client-input-dropped") != 0 || counter(st, "client-input-fenced") != 0 {
+		t.Fatalf("input counted before the connection was given up: %+v", st.Counters)
 	}
 
 	// A check mismatch gives the connection up. Whatever was queued would
 	// reach a different screen, so it is not sent, and it is counted by what
 	// the user typed: one second paste, three keys, one last paste. The
-	// first, which the holder read, is not among them.
+	// first, which the holder read, is not among them. It is fenced, not
+	// dropped (a drop is the queue overflowing), with one notice.
 	hc.corrupt("A", "B")
 	hc.check()
-	e.until("the count", func(st terminalconsole.LiveStatus) bool { return counter(st, "client-input-dropped") >= 5 })
-	if n := counter(e.c.Status(), "client-input-dropped"); n != 5 {
-		t.Fatalf("%d inputs counted as dropped, want exactly 5", n)
+	e.until("the count", func(st terminalconsole.LiveStatus) bool { return counter(st, "client-input-fenced") >= 5 })
+	if st := e.c.Status(); counter(st, "client-input-fenced") != 5 || st.InputFenced != 5 || counter(st, "client-input-dropped") != 0 {
+		t.Fatalf("inputs counted as fenced %d (status %d) and dropped %d, want exactly 5, 5 and 0",
+			counter(st, "client-input-fenced"), st.InputFenced, counter(st, "client-input-dropped"))
 	}
 	hc.resume()
 	for _, typ := range hc.closed() {
@@ -682,7 +684,7 @@ func TestInputQueuedWhenAConnectionIsGivenUpIsCounted(t *testing.T) {
 	if got := hc2.input(1); got != "a" {
 		t.Errorf("the next connection first received %q, want the one key typed after it", got)
 	}
-	if n := counter(e.c.Status(), "client-input-dropped"); n != 5 {
-		t.Errorf("%d inputs counted as dropped at the end, want 5", n)
+	if n := counter(e.c.Status(), "client-input-fenced"); n != 5 {
+		t.Errorf("%d inputs counted as fenced at the end, want 5", n)
 	}
 }

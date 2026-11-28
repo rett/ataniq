@@ -91,6 +91,22 @@ type Config struct {
 	// A nil field means always dial, for a source with no probe.
 	// FileTicketSource gives the one for a ticket file.
 	TicketReady func() error
+	// ReconnectAsViewer says what the client does once it has lost the writer
+	// role: after a Role frame that demotes it, a writer-released Notice, or
+	// a writer connection that ended (other than by Close), it wants the
+	// viewer role for good: every later connection asks for and accepts only
+	// a viewer, input is refused, and the user must ask for the writer role
+	// again (with a new client). False, the default and the scratch --attach
+	// path, keeps the client's Mode: it asks for a writer ticket again after
+	// a lost connection. The ticket binds the role, so a source that still
+	// gives writer tickets after the change makes the client refuse the grant
+	// as a role mismatch; set ViewerTickets to supply viewer tickets.
+	ReconnectAsViewer bool
+	// ViewerTickets gives the viewer tickets of the connections made after
+	// ReconnectAsViewer took effect, in place of Tickets and TicketReady. It
+	// is asked before each dial, as the service of NewViewer is, and an
+	// ErrNoTicket means there is none yet. Nil keeps Tickets and TicketReady.
+	ViewerTickets func() (string, error)
 	// Dial connects to Socket. Nil dials the unix socket.
 	Dial DialFunc
 	// Clock times the wait for a ticket. Nil is the real clock.

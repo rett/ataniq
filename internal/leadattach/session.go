@@ -183,16 +183,24 @@ func (c *Client) attach(nc net.Conn, ticket string, resync bool) (out outcome) {
 	defer func() {
 		c.mu.Lock()
 		c.cur = nil
+		if s.welcomed && out.kind != outClosed && c.role == wire.RoleWriter {
+			// A writer connection that ended: the writer place is gone with
+			// it, and a client that reconnects as a viewer asks for no more.
+			c.downgradeLocked()
+		}
 		c.mu.Unlock()
 		if !started {
 			close(cn.sendDone)
 		}
 		if n := cn.finish(out.kind == outClosed || out.kind == outResync || out.kind == outRoleMismatch || out.kind == outReselect); n > 0 {
 			// Input that was queued and never written is not sent later, to
-			// a different screen; it is counted.
+			// a different screen: it is fenced and counted.
 			c.mu.Lock()
-			c.cnt.inputDropped += uint64(n)
+			c.cnt.inputFenced += uint64(n)
 			c.mu.Unlock()
+			if out.kind != outClosed {
+				c.mutate(func() { c.addNoticeLocked(c.fencedNoticeLocked(fenceReplaced)) })
+			}
 		}
 		out.snapshot = s.snaps > 0
 		out.checked = s.checked
@@ -335,7 +343,7 @@ func (s *session) handshake(f wire.Frame) *outcome {
 	if !c.targetMatches(w) {
 		return &outcome{kind: outReselect}
 	}
-	if want := wire.Role(c.cfg.Mode); w.Role != want {
+	if want := wire.Role(c.modeNow()); w.Role != want {
 		reason := "requested " + string(want) + " but the ticket granted " + string(w.Role)
 		c.mutate(func() { c.addNoticeLocked(liveNotice("role-mismatch", reason)) })
 		return &outcome{kind: outRoleMismatch, reason: reason}
@@ -568,15 +576,59 @@ func (s *session) roleFrame(payload []byte) *outcome {
 	if err != nil {
 		return protocolError("the holder sent a bad role frame")
 	}
-	// The Role frame only updates the status and the name a later Notice
-	// uses: the holder says every writer change once in a Notice of its
-	// own, and the cockpit must not show it twice.
+	// The Role frame updates the status and the name a later Notice uses: the
+	// holder says every writer change once in a Notice of its own, and the
+	// cockpit must not show it twice. A frame that takes the writer role away
+	// also fences what is queued.
 	s.writer = ri.WriterName
+	lost := false
 	c.mutate(func() {
+		lost = c.role == wire.RoleWriter && ri.Role != wire.RoleWriter
 		c.role = ri.Role
 		c.st.Role = terminalconsole.LiveRole(ri.Role)
 	})
+	switch {
+	case lost:
+		s.writerLost()
+	case ri.Role == wire.RoleWriter:
+		s.cn.q.unfence()
+	}
 	return nil
+}
+
+// writerLost fences the connection after the client lost the writer role on
+// it: whatever is queued is dropped and counted, once in a notice, and the
+// queue refuses anything a sink was about to push. A frame already taken by
+// the sender is on its way and is the holder's to refuse. With
+// Config.ReconnectAsViewer the client is a viewer from now on.
+func (s *session) writerLost() {
+	c := s.c
+	n := s.cn.q.fence()
+	c.mutate(func() {
+		c.downgradeLocked()
+		if n > 0 {
+			c.cnt.inputFenced += uint64(n)
+			c.addNoticeLocked(c.fencedNoticeLocked(fenceRoleLost))
+		}
+	})
+}
+
+// Why input was fenced.
+const (
+	fenceRoleLost = iota
+	fenceReplaced
+)
+
+// fencedNoticeLocked is the one notice of a fence.
+func (c *Client) fencedNoticeLocked(why int) terminalconsole.LiveNotice {
+	text := "The writer role was lost: input waiting to be sent was dropped."
+	if why == fenceReplaced {
+		text = "The connection was replaced: input waiting to be sent was dropped, not sent to the new one."
+	}
+	if c.viewerOnly {
+		text += " This console reconnects as a viewer."
+	}
+	return liveNotice("input-fenced", text)
 }
 
 func (s *session) check(payload []byte) *outcome {
@@ -624,7 +676,7 @@ func (s *session) notice(payload []byte) *outcome {
 	}
 	text := shorten(n.Text, wire.MaxNoticeText)
 	out := terminalconsole.LiveNotice{Code: string(n.Reason), Text: text}
-	refused, resyncing, once := false, false, false
+	refused, resyncing, once, released := false, false, false, false
 	switch n.Reason {
 	case wire.ReasonKeyHeldSuspend, wire.ReasonKeyHeldSignal:
 		out.Code = terminalconsole.NoticeHeldKey
@@ -650,6 +702,14 @@ func (s *session) notice(payload []byte) *outcome {
 		s.hint = "too slow"
 	}
 	c.mutate(func() {
+		if n.Reason == wire.ReasonWriterReleased && c.role == wire.RoleWriter {
+			// Only the writer's own release comes to a writer: the place is
+			// gone, with or without a Role frame before it (a release that
+			// closes the connection sends this Notice alone).
+			c.role = wire.RoleViewer
+			c.st.Role = terminalconsole.LiveViewer
+			released = true
+		}
 		if refused {
 			c.st.RefusedInput++
 		}
@@ -664,6 +724,9 @@ func (s *session) notice(payload []byte) *outcome {
 		}
 		c.addNoticeLocked(out)
 	})
+	if released {
+		s.writerLost()
+	}
 	return nil
 }
 

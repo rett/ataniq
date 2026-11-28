@@ -67,7 +67,10 @@ type Client struct {
 	// inputBrokenShown is set once the notice that the agent's input is
 	// broken was made: it is said once for the life of the client.
 	inputBrokenShown bool
-	cnt              counters
+	// viewerOnly is set once ReconnectAsViewer took effect: cfg.Mode is then
+	// the viewer.
+	viewerOnly bool
+	cnt        counters
 }
 
 // counters are the client's own counters, shown with the holder's.
@@ -76,6 +79,7 @@ type counters struct {
 	checksSkipped   uint64
 	snapshots       uint64
 	inputDropped    uint64
+	inputFenced     uint64
 	noticesDropped  uint64
 	pasteRefused    uint64
 	keysUnencodable uint64
@@ -185,6 +189,7 @@ func (c *Client) Status() terminalconsole.LiveStatus {
 	defer c.mu.Unlock()
 	st := c.st
 	st.Counters = c.countersLocked()
+	st.InputFenced = c.cnt.inputFenced
 	return st
 }
 
@@ -197,6 +202,7 @@ func (c *Client) countersLocked() []terminalconsole.LiveCounter {
 		{Name: "client-position-gaps", Value: n.positionGaps},
 		{Name: "client-checks-skipped", Value: n.checksSkipped},
 		{Name: "client-input-dropped", Value: n.inputDropped},
+		{Name: "client-input-fenced", Value: n.inputFenced},
 		{Name: "client-keys-unencodable", Value: n.keysUnencodable},
 		{Name: "client-pastes-refused", Value: n.pasteRefused},
 		{Name: "client-notices-dropped", Value: n.noticesDropped},
@@ -272,6 +278,34 @@ func (c *Client) inputConnLocked() *conn {
 		return nil
 	}
 	return c.cur
+}
+
+// downgradeLocked makes the client a viewer for good, when Config says it
+// reconnects as one after losing the writer role.
+func (c *Client) downgradeLocked() {
+	if c.cfg.ReconnectAsViewer && c.cfg.Mode == ModeWriter {
+		c.cfg.Mode, c.viewerOnly = ModeViewer, true
+	}
+}
+
+// modeNow is the role the client asks for in its next connection.
+func (c *Client) modeNow() Mode {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cfg.Mode
+}
+
+// ticketsBeforeDial reports whether a ticket is asked before the dial: the
+// viewer service of NewViewer, or ViewerTickets after the downgrade. Other
+// tickets are read after the dial, because a scratch file is emptied by the
+// read.
+func (c *Client) ticketsBeforeDial() bool {
+	if c.issueBeforeDial {
+		return true
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.viewerOnly && c.cfg.ViewerTickets != nil
 }
 
 // addNoticeLocked keeps a notice for the cockpit. The backlog is bounded:
@@ -398,7 +432,8 @@ func (c *Client) run() {
 		// the holder's handshake.
 		var ticket string
 		var err error
-		if c.issueBeforeDial {
+		before := c.ticketsBeforeDial()
+		if before {
 			ticket, err = c.askTicket()
 		} else if ready := c.cfg.TicketReady; ready != nil {
 			err = ready()
@@ -431,7 +466,7 @@ func (c *Client) run() {
 		}
 		// Read a scratch ticket only now so a failed dial leaves it in
 		// the file. Another reader may have taken it since the check.
-		if !c.issueBeforeDial {
+		if !before {
 			ticket, err = c.askTicket()
 		}
 		if err != nil {
@@ -502,7 +537,13 @@ func (c *Client) run() {
 // askTicket asks the source once, and returns an error when it has no ticket
 // (ErrNoTicket, or why it has none) or gave a malformed one.
 func (c *Client) askTicket() (string, error) {
-	t, err := c.cfg.Tickets()
+	get := c.cfg.Tickets
+	c.mu.Lock()
+	if c.viewerOnly && c.cfg.ViewerTickets != nil {
+		get = c.cfg.ViewerTickets
+	}
+	c.mu.Unlock()
+	t, err := get()
 	if err == nil {
 		if wire.CheckTicket(t) == nil {
 			return t, nil
