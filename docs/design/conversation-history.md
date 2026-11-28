@@ -41,7 +41,10 @@ pruned entries were hidden, so retention never renumbers. For a projection that
 hides nothing it is the authority's sequence. A fresh readable segment gets a
 fresh generation. An attach or a page refresh preserves the ID, and so does a
 change of viewer whose projection hides the same entries below it. Desk and seat
-deduplicate by the whole tuple. Preserve existing event and cause IDs when an
+deduplicate by the whole tuple within one viewer's projection only: two
+projections that hide different entries can give one tuple to different entries,
+and a change of grant can renumber a viewer's own entries. A reset
+(`reset_required`) discards the IDs with the page. Preserve existing event and cause IDs when an
 entry refers to those events. [Resource definition](../../internal/appcontract/resource.go)
 and [event identities](../../internal/appcontract/projection.go).
 

@@ -6,14 +6,18 @@ import (
 	"strings"
 )
 
-// MessageID is the stable identity of one conversation entry: the authority,
-// the stable lead role, the conversation's ID, the generation of the readable
+// MessageID is the identity of one conversation entry as one viewer's
+// disclosure projection reads it: the authority, the stable lead role, the conversation's ID, the generation of the readable
 // segment and the entry's number within that segment. The number counts the
 // entries the reading viewer's disclosure projection does not hide, so that a
 // hidden entry leaves no gap in it; for a projection that hides nothing it is
 // the authority's sequence. An attach or a page refresh keeps it, and so does a
 // change of viewer whose projection hides the same entries below it; a fresh
-// readable segment has a fresh generation. Desk and seat compare whole values. The value is data, not a
+// readable segment has a fresh generation. Two projections that hide different
+// entries can give one tuple to different entries, and one viewer's numbers
+// change when a grant changes what its projection hides below an entry: compare
+// IDs only within one viewer and projection, and drop them with the page on
+// reset_required. The value is data, not a
 // proof of disclosure: a reader may see an entry only under current authority.
 //
 // The canonical text form is
