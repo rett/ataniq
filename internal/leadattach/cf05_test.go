@@ -246,6 +246,25 @@ func TestCF05Client(t *testing.T) {
 			reconnectsAsViewer(t, e, hc, v)
 		})
 
+		t.Run("PinCoversTheViewerFallback", func(t *testing.T) {
+			// A writer pinned to a lead and epoch stops for reselection when
+			// its viewer fallback finds another epoch behind the socket.
+			v, set := newViewers()
+			e := newEnv(t, setup{pipe: true, mode: leadattach.ModeWriter, mutate: func(cfg *leadattach.Config) {
+				set(cfg)
+				cfg.ExpectLead, cfg.ExpectEpoch = "lead-one", 3
+			}})
+			hc := e.attach(wire.RoleWriter)
+			hc.nc.Close()
+			next := e.h.accept()
+			next.welcomeTarget(wire.RoleViewer, "lead-one", 4)
+			requireDetach(t, next)
+			requireReselect(t, e)
+			if v.calls.Load() != 1 {
+				t.Fatalf("viewer tickets asked %d times", v.calls.Load())
+			}
+		})
+
 		t.Run("CloseCancelsASlowViewerTicket", func(t *testing.T) {
 			// The source honors only its context, as a daemon command in
 			// flight does: Close must cancel it and not wait for it.

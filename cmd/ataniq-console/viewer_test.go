@@ -490,7 +490,7 @@ func TestCF03ViewerRenewal(t *testing.T) {
 			t.Fatal(err)
 		}
 		a := got.attach
-		if a.viewer || a.tickets != nil || a.expectLead != "" || a.expectEpoch != 0 || a.ticketFile != req.TicketFile || a.socket != "/run/lead-alpha/"+attachSocketName {
+		if a.viewer || a.tickets != nil || a.ticketFile != req.TicketFile || a.socket != "/run/lead-alpha/"+attachSocketName {
 			t.Fatalf("writer attach %+v", a)
 		}
 		// It reads its one ticket from the file; once the writer role is lost it
@@ -502,6 +502,11 @@ func TestCF03ViewerRenewal(t *testing.T) {
 		lc := fileTicketConfig(a, leadattach.ModeWriter)
 		if lc.Mode != leadattach.ModeWriter || !lc.ReconnectAsViewer || lc.ViewerTickets == nil {
 			t.Fatalf("writer config: mode %v, reconnect as viewer %t, viewer tickets %t", lc.Mode, lc.ReconnectAsViewer, lc.ViewerTickets != nil)
+		}
+		// The writer and its viewer fallback are pinned to the selected lead
+		// and epoch, so that the reselect stop covers the fallback too.
+		if a.expectLead != "lead-alpha" || a.expectEpoch != 3 || lc.ExpectLead != "lead-alpha" || lc.ExpectEpoch != 3 {
+			t.Fatalf("pin %q at %d in the attach, %q at %d in the config, want lead-alpha at 3", a.expectLead, a.expectEpoch, lc.ExpectLead, lc.ExpectEpoch)
 		}
 		// With no lead client a writer still attaches, with no fallback; a
 		// viewer cannot.
