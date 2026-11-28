@@ -1,6 +1,7 @@
 package appcontract
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -755,4 +756,58 @@ func TestHiddenEntriesLeaveNoTraceInIDs(t *testing.T) {
 			t.Errorf("state %s", after.State)
 		}
 	})
+}
+
+// TestEscapedLenIsJSONLength holds that a page's byte cost counts text as JSON
+// writes it: for every character the cost is at least the encoder's output.
+func TestEscapedLenIsJSONLength(t *testing.T) {
+	for r := rune(0); r <= 0x2100; r++ {
+		s := string(r)
+		b, err := json.Marshal(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, enc := escapedLen(s), len(b)-2; got < enc {
+			t.Errorf("U+%04X: cost %d under the encoded %d", r, got, enc)
+		}
+	}
+	for _, s := range []string{"", "plain", "<&>", "tab\there", "  ", "quote\"back\\slash", "é世🙂"} {
+		b, _ := json.Marshal(s)
+		if got := escapedLen(s); got != len(b)-2 {
+			t.Errorf("%q: cost %d, encoded %d", s, got, len(b)-2)
+		}
+	}
+}
+
+// TestPageBoundCountsEscapes holds that a page of text that JSON escapes is cut
+// by what it encodes to, so a full page cannot outgrow the wire's cap.
+func TestPageBoundCountsEscapes(t *testing.T) {
+	f := newPageFixture(t, Retention{})
+	text := strings.Repeat("<", 16<<10)
+	for i := 0; i < 60; i++ {
+		f.clock.Advance(time.Second)
+		f.source.Append(Entry{Kind: KindReply, Text: text})
+	}
+	p := mustRead(t, f.reader, pageReq("viewer-a", Backward, "", MaxPageEntries))
+	if len(p.Entries) == 0 {
+		t.Fatal("no entries")
+	}
+	encoded := 0
+	for _, e := range p.Entries {
+		b, err := json.Marshal(e.Text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded += len(b) - 2 + EntryOverhead
+	}
+	if encoded > MaxPageBytes {
+		t.Errorf("page of %d entries encodes its text to %d bytes, bound %d", len(p.Entries), encoded, MaxPageBytes)
+	}
+	// 16 KiB of '<' encodes to 96 KiB: two fit, a third does not.
+	if len(p.Entries) != 2 {
+		t.Errorf("%d entries, want 2", len(p.Entries))
+	}
+	if p.State != PageMore || p.Older == "" {
+		t.Errorf("state %s", p.State)
+	}
 }

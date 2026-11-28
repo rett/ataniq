@@ -151,8 +151,14 @@ type PageRequest struct {
 }
 
 // Page bounds. A page holds at most the entry count and the byte cost, where
-// an entry costs EntryOverhead plus its text; it always holds one visible
-// entry when one is available, as a single text is far below MaxPageBytes.
+// an entry costs EntryOverhead plus its text as JSON writes it (a character
+// that JSON escapes costs its escape, up to six bytes, so that a page of such
+// text cannot encode to several times its bound); it always holds one visible
+// entry when one is available. The desk's wire caps an answer at 1 MiB
+// (leadwire.MaxConversationResultBytes): the text of a full page is at most
+// MaxPageBytes encoded, and 200 entries with every other field at its cap add
+// about 3 KiB each beyond EntryOverhead, so the largest answer stays under
+// 850 KiB; leadwire's TestWorstCasePageFitsTheResultCap holds that.
 const (
 	DefaultPageEntries = 50
 	MaxPageEntries     = 200
@@ -357,7 +363,27 @@ func (r *PageReader) entry(req PageRequest, s Snapshot, e Entry, seq uint64) Pag
 	return p
 }
 
-func cost(p PageEntry) int { return EntryOverhead + len(p.Text) }
+func cost(p PageEntry) int { return EntryOverhead + escapedLen(p.Text) }
+
+// escapedLen is the size in bytes of s inside a JSON string as Go's encoder
+// writes it, with its HTML escaping on, the largest form: a quote, a backslash
+// and a line feed, carriage return or tab take two bytes, any other control
+// character, '<', '>', '&' and the separators U+2028 and U+2029 take six, and
+// every other character its own length. s must be valid UTF-8.
+func escapedLen(s string) int {
+	n := 0
+	for _, r := range s {
+		switch {
+		case r == '"' || r == '\\' || r == '\n' || r == '\r' || r == '\t':
+			n += 2
+		case r < 0x20 || r == '<' || r == '>' || r == '&' || r == 0x2028 || r == 0x2029:
+			n += 6
+		default:
+			n += utf8.RuneLen(r)
+		}
+	}
+	return n
+}
 
 // backward returns the entries with sequence below before, newest first
 // until the count or byte bound, ordered ascending. A hidden entry is examined,
