@@ -191,9 +191,11 @@ type Config struct {
 
 	// RecentRows is the bound, in rows, of the ring of recent output that the
 	// holder's pane keeps for a console that attaches later (see
-	// sessionpane.Options.RecentRows). Zero means
-	// sessionpane.DefaultRecentRows, which is provisional until the attended
-	// rehearsal; a negative number keeps no ring.
+	// sessionpane.Options.RecentRows). Zero, the default, keeps no ring:
+	// nothing serves it yet, and it costs memory and changes the pane's
+	// slicing of output. A positive number enables it with that bound;
+	// sessionpane.DefaultRecentRows is the provisional value for a caller that
+	// opts in.
 	RecentRows int
 
 	// RoleLock is the path of the role's lock file. Unless HeldRoleLock is
@@ -390,14 +392,10 @@ func Start(cfg Config) (_ *Session, err error) {
 	s.hold.init(cfg.heldLimit)
 	s.replies.init()
 	s.replies.owner = s
-	recentRows := cfg.RecentRows
-	if recentRows == 0 {
-		recentRows = sessionpane.DefaultRecentRows
-	}
 	s.pane = sessionpane.New(cols, rows, sessionpane.Options{
 		Replies:    s.replies.push,
 		Colours:    cfg.Colours,
-		RecentRows: max(recentRows, 0),
+		RecentRows: max(cfg.RecentRows, 0),
 	})
 	// The handlers are set before the agent starts, so that no output reaches
 	// the pane without them.

@@ -11,8 +11,8 @@ import (
 	"ataniq/internal/terminalconsole/sessionpane"
 )
 
-// The holder's pane keeps the ring of recent output by default, and the
-// bound is a parameter of the configuration.
+// The holder's pane keeps no ring of recent output unless the configuration
+// asks for one, and the bound is a parameter of the configuration.
 func TestCF04RecentRowsOfTheHoldersPane(t *testing.T) {
 	const size = 60000
 	stream := fakeagent.FloodBytes(1, size)
@@ -41,12 +41,10 @@ func TestCF04RecentRowsOfTheHoldersPane(t *testing.T) {
 			}
 		}
 	}
-	t.Run("default", func(t *testing.T) {
-		want := reference(sessionpane.DefaultRecentRows)
-		if want.Next == 0 {
-			t.Fatal("the flood scrolled no row: this test needs updating")
+	t.Run("off by default", func(t *testing.T) {
+		if r := recent(t, func(*Config) {}); r.Next != 0 || len(r.Entries) != 0 {
+			t.Fatalf("a holder with no RecentRows kept %+v", r)
 		}
-		same(t, recent(t, func(*Config) {}), want)
 	})
 	t.Run("configured", func(t *testing.T) {
 		want := reference(25)
@@ -56,9 +54,11 @@ func TestCF04RecentRowsOfTheHoldersPane(t *testing.T) {
 		}
 		same(t, got, want)
 	})
-	t.Run("none", func(t *testing.T) {
-		if r := recent(t, func(c *Config) { c.RecentRows = -1 }); r.Next != 0 || len(r.Entries) != 0 {
-			t.Fatalf("a holder with the ring off kept %+v", r)
+	t.Run("provisional default enabled", func(t *testing.T) {
+		want := reference(sessionpane.DefaultRecentRows)
+		if want.Next == 0 {
+			t.Fatal("the flood scrolled no row: this test needs updating")
 		}
+		same(t, recent(t, func(c *Config) { c.RecentRows = sessionpane.DefaultRecentRows }), want)
 	})
 }
