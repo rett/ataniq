@@ -60,6 +60,7 @@ const (
 	TypeCheck    = byte('C')
 	TypeNotice   = byte('N')
 	TypeExit     = byte('E')
+	TypeHistory  = byte('Y')
 )
 
 // Frame types of the control socket.
@@ -139,6 +140,7 @@ var types = map[byte]typeInfo{
 	TypeCheck:    {dir: ToClient, min: jsonMin, max: MaxHolderPayload, json: true},
 	TypeNotice:   {dir: ToClient, min: jsonMin, max: MaxHolderPayload, json: true},
 	TypeExit:     {dir: ToClient, min: jsonMin, max: MaxHolderPayload, json: true},
+	TypeHistory:  {dir: ToClient, min: historyHeaderLen, max: MaxHistoryPayload},
 
 	TypeRequest:  {dir: ControlRequests, min: jsonMin, max: MaxControlPayload, json: true},
 	TypeResponse: {dir: ControlResponses, min: jsonMin, max: MaxControlPayload, json: true},
@@ -190,6 +192,8 @@ func TypeName(typ byte) string {
 		return "notice"
 	case TypeExit:
 		return "exit"
+	case TypeHistory:
+		return "history"
 	case TypeRequest:
 		return "request"
 	case TypeResponse:
