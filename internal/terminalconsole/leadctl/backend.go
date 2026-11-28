@@ -159,6 +159,15 @@ func (c Control) NotOfferedReason() string {
 	return string(c.Op) + "-not-offered"
 }
 
+// OfferAll returns a new offer map in which every control of the view is
+// offered, for a backend that does not negotiate.
+func OfferAll() map[Control]Availability {
+	return map[Control]Availability{
+		{Op: OpDefine}: {Offered: true}, {Op: OpStart}: {Offered: true}, {Op: OpStop}: {Offered: true},
+		{Op: OpInject}: {Offered: true}, {Op: OpTicket}: {Offered: true}, {Op: OpTicket, Writer: true}: {Offered: true},
+	}
+}
+
 // Availability is the negotiated offer for a control on one lead. Reason is a
 // local code for an unavailable control, translated through the view's words.
 type Availability struct {
@@ -168,8 +177,9 @@ type Availability struct {
 
 // Lead is one lead of the listing.
 type Lead struct {
-	// Actions holds the negotiated offer. A backend without negotiation may
-	// leave it nil to use the original local scratch controls.
+	// Actions holds the negotiated offer, and a control it does not list is
+	// not offered. A nil map offers nothing, so a backend sets it: OfferAll
+	// for one that offers every control.
 	Actions map[Control]Availability
 	// HomeID is empty for the local scratch backend. A row from a named
 	// home is for display only on this role-addressed backend.

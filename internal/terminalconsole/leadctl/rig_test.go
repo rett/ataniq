@@ -103,7 +103,7 @@ func (f *fakeBackend) total() int {
 // aLead is a lead of the listing that can be started.
 func aLead(key string) Lead {
 	return Lead{Key: key, Role: "scratch-" + key + "/lead", Defined: true, Provision: "done", State: "stopped",
-		Unit: "ataniq-lead-scratch-" + key + ".service", Inject: true}
+		Unit: "ataniq-lead-scratch-" + key + ".service", Inject: true, Actions: OfferAll()}
 }
 
 // aRunning is a lead that is ready in epoch 3, with its one message free.

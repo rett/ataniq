@@ -583,7 +583,8 @@ func (l Lead) availability(c Control) Availability {
 	case c.Op == OpInject && !l.Inject:
 		return Availability{Reason: "messages-off"}
 	case l.Actions == nil:
-		return Availability{Offered: true}
+		// No offer map is no offer: a backend that forgot it offers nothing.
+		return Availability{Reason: c.NotOfferedReason()}
 	}
 	if offer, ok := l.Actions[c]; ok {
 		return offer
