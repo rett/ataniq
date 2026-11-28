@@ -56,6 +56,12 @@
 // permission gives "forbidden". The handler rechecks authorization when
 // committing an effect.
 //
+// A handler offering [OpDirectoryList] advertises it on one directory target.
+// Send that target with "directory.list" to read a [DirectoryListResult].
+// Each row carries the assigned lead's target ID, also present in hello.
+// Use its display name for presentation and compare the target ID in full.
+// A changed directory can invalidate the list target and require a new hello.
+//
 // # Wire
 //
 // One JSON object per line, UTF-8, each line ended by a single LF. A request
