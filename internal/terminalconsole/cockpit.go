@@ -290,6 +290,12 @@ func (m *Model) enter() tea.Cmd {
 			m.notice = noSessionText
 			return nil
 		}
+		if m.live.on() && m.liveReselect() {
+			// The pin no longer holds: the pane takes no focus until the
+			// lead is selected again.
+			m.notice = "Stopped: the lead's epoch changed. Select the lead again."
+			return nil
+		}
 		if m.layout().cockpit {
 			m.focus = sessionFocus
 		}
