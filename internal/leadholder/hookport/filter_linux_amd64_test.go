@@ -36,15 +36,19 @@ func digest(program []unix.SockFilter) string {
 	return fmt.Sprintf("%x", sha256.Sum256(b.Bytes()))
 }
 
-// Only test code builds the diagnostic program. Its data word identifies the
-// exact return instruction; its real SIGSYS siginfo also names the syscall.
-func attribution() []unix.SockFilter {
+// Only test code builds the diagnostic program. It is the production program
+// with exactly one change: the return instruction of the probed operation's
+// rule traps instead of failing. Its data word identifies that instruction;
+// its real SIGSYS siginfo also names the syscall. Every other rule keeps its
+// production errno, so a thread of the Go runtime or of libc that makes a
+// denied call of its own (a pthread_create that uses clone3, for one) gets
+// the production errno and its fallback instead of a SIGSYS. That SIGSYS
+// would be forced to the default action, a core dump, because those threads
+// block every signal while they start.
+func attribution(op operation) []unix.SockFilter {
 	p := holderProgram()
-	for i, ins := range p {
-		if ins.Code == unix.BPF_RET|unix.BPF_K && ins.K&0xffff0000 == unix.SECCOMP_RET_ERRNO {
-			p[i].K = unix.SECCOMP_RET_TRAP | uint32(i)
-		}
-	}
+	mark := ruleMark(op.nr)
+	p[mark].K = unix.SECCOMP_RET_TRAP | mark
 	return p
 }
 
@@ -53,10 +57,8 @@ func TestFilterProgram(t *testing.T) {
 	for _, op := range operations() {
 		seen[op.nr] = true
 	}
-	prod, attr := holderProgram(), attribution()
-	if len(prod) != len(attr) {
-		t.Fatal("program length differs")
-	}
+	prod := holderProgram()
+	traps := map[uint32]bool{}
 	for _, nr := range append(slices.Clone(denied[:]), unix.SYS_CLONE) {
 		if !seen[nr] {
 			t.Fatalf("no kernel control for syscall %d", nr)
@@ -69,17 +71,37 @@ func TestFilterProgram(t *testing.T) {
 			t.Fatalf("missing deny rule for syscall %d", nr)
 		}
 	}
-	for i, a := range attr {
-		b := prod[i]
-		if b.Code == unix.BPF_RET|unix.BPF_K && b.K&0xffff0000 == unix.SECCOMP_RET_ERRNO {
-			b.K = unix.SECCOMP_RET_TRAP | uint32(i)
+	// Each attribution program differs from production at one instruction:
+	// the errno return of the operation's own rule.
+	for _, op := range operations() {
+		attr := attribution(op)
+		if len(prod) != len(attr) {
+			t.Fatalf("%s: program length differs", op.name)
 		}
-		if a != b {
-			t.Fatalf("attribution differs at instruction %d", i)
+		mark := ruleMark(op.nr)
+		traps[mark] = true
+		for i, a := range attr {
+			b := prod[i]
+			if uint32(i) == mark {
+				if b.Code != unix.BPF_RET|unix.BPF_K || b.K&0xffff0000 != unix.SECCOMP_RET_ERRNO {
+					t.Fatalf("%s: rule mark %d is not an errno return", op.name, mark)
+				}
+				b.K = unix.SECCOMP_RET_TRAP | mark
+			}
+			if a != b {
+				t.Fatalf("%s: attribution differs at instruction %d", op.name, i)
+			}
+		}
+	}
+	// Every errno return of the production program is attributed by an operation.
+	for i, b := range prod {
+		if b.Code == unix.BPF_RET|unix.BPF_K && b.K&0xffff0000 == unix.SECCOMP_RET_ERRNO && !traps[uint32(i)] {
+			t.Fatalf("no attribution case for errno return %d", i)
 		}
 	}
 }
 
+// ruleMark is the index of the errno return of nr's production rule.
 func ruleMark(nr uint32) uint32 {
 	p := holderProgram()
 	for i, v := range p {
@@ -315,7 +337,7 @@ func runChild(t *testing.T, op operation, mode string, argv ...string) {
 	}
 	program := holderProgram()
 	if mode == "attribution" {
-		program = attribution()
+		program = attribution(op)
 	}
 	want := "READY " + digest(program) + "\n"
 	if mode == "control" || mode == "abi-control" {
@@ -400,6 +422,7 @@ func TestHP8Child(t *testing.T) {
 		childError("working directory", err, false)
 	}
 	var invoke call
+	var probed operation
 	if mode == "kill" || mode == "abi-control" {
 		// A host filter can also kill the unfiltered control. Disable dumps
 		// even on hosts that pipe cores to a collector and ignore RLIMIT_CORE.
@@ -436,6 +459,7 @@ func TestHP8Child(t *testing.T) {
 		for _, op := range operations() {
 			if op.name == name {
 				found = true
+				probed = op
 				invoke, err = prepare(op, dir, marker)
 				break
 			}
@@ -458,7 +482,7 @@ func TestHP8Child(t *testing.T) {
 		if err := catchTrap(); err != nil {
 			childError("sigaction", err, true)
 		}
-		p := attribution()
+		p := attribution(probed)
 		marker := []byte("READY " + digest(p) + "\n")
 		if err := install(p); err != nil {
 			childError("install attribution", err, true)
