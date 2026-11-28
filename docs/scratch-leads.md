@@ -484,7 +484,7 @@ operation; every code is a word of lower-case letters, digits and dashes.
 | `lead.start` | `role-busy`, `not-provisioned`, `folder-missing`, `holder-version-skew`, `max-running`, `role-not-defined`, `not-managed`, `preflight`, `record-folder-left`, `foreign-unit`, `unit-loaded`, `limits`, `profile-not-launchable`, `launch-refused`, `epoch-exhausted`, `registry-refused` | `start-failed`, `previous-unit-not-gone`, `intent-pending` | `launch-uncertain`, `daemon-stopping`, `registry-check`, `registry-broken`, `failed` |
 | `lead.stop` | `role-busy`, `stale-epoch`, `role-not-defined`, `not-managed` | `intent-pending`, `failed` | `stop-unproven`, `daemon-stopping`, `registry-broken`, `failed` |
 | `lead.ticket` | `stale-epoch`, `not-running`, `holder-version-skew`, `ticket-refused` | `holder-unreachable`, `ticket-failed`, `ticket-lost`, `ticket-file` | |
-| `lead.inject` | `stale-epoch`, `inject-off`, `not-running`, `holder-version-skew`, `second-message`, `message-in-flight`, and the admission codes of the canary slice (`bad-id`, `body-too-long`, `empty-body` and the like) | `holder-unreachable`, and `holder-` with the holder's refusal (`disabled`, `busy`, `bad-request`; the epoch's message stays free after `disabled` and `bad-request`, and stays spent after `busy`) | |
+| `lead.inject` | `stale-epoch`, `inject-off`, `not-running`, `holder-version-skew`, `second-message`, `message-in-flight`, and the admission codes of the canary slice (`bad-id`, `body-too-long`, `empty-body` and the like) | `holder-unreachable` (the inject-sent line is in and the socket could not be dialled: the epoch's message is free again, see [Message and attach](#message-and-attach)), `failed` (the evidence file takes no line, or the request does not encode: nothing was sent and nothing is spent), and `holder-` with the holder's refusal (`disabled`, `busy`, `bad-request`; the epoch's message stays free after `disabled` and `bad-request`, and stays spent after `busy`) | |
 
 Both `lead.define` and `lead.start` can also return a refused receipt for a
 missing, foreign or unassigned project home, or a stale assignment version.
@@ -545,8 +545,9 @@ a result that holds a receipt.
 A lead's `inject` flag and its message follow the canary slice, with one
 difference that is the lead's own: **the epoch's one message is spent by a message
 that may have reached the lead, and not by one that was not delivered.** Once the
-request frame is written the message is spent, and stays spent unless the holder
-wrote nothing to the lead, which it says in one of two ways:
+`inject-sent` line is in the evidence (the daemon writes it before it dials the
+holder and writes the request frame) the message is spent, and stays spent unless
+nothing reached the lead, which is known in one of three ways:
 
 - its answer decodes, is a valid result, and says `not-now` (reason `not-ready`
   or `blocked`) or `refused` (reason `untested` or `text`) with `written`
@@ -556,7 +557,12 @@ wrote nothing to the lead, which it says in one of two ways:
   `bad-request` (an answer with no result: the receipt is `unavailable` with
   `holder-` and the code, or `refused` `stale-epoch` for `wrong-epoch`); the
   daemon then writes the `inject-refused` line of the message, with its message id
-  and the code `holder-` and the holder's code.
+  and the code `holder-` and the holder's code; or
+- the daemon could not dial the holder's socket, or could not set the deadline of
+  its write, after it had written the `inject-sent` line: no frame was written.
+  The receipt is `unavailable` with `holder-unreachable`, and the daemon writes an
+  `inject-refused` line with the code `unsent`, the message id and the same
+  `effect_id` as the `inject-sent` line it closes.
 
 Then the daemon makes the epoch's message free again, once the line is in the
 evidence, and the lead may send another message in the same epoch, with the same
@@ -570,35 +576,43 @@ daemon does not know, a line (the result or the refusal) that could not be
 written, and a holder's refusal `busy`. The last is a refusal of the request, and
 the receipt is `unavailable` with `holder-busy` all the same, but the daemon sends
 one message at a time, so a holder that says a delivery is running is delivering
-something the daemon has no record of (the inject residual below), which may have
+something the daemon has no record of (the inject order below), which may have
 reached the lead: the daemon writes the `inject-refused` line of the message, the
 row shows the epoch's message spent with no words of it (the console says
 `sent-unsure`) and the daemon's log says why, and a later message is refused
 `second-message`. The holder's text is not read to tell this `busy` from another.
 A refusal before the
-frame is written (a bad message, a stopped role, a second message, a holder that
-cannot be dialled) spends nothing. A second message while the first is
+`inject-sent` line is written (a bad message, a stopped role, a second message, a
+holder of another build) spends nothing, and so does an evidence file that takes
+no line: nothing is sent, the receipt is `unavailable` with the code `failed`, and
+the daemon's log says why (the `inject-refused` line, when it can be written, has
+the code `evidence-unwritable`; a request that does not encode has the code
+`request-invalid`, with nothing recorded or sent). A holder that cannot be dialled
+is not among them: the line is already in, and the `unsent` line above is what
+gives the message back. A second message while the first is
 spent is refused `second-message`, and one while the first is in flight
 `message-in-flight`. The canary's own rule is unchanged: there every result spends
 the message, `not-now` included.
 
 The spent epochs are rebuilt at every daemon start from the lead's evidence file,
 and `lead.list` shows `message_spent`. The reader sees the lines of one epoch in
-the order of the file, as a series of messages, an `inject-sent` line and then
-the `inject-result` line of the same message id, or the `inject-refused` line of
-the same message id whose code is `holder-disabled`, `holder-wrong-epoch`,
-`holder-busy` or `holder-bad-request`. The epoch is free when every message of
-the series is closed by a result of the four that release the message or by a
-refusal other than `holder-busy` (a `holder-busy` line closes its message and
-spends the epoch); it is spent when a message has no closing line (the daemon
-was killed after the `inject-sent` line, which is written before the wait for the
-answer), when a result line or a holder refusal has no `inject-sent` line before
+the order of the file, as a series of messages, an `inject-sent` line (it has an
+`effect_id`, the id of the command in the frame, which no restart of the daemon
+repeats) and then the `inject-result` line of the same message id, or the
+`inject-refused` line of the same message id whose code is `holder-disabled`,
+`holder-wrong-epoch`, `holder-busy`, `holder-bad-request` or `unsent`. The epoch is
+free when every message of the series is closed by a result of the four that
+release the message, by an `unsent` line or by a refusal other than
+`holder-busy` (a `holder-busy` line closes its message and spends the epoch); it
+is spent when a message has no closing line (the daemon was killed after the
+`inject-sent` line, which is written before the frame and so before the wait for
+the answer), when a result line or a holder refusal has no `inject-sent` line before
 it, names another message id or is the second of its message, when an
 `inject-sent` line follows one that has no closing line, and when a result is not
 a release or is not a combination the holder sends, and when a message is closed
 by `holder-busy`. An `inject-refused` line with
-any other code (a message that never reached the holder: `inject-off`,
-`second-message`, `holder-unreachable` and the like) is not part of the series
+any other code (a message that never reached the holder and has no `inject-sent`
+line: `inject-off`, `second-message`, `evidence-unwritable` and the like) is not part of the series
 and changes nothing, so it does not close an open message. Whatever is in doubt
 is spent. The file is read as strictly as the canary's: a line that is damaged or
 partial refuses the start, and so does a line of the lead that lacks the
@@ -1646,26 +1660,26 @@ which settles it at its reconcile, as before.
   such a lead: that needs a new startup check of the registry in both builds and
   a decision on what blocks the owner who is trying to clean up, so it is left
   documented only.
-- **The inject residual.** The order of an inject is: admit the command (durable),
-  the admission checks and the epoch, write the request frame, write the
-  `inject-sent` line of the evidence, then finish the receipt. A daemon killed
-  **between the frame and the `inject-sent` line** (a window of a few
-  milliseconds) leaves the epoch **unspent** after the restart, though the
-  message is on its way to the lead, and the command's receipt reads `uncertain`.
-  A killed daemon after that line leaves the epoch spent, because the line has no
-  `inject-result` line after it: only a message whose result line is in the
-  evidence, with `not-now` or `refused` and nothing written, or whose
-  `inject-refused` line holds a holder refusal other than `holder-busy`, is read
-  back as not spent. A replay of the command is never sent again. Read the lead's
-  screen before a second message.
+- **The inject order.** The order of an inject is: admit the command (durable),
+  check the admission and the epoch, write the `inject-sent` line of the evidence
+  (with its `effect_id`), then dial the holder and write the request frame, and
+  then finish the receipt. When the line cannot be written, nothing is sent and
+  nothing is spent. A daemon killed after the line leaves the epoch **spent** after
+  the restart, because the line has no closing line after it, whether or not the
+  frame had left: only a message whose `inject-result` line is in the evidence, with
+  `not-now` or `refused` and nothing written, or whose `inject-refused` line holds
+  `unsent` or a holder refusal other than `holder-busy`, is read back as not spent.
+  A daemon killed before the line sent nothing. There is no longer a stretch in
+  which a message is on its way to the lead and the evidence does not know of it.
+  A replay of the command is never sent again. Read the lead's screen before a
+  second message when the epoch shows `sent-unsure`.
 
-  The same window is why a holder's `busy` leaves the epoch spent: a restarted
-  daemon with the epoch unspent that sends a message finds the holder still
-  delivering the one that was lost, and the holder answers `busy`. The daemon
-  takes that for what it is, a delivery it has no record of, and keeps the epoch
-  spent, so that no third message follows. The message that was refused was not
-  written, and the lost one is not known to have been delivered nor known not to
-  have been: read the lead's screen.
+  A holder's `busy` still leaves the epoch spent. The daemon sends one message at
+  a time and writes down each one it sends, so a holder that answers `busy` is
+  delivering something the daemon has no record of. The daemon takes that for what
+  it is and keeps the epoch spent, so that no third message follows. The message
+  that was refused was not written, and the other one is not known to have been
+  delivered nor known not to have been: read the lead's screen.
 - **One scratch root per account for a key.** Unit names come from the key and
   live in the user's one systemd manager. Two scratch roots on one account that
   both define `alpha` name the same unit, `ataniq-lead-scratch-alpha.service`,

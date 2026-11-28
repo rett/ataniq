@@ -5,4 +5,5 @@
   killed in between can no longer have a message delivered that its evidence
   does not know. A holder socket that cannot be dialled leaves an
   `inject-refused` line with the code `unsent`, which frees a scratch lead's
-  message; the canary's message stays spent.
+  message; the canary's message stays spent. The canary slice, scratch leads and
+  runbook guides describe this order.

@@ -975,10 +975,9 @@ func (x *canaryExt) refuseUnsent(messageID string, epoch uint64, effect string) 
 // to a lead of scratch mode: disabled, wrong-epoch and bad-request do, since the
 // holder refused the request before any delivery. Busy does not: the daemon
 // sends one message at a time, so a holder that says a delivery is running is
-// delivering something the daemon has no record of (the residual of an inject
-// whose daemon was killed between the frame and the inject-sent line), which
-// may have reached the lead. The holder's text is not trusted to tell that busy
-// from another one.
+// delivering something the daemon has no record of, since every message it
+// sends has its inject-sent line first, which may have reached the lead. The
+// holder's text is not trusted to tell that busy from another one.
 func holderFrees(code string) bool {
 	return holderRefusal(code) && code != wire.CodeBusy
 }
